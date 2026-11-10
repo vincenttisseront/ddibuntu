@@ -4,7 +4,7 @@ import { createError, deleteCookie, getCookie, getMethod, getQuery, getRequestHe
 import type { H3Event } from 'h3'
 import type { ZodType } from 'zod'
 import { cfg } from './config'
-import { inRecovery, query } from './db'
+import { inRecovery, isSchemaReady, query } from './db'
 import { ROLE_RANK, safeEqual, sessionFromToken } from './auth'
 import type { Role, SessionUser } from './auth'
 
@@ -108,6 +108,7 @@ export async function dispatch(event: H3Event): Promise<unknown> {
       if (table.some((e) => e.re.test(path))) fail(405, 'method_not_allowed')
       fail(404, 'not_found')
     }
+    if (!isSchemaReady() && !['/health', '/cluster/role'].includes(path)) fail(503, 'schema_pending')   // secondaire en attente des migrations du leader
     if (unsafe) {
       // nœud secondaire du cluster : aucune écriture (ni déploiement de fichiers) ; les modifications se font sur le leader / l'adresse de service
       if (await inRecovery()) fail(503, 'replica')

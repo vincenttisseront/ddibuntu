@@ -22,7 +22,7 @@ if [ -n "$missing" ]; then note "batterie cluster réel non exécutable ici (man
 
 B="$(mktemp -d /srv/ddilive.XXXXXX)"; chmod 755 "$B"
 cleanup() {
-  pkill -f "patroni $B/" 2>/dev/null; pkill -u etcd -f "$B/" 2>/dev/null; sleep 1
+  pkill -f "$B/console/" 2>/dev/null; pkill -f "patroni $B/" 2>/dev/null; pkill -u etcd -f "$B/" 2>/dev/null; sleep 1
   for n in 1 2 3; do pkill -9 -u postgres -f "$B/n$n/" 2>/dev/null; done
   rm -rf "$B"; rm -rf "$T_TMP"
 }
@@ -355,6 +355,61 @@ wait_cond 200 "le cluster retrouve un primaire en écriture" '[ "$(writable_coun
 sleep 10
 NL="$(writable_count)"
 expect_eq "après retour du quorum : exactement un primaire accessible en écriture" "1" "$NL"
+echo "== Console réelle : le leader écrit, le secondaire est en lecture seule, la bascule demandée par la console déplace l'écriture =="
+if [ ! -f "$ROOT/webui/.output/server/index.mjs" ] || ! command -v node >/dev/null 2>&1; then
+  note "console non construite (webui/.output) ou node absent : section console non exécutée"
+else
+  NODE_BIN="$(command -v node)"; CON="$B/console"; mkdir -p "$CON"; cp -r "$ROOT/webui/.output" "$CON/.output"; chmod -R a+rX "$CON"
+  find_leader() { for n in 1 2; do [ "$(sql "$n" -c "select pg_is_in_recovery()" 2>/dev/null)" = f ] && { echo "$n"; return; }; done; }
+  LN="$(find_leader)"; RN=$((3 - LN))
+  sql "$LN" -c "drop table if exists rendered_configs" >/dev/null     # la migration 6 de la console recrée la table (créée à la main plus haut pour les essais de « follow »)
+  start_console() { # start_console N PORT
+    mkdir -p "$B/congen$1"; chown postgres:postgres "$B/congen$1"
+    ( cd "$CON" && runuser -u postgres -- env NODE_ENV=production PORT="$2" NITRO_HOST=127.0.0.1 DDI_TEST_MODE=1 DDI_COOKIE_SECURE=false DDI_SECRET_KEY=cle-secrete-de-test-0123456789abcdefghij \
+      DDI_SETUP_TOKEN=jeton-test DDI_PBKDF2_ITERATIONS=2000 DDI_GENERATED_DIR="$B/congen$1" DDI_CLUSTER_STATUS="$(R "$1")/run/ddibuntu/cluster-status.json" \
+      DDI_QUERY_LOG=/nonexistent DDI_RELOAD_STATUS="$B/congen$1/reload-status" \
+      DDI_DATABASE_URL="postgresql://postgres@/postgres?host=$(R "$1")/run/pg" "$NODE_BIN" "$CON/.output/server/index.mjs" >"$B/console$1.log" 2>&1 & )
+  }
+  hc() { # hc PORT METHODE CHEMIN [JSON] : code HTTP ; corps dans $B/hc.out
+    local port="$1" m="$2" pth="$3" d="${4:-}"
+    if [ -n "$d" ]; then curl -s -o "$B/hc.out" -w '%{http_code}' -X "$m" -b "$B/jar" -c "$B/jar" -H "x-csrf-token: ${CSRF:-}" -H 'content-type: application/json' -d "$d" "http://127.0.0.1:$port$pth"
+    else curl -s -o "$B/hc.out" -w '%{http_code}' -X "$m" -b "$B/jar" -c "$B/jar" -H "x-csrf-token: ${CSRF:-}" "http://127.0.0.1:$port$pth"; fi
+  }
+  hcode() { python3 -c "import json; d=json.load(open('$B/hc.out')); print(d.get('data',{}).get('code') or d.get('statusMessage',''))" 2>/dev/null; }
+  PL=3101; PR=3102; PW='Zq7!vK2m-Lw9#pR4t'
+  start_console "$LN" $PL
+  wait_cond 60 "la console du leader (n$LN) démarre et migre le schéma" '[ "$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:$PL/api/health)" = 200 ]'
+  wait_cond 30 "le schéma de la console arrive sur le secondaire (n$RN) par la réplication" '[ "$(sql $RN -c "select coalesce(max(version),0) from schema_migrations")" = 7 ]'
+  start_console "$RN" $PR
+  wait_cond 60 "la console du secondaire (n$RN) démarre sans écrire (schéma déjà au niveau)" '[ "$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:$PR/api/health)" = 200 ]'
+  expect_eq "leader : /cluster/role → pas de secondaire" "false" "$(curl -s http://127.0.0.1:$PL/api/cluster/role | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["replica"]).lower())')"
+  expect_eq "secondaire : /cluster/role → secondaire" "true" "$(curl -s http://127.0.0.1:$PR/api/cluster/role | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["replica"]).lower())')"
+  expect_eq "leader : création du premier administrateur" "200" "$(hc $PL POST /api/setup/admin "{\"token\":\"jeton-test\",\"username\":\"admin\",\"password\":\"$PW\"}")"
+  expect_eq "leader : connexion" "200" "$(hc $PL POST /api/auth/login "{\"username\":\"admin\",\"password\":\"$PW\"}")"
+  CSRF="$(python3 -c "import json; print(json.load(open('$B/hc.out'))['csrf'])")"
+  expect_eq "leader : écriture acceptée (nouvel utilisateur)" "200" "$(hc $PL POST /api/users "{\"username\":\"lect\",\"role\":\"viewer\",\"password\":\"$PW\"}")"
+  wait_cond 20 "la session et l'utilisateur sont répliqués sur le secondaire" '[ "$(sql $RN -c "select count(*) from users")" = 2 ]'
+  expect_eq "secondaire : connexion refusée (lecture seule)" "503/replica" "$(hc $PR POST /api/auth/login "{\"username\":\"admin\",\"password\":\"$PW\"}")/$(hcode)"
+  expect_eq "secondaire : la session ouverte sur le leader reste lisible" "200" "$(hc $PR GET /api/users)"
+  expect_eq "secondaire : écriture refusée proprement (503)" "503/replica" "$(hc $PR POST /api/users "{\"username\":\"intrus\",\"role\":\"viewer\",\"password\":\"$PW\"}")/$(hcode)"
+  expect_eq "secondaire : déploiement refusé et aucun fichier écrit" "503/0" "$(hc $PR POST /api/system/apply '{"deploy":true}')/$(ls -A "$B/congen$RN" | grep -c '^\.deployed$')"
+  expect_eq "secondaire : l'utilisateur refusé n'existe pas" "0" "$(sql $RN -c "select count(*) from users where username = 'intrus'")"
+  # états publiés par root (follow) lus par les deux consoles
+  fol "$LN" >/dev/null 2>&1; fol "$RN" >/dev/null 2>&1
+  expect_eq "leader : état du cluster visible, rôle local = leader" "true/leader/n$LN" "$(hc $PL GET /api/cluster/status >/dev/null; python3 -c "import json; d=json.load(open('$B/hc.out')); print(str(d['clustered']).lower()+'/'+d['state']['localRole']+'/'+d['state']['leader'])")"
+  expect_eq "secondaire : même cluster vu en lecture seule, rôle local = replica" "true/replica/true" "$(hc $PR GET /api/cluster/status >/dev/null; python3 -c "import json; d=json.load(open('$B/hc.out')); print(str(d['clustered']).lower()+'/'+d['state']['localRole']+'/'+str(d['replica']).lower())")"
+  expect_eq "leader : le secondaire est le seul candidat à la bascule" "n$RN" "$(hc $PL GET /api/cluster/status >/dev/null; python3 -c "import json; print(','.join(json.load(open('$B/hc.out'))['candidates']))")"
+  expect_eq "leader : demande de bascule vers le secondaire acceptée" "200" "$(hc $PL POST /api/cluster/switchover "{\"candidate\":\"n$RN\"}")"
+  expect_eq "…la demande est un simple fichier d'une ligne" "n$RN" "$(cat "$B/congen$LN/.cluster-switchover")"
+  # le fichier est déposé par le processus « postgres » du banc (la console) ; root le relit et exécute (unité .path en production)
+  DDI_GENERATED_DIR="$B/congen$LN" cl "$LN" request >"$B/req2.out" 2>&1; RQ=$?
+  expect_eq "root : demande validée et bascule exécutée" "0" "$RQ"
+  wait_for 90 "le secondaire devient leader" is_leader "$RN" "$RN"
+  wait_cond 30 "la console de n$RN (nouveau leader) accepte maintenant les écritures" '[ "$(hc $PR POST /api/users "{\"username\":\"apres\",\"role\":\"viewer\",\"password\":\"$PW\"}")" = 200 ]'
+  wait_cond 30 "la console de n$LN (ancien leader) refuse maintenant les écritures (503)" '[ "$(hc $PL POST /api/users "{\"username\":\"refuse\",\"role\":\"viewer\",\"password\":\"$PW\"}")" = 503 ]'
+  wait_cond 30 "la même session fonctionne sur le nouveau leader et l'utilisateur écrit est répliqué sur l'ancien" '[ "$(sql $LN -c "select count(*) from users where username = '"'"'apres'"'"'")" = 1 ]'
+  pkill -f "$CON/.output/server/index.mjs" 2>/dev/null
+fi
 note "non couvert : coupure réseau réelle, perte de machine, horloges désynchronisées, disque saturé ; à rejouer sur le premier laboratoire (docs/ARCHITECTURE-CLUSTER.md)"
 
 finish

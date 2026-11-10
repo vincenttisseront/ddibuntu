@@ -14,6 +14,7 @@
 #   sync                                                                        relit le registre des nœuds (etcd) : pairs et pare-feu à jour
 #   status                                                                      état JSON (etcd, Patroni, membres, retard de réplication)
 #   switchover [--candidate N]                                                  bascule contrôlée du primaire
+#   rolling-check VERSION                                                       (mise à jour en ligne) autorise ou refuse : le leader attend que les secondaires soient à jour
 #   request                                                                     traite la demande de bascule déposée par la console (« .cluster-switchover » : un nom de nœud, validé)
 #   follow                                                                      (nœud de données) aligne Kea (HA) et BIND (primaire/secondaire) : primaire = fichiers de la console, secondaire = copie répliquée en base
 #   vip-check                                                                   (Keepalived) code 0 si ce nœud est le leader Patroni ; « init --vip CIDR --vip-iface IFACE [--vip-vrid N] » active la VIP de service
@@ -619,17 +620,55 @@ patroni_role() {   # leader | replica | "" (inconnu)
 #    (Kea + BIND secondaire, zones transférées par TSIG) ; les sorties de console périmées (zones/) sont retirées pour qu'un fichier de zone ancien
 #    ne remplace jamais, plus tard, la copie transférée si ce nœud devient primaire.
 #  · primaire : réapplique quand le câblage change (arrivée du second nœud de données, clé TSIG) ; le contenu, lui, est appliqué par le déploiement.
+VERSIONS=/ddibuntu-cluster/versions/
+my_version() { local v; v="$(tr -d '\n' < "$ROOT/usr/local/lib/ddibuntu/VERSION" 2>/dev/null || true)"; [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "$v" || true; }
+cmd_putver() { conf_load; [[ "${1:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1; ectl put "$VERSIONS${C[NODE_NAME]}" "$1" >/dev/null; }
+# rolling-check VERSION : appelé par la mise à jour en ligne AVANT d'installer VERSION. Code 0 = autorisé ; 3 = refusé (message sur la sortie d'erreur).
+# Règle : on met à jour les secondaires d'abord. Le leader ne l'est qu'une fois les autres nœuds de données en bonne santé déjà à la version visée
+# (le leader applique les migrations de schéma, qu'un secondaire resté sur l'ancienne version ne comprendrait plus).
+cmd_rolling_check() {
+  local target="${1:-}"; [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version visée invalide"
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || return 0
+  local role; role="$(patroni_role)"
+  case "$role" in
+    replica) return 0 ;;
+    leader) ;;
+    *) echo "état de la base inconnu sur ce nœud : mise à jour refusée par prudence (réessayez quand Patroni répond)" >&2; return 3 ;;
+  esac
+  local cl p name v st
+  cl="$(curl -fsS --max-time 4 --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "https://${C[NODE_IP]}:${C[PATRONI_PORT]}/cluster" 2>/dev/null || true)"
+  for p in ${C[PEERS]}; do
+    [ "$(peer_field "$p" role)" = data ] || continue
+    name="$(peer_field "$p" name)"; [ "$name" != "${C[NODE_NAME]}" ] || continue
+    st="$(printf '%s' "$cl" | NAME="$name" python3 -c 'import json,os,sys
+try: m=[x for x in json.load(sys.stdin)["members"] if x["name"]==os.environ["NAME"]]
+except Exception: m=[]
+print(m[0].get("state","") if m else "")' 2>/dev/null || true)"
+    case "$st" in running|streaming) ;; *) echo "avertissement : $name n'est pas en bonne santé ($st) : il n'attend pas la mise à jour" >&2; continue ;; esac
+    v="$(ectl get "$VERSIONS$name" --print-value-only 2>/dev/null | head -1 || true)"
+    if [ "$v" != "$target" ]; then
+      echo "ce nœud est le leader : mettez d'abord à jour $name (version visée $target, actuelle ${v:-inconnue}), puis basculez le leader vers $name, puis mettez à jour ce nœud" >&2
+      return 3
+    fi
+  done
+  return 0
+}
+
 # État du cluster lisible par la console (sans secret), remplacé atomiquement. Ne fait jamais échouer « follow ».
 publish_state() {
   local d="$ROOT/run/ddibuntu" t lrole="" bind=""
   install -d -m 0755 "$d" 2>/dev/null || return 0
   t="$(mktemp "$d/.cluster.XXXXXX" 2>/dev/null)" || return 0
   if [ "${C[NODE_ROLE]}" = data ]; then lrole="$(patroni_role)"; bind="$(cat "$STATE/bind-applied" 2>/dev/null || true)"; fi
-  if cmd_status 2>/dev/null | LROLE="$lrole" BIND="$bind" python3 -c '
+  # version installée, partagée par etcd : sert à la mise à jour progressive (le leader n'est mis à jour qu'après le secondaire)
+  local ver; ver="$(my_version)"
+  if [ -n "$ver" ]; then timeout 6 "$0" _putver "$ver" >/dev/null 2>&1 || true; fi
+  if cmd_status 2>/dev/null | LROLE="$lrole" BIND="$bind" VER="$ver" python3 -c '
 import json, os, sys, time
 d = json.load(sys.stdin)
 d["local_role"] = os.environ["LROLE"] or "unknown"
 d["bind"] = os.environ["BIND"] or None
+d["version"] = os.environ["VER"] or None
 d["at"] = int(time.time())
 print(json.dumps(d, ensure_ascii=False))' > "$t" 2>/dev/null; then
     chmod 0644 "$t"; mv -f "$t" "$d/cluster-status.json"
@@ -747,6 +786,8 @@ case "${1:-}" in
   sync) cmd_sync ;;
   follow) cmd_follow ;;
   request) cmd_request ;;
+  rolling-check) shift; cmd_rolling_check "$@" ;;
+  _putver) shift; cmd_putver "$@" ;;
   vip-check) cmd_vip_check ;;
   keepalived) conf_load; render_keepalived ;;
   *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;

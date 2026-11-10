@@ -49,7 +49,7 @@ Statut : **validée** (itération 0). Aucune ligne de code de cluster n'existe e
 | 2 | Fondations : PKI interne, enrôlement, réplication PostgreSQL, quorum, état du cluster |
 | 3 | Kea HA load-balancing (**fait**, 0.5.3 — voir ci-dessous) |
 | 4 | BIND primaire/secondaire, distribution du RPZ, Keepalived (**fait**, 0.5.4 — voir ci-dessous) |
-| 5 | Bascule automatique, isolation, réintégration (`pg_rewind`), mise à jour progressive |
+| 5 | La console, BIND et Kea suivent le leader ; bascule depuis la console ; mise à jour progressive (**fait**, 0.5.5 — voir ci-dessous) |
 | 6 | Active Directory : Kerberos, GSS-TSIG, redirecteurs conditionnels |
 
 ## Itération 3 — Kea HA : comment c'est réalisé
@@ -70,3 +70,13 @@ Statut : **validée** (itération 0). Aucune ligne de code de cluster n'existe e
 - **IP virtuelle** : Keepalived (VRRP unicast sur le réseau dédié). Le script `vip-check` interroge l'API Patroni `/primary` en TLS mutuel : seul le leader PostgreSQL garde l'adresse. Sans leader, personne ne la porte (mieux vaut ne pas répondre que répondre depuis une base en lecture seule). Aucun Keepalived sur l'arbitre ; protocole 112 ouvert aux seuls pairs.
 - **Différé à l'itération 5** : promotion du BIND secondaire (changement de rôle quand le leader change), console et Kea qui suivent le primaire, page « Cluster ». Tant que le leader ne change pas, le comportement est complet ; après une bascule, le DNS reste servi par les deux nœuds mais les modifications de zones doivent attendre l'itération 5.
 - **À vérifier au premier laboratoire** : coupure réseau réelle, comportement de VRRP sur un vrai commutateur, charge des transferts, zones dynamiques (`rndc reload` ne les relit pas).
+
+## Itération 5 — suivre le leader : comment c'est réalisé
+- **Une seule source de vérité : Patroni.** Le leader de la base est aussi le nœud qui sert les écritures de la console, le BIND primaire et la VIP. `ddibuntu-cluster follow` (1 min) lit le rôle Patroni local et aligne le reste ; Keepalived déplace la VIP sans attendre (il interroge Patroni toutes les quelques secondes).
+- **Promotion BIND (`ddibuntu-reload --promote`)** : la configuration `named.conf.*` répliquée est retransformée en primaire (même code que le déploiement). Les fichiers de zone, eux, sont ceux que le nœud a reçus par transfert : BIND les stocke en binaire avec un journal, `named-compilezone -j -f raw -F text` les convertit en texte avec le journal appliqué (les noms créés par DDNS avant la panne sont conservés), le journal devenu incohérent est supprimé. Tout est contrôlé **avant** la première modification ; un échec laisse le nœud secondaire.
+- **Retour d'un ancien primaire** : `--replica` après un rôle `primary` supprime ses fichiers de zone et journaux : un transfert complet depuis le nouveau primaire remplace tout (une copie « plus récente » ne serait jamais écrasée, BIND la jugeant à jour).
+- **Console** : `pg_is_in_recovery()` décide. Secondaire = lecture seule : les requêtes qui écrivent sont refusées par un 503 `replica` **avant** tout effet de bord (déploiement de fichiers compris), les sessions (répliquées) restent lisibles, aucune migration n'est tentée (elles viennent du leader), les tâches de fond qui écrivent sont suspendues. Promu, le nœud reprend l'écriture en quelques secondes.
+- **Demande de bascule** : la console dépose un fichier d'une ligne (nom de nœud) dans le seul dossier qui lui est ouvert en écriture ; root le relit comme un simple nom, le vérifie contre `cluster.conf` et l'état réel de Patroni (candidat = secondaire de données en bonne santé, pas le leader), exécute `patronictl switchover` et publie un résultat à message fixe.
+- **Mise à jour progressive** : chaque nœud publie sa version dans etcd. Le leader n'accepte la mise à jour en ligne que lorsque les secondaires sains sont déjà à la version visée : on met à jour les secondaires, on bascule, puis on met à jour l'ancien leader. Un secondaire sur le nouveau logiciel mais l'ancien schéma annonce `waiting_leader` (l'installation n'est pas annulée), répond `schema_pending` et attend les migrations du leader.
+- **Isolation** (déjà éprouvée à l'itération 2 pour la base) : un leader sans quorum devient inutilisable en écriture ; sa VIP disparaît (vip-check) ; DNS et DHCP continuent de répondre (Kea HA, BIND secondaire).
+- **À vérifier au premier laboratoire** : coupure réseau réelle, durée de la fenêtre de rétrogradation (≤ 1 min), bascule sous charge DHCP, grandes zones.

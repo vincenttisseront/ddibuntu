@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { audit, clearSessionCookie, fail, route, setSessionCookie, COOKIE } from '../utils/router'
-import { one, query, tx, getSetting, isSchemaReady } from '../utils/db'
+import { one, query, tx, getSetting, isSchemaReady, inRecovery } from '../utils/db'
 import { cfg } from '../utils/config'
 import { createSession, destroySession, destroyUserSessions, dummyVerify, hashPassword, loginBlocked, passwordPolicyError, recordAttempt, safeEqual, verifyPassword, decryptSecret } from '../utils/auth'
 import { AD_DEFAULTS, authenticateAd, defaultLdapFactory } from '../utils/ad'
@@ -10,7 +10,13 @@ import { getCookie, getRequestHeader } from 'h3'
 const username = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9._@-]+$/)
 const role = z.enum(['admin', 'operator', 'viewer'])
 
-route('GET', '/health', 'public', async () => { if (!isSchemaReady()) fail(503, 'starting'); return { status: 'ok' } })
+// Un secondaire dont la console vient d'être mise à jour attend que le leader applique les migrations : le processus est sain (la mise à jour en ligne
+// ne doit pas faire de retour arrière), mais l'API répond « schema_pending » tant que le schéma n'est pas au niveau.
+route('GET', '/health', 'public', async () => {
+  if (isSchemaReady()) return { status: 'ok' }
+  if (await inRecovery().catch(() => false)) return { status: 'waiting_leader' }
+  fail(503, 'starting')
+})
 
 route('GET', '/auth/me', 'public', async (c) => (c.user ? { user: { id: c.user.id, username: c.user.username, role: c.user.role, source: c.user.source, displayName: c.user.displayName }, csrf: c.user.csrf } : { user: null }))
 

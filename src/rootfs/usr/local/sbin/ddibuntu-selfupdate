@@ -198,6 +198,11 @@ cmd_apply() {
   newer "$LATEST" "$cur" || die "la version $LATEST n'est pas plus récente que la version installée ($cur)"
   if [ -z "$BUNDLE_URL" ] || [ -z "$SUMS_URL" ] || [ -z "$SIG_URL" ]; then die "la release $LATEST n'a pas tous ses fichiers signés"; fi
 
+  # Cluster : mise à jour progressive. Le leader n'est mis à jour qu'après les autres nœuds de données (voir « ddibuntu-cluster rolling-check »).
+  if [ -e "${DDI_CLUSTER_CONF:-/etc/ddibuntu-cluster/cluster.conf}" ]; then
+    local why; why="$("${DDI_CLUSTER_CMD:-/usr/local/sbin/ddibuntu-cluster}" rolling-check "$LATEST" 2>&1 >/dev/null)" \
+      || die "mise à jour progressive du cluster : ${why:-refusée}"
+  fi
   rm -rf "$WORKDIR"; mkdir -p "$WORKDIR"; chmod 0700 "$WORKDIR"
   st state=downloading "message=Téléchargement de la version $LATEST"
   gh_curl -H 'Accept: application/octet-stream' --max-filesize 1048576 "$SUMS_URL" -o "$WORKDIR/SHA256SUMS" || die "téléchargement de SHA256SUMS impossible"

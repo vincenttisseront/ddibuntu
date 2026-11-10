@@ -11,7 +11,7 @@ Appliance **DDI** (DNS, DHCP, IPAM) sur Ubuntu Server 24.04 LTS, installable par
 - **Retour arrière partout** : un point de restauration est créé avant chaque configuration, déploiement ou import ; les changements réseau s'annulent seuls sans confirmation.
 - **Sécurité** : chaîne d'approvisionnement vérifiée (signatures et empreintes), console sans privilège, application privilégiée séparée et contrôlée, pare-feu nftables, durcissement.
 
-> État : version de développement **0.5.4**. Voir « Limites connues » ci-dessous avant tout usage en production.
+> État : version de développement **0.5.5**. Voir « Limites connues » ci-dessous avant tout usage en production.
 
 ## Démarrage rapide
 
@@ -49,7 +49,7 @@ docs/                    architecture, installation, tests, publication
 
 Principes de travail : une fonction n'est « faite » que si un test réel l'a prouvée ; un test qui échoue est d'abord soupçonné d'être faux, puis vérifié ; aucune donnée réelle (messages, clients, secrets) dans les tests.
 
-## Cluster (en construction — itération 4 sur 6)
+## Cluster (en construction — itération 5 sur 6)
 
 Deux nœuds de données + un arbitre, sur un réseau dédié ; architecture et décisions : [docs/ARCHITECTURE-CLUSTER.md](docs/ARCHITECTURE-CLUSTER.md).
 
@@ -66,7 +66,7 @@ ddibuntu-cluster join n2.bundle --wipe-local-db
 ddibuntu-cluster status          # état JSON
 ddibuntu-cluster switchover      # bascule contrôlée
 ```
-Ajoutez d'abord l'arbitre, puis le second nœud de données. Dès que deux nœuds de données existent, Kea passe en **HA load-balancing** (configuration ajoutée par root ; `ddibuntu-cluster status` montre l'état HA) : les relais DHCP doivent lister les deux adresses réelles des nœuds. BIND devient **primaire/secondaire** : le secondaire est dérivé par root de la configuration répliquée et reçoit les zones (et la RPZ) par transfert signé TSIG sur le réseau dédié. Pour une adresse de service unique, ajoutez une **IP virtuelle** qui suit le leader PostgreSQL (Keepalived ; voir `docs/ARCHITECTURE-CLUSTER.md`). Pas encore de page console ; la promotion de BIND et la console qui suit le primaire arrivent à l'itération 5.
+Ajoutez d'abord l'arbitre, puis le second nœud de données. Dès que deux nœuds de données existent, Kea passe en **HA load-balancing** (configuration ajoutée par root ; `ddibuntu-cluster status` montre l'état HA) : les relais DHCP doivent lister les deux adresses réelles des nœuds. BIND devient **primaire/secondaire** : le secondaire est dérivé par root de la configuration répliquée et reçoit les zones (et la RPZ) par transfert signé TSIG sur le réseau dédié. Pour une adresse de service unique, ajoutez une **IP virtuelle** qui suit le leader PostgreSQL (Keepalived ; voir `docs/ARCHITECTURE-CLUSTER.md`). La **page « Cluster »** de la console montre l'état et permet la bascule contrôlée ; BIND est promu automatiquement quand Patroni change de leader et un nœud secondaire de la console est en lecture seule (utilisez l'adresse de service). **Mise à jour en ligne** : secondaires d'abord, puis bascule, puis l'ancien leader (le leader refuse tant que les secondaires ne sont pas à jour).
 
 ## Limites connues
 
