@@ -2,6 +2,7 @@
 import { promises as fs } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
+import { readAdState } from './adkrb'
 import { cfg } from './config'
 import { decryptSecret } from './auth'
 import { getSetting, one, query, tx } from './db'
@@ -15,9 +16,10 @@ export async function loadDns(): Promise<DnsSettings> { return { ...DNS_DEFAULTS
 export async function loadKea(): Promise<any> { return { ...KEA_DEFAULTS, ...(await getSetting<any>('dhcp', {})) } }
 
 export async function buildConfig(): Promise<{ files: OutFile[]; bumps: Array<{ id: number; serial: number }>; warnings: string[] }> {
-  const dns = await loadDns()
+  // le domaine Kerberos vient de l'état publié par root, jamais d'un réglage de la console : le rendu ne peut pas diverger de ce que root acceptera
+  const dns: DnsSettings = { ...(await loadDns()), kerberosRealm: (await readAdState())?.realm ?? '' }
   const warnings: string[] = []
-  const zones = await query<any>(`select id, name, type, masters, forwarders, allow_transfer, ddns_enabled, disabled, soa_mname, soa_rname, soa_refresh, soa_retry, soa_expire,
+  const zones = await query<any>(`select id, name, type, masters, forwarders, allow_transfer, ddns_enabled, ddns_secure, disabled, soa_mname, soa_rname, soa_refresh, soa_retry, soa_expire,
     soa_minimum, default_ttl, serial::text as serial, dirty from dns_zones order by name`)
   const files: OutFile[] = []
   const bumps: Array<{ id: number; serial: number }> = []

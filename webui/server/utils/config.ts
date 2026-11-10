@@ -22,6 +22,7 @@ export function cfg() {
     updateStatusFile: e.DDI_UPDATE_STATUS ?? '/var/lib/ddibuntu/update-status.json',
     versionFile: e.DDI_VERSION_FILE ?? '/usr/local/lib/ddibuntu/VERSION',
     clusterStatusFile: e.DDI_CLUSTER_STATUS ?? '/run/ddibuntu/cluster-status.json',
+    adStatusFile: e.DDI_AD_STATUS ?? '/run/ddibuntu/ad-status.json',
     reloadStatusFile: e.DDI_RELOAD_STATUS ?? '/var/lib/ddibuntu/reload-status',
     allowPrivateFetch: test && e.DDI_ALLOW_PRIVATE_FETCH === '1',
     dig: e.DDI_DIG ?? 'dig',

@@ -16,6 +16,7 @@ const nav = computed(() => [
   { label: t('nav.dhcp'), icon: 'i-lucide-server', to: '/dhcp' },
   { label: t('nav.filtering'), icon: 'i-lucide-shield-ban', to: '/filtering' },
   { label: t('nav.import'), icon: 'i-lucide-file-input', to: '/import' },
+  ...(['admin', 'operator'].includes(user.value?.role) ? [{ label: t('nav.ad'), icon: 'i-lucide-building-2', to: '/ad' }] : []),
   ...(clusterOn.value ? [{ label: t('nav.cluster'), icon: 'i-lucide-server-cog', to: '/cluster' }] : []),
   ...(user.value?.role === 'admin' ? [{ label: t('nav.system'), icon: 'i-lucide-settings', to: '/system', ...(updateAvailable.value ? { badge: t('update.badge'), to: '/system#updates' } : {}) }] : []),
 ])

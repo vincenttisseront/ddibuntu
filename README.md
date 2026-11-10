@@ -11,7 +11,7 @@ Appliance **DDI** (DNS, DHCP, IPAM) sur Ubuntu Server 24.04 LTS, installable par
 - **Retour arrière partout** : un point de restauration est créé avant chaque configuration, déploiement ou import ; les changements réseau s'annulent seuls sans confirmation.
 - **Sécurité** : chaîne d'approvisionnement vérifiée (signatures et empreintes), console sans privilège, application privilégiée séparée et contrôlée, pare-feu nftables, durcissement.
 
-> État : version de développement **0.5.5**. Voir « Limites connues » ci-dessous avant tout usage en production.
+> État : version de développement **0.5.6**. Voir « Limites connues » ci-dessous avant tout usage en production.
 
 ## Démarrage rapide
 
@@ -71,7 +71,7 @@ Ajoutez d'abord l'arbitre, puis le second nœud de données. Dès que deux nœud
 ## Limites connues
 
 - Jamais exécuté sur **VMware réel**, **Docker Desktop réel** ni **PowerShell 5.1** ; l'interface web n'a pas été pilotée dans un navigateur automatisé.
-- Le DDNS reçu par BIND est écrasé au déploiement suivant ; Kea 2.4 (Ubuntu 24.04) n'a pas GSS-TSIG (DDNS sécurisé vers l'AD : Kea 3.x).
+- Le DDNS reçu par BIND est écrasé au déploiement suivant. Kea 2.4 (Ubuntu 24.04) n'a pas GSS-TSIG : le serveur DNS de l'appliance accepte bien les mises à jour sécurisées des machines du domaine (0.5.6), mais l'envoi des enregistrements DHCP vers les contrôleurs Active Directory en GSS-TSIG (Kea 3.x ou `nsupdate -g`) n'est pas fait. L'authentification Kerberos n'a été essayée qu'avec un KDC MIT, pas avec un vrai Active Directory.
 - Certificat TLS de la console auto-signé ; haute disponibilité en cours de construction (voir ci-dessus) ; pas de règles par client ni par expression régulière dans le filtrage.
 - La découverte réseau lit l'ARP dans `/proc/net/arp` ; le ping dépend des réglages du système.
 

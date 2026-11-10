@@ -1,0 +1,9 @@
+[Unit]
+Description=DDI-Buntu : demande Kerberos / GSS-TSIG de la console (validée par root)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-ad request
+TimeoutStartSec=180
+PrivateTmp=yes
+ProtectHome=yes

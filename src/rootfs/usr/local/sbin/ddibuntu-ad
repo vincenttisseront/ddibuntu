@@ -1,0 +1,262 @@
+#!/bin/bash
+# ddibuntu-ad — Kerberos / GSS-TSIG de l'appliance (root). La console (sans privilège) ne touche jamais au keytab ni à la configuration Kerberos :
+# elle dépose une demande que ce script revalide entièrement (comme ddibuntu-cluster pour la bascule).
+#
+#   configure --realm REALM [--kdc HOTE[:PORT]]...   enregistre le domaine Kerberos (AD) ; écrit /etc/krb5.conf
+#   install-keytab FICHIER|-                         installe le keytab du serveur DNS (principaux « DNS/<nom>@REALM » uniquement)
+#   remove                                           retire la configuration et le keytab
+#   status                                           état (JSON) : domaine, KDC, principaux du keytab, versions de clé
+#   test                                             obtient un ticket avec le keytab (KDC joignable, clé à jour) puis le détruit
+#   request                                          traite la demande déposée par la console (.ad-request, .ad-keytab) puis publie le résultat
+#
+# BIND n'accepte les mises à jour sécurisées (GSS-TSIG) que si, ICI, un domaine et un keytab existent : ddibuntu-reload ajoute alors « tkey-gssapi-keytab »
+# et recompose les « update-policy » à partir de ce domaine ; la console ne peut ni déclarer le keytab ni choisir un autre domaine.
+#
+# Variables de test : DDI_ROOT (préfixe de tous les chemins), DDI_TEST=1 (pas d'exigence root, ni chown, ni systemctl), DDI_GENERATED_DIR, DDI_RELOAD_CMD,
+# DDI_KEYTAB_GROUP (groupe du keytab, « bind » par défaut), DDI_KRB5_CONFIG.
+set -euo pipefail
+umask 077
+
+ROOT="${DDI_ROOT:-}"
+AD_DIR="$ROOT/etc/ddibuntu-ad"; CONF="$AD_DIR/ad.conf"
+KEYTAB="$ROOT/etc/bind/krb5.keytab"           # seul emplacement lisible par named sous AppArmor (profil usr.sbin.named)
+KRB5CONF="${DDI_KRB5_CONFIG:-$ROOT/etc/krb5.conf}"
+GEN="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}"
+STATE="$ROOT/var/lib/ddibuntu"
+RUN="$ROOT/run/ddibuntu"
+KGROUP="${DDI_KEYTAB_GROUP:-bind}"
+RELOAD="${DDI_RELOAD_CMD:-/usr/local/sbin/ddibuntu-reload}"
+MAX_KEYTAB=65536
+
+log() { printf 'ddibuntu-ad: %s\n' "$*" >&2; }
+die() { printf 'ddibuntu-ad: ERREUR : %s\n' "$*" >&2; exit 1; }
+[ -n "${DDI_TEST:-}" ] || [ "$(id -u)" -eq 0 ] || die "à lancer en root"
+
+# ---------------------------------------------------------------- validation (rien de ce qui vient d'un fichier ou d'un argument n'est fait confiance)
+valid_realm() { [[ "$1" =~ ^[A-Z0-9]([A-Z0-9.-]{0,60}[A-Z0-9])?$ ]]; }
+valid_kdc() {
+  [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,200}[A-Za-z0-9])?(:[0-9]{1,5})?$ ]] || return 1
+  local port="${1##*:}"; [ "$port" = "$1" ] || [ "$port" -le 65535 ]
+}
+
+conf_get() { [ -f "$CONF" ] && sed -n "s/^$1=//p" "$CONF" | head -n1 || true; }
+realm_now() { conf_get REALM; }
+kdcs_now() { conf_get KDCS; }
+
+# ---------------------------------------------------------------- publication de l'état (sans secret, lisible par la console)
+publish() {  # $1 = JSON
+  install -d -m 0755 "$RUN" 2>/dev/null || return 0
+  local t; t="$(mktemp "$RUN/.ad.XXXXXX")" || return 0
+  printf '%s\n' "$1" > "$t"; chmod 0644 "$t"; mv -f "$t" "$RUN/ad-status.json"
+}
+keytab_info() {   # JSON du keytab (principaux, versions, types de chiffrement), vide si absent
+  if [ ! -f "$KEYTAB" ]; then printf '{"present":false}'; return; fi
+  KT="$KEYTAB" python3 - <<'PY'
+import json, os, re, subprocess
+kt = os.environ["KT"]
+st = os.stat(kt)
+out = {"present": True, "size": st.st_size, "mtime": int(st.st_mtime), "mode": oct(st.st_mode & 0o777), "principals": [], "enctypes": [], "kvno": {}}
+try:
+    r = subprocess.run(["klist", "-k", "-e", kt], capture_output=True, text=True, timeout=10)
+    for l in r.stdout.splitlines():
+        m = re.match(r"\s*(\d+)\s+(\S+)\s+\((\S+)\)", l)
+        if not m: continue
+        p = m.group(2)
+        if p not in out["principals"]: out["principals"].append(p)
+        if m.group(3) not in out["enctypes"]: out["enctypes"].append(m.group(3))
+        out["kvno"][p] = max(int(m.group(1)), out["kvno"].get(p, 0))
+    if r.returncode != 0: out["error"] = "keytab illisible"
+except Exception:
+    out["error"] = "klist indisponible"
+print(json.dumps(out, ensure_ascii=False), end="")
+PY
+}
+cmd_status() {
+  local realm kdcs ki
+  realm="$(realm_now)"; kdcs="$(kdcs_now)"; ki="$(keytab_info)"
+  local js
+  js="$(REALM="$realm" KDCS="$kdcs" KI="$ki" python3 -c '
+import json, os, time
+print(json.dumps({"at": int(time.time()), "configured": bool(os.environ["REALM"]), "realm": os.environ["REALM"], "kdcs": os.environ["KDCS"].split(),
+                  "keytab": json.loads(os.environ["KI"])}, ensure_ascii=False))')"
+  publish "$js"; printf '%s\n' "$js"
+}
+
+# ---------------------------------------------------------------- configure
+write_krb5() {   # /etc/krb5.conf appartient à l'appliance ; l'original est conservé une fois
+  local realm="$1" kdcs="$2" t k
+  install -d -m 0755 "$(dirname "$KRB5CONF")"
+  if [ -f "$KRB5CONF" ] && [ ! -e "$KRB5CONF.ddibuntu-orig" ] && ! grep -q '^# Géré par DDI-Buntu' "$KRB5CONF"; then cp -p "$KRB5CONF" "$KRB5CONF.ddibuntu-orig"; fi
+  t="$(mktemp "$(dirname "$KRB5CONF")/.krb5.XXXXXX")"
+  {
+    printf '# Géré par DDI-Buntu (ddibuntu-ad) — ne pas modifier à la main.\n[libdefaults]\n  default_realm = %s\n' "$realm"
+    printf '  dns_lookup_realm = false\n  dns_lookup_kdc = %s\n  rdns = false\n  dns_canonicalize_hostname = false\n  udp_preference_limit = 1\n  forwardable = true\n' "$([ -n "$kdcs" ] && echo false || echo true)"
+    if [ -n "$kdcs" ]; then
+      printf '[realms]\n  %s = {\n' "$realm"
+      for k in $kdcs; do printf '    kdc = %s\n' "$k"; done
+      printf '  }\n'
+    fi
+  } > "$t"
+  chmod 0644 "$t"; mv -f "$t" "$KRB5CONF"
+}
+cmd_configure() {
+  local realm="" kdcs="" k
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --realm) realm="${2:-}"; shift 2 ;;
+      --kdc) k="${2:-}"; valid_kdc "$k" || die "KDC invalide : $k"; kdcs="$kdcs $k"; shift 2 ;;
+      *) die "argument inconnu : $1" ;;
+    esac
+  done
+  valid_realm "$realm" || die "domaine Kerberos invalide (majuscules, chiffres, points ; ex. CORP.LOCAL)"
+  kdcs="$(echo $kdcs)"
+  local n; n="$(wc -w <<<"$kdcs")"; [ "$n" -le 8 ] || die "8 KDC au plus"
+  # un changement de domaine invalide le keytab installé : ses principaux portent l'ancien domaine
+  if [ -n "$(realm_now)" ] && [ "$(realm_now)" != "$realm" ] && [ -f "$KEYTAB" ]; then
+    rm -f "$KEYTAB"; log "domaine changé : ancien keytab retiré (à réinstaller)"
+  fi
+  install -d -m 0755 "$AD_DIR"
+  local t; t="$(mktemp "$AD_DIR/.conf.XXXXXX")"
+  printf 'REALM=%s\nKDCS=%s\n' "$realm" "$kdcs" > "$t"; chmod 0644 "$t"; mv -f "$t" "$CONF"
+  write_krb5 "$realm" "$kdcs"
+  log "domaine $realm enregistré${kdcs:+ (KDC : $kdcs)}"
+  cmd_status >/dev/null
+}
+
+# ---------------------------------------------------------------- keytab
+check_keytab() {   # $1 = fichier à contrôler ; échoue avec un message précis
+  local f="$1" realm; realm="$(realm_now)"
+  [ -n "$realm" ] || die "aucun domaine Kerberos configuré (ddibuntu-ad configure --realm …)"
+  [ -f "$f" ] && [ ! -L "$f" ] || die "keytab : fichier ordinaire attendu"
+  local sz; sz="$(stat -c %s "$f")"
+  [ "$sz" -gt 0 ] && [ "$sz" -le "$MAX_KEYTAB" ] || die "keytab : taille invalide ($sz octets)"
+  [ "$(head -c1 "$f" | od -An -tx1 | tr -d ' ')" = 05 ] || die "keytab : format inconnu (octet de version attendu : 5)"
+  REALM="$realm" KT="$f" python3 - <<'PY' || exit 1
+import os, re, subprocess, sys
+realm, kt = os.environ["REALM"], os.environ["KT"]
+r = subprocess.run(["klist", "-k", "-e", kt], capture_output=True, text=True, timeout=10)
+if r.returncode != 0: sys.exit("ddibuntu-ad: ERREUR : keytab illisible (klist : %s)" % r.stderr.strip()[:120])
+n = 0
+for l in r.stdout.splitlines():
+    m = re.match(r"\s*(\d+)\s+(\S+)\s+\((\S+)\)", l)
+    if not m: continue
+    n += 1
+    p, enc = m.group(2), m.group(3)
+    if not re.fullmatch(r"DNS/[A-Za-z0-9][A-Za-z0-9.-]{0,200}@" + re.escape(realm), p):
+        sys.exit("ddibuntu-ad: ERREUR : principal refusé « %s » : seuls « DNS/<nom du serveur>@%s » sont admis" % (p[:80], realm))
+    # klist préfixe « DEPRECATED: » (DES, RC4…) ou « UNSUPPORTED: » : DES/3DES et les types inconnus sont refusés ; RC4 reste admis (domaines AD anciens)
+    base = re.sub(r"(?i)^deprecated:", "", enc).lower()
+    if enc.lower().startswith("unsupported:") or re.match(r"des3?(-|$)", base): sys.exit("ddibuntu-ad: ERREUR : type de chiffrement obsolète ou inconnu refusé : %s" % enc)
+if n == 0: sys.exit("ddibuntu-ad: ERREUR : keytab vide")
+PY
+}
+cmd_install_keytab() {
+  local src="${1:-}" tmp
+  [ -n "$src" ] || die "usage : install-keytab FICHIER|-"
+  install -d -m 0700 "$STATE" 2>/dev/null || true
+  tmp="$(mktemp "${TMPDIR:-/tmp}/.ddikt.XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp'" EXIT
+  if [ "$src" = - ]; then head -c $((MAX_KEYTAB + 1)) > "$tmp"
+  else [ -f "$src" ] && [ ! -L "$src" ] || die "keytab : fichier ordinaire attendu"; head -c $((MAX_KEYTAB + 1)) "$src" > "$tmp"; fi
+  check_keytab "$tmp"
+  install -d -m 0755 "$(dirname "$KEYTAB")"
+  local t; t="$(mktemp "$(dirname "$KEYTAB")/.krb5kt.XXXXXX")"
+  cat "$tmp" > "$t"
+  chmod 0640 "$t"
+  if [ -z "${DDI_TEST:-}" ] || getent group "$KGROUP" >/dev/null 2>&1; then chown "root:$KGROUP" "$t" 2>/dev/null || { rm -f "$t"; die "groupe $KGROUP introuvable"; }; fi
+  mv -f "$t" "$KEYTAB"
+  log "keytab installé"
+  cmd_status >/dev/null
+}
+cmd_remove() {
+  rm -f "$KEYTAB" "$CONF"
+  if [ -f "$KRB5CONF.ddibuntu-orig" ]; then mv -f "$KRB5CONF.ddibuntu-orig" "$KRB5CONF"
+  elif [ -f "$KRB5CONF" ] && grep -q '^# Géré par DDI-Buntu' "$KRB5CONF"; then rm -f "$KRB5CONF"; fi
+  log "configuration Kerberos et keytab retirés"
+  cmd_status >/dev/null
+}
+
+# ---------------------------------------------------------------- test : un ticket obtenu avec le keytab prouve KDC joignable, heure correcte et clé à jour
+cmd_test() {
+  [ -f "$KEYTAB" ] || die "aucun keytab installé"
+  [ -n "$(realm_now)" ] || die "aucun domaine configuré"
+  local princ cc out rc=0
+  princ="$(klist -k "$KEYTAB" 2>/dev/null | sed -nE 's/^ *[0-9]+ +(DNS\/[^ ]+) *$/\1/p' | head -n1)"
+  [ -n "$princ" ] || die "keytab sans principal DNS/…"
+  cc="$(mktemp "${TMPDIR:-/tmp}/.ddicc.XXXXXX")"
+  out="$(KRB5CCNAME="FILE:$cc" KRB5_CONFIG="$KRB5CONF" timeout 20 kinit -k -t "$KEYTAB" "$princ" 2>&1)" || rc=$?
+  KRB5CCNAME="FILE:$cc" kdestroy >/dev/null 2>&1 || true; rm -f "$cc"
+  if [ "$rc" -ne 0 ]; then printf 'ddibuntu-ad: échec : %s\n' "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)" >&2; return 1; fi
+  printf 'ddibuntu-ad: ticket obtenu pour %s\n' "$princ"
+}
+
+# ---------------------------------------------------------------- application : BIND relit sa configuration avec le nouveau keytab
+apply_now() {
+  [ -x "$RELOAD" ] || [ -n "${DDI_RELOAD_CMD:-}" ] || return 0
+  local role; role="$(cat "$STATE/bind-role" 2>/dev/null || true)"
+  # un secondaire n'accepte pas de mises à jour : il n'a pas besoin du keytab pour servir, mais le garde pour une promotion
+  if [ "$role" = secondary ]; then log "nœud secondaire : appliqué à la prochaine promotion"; return 0; fi
+  "$RELOAD" >/dev/null 2>&1 || { log "AVERTISSEMENT : ddibuntu-reload a échoué ; la configuration BIND n'a pas été relue"; return 1; }
+}
+
+# ---------------------------------------------------------------- demande de la console
+cmd_request() {
+  local rq="$GEN/.ad-request" kt="$GEN/.ad-keytab" action="" msg="" ok=false realm="" kdcs=""
+  [ -e "$rq" ] || [ -L "$rq" ] || return 0
+  local raw=""
+  if [ -f "$rq" ] && [ ! -L "$rq" ]; then raw="$(head -c 4096 "$rq")"; fi
+  rm -f "$rq"
+  local parsed
+  parsed="$(RAW="$raw" python3 - <<'PY' 2>/dev/null || true
+import json, os, re
+try: d = json.loads(os.environ["RAW"])
+except Exception: raise SystemExit(0)
+if not isinstance(d, dict): raise SystemExit(0)
+a = d.get("action")
+if a not in ("configure", "install-keytab", "remove", "test"): raise SystemExit(0)
+realm = d.get("realm", "") if a == "configure" else ""
+kdcs = d.get("kdcs", []) if a == "configure" else []
+if not isinstance(kdcs, list) or not all(isinstance(k, str) for k in kdcs): raise SystemExit(0)
+print(a); print(realm if isinstance(realm, str) else ""); print(" ".join(kdcs))
+PY
+)"
+  action="$(sed -n 1p <<<"$parsed")"; realm="$(sed -n 2p <<<"$parsed")"; kdcs="$(sed -n 3p <<<"$parsed")"
+  local rc=0 out=""
+  case "$action" in
+    configure)
+      local args=(--realm "$realm") k
+      for k in $kdcs; do args+=(--kdc "$k"); done
+      out="$( ( cmd_configure "${args[@]}" ) 2>&1)" || rc=$?
+      if [ "$rc" -eq 0 ]; then apply_now || true; fi ;;
+    install-keytab)
+      if [ -f "$kt" ] && [ ! -L "$kt" ]; then out="$( ( cmd_install_keytab "$kt" ) 2>&1)" || rc=$?; else out="keytab non déposé"; rc=1; fi
+      if [ "$rc" -eq 0 ]; then apply_now || true; fi ;;
+    remove) out="$( ( cmd_remove ) 2>&1)" || rc=$?; if [ "$rc" -eq 0 ]; then apply_now || true; fi ;;
+    test) out="$( ( cmd_test ) 2>&1)" || rc=$? ;;
+    *) out="demande invalide"; rc=1 ;;
+  esac
+  # le keytab déposé par la console ne doit pas rester sur le disque, ni en cas de refus
+  if [ -e "$kt" ] || [ -L "$kt" ]; then if [ -f "$kt" ] && [ ! -L "$kt" ]; then shred -u "$kt" 2>/dev/null || rm -f "$kt"; else rm -f "$kt"; fi; fi
+  [ "$rc" -eq 0 ] && ok=true
+  msg="$(printf '%s' "$out" | tr '\n\r' '  ' | sed 's/ddibuntu-ad: //g' | cut -c1-240)"
+  log "demande de la console (${action:-invalide}) : ${msg:-ok}"
+  install -d -m 0755 "$RUN" 2>/dev/null || return 0
+  local t; t="$(mktemp "$RUN/.result.XXXXXX")" || return 0
+  ACTION="${action:-invalid}" OK="$ok" MSG="$msg" python3 -c '
+import json, os, time
+print(json.dumps({"at": int(time.time()), "action": os.environ["ACTION"], "ok": os.environ["OK"] == "true", "message": os.environ["MSG"]}, ensure_ascii=False))' > "$t"
+  chmod 0644 "$t"; mv -f "$t" "$RUN/ad-result.json"
+  cmd_status >/dev/null 2>&1 || true
+  [ "$ok" = true ] || return 1
+}
+
+case "${1:-}" in
+  configure) shift; cmd_configure "$@" ;;
+  install-keytab) shift; cmd_install_keytab "${1:-}" ;;
+  remove) cmd_remove ;;
+  status) cmd_status ;;
+  test) cmd_test ;;
+  request) cmd_request ;;
+  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

@@ -16,6 +16,8 @@ export interface DnsSettings {
   listenOn: string[]; allowRecursion: string[]; allowQuery: string[]; forwarders: string[]
   dnssecValidation: 'auto' | 'no'; queryLog: boolean; ddnsKeyFile: string
   rpzEnabled: boolean; rpzZone: string; rpzAction: 'nxdomain' | 'nodata' | 'sinkhole'; sinkhole4: string; sinkhole6: string
+  /** Domaine Kerberos configuré par root (ddibuntu-ad) : jamais saisi ici, relu de son état publié. Vide = aucune mise à jour sécurisée possible. */
+  kerberosRealm?: string
 }
 export const DNS_DEFAULTS: DnsSettings = {
   listenOn: [], allowRecursion: ['127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'], allowQuery: [], forwarders: [],
@@ -26,7 +28,7 @@ const acl = (l: string[], fallback = 'any') => (l.length ? l.map((x) => `${x};`)
 
 export interface ZoneRow extends ZoneInfo {
   type: 'primary' | 'secondary' | 'forward'; masters: string[]; forwarders: string[]; allow_transfer: string[]
-  ddns_enabled: boolean; disabled: boolean
+  ddns_enabled: boolean; disabled: boolean; ddns_secure?: 'ms-self' | 'krb5-self' | 'both' | null
 }
 
 export function renderNamedOptions(s: DnsSettings, anyDdns: boolean): string {
@@ -54,6 +56,16 @@ export function renderNamedOptions(s: DnsSettings, anyDdns: boolean): string {
   return l.filter(Boolean).join('\n') + '\n'
 }
 
+/** Octrois « update-policy » d'une zone : la clé DDNS (si activée) et, quand root a configuré un domaine Kerberos, les mises à jour sécurisées des clients. */
+export function secureGrants(z: Pick<ZoneRow, 'ddns_enabled' | 'ddns_secure'>, realm: string): string[] {
+  if (!z.ddns_secure || !/^[A-Z0-9]([A-Z0-9.-]{0,60}[A-Z0-9])?$/.test(realm)) return []
+  const g: string[] = []
+  if (z.ddns_enabled) g.push('grant ddi-ddns zonesub ANY')
+  if (z.ddns_secure === 'ms-self' || z.ddns_secure === 'both') g.push(`grant ${realm} ms-self . A AAAA`)
+  if (z.ddns_secure === 'krb5-self' || z.ddns_secure === 'both') g.push(`grant ${realm} krb5-self . A AAAA`)
+  return g
+}
+
 export function renderNamedZones(zones: ZoneRow[], s: DnsSettings): string {
   const out: string[] = ['// Généré par DDI-Buntu — ne pas modifier à la main.']
   for (const z of zones) {
@@ -63,7 +75,10 @@ export function renderNamedZones(zones: ZoneRow[], s: DnsSettings): string {
     if (z.type === 'primary') {
       const props = [`type primary;`, `file "${ZONES_DIR}/db.${n}";`, 'notify yes;']
       if (z.allow_transfer.length) props.push(`allow-transfer { ${acl(z.allow_transfer)} };`)
-      if (z.ddns_enabled) props.push('allow-update { key "ddi-ddns"; };')
+      const grants = secureGrants(z, s.kerberosRealm ?? '')
+      // « allow-update » et « update-policy » s'excluent dans BIND : la clé DDNS (Kea) devient alors un octroi de la politique
+      if (grants.length) props.push(`update-policy { ${grants.join('; ')}; };`)
+      else if (z.ddns_enabled) props.push('allow-update { key "ddi-ddns"; };')
       out.push(`zone "${n}" { ${props.join(' ')} };`)
     } else if (z.type === 'secondary') {
       out.push(`zone "${n}" { type secondary; primaries { ${acl(z.masters)} }; file "${ZONES_DIR}/db.${n}"; };`)

@@ -1,7 +1,7 @@
 // Bout en bout (serveur CONSTRUIT, PostgreSQL réel, outils BIND/Kea réels) : points de restauration, retour arrière,
 // import NetBox, import AD (transfert de zone), découverte réseau.
 import { spawn, type ChildProcess } from 'node:child_process'
-import { chmodSync, mkdtempSync, existsSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, existsSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 const PORT = 3398, BASE = `http://127.0.0.1:${PORT}`
 const DBURL = 'postgresql://ddi:ddi-test-pw@127.0.0.1:5432/ddibuntu_test'
 const SETUP_TOKEN = 'jeton-de-test-0123456789abcdef', PW = 'Correct-Horse-Battery-9'
-const TMP = mkdtempSync(join(tmpdir(), 'ddi-i4-')), GEN = join(TMP, 'gen'), STATUS = join(TMP, 'reload-status'), DIG = join(TMP, 'dig'), CLFILE = join(TMP, 'cluster-status.json')
+const TMP = mkdtempSync(join(tmpdir(), 'ddi-i4-')), GEN = join(TMP, 'gen'), STATUS = join(TMP, 'reload-status'), DIG = join(TMP, 'dig'), CLFILE = join(TMP, 'cluster-status.json'), ADFILE = join(TMP, 'ad-status.json')
 let srv: ChildProcess, db: pg.Client, srvLog = ''
 
 class Client {
@@ -66,7 +66,7 @@ beforeAll(async () => {
   db = new pg.Client({ connectionString: DBURL }); await db.connect()
   await db.query('drop schema public cascade; create schema public')
   srv = spawn('node', ['.output/server/index.mjs'], { env: { ...process.env, NODE_ENV: 'production', PORT: String(PORT), NITRO_HOST: '127.0.0.1', DDI_TEST_MODE: '1', DDI_COOKIE_SECURE: 'false', DDI_DATABASE_URL: DBURL,
-    DDI_SECRET_KEY: 'cle-secrete-de-test-0123456789abcdefghij', DDI_SETUP_TOKEN: SETUP_TOKEN, DDI_PBKDF2_ITERATIONS: '2000', DDI_GENERATED_DIR: GEN, DDI_ALLOW_PRIVATE_FETCH: '1', DDI_DIG: DIG, DDI_RELOAD_STATUS: STATUS, DDI_CLUSTER_STATUS: CLFILE } })
+    DDI_SECRET_KEY: 'cle-secrete-de-test-0123456789abcdefghij', DDI_SETUP_TOKEN: SETUP_TOKEN, DDI_PBKDF2_ITERATIONS: '2000', DDI_GENERATED_DIR: GEN, DDI_ALLOW_PRIVATE_FETCH: '1', DDI_DIG: DIG, DDI_RELOAD_STATUS: STATUS, DDI_CLUSTER_STATUS: CLFILE, DDI_AD_STATUS: ADFILE } })
   srv.stdout!.on('data', (d) => { srvLog += d }); srv.stderr!.on('data', (d) => { srvLog += d })
   await until(async () => (await fetch(BASE + '/api/health')).status === 200)
   const su = await anon.post('/api/setup/admin', { token: SETUP_TOKEN, username: 'admin', password: PW })
@@ -90,7 +90,7 @@ const mk = async () => {
   return { vlan, s1, s2, z }
 }
 let W: Awaited<ReturnType<typeof mk>>
-const MIGRATIONS_LAST = 7   // dernière migration du schéma
+const MIGRATIONS_LAST = 8   // dernière migration du schéma
 
 describe('points de restauration des données', () => {
   it('migration 2 appliquée, version 0.4.0', async () => {
@@ -489,5 +489,114 @@ describe('cluster : état publié par root, droits, demande de bascule', () => {
   it('codes d\'erreur traduits', async () => {
     const fr = (await import('../app/i18n/fr')).default, en = (await import('../app/i18n/en')).default
     for (const c of ['replica', 'not_clustered', 'cluster_state_stale', 'invalid_candidate', 'schema_pending']) { expect((fr as any)[`err.${c}`]).toBeTruthy(); expect((en as any)[`err.${c}`]).toBeTruthy() }
+  })
+})
+
+describe('Active Directory : Kerberos / GSS-TSIG et redirecteurs conditionnels', () => {
+  const adState = (over: Record<string, unknown> = {}) => ({ at: Math.floor(Date.now() / 1000), configured: true, realm: 'CORP.TEST', kdcs: ['dc1.corp.test'],
+    keytab: { present: true, principals: ['DNS/ns1.corp.test@CORP.TEST'], enctypes: ['aes256-cts-hmac-sha1-96'], kvno: { 'DNS/ns1.corp.test@CORP.TEST': 2 }, mtime: 1700000000, size: 160 }, ...over })
+  const publishAd = (o?: Record<string, unknown>) => writeFileSync(ADFILE, JSON.stringify(adState(o)))
+  const REQ = join(GEN, '.ad-request'), KT = join(GEN, '.ad-keytab')
+  const clean = () => { for (const f of [REQ, KT, ADFILE, join(TMP, 'ad-result.json')]) rmSync(f, { force: true }) }
+  const keytabB64 = (n = 40) => Buffer.concat([Buffer.from([0x05, 0x02]), Buffer.alloc(n, 7)]).toString('base64')
+  it('état : réservé aux opérateurs, vide tant que root n\'a rien publié', async () => {
+    clean()
+    const r = await admin.get('/api/ad/kerberos'); expect(r.status).toBe(200); expect(r.json).toMatchObject({ state: null, result: null, pending: false })
+    code(await viewer.get('/api/ad/kerberos'), 403, 'forbidden'); code(await anon.get('/api/ad/kerberos'), 401, 'unauthenticated')
+    expect((await operator.get('/api/ad/kerberos')).status).toBe(200)
+  })
+  it('état publié par root : relayé tel quel, assaini', async () => {
+    publishAd({ secret: 'ne-doit-pas-sortir' })
+    const r = (await admin.get('/api/ad/kerberos')).json
+    expect(r.state).toMatchObject({ configured: true, realm: 'CORP.TEST', kdcs: ['dc1.corp.test'] }); expect(r.state.keytab.principals).toEqual(['DNS/ns1.corp.test@CORP.TEST'])
+    expect(JSON.stringify(r)).not.toContain('ne-doit-pas-sortir')
+    writeFileSync(ADFILE, '{pas du json'); expect((await admin.get('/api/ad/kerberos')).json.state).toBeNull()
+  })
+  it('configuration du domaine : administrateurs seulement, entrées validées, une demande à la fois', async () => {
+    clean()
+    const body = { realm: 'corp.test', kdcs: ['dc1.corp.test', '10.0.0.5:88'] }
+    code(await operator.put('/api/ad/kerberos/config', body), 403, 'forbidden'); code(await viewer.put('/api/ad/kerberos/config', body), 403, 'forbidden'); code(await anon.put('/api/ad/kerberos/config', body), 401, 'unauthenticated')
+    for (const bad of [{ realm: 'CORP TEST' }, { realm: 'A;B' }, { realm: '' }, { realm: 'CORP.TEST', kdcs: ['a b'] }, { realm: 'CORP.TEST', kdcs: ['x;y'] }, { realm: 'CORP.TEST', kdcs: Array(9).fill('dc.test') }, { realm: 'CORP.TEST', extra: 1 }])
+      code(await admin.put('/api/ad/kerberos/config', bad), 400, 'validation')
+    expect(existsSync(REQ)).toBe(false)
+    const before = (await admin.get('/api/system/config-generation')).json?.generation
+    const r = await admin.put('/api/ad/kerberos/config', body); expect(r.status).toBe(200); expect(r.json.accepted).toBe(true); expect(typeof r.json.requestedAt).toBe('number')
+    expect(JSON.parse(readFileSync(REQ, 'utf8'))).toEqual({ action: 'configure', realm: 'CORP.TEST', kdcs: ['dc1.corp.test', '10.0.0.5:88'] })   // majuscules imposées
+    code(await admin.put('/api/ad/kerberos/config', body), 409, 'request_pending')
+    code(await admin.post('/api/ad/kerberos/test', {}), 409, 'request_pending')
+    expect((await admin.get('/api/ad/kerberos')).json.pending).toBe(true)
+    if (before !== undefined) expect((await admin.get('/api/system/config-generation')).json.generation).toBeGreaterThan(before)
+    expect((await rows("select username from audit_log where action = 'ad.kerberos.configure'"))[0]).toEqual({ username: 'admin' })
+    rmSync(REQ)
+  })
+  it('keytab : secret déposé en 0600, jamais journalisé, format contrôlé', async () => {
+    clean()
+    code(await admin.put('/api/ad/kerberos/keytab', { keytab: keytabB64() }), 409, 'kerberos_not_configured')   // root n'a pas encore de domaine
+    publishAd()
+    code(await operator.put('/api/ad/kerberos/keytab', { keytab: keytabB64() }), 403, 'forbidden')
+    for (const bad of [{ keytab: '' }, { keytab: 'pas du base64 !!' }, { keytab: Buffer.from('texte quelconque').toString('base64') }, { keytab: Buffer.from([4, 2, 1]).toString('base64') },
+      { keytab: Buffer.alloc(70000, 5).toString('base64') }, { keytab: keytabB64(), extra: 1 }]) { const r = await admin.put('/api/ad/kerberos/keytab', bad); expect([400, 413]).toContain(r.status) }
+    expect(existsSync(KT)).toBe(false); expect(existsSync(REQ)).toBe(false)
+    const r = await admin.put('/api/ad/kerberos/keytab', { keytab: keytabB64(40) }); expect(r.status).toBe(200)
+    expect(readFileSync(KT).length).toBe(42); expect(statSync(KT).mode & 0o777).toBe(0o600)
+    expect(JSON.parse(readFileSync(REQ, 'utf8'))).toEqual({ action: 'install-keytab' })   // le contenu du keytab ne figure pas dans la demande
+    expect(JSON.stringify(await rows('select * from audit_log'))).not.toContain(keytabB64(40))
+    expect((await rows("select detail from audit_log where action = 'ad.kerberos.install-keytab'"))[0].detail).toEqual({ bytes: 42 })
+    rmSync(REQ); rmSync(KT)
+  })
+  it('test et retrait : demandes sans donnée, résultat de root relayé', async () => {
+    clean(); publishAd()
+    code(await operator.post('/api/ad/kerberos/test', {}), 403, 'forbidden'); code(await operator.del('/api/ad/kerberos'), 403, 'forbidden')
+    expect((await admin.post('/api/ad/kerberos/test', {})).status).toBe(200); expect(JSON.parse(readFileSync(REQ, 'utf8'))).toEqual({ action: 'test' }); rmSync(REQ)
+    expect((await admin.del('/api/ad/kerberos')).status).toBe(200); expect(JSON.parse(readFileSync(REQ, 'utf8'))).toEqual({ action: 'remove' }); rmSync(REQ)
+    writeFileSync(join(TMP, 'ad-result.json'), JSON.stringify({ at: 1234, action: 'test', ok: false, message: 'kinit: Preauthentication failed' }))
+    expect((await admin.get('/api/ad/kerberos')).json.result).toEqual({ at: 1234, action: 'test', ok: false, message: 'kinit: Preauthentication failed' })
+  })
+  it('zones à mise à jour sécurisée : règles et rendu réel dans la configuration déployée', async () => {
+    clean()
+    const zone = (o: Record<string, unknown>) => ({ type: 'primary', soa_mname: 'ns1.corp.test.', soa_rname: 'hostmaster.corp.test.', ...o })
+    code(await admin.post('/api/dns/zones', zone({ name: 'corp.test', ddns_secure: 'krb5-self' })), 409, 'kerberos_not_configured')
+    publishAd()
+    code(await admin.post('/api/dns/zones', zone({ name: 'sub.corp.test', ddns_secure: 'ms-self' })), 400, 'ms_self_zone_mismatch')   // BIND lit PC1$ comme pc1.corp.test
+    code(await admin.post('/api/dns/zones', zone({ name: 'sec.corp.test', type: 'secondary', masters: ['10.0.0.9'], ddns_secure: 'krb5-self' })), 400, 'secure_update_primary_only')
+    code(await admin.post('/api/dns/zones', zone({ name: 'x.test', ddns_secure: 'tout' })), 400, 'validation')
+    const z = (await admin.post('/api/dns/zones', zone({ name: 'corp.test', ddns_secure: 'both', ddns_enabled: true }))).json; expect(z.id).toBeTruthy()
+    const sub = (await admin.post('/api/dns/zones', zone({ name: 'sub.corp.test', ddns_secure: 'krb5-self' }))).json; expect(sub.id).toBeTruthy()
+    const plain = (await admin.post('/api/dns/zones', zone({ name: 'plain.test', ddns_enabled: true }))).json
+    expect((await admin.get(`/api/dns/zones/${z.id}`)).json.ddns_secure).toBe('both')
+    expect((await admin.get(`/api/dns/zones/${plain.id}`)).json.ddns_secure).toBe('none')   // l'API présente « aucune » sous la forme « none »
+    for (const id of [z.id, sub.id, plain.id]) await admin.post('/api/dns/records', { zone_id: id, name: '@', type: 'NS', rdata: 'ns.elsewhere.example.' })
+    expect((await admin.put(`/api/dns/zones/${plain.id}`, zone({ name: 'plain.test', ddns_enabled: true, ddns_secure: 'none' }))).status).toBe(200)
+    { const d = (await admin.post('/api/system/apply', { deploy: true })).json; expect(d, JSON.stringify(d)).toMatchObject({ deployed: true }) }
+    const zones = readFileSync(join(GEN, 'named.conf.zones'), 'utf8')
+    expect(zones).toContain('zone "corp.test" {'); expect(zones).toContain('update-policy { grant ddi-ddns zonesub ANY; grant CORP.TEST ms-self . A AAAA; grant CORP.TEST krb5-self . A AAAA; };')
+    expect(zones).toContain('zone "sub.corp.test" { type primary; file "'); expect(zones).toMatch(/zone "sub\.corp\.test" [^\n]*update-policy \{ grant CORP\.TEST krb5-self \. A AAAA; \};/)
+    expect(zones).toMatch(/zone "plain\.test" [^\n]*allow-update \{ key "ddi-ddns"; \};/)
+    expect(zones).not.toMatch(/allow-update[^\n]*update-policy|update-policy[^\n]*allow-update/)
+    expect(readFileSync(join(GEN, 'named.conf.options'), 'utf8')).not.toMatch(/tkey/)   // réservé à root
+    // sans domaine publié par root, plus aucun octroi Kerberos dans le rendu (la clé DDNS reste)
+    rmSync(ADFILE); await db.query('update dns_zones set dirty = true')
+    expect((await admin.post('/api/system/apply', { deploy: true })).json).toMatchObject({ deployed: true })
+    const after = readFileSync(join(GEN, 'named.conf.zones'), 'utf8'); expect(after).not.toMatch(/ms-self|krb5-self/); expect(after).toMatch(/zone "corp\.test" [^\n]*allow-update \{ key "ddi-ddns"; \};/)
+  })
+  it('redirecteurs conditionnels : droits, validation, création et mise à jour', async () => {
+    code(await viewer.post('/api/ad/forwarders/apply', { domain: 'ad.test', servers: ['10.0.0.10'] }), 403, 'forbidden'); code(await anon.post('/api/ad/forwarders/check', { domain: 'ad.test', servers: ['10.0.0.10'] }), 401, 'unauthenticated')
+    for (const bad of [{ domain: 'ad.test', servers: [] }, { domain: 'ad.test', servers: ['pas-une-ip'] }, { domain: 'ad.test', servers: ['127.0.0.1'] }, { domain: 'ad.test', servers: ['169.254.169.254'] },
+      { domain: 'ad.test', servers: ['0.0.0.0'] }, { domain: 'ad.test', servers: Array(5).fill('10.0.0.1') }, { domain: 'a b', servers: ['10.0.0.10'] }, { domain: '', servers: ['10.0.0.10'] }, { domain: 'ad.test', servers: ['10.0.0.10'], x: 1 }]) {
+      code(await operator.post('/api/ad/forwarders/apply', bad), 400, 'validation'); code(await operator.post('/api/ad/forwarders/check', bad), 400, 'validation')
+    }
+    const r = await operator.post('/api/ad/forwarders/apply', { domain: 'AD.Test.', servers: ['10.0.0.10', '10.0.0.11'] }); expect(r.status).toBe(200); expect(r.json.created).toBe(true)
+    expect((await rows("select type, forwarders::text as f, ad_integrated from dns_zones where name = 'ad.test'"))[0]).toEqual({ type: 'forward', f: '{10.0.0.10,10.0.0.11}', ad_integrated: true })
+    const r2 = await operator.post('/api/ad/forwarders/apply', { domain: 'ad.test', servers: ['10.0.0.12'] }); expect(r2.json).toMatchObject({ created: false, id: r.json.id })
+    expect((await rows("select forwarders::text as f from dns_zones where name = 'ad.test'"))[0].f).toBe('{10.0.0.12}')
+    code(await operator.post('/api/ad/forwarders/apply', { domain: 'corp.test', servers: ['10.0.0.10'] }), 409, 'zone_exists_not_forward')   // une zone locale masquerait la redirection
+  })
+  it('vérification des redirecteurs : interroge réellement le serveur indiqué', async () => {
+    const r = await operator.post('/api/ad/forwarders/check', { domain: 'ad.test', servers: ['192.0.2.1'] })   // adresse de documentation : ne répond pas
+    expect(r.status).toBe(200); expect(r.json.adDetected).toBe(false); expect(r.json.results).toHaveLength(1); expect(r.json.results[0]).toMatchObject({ server: '192.0.2.1', soa: null }); expect(r.json.results[0].error).toBeTruthy()
+  }, 20000)
+  it('codes d\'erreur et clés d\'interface traduits (fr et en)', async () => {
+    const fr = (await import('../app/i18n/fr')).default, en = (await import('../app/i18n/en')).default
+    for (const c of ['request_pending', 'kerberos_not_configured', 'secure_update_primary_only', 'invalid_keytab', 'zone_exists_not_forward', 'ms_self_zone_mismatch']) { expect((fr as any)[`err.${c}`], c).toBeTruthy(); expect((en as any)[`err.${c}`], c).toBeTruthy() }
   })
 })

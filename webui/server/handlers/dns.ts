@@ -3,6 +3,7 @@ import { audit, fail, intParam, qint, qstr, route } from '../utils/router'
 import { getSetting, one, query, setSetting, tx } from '../utils/db'
 import { cidrToString, isValidDnsName, normIp, parseCidr } from '../utils/net'
 import { RECORD_TYPES, conflictError, isAdCritical, isRecordType, normalizeRdata, renderZone, toRelativeName } from '../utils/dns'
+import { readAdState } from '../utils/adkrb'
 import { DNS_DEFAULTS } from '../utils/render'
 import type { DnsSettings } from '../utils/render'
 
@@ -14,21 +15,28 @@ const ttl = z.number().int().min(0).max(2147483647)
 const zoneBody = z.object({
   name: zoneName, type: z.enum(['primary', 'secondary', 'forward']),
   masters: z.array(ipS).max(10).default([]), forwarders: z.array(ipS).max(10).default([]), allow_transfer: z.array(aclS).max(20).default([]),
-  ddns_enabled: z.boolean().default(false), ad_integrated: z.boolean().default(false), disabled: z.boolean().default(false),
+  ddns_enabled: z.boolean().default(false), ddns_secure: z.enum(['none', 'ms-self', 'krb5-self', 'both']).nullable().default('none'), ad_integrated: z.boolean().default(false), disabled: z.boolean().default(false),
   soa_mname: z.string().max(253).nullable().optional(), soa_rname: z.string().max(253).nullable().optional(),
   soa_refresh: ttl.default(3600), soa_retry: ttl.default(600), soa_expire: ttl.default(1209600), soa_minimum: ttl.default(3600), default_ttl: ttl.default(3600),
   comment: z.string().max(500).nullable().optional(),
 })
 const norm = (z_: z.infer<typeof zoneBody>) => ({
-  ...z_, masters: z_.masters.map((x) => normIp(x)!), forwarders: z_.forwarders.map((x) => normIp(x)!),
+  ...z_, ddns_secure: z_.ddns_secure === 'none' ? null : z_.ddns_secure, masters: z_.masters.map((x) => normIp(x)!), forwarders: z_.forwarders.map((x) => normIp(x)!),
   allow_transfer: z_.allow_transfer.map((x) => (parseCidr(x) ? cidrToString(parseCidr(x)!) : normIp(x)!)),
 })
-function typeRules(b: z.infer<typeof zoneBody>) {
+async function typeRules(b: z.infer<typeof zoneBody>) {
   if (b.type === 'secondary' && !b.masters.length) fail(400, 'masters_required')
   if (b.type === 'forward' && !b.forwarders.length) fail(400, 'forwarders_required')
+  if (b.ddns_secure) {
+    if (b.type !== 'primary') fail(400, 'secure_update_primary_only')
+    const realm = (await readAdState())?.realm
+    if (!realm) fail(409, 'kerberos_not_configured')   // sans domaine configuré par root, la politique ne serait jamais appliquée
+    // BIND associe le compte machine « PC1$@CORP.LOCAL » au nom « pc1.corp.local » : ms-self n'a d'effet que dans la zone portant le nom du domaine
+    if ((b.ddns_secure === 'ms-self' || b.ddns_secure === 'both') && b.name !== realm.toLowerCase()) fail(400, 'ms_self_zone_mismatch')
+  }
 }
 
-const ZONE_SQL = `select z.id, z.name, z.type, z.masters, z.forwarders, z.allow_transfer, z.ddns_enabled, z.ad_integrated, z.disabled, z.soa_mname, z.soa_rname,
+const ZONE_SQL = `select z.id, z.name, z.type, z.masters, z.forwarders, z.allow_transfer, z.ddns_enabled, coalesce(z.ddns_secure, 'none') as ddns_secure, z.ad_integrated, z.disabled, z.soa_mname, z.soa_rname,
   z.soa_refresh, z.soa_retry, z.soa_expire, z.soa_minimum, z.default_ttl, z.serial::text as serial, z.dirty, z.comment, z.updated_at,
   (select count(*)::int from dns_records r where r.zone_id = z.id) as records from dns_zones z`
 
@@ -40,19 +48,19 @@ route('GET', '/dns/zones/:id', 'viewer', async (c) => {
   return z
 })
 route('POST', '/dns/zones', 'operator', async (c) => {
-  const b = norm(await c.body(zoneBody)); typeRules(zoneBody.parse(b))
-  const r = await one<any>(`insert into dns_zones (name, type, masters, forwarders, allow_transfer, ddns_enabled, ad_integrated, disabled, soa_mname, soa_rname, soa_refresh, soa_retry, soa_expire, soa_minimum, default_ttl, comment)
-    values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
-    [b.name, b.type, b.masters, b.forwarders, b.allow_transfer, b.ddns_enabled, b.ad_integrated, b.disabled, b.soa_mname ?? null, b.soa_rname ?? null, b.soa_refresh, b.soa_retry, b.soa_expire, b.soa_minimum, b.default_ttl, b.comment ?? null])
+  const b = norm(await c.body(zoneBody)); await typeRules(zoneBody.parse(b))
+  const r = await one<any>(`insert into dns_zones (name, type, masters, forwarders, allow_transfer, ddns_enabled, ddns_secure, ad_integrated, disabled, soa_mname, soa_rname, soa_refresh, soa_retry, soa_expire, soa_minimum, default_ttl, comment)
+    values ($1,$2,$3,$4,$5,$6,$17,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
+    [b.name, b.type, b.masters, b.forwarders, b.allow_transfer, b.ddns_enabled, b.ad_integrated, b.disabled, b.soa_mname ?? null, b.soa_rname ?? null, b.soa_refresh, b.soa_retry, b.soa_expire, b.soa_minimum, b.default_ttl, b.comment ?? null, b.ddns_secure])
   await audit(c, 'zone_create', 'zone', r.id, { name: b.name, type: b.type })
   return { id: r.id }
 })
 route('PUT', '/dns/zones/:id', 'operator', async (c) => {
   const id = intParam(c, 'id')
-  const b = norm(await c.body(zoneBody)); typeRules(zoneBody.parse(b))
-  const r = await one(`update dns_zones set name=$2, type=$3, masters=$4, forwarders=$5, allow_transfer=$6, ddns_enabled=$7, ad_integrated=$8, disabled=$9, soa_mname=$10, soa_rname=$11,
+  const b = norm(await c.body(zoneBody)); await typeRules(zoneBody.parse(b))
+  const r = await one(`update dns_zones set name=$2, type=$3, masters=$4, forwarders=$5, allow_transfer=$6, ddns_enabled=$7, ad_integrated=$8, ddns_secure=$18, disabled=$9, soa_mname=$10, soa_rname=$11,
     soa_refresh=$12, soa_retry=$13, soa_expire=$14, soa_minimum=$15, default_ttl=$16, comment=$17, dirty=true, updated_at=now() where id=$1 returning id`,
-    [id, b.name, b.type, b.masters, b.forwarders, b.allow_transfer, b.ddns_enabled, b.ad_integrated, b.disabled, b.soa_mname ?? null, b.soa_rname ?? null, b.soa_refresh, b.soa_retry, b.soa_expire, b.soa_minimum, b.default_ttl, b.comment ?? null])
+    [id, b.name, b.type, b.masters, b.forwarders, b.allow_transfer, b.ddns_enabled, b.ad_integrated, b.disabled, b.soa_mname ?? null, b.soa_rname ?? null, b.soa_refresh, b.soa_retry, b.soa_expire, b.soa_minimum, b.default_ttl, b.comment ?? null, b.ddns_secure])
   if (!r) fail(404, 'not_found')
   await audit(c, 'zone_update', 'zone', id)
   return { ok: true }

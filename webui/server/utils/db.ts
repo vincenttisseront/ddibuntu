@@ -344,7 +344,15 @@ alter table rendered_configs drop constraint rendered_configs_name_check;
 alter table rendered_configs add constraint rendered_configs_name_check check (name in ('kea-dhcp4.conf', 'named.conf.options', 'named.conf.zones'));
 `
 
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }]
+// Itération 6 (Active Directory) : mises à jour DNS sécurisées (GSS-TSIG / Kerberos) par zone. Le domaine Kerberos et le keytab restent sous la garde de root.
+const SCHEMA_8 = String.raw`
+alter table dns_zones add column ddns_secure text check (ddns_secure in ('ms-self', 'krb5-self', 'both'));
+drop trigger cfg_gen_zones on dns_zones;
+create trigger cfg_gen_zones after insert or delete or update of name, type, masters, forwarders, allow_transfer, ddns_enabled, ddns_secure, soa_mname, soa_rname,
+  soa_refresh, soa_retry, soa_expire, soa_minimum, default_ttl, ad_integrated, disabled on dns_zones for each statement execute function bump_config_generation();
+`
+
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

@@ -11,6 +11,7 @@ ZONES="${DDI_ZONES_RUNTIME_DIR:-/var/lib/bind/ddibuntu}"
 KEA_ETC="${DDI_KEA_ETC:-/etc/kea}"
 STATE="${DDI_STATE_DIR:-/var/lib/ddibuntu}"
 CLUSTER_DIR="${DDI_CLUSTER_DIR:-/etc/ddibuntu-cluster}"      # lu seulement s'il existe : racine de confiance (root), jamais écrit par la console
+AD_DIR="${DDI_AD_DIR:-/etc/ddibuntu-ad}"                      # domaine Kerberos configuré par root (ddibuntu-ad) : seule source des « update-policy » Kerberos
 KEA_HOOKS="${DDI_KEA_HOOKS_DIR:-}"                            # vide = recherche /usr/lib/*/kea/hooks
 KEA_LEASES="${DDI_KEA_LEASE_FILE:-/var/lib/kea/kea-leases4.csv}"
 case "${1:-}" in
@@ -48,7 +49,7 @@ check_named() {   # $1 = fichier de configuration BIND généré
   local f="$1" bad
   bad="$(grep -nE '^[[:space:]]*include[[:space:]]' "$f" | grep -vF 'include "/etc/bind/ddi-ddns.key";' || true)"
   [ -z "$bad" ] || fail "directive include refusée dans $(basename "$f") : $bad"
-  if grep -nE '(^|[^a-zA-Z-])(controls|dyndb|plugin|trust-anchors|managed-keys|session-keyfile|pid-file|lock-file)([^a-zA-Z-]|$)' "$f" | grep -q .; then fail "directive interdite dans $(basename "$f")"; fi
+  if grep -nE '(^|[^a-zA-Z-])(controls|dyndb|plugin|trust-anchors|managed-keys|session-keyfile|pid-file|lock-file|tkey-gssapi-keytab|tkey-gssapi-credential|tkey-domain|tkey-dhkey)([^a-zA-Z-]|$)' "$f" | grep -q .; then fail "directive interdite dans $(basename "$f")"; fi
   bad="$(grep -oE '(^|[^a-zA-Z-])(directory|file) "[^"]*"' "$f" | sed -E 's/^[^a-z]*//' | grep -vE "^file \"($ZONES/[A-Za-z0-9._-]+|/var/log/named/query\.log)\"$|^directory \"/var/cache/bind\"$" || true)"
   [ -z "$bad" ] || fail "chemin refusé dans $(basename "$f") : $bad"
 }
@@ -166,7 +167,7 @@ if mode == "bind-render":
         out.append(l)
     if not seen or not replaced: die("named.conf.options inattendu (bloc options ou allow-transfer global absent)")
     open(out_opts, "w", encoding="utf-8").write('include "%s";\n' % keyfile + "\n".join(out))
-    prop = re.compile(r'\s*(notify yes;|allow-update \{ key "ddi-ddns"; \};|allow-query \{ none; \};|allow-transfer \{ ([^{}"]*) \};)')
+    prop = re.compile(r'\s*(notify yes;|allow-update \{ key "ddi-ddns"; \};|update-policy \{ ([^{}"]*) \};|allow-query \{ none; \};|allow-transfer \{ ([^{}"]*) \};)')
     zo = []
     for l in open(zones_src, encoding="utf-8").read().split("\n"):
         if l == "" or l.startswith("//") or re.match(r'zone "[^"]+" \{ type (secondary|forward);', l):
@@ -175,26 +176,82 @@ if mode == "bind-render":
         m = re.fullmatch(r'zone "([^"]+)" \{ type primary; file "([^"]+)";(.*) \};', l)
         if not m: die("ligne de zone inattendue : " + l[:80])
         z, f, rest = m.group(1), m.group(2), m.group(3)
-        user_acl, quiet, ddns, pos = "", False, False, 0
+        user_acl, quiet, ddns, upol, pos = "", False, False, "", 0
         while pos < len(rest):
             pm = prop.match(rest, pos)
             if not pm:
                 if rest[pos:].strip() == "": break
                 die("propriété de zone inattendue : " + rest[pos:pos + 60])
             t = pm.group(1)
-            if t.startswith("allow-transfer"): user_acl = pm.group(2).strip()
+            if t.startswith("allow-transfer"): user_acl = pm.group(3).strip()
             elif t.startswith("allow-query"): quiet = True
             elif t.startswith("allow-update"): ddns = True
+            elif t.startswith("update-policy"): upol = pm.group(2).strip()
             pos = pm.end()
         if role == "primary":
             acl = (user_acl.rstrip(";").strip() + "; " if user_acl else "") + 'key "ddi-xfr";'
-            zo.append('zone "%s" { type primary; file "%s"; notify yes; allow-transfer { %s };%s%s };' % (z, f, acl, ' allow-update { key "ddi-ddns"; };' if ddns else "", " allow-query { none; };" if quiet else ""))
+            zo.append('zone "%s" { type primary; file "%s"; notify yes; allow-transfer { %s };%s%s };' % (z, f, acl, (' update-policy { %s };' % upol) if upol else (' allow-update { key "ddi-ddns"; };' if ddns else ""), " allow-query { none; };" if quiet else ""))
         else:
             zo.append('zone "%s" { type secondary; primaries { %s key "ddi-xfr"; }; file "%s";%s };' % (z, peer, f, " allow-query { none; };" if quiet else ""))
     zo.append('server %s { keys "ddi-xfr"; };' % peer)
     open(out_zones, "w", encoding="utf-8").write("\n".join(zo) + "\n")
     sys.exit(0)
 die("mode inconnu")
+PY
+}
+# ---- Active Directory : mises à jour sécurisées (GSS-TSIG / Kerberos) ----
+# La console propose des « update-policy » (clé DDNS + Kerberos) ; ICI, root les relit, les recompose à partir de SON domaine Kerberos (ddibuntu-ad
+# configure) et ajoute « tkey-gssapi-keytab » (exécution d'authentification : jamais accepté de la console). Sans domaine configuré sur ce nœud, les
+# octrois Kerberos sont retirés (le nœud reste utilisable, notamment après une promotion) ; un domaine différent de celui de root fait REFUSER le dépôt.
+ad_py() {   # ad_py ROLE OPTIONS_SRC ZONES_SRC OPTIONS_OUT ZONES_OUT KEYTAB
+  python3 - "$AD_DIR" "$@" <<'PY'
+import os, re, sys
+addir, role, opts_src, zones_src, opts_out, zones_out, keytab = sys.argv[1:8]
+def die(m): sys.stderr.write("AD : %s\n" % m); sys.exit(2)
+def warn(m): sys.stderr.write("AVERTISSEMENT : %s\n" % m)
+realm = ""
+conf = os.path.join(addir, "ad.conf")
+if os.path.isfile(conf):
+    for l in open(conf, encoding="utf-8"):
+        m = re.fullmatch(r"REALM=([A-Z0-9][A-Z0-9.-]{0,61})\n?", l)
+        if m: realm = m.group(1)
+have_kt = os.path.isfile(keytab)
+kerb = False
+grant_key = re.compile(r"grant ddi-ddns zonesub ANY")
+grant_krb = re.compile(r"grant ([A-Z0-9][A-Z0-9.-]{0,61}) (ms-self|krb5-self) \. A AAAA")
+def policy(body, zone):
+    global kerb
+    out = []
+    for st in [x.strip() for x in body.split(";") if x.strip()]:
+        if grant_key.fullmatch(st):
+            if role != "secondary": out.append("grant ddi-ddns zonesub ANY")
+            continue
+        m = grant_krb.fullmatch(st)
+        if not m: die("update-policy refusée pour la zone %s : « %s »" % (zone, st[:70]))
+        if role == "secondary": continue                      # un secondaire n'accepte aucune mise à jour : grammaire contrôlée, rien n'est retenu
+        if not realm:
+            warn("zone %s : domaine Kerberos non configuré sur ce nœud (ddibuntu-ad configure) : octroi %s retiré" % (zone, m.group(2))); continue
+        if m.group(1) != realm: die("zone %s : domaine Kerberos « %s » différent de celui du nœud (%s)" % (zone, m.group(1), realm))
+        out.append("grant %s %s . A AAAA" % (realm, m.group(2))); kerb = True
+    return out
+zo = []
+for l in open(zones_src, encoding="utf-8").read().split("\n"):
+    m = re.fullmatch(r'(zone "([^"]+)" \{ type primary; file "[^"]+";.*?)( update-policy \{ ([^{}"]*) \};)(.*)', l)
+    if not m:
+        if "update-policy" in l: die("ligne de zone avec update-policy inattendue : " + l[:80])
+        zo.append(l); continue
+    pol = policy(m.group(4), m.group(2))
+    zo.append(m.group(1) + ((" update-policy { %s; };" % "; ".join(pol)) if pol else "") + m.group(5))
+if kerb and role != "secondary" and not have_kt: warn("domaine %s configuré mais keytab absent (%s) : les clients Kerberos seront refusés" % (realm, keytab))
+out, done = [], False
+for l in open(opts_src, encoding="utf-8").read().split("\n"):
+    out.append(l)
+    if l == "options {" and not done:
+        done = True
+        if kerb and role != "secondary" and have_kt: out.append('  tkey-gssapi-keytab "%s";' % keytab)
+if not done: die("named.conf.options inattendu (bloc options absent)")
+open(opts_out, "w", encoding="utf-8").write("\n".join(out))
+open(zones_out, "w", encoding="utf-8").write("\n".join(zo))
 PY
 }
 ha_py() {   # ha_py probe|render [FICHIER]
@@ -218,14 +275,15 @@ verify_kea() {    # avec HA, la configuration finale est relue par Kea lui-même
   command -v kea-dhcp4 >/dev/null 2>&1 || { log "kea-dhcp4 absent : configuration HA non vérifiée"; return 0; }
   kea-dhcp4 -t "$KEA_ETC/kea-dhcp4.conf" >"$STATE/kea-verify.out" 2>&1 || { tail -n 5 "$STATE/kea-verify.out" >&2; return 1; }
 }
+SRC_OPTS="$GEN/named.conf.options"; SRC_ZONES="$GEN/named.conf.zones"       # remplacés par les fichiers recomposés par ad_py (voir plus bas)
 install_named() {
   if [ "$bind_role" = none ]; then
-    install -m 0644 -o root -g bind "$GEN/named.conf.options" "$BIND_ETC/named.conf.options"
-    install -m 0644 -o root -g bind "$GEN/named.conf.zones" "$BIND_ETC/named.conf.local"
+    install -m 0644 -o root -g bind "$SRC_OPTS" "$BIND_ETC/named.conf.options"
+    install -m 0644 -o root -g bind "$SRC_ZONES" "$BIND_ETC/named.conf.local"
     return 0
   fi
   local t; t="$(mktemp -d)"
-  if ! cluster_py bind-render "$CLUSTER_DIR" "$bind_role" "$GEN/named.conf.options" "$GEN/named.conf.zones" "$t/options" "$t/local" "$XFR_KEY" 2>"$STATE/cluster-probe.err"; then
+  if ! cluster_py bind-render "$CLUSTER_DIR" "$bind_role" "$SRC_OPTS" "$SRC_ZONES" "$t/options" "$t/local" "$XFR_KEY" 2>"$STATE/cluster-probe.err"; then
     tr '\n' ' ' < "$STATE/cluster-probe.err" >&2; rm -rf "$t"; return 1
   fi
   install -m 0644 -o root -g bind "$t/options" "$BIND_ETC/named.conf.options"
@@ -252,7 +310,16 @@ check_kea "$GEN/kea-dhcp4.conf"
 if [ "$MODE" != kea-only ]; then check_named "$GEN/named.conf.options"; check_named "$GEN/named.conf.zones"; fi
 shopt -s nullglob
 if [ "$MODE" = full ]; then for z in "$GEN"/zones/db.*; do check_zone "$z"; done; fi
-ptmp=""; trap 'rm -rf "${ptmp:-}"' EXIT
+ptmp=""; adtmp=""; trap 'rm -rf "${ptmp:-}" "${adtmp:-}"' EXIT
+if [ "$MODE" != kea-only ]; then
+  # recomposition des « update-policy » et ajout du keytab GSS-TSIG AVANT toute modification : un dépôt refusé ne touche à rien
+  install -d -m 0750 "$STATE"
+  adtmp="$(mktemp -d "$STATE/.ad.XXXXXX")"
+  ad_py "$bind_role" "$GEN/named.conf.options" "$GEN/named.conf.zones" "$adtmp/options" "$adtmp/zones" "$BIND_ETC/krb5.keytab" 2>"$adtmp/err" \
+    || fail "mises à jour sécurisées refusées : $(tr '\n' ' ' < "$adtmp/err" | cut -c1-200)"
+  while IFS= read -r w; do [ -z "$w" ] || log "$w"; done < "$adtmp/err"
+  SRC_OPTS="$adtmp/options"; SRC_ZONES="$adtmp/zones"
+fi
 if [ "$MODE" = promote ]; then
   # Les zones transférées sont stockées par BIND au format binaire (« raw ») avec un journal IXFR : on les convertit en texte, journal appliqué
   # (named-compilezone -j), AVANT toute modification ; une zone illisible fait refuser la promotion (le nœud reste secondaire et continue de servir).
