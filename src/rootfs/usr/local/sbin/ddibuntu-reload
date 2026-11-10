@@ -249,7 +249,7 @@ for l in open(opts_src, encoding="utf-8").read().split("\n"):
     if l == "options {" and not done:
         done = True
         if kerb and role != "secondary" and have_kt: out.append('  tkey-gssapi-keytab "%s";' % keytab)
-if not done: die("named.conf.options inattendu (bloc options absent)")
+if not done and kerb and role != "secondary" and have_kt: die("named.conf.options inattendu : ligne « options { » introuvable pour y placer tkey-gssapi-keytab")
 open(opts_out, "w", encoding="utf-8").write("\n".join(out))
 open(zones_out, "w", encoding="utf-8").write("\n".join(zo))
 PY

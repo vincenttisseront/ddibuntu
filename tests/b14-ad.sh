@@ -233,6 +233,11 @@ check_fail "allow-update ouvert à tous : refusé" rl
 check "…les fichiers installés sont restés ceux du dernier dépôt valide" cmp "$W/opt.good" "$OPT"
 check "…zones inchangées aussi" cmp "$W/loc.good" "$LOC"
 
+printf 'options { directory "/var/cache/bind"; };\n' > "$G/named.conf.options"; mkzones "$POL"
+check_fail "options sur une ligne + tkey nécessaire : refusé (on ne devine pas où l'insérer)" rl
+rm -rf "$ADD"; check "options sur une ligne sans Kerberos configuré : accepté comme avant" rl
+ad configure --realm CORP.TEST >/dev/null; ad install-keytab "$W/ok.kt" >/dev/null; mkopts
+
 echo "== ddibuntu-reload : cluster (primaire / secondaire) =="
 mkopts; mkzones "$POL"
 openssl ecparam -name prime256v1 -genkey -noout -out "$CD/ca.key" 2>/dev/null

@@ -275,7 +275,7 @@ describe('points de restauration et schéma', () => {
     expect((await admin.post('/api/ipam/spaces', { name: 'après restauration' })).status).toBe(200)   // séquence repartie après le plus grand id
     expect((await admin.get(`/api/snapshots/${snap}/diff`)).status).toBe(200)
   })
-  it('migration : version 7 appliquée, ancienne contrainte unique(cidr) remplacée', async () => {
+  it('migration : version 8 appliquée, ancienne contrainte unique(cidr) remplacée', async () => {
     expect((await rows('select max(version)::int v from schema_migrations'))[0].v).toBe(7)
     expect((await rows("select 1 from pg_constraint where conname = 'subnets_cidr_key'"))).toHaveLength(0)
     expect((await rows("select 1 from pg_indexes where indexname = 'subnets_space_cidr'"))).toHaveLength(1)
