@@ -125,7 +125,7 @@ expect_eq "join : une seule ligne DDI_SECRET_KEY" "1" "$(grep -c '^DDI_SECRET_KE
 expect_eq "join : pas d'autorité sur n2" "no" "$([ -e "$(R 2)/var/lib/ddibuntu/cluster/ca/ca.key" ] && echo yes || echo no)"
 check_fail "join : un nœud déjà rattaché refuse un second lot" clp "$P2" 2 join "$B/n2.bundle" --wipe-local-db --no-activate
 start_etcd 2
-wait_for 30 "etcd n2 sain" ectl 2 endpoint health
+wait_for 30 "etcd n2 répond (membre sans voix)" ectl 2 endpoint status
 check "activate n2 : promotion du learner en votant" cl 2 activate
 expect_eq "etcd : 2 votants, 0 learner" "2 0" "$(voters 1)"
 start_patroni 2
@@ -137,9 +137,14 @@ check "join n3 (arbitre : pas de --wipe-local-db nécessaire)" clp "$P3" 3 join 
 expect_eq "arbitre : aucune configuration Patroni ni base" "no" "$([ -e "$(R 3)/etc/patroni/config.yml" ] && echo yes || echo no)"
 expect_eq "arbitre : aucun secret de la console reçu" "no" "$([ -s "$(R 3)/etc/ddibuntu/console.env" ] && echo yes || echo no)"
 start_etcd 3
-wait_for 30 "etcd n3 sain" ectl 3 endpoint health
+wait_for 30 "etcd n3 répond (membre sans voix)" ectl 3 endpoint status
 check "activate n3" cl 3 activate
 expect_eq "etcd : 3 votants" "3 0" "$(voters 1)"
+expect_nogrep "avant sync : n2 ne connaît pas encore n3" 'n3=' <(grep '^PEERS=' "$(R 2)/etc/ddibuntu-cluster/cluster.conf")
+check "sync sur n2 : le registre etcd apprend n3 à n2" cl 2 sync
+expect_grep "après sync : n2 connaît n3 (arbitre)" "n3=127\\.0\\.1\\.3:witness" "$(R 2)/etc/ddibuntu-cluster/cluster.conf"
+expect_grep "après sync : n2 recalcule la configuration Patroni" 'hosts: .*127\.0\.1\.3:2379' "$(R 2)/etc/patroni/config.yml"
+check "sync idempotent" cl 2 sync
 
 echo "== Réplication et authentification =="
 sql 1 -c "insert into t values (2,'après-cluster')"
@@ -183,12 +188,16 @@ expect_eq "toujours un seul primaire" "n1" "$(leader_name 1)"
 echo "== Isolation : primaire sans quorum → lecture seule =="
 # n1 est primaire. On coupe etcd sur n2 et n3 : n1 perd le quorum et doit se rétrograder lui-même.
 pkill -u etcd -f "$(R 2)/etc" 2>/dev/null; pkill -u etcd -f "$(R 3)/etc" 2>/dev/null
-wait_for 80 "n1 sans quorum cesse d'être primaire (lecture seule)" test "$(sql 1 -c "select pg_is_in_recovery()" 2>/dev/null)" = t
+# Patroni coupe PostgreSQL (ou le relance en lecture seule) : dans les deux cas, plus aucune écriture possible sur n1
+not_writable() { [ "$(sql "$1" -c "select pg_is_in_recovery()" 2>/dev/null)" != f ]; }
+wait_for 90 "n1 sans quorum cesse d'être primaire (arrêt ou lecture seule)" not_writable 1
 check_fail "n1 isolé refuse l'écriture" sql 1 -c "insert into t values (50,'split-brain')"
 start_etcd 2; start_etcd 3
 wait_for 60 "le quorum revient : etcd n2 sain" ectl 2 endpoint health
-wait_for 120 "le cluster retrouve un primaire unique" test "$(leader_name 1)" != ""
-NL="$(for n in 1 2; do sql "$n" -c "select pg_is_in_recovery()" 2>/dev/null; done | grep -c '^f$')"
+writable_count() { for n in 1 2; do sql "$n" -c "select pg_is_in_recovery()" 2>/dev/null; done | grep -c '^f$'; }
+wait_for 150 "le cluster retrouve un primaire en écriture" test "$(writable_count)" = 1
+sleep 10
+NL="$(writable_count)"
 expect_eq "après retour du quorum : exactement un primaire accessible en écriture" "1" "$NL"
 note "non couvert : coupure réseau réelle, perte de machine, horloges désynchronisées, disque saturé ; à rejouer sur le premier laboratoire (docs/ARCHITECTURE-CLUSTER.md)"
 
