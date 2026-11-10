@@ -392,7 +392,8 @@ else
   PL=3101; PR=3102; PW='Zq7!vK2m-Lw9#pR4t'
   start_console "$LN" $PL
   wait_cond 60 "la console du leader (n$LN) démarre et migre le schéma" '[ "$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:$PL/api/health)" = 200 ]'
-  wait_cond 30 "le schéma de la console arrive sur le secondaire (n$RN) par la réplication" '[ "$(sql $RN -c "select coalesce(max(version),0) from schema_migrations")" = 7 ]'
+  LAST_MIG="$(grep -oE 'version: [0-9]+, sql: SCHEMA_[0-9]+' "$ROOT/webui/server/utils/db.ts" | grep -oE '^version: [0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)"
+  wait_cond 30 "le schéma de la console arrive sur le secondaire (n$RN) par la réplication" '[ "$(sql $RN -c "select coalesce(max(version),0) from schema_migrations")" = '"$LAST_MIG"' ]'
   start_console "$RN" $PR
   wait_cond 60 "la console du secondaire (n$RN) démarre sans écrire (schéma déjà au niveau)" '[ "$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:$PR/api/health)" = 200 ]'
   expect_eq "leader : /cluster/role → pas de secondaire" "false" "$(curl -s http://127.0.0.1:$PL/api/cluster/role | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["replica"]).lower())')"
