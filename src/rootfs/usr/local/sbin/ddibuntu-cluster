@@ -255,12 +255,12 @@ ${cfgdir}
     ssl_min_protocol_version: TLSv1.2
     password_encryption: scram-sha-256
   pg_hba:
+    - hostssl replication replicator ${C[REPL_NET]} cert map=ddicluster
+    - hostssl postgres rewind ${C[REPL_NET]} cert map=ddicluster
     - local all postgres peer
     - local all all peer
     - host all all 127.0.0.1/32 scram-sha-256
     - host all all ::1/128 scram-sha-256
-    - hostssl replication replicator ${C[REPL_NET]} cert map=ddicluster
-    - hostssl postgres rewind ${C[REPL_NET]} cert map=ddicluster
   pg_ident:
     - ddicluster "/^node-[a-z0-9-]+\$" replicator
     - ddicluster "/^node-[a-z0-9-]+\$" rewind
