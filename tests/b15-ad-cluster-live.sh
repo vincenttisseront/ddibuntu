@@ -21,7 +21,9 @@ getent passwd etcd >/dev/null && getent passwd postgres >/dev/null || missing="$
 if [ -n "$missing" ]; then note "batterie cluster réel (AD) non exécutable ici (manque :$missing)"; finish; exit; fi
 
 B="$(mktemp -d /srv/ddilive.XXXXXX)"; chmod 755 "$B"
-cleanup() { pkill -u etcd -f "$B/" 2>/dev/null; pkill -9 -u postgres -f "$B/n" 2>/dev/null; sleep 1; rm -rf "$B"; rm -rf "$T_TMP"; }
+cleanup() { pkill -u etcd -f "$B/" 2>/dev/null; pkill -9 -u postgres -f "$B/n" 2>/dev/null
+  for _ in $(seq 1 20); do pgrep -u etcd -f "$B/" >/dev/null 2>&1 || break; sleep 0.5; done   # les ports d'etcd doivent être libérés avant la batterie suivante
+  sleep 1; rm -rf "$B"; rm -rf "$T_TMP"; }
 trap cleanup EXIT
 
 ip() { echo "127.0.1.$1"; }
