@@ -53,6 +53,7 @@ openssl ecparam -name prime256v1 -genkey -noout -out "$CD/pki/node.key" 2>/dev/n
 openssl req -new -key "$CD/pki/node.key" -subj /CN=n -out "$CD/n.csr" 2>/dev/null
 openssl x509 -req -in "$CD/n.csr" -CA "$CD/pki/ca.crt" -CAkey "$CD/ca.key" -CAcreateserial -days 2 -out "$CD/pki/node.crt" 2>/dev/null
 conf() { printf 'CLUSTER_NAME=lab\nNODE_NAME=%s\nNODE_ROLE=%s\nNODE_IP=%s\nREPL_NET=10.9.0.0/24\nPEERS=%s\nCA_NODE=0\n' "$1" "$2" "$3" "$4" > "$CD/cluster.conf"; }
+# shellcheck disable=SC2120  # les arguments éventuels sont transmis tels quels à ddibuntu-reload
 rl() { env DDI_GENERATED_DIR="$GEN" DDI_BIND_ETC="$BE" DDI_ZONES_RUNTIME_DIR="$ZN" DDI_KEA_ETC="$KE" DDI_STATE_DIR="$ST" DDI_CLUSTER_DIR="$CD" DDI_RELOAD_NOSERVICES=1 bash "$RELOAD" "$@"; }
 OPT="$BE/named.conf.options"; LOC="$BE/named.conf.local"
 PEERS3="n1=10.9.0.1:data n2=10.9.0.2:data n3=10.9.0.3:witness"
