@@ -104,8 +104,23 @@ expect_eq "retour arrière : état failed" failed "$(jget "$ST" state)"
 expect_eq "retour arrière : pas de console.old résiduelle" no "$([ -e "$R/opt/ddibuntu/console.old" ] && echo yes || echo no)"
 expect_eq "retour arrière : fichier nouveau VERSION restauré" 0.4.0 "$(tr -d '\n' < "$R/usr/local/lib/ddibuntu/VERSION")"
 
+echo "== 5b. Cluster : le leader attend que les secondaires soient à jour (ddibuntu-cluster rolling-check) =="
+# faux « ddibuntu-cluster » : refuse (code 3, message sur la sortie d'erreur) tant que $W/rc-mode contient "refuse"
+# shellcheck disable=SC2016  # variables du stub
+printf '#!/bin/bash\n[ "$1" = rolling-check ] || exit 2\nif [ "$(cat %s/rc-mode)" = refuse ]; then echo "ce noeud est le leader : mettez d abord a jour n2" >&2; exit 3; fi\necho "$2" > %s/rc-called\nexit 0\n' "$W" "$W" > "$W/fake-cluster"; chmod 755 "$W/fake-cluster"
+echo refuse > "$W/rc-mode"; : > "$W/cluster.conf"
+NB0="$(find "$R/var/lib/ddibuntu/update-backup" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+export DDI_CLUSTER_CONF="$W/cluster.conf" DDI_CLUSTER_CMD="$W/fake-cluster"
+expect_eq "leader trop en avance : refus (code 1)" 1 "$(req '{"action":"apply","version":"0.5.0"}')"
+if jget "$ST" error | grep -q "mettez d abord a jour n2"; then ok "…le message du contrôle est montré à l'administrateur"; else ko "message" "$(jget "$ST" error)"; fi
+expect_eq "…rien n'a été installé (console)" "OLD CONSOLE" "$(cat "$R/opt/ddibuntu/console/app/server/index.mjs")"
+expect_eq "…version inchangée" 0.4.0 "$(tr -d '\n' < "$R/var/lib/ddibuntu/installed-version")"
+expect_eq "…aucune sauvegarde créée avant le refus" "$NB0" "$(find "$R/var/lib/ddibuntu/update-backup" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+echo autorise > "$W/rc-mode"
+
 echo "== 6. Installation réussie =="
 expect_eq "apply 0.5.0 : code 0" 0 "$(req '{"action":"apply","version":"0.5.0"}')"
+expect_eq "…le contrôle de mise à jour progressive a été appelé avec la version visée" 0.5.0 "$(cat "$W/rc-called" 2>/dev/null)"
 tail -3 "$W/out.log"
 expect_eq "console remplacée" "NEW CONSOLE 0.5.0" "$(cat "$R/opt/ddibuntu/console/app/server/index.mjs")"
 expect_eq "installed-version = 0.5.0" 0.5.0 "$(tr -d '\n' < "$R/var/lib/ddibuntu/installed-version")"

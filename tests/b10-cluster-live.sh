@@ -320,6 +320,20 @@ expect_eq "n1 : BIND secondaire" "secondary" "$(bindrole 1)"
 expect_grep "n1 : zone secondaire du nouveau leader" 'zone "lab.test" \{ type secondary; primaries \{ 127\.0\.1\.2 key "ddi-xfr"; \}' "$(R 1)/etc/bind/named.conf.local"
 expect_grep "n1 : plus de also-notify" 'notify no;' "$(R 1)/etc/bind/named.conf.options"
 
+echo "== Mise à jour progressive : le leader attend que les secondaires soient à jour =="
+for n in 1 2; do mkdir -p "$(R $n)/usr/local/lib/ddibuntu"; echo 0.5.4 > "$(R $n)/usr/local/lib/ddibuntu/VERSION"; done
+fol 1 >/dev/null 2>&1; fol 2 >/dev/null 2>&1       # chaque nœud publie sa version dans etcd
+expect_eq "versions partagées dans etcd" "0.5.4/0.5.4" "$(ectl 1 get /ddibuntu-cluster/versions/n1 --print-value-only)/$(ectl 1 get /ddibuntu-cluster/versions/n2 --print-value-only)"
+expect_eq "n2 est leader" "n2" "$(leader_name 1)"
+cl 2 rolling-check 0.5.5 >"$B/rc.out" 2>&1; RC=$?
+expect_eq "leader : mise à jour refusée tant que le secondaire n'est pas à jour (code 3)" "3" "$RC"
+expect_grep "…message : mettre d'abord à jour n1" "mettez d'abord à jour n1" "$B/rc.out"
+check "secondaire : mise à jour autorisée en premier" cl 1 rolling-check 0.5.5
+check_fail "version visée invalide refusée" cl 2 rolling-check "0.5; reboot"
+echo 0.5.5 > "$(R 1)/usr/local/lib/ddibuntu/VERSION"; fol 1 >/dev/null 2>&1
+check "leader : autorisé une fois le secondaire à jour" cl 2 rolling-check 0.5.5
+check "leader : version déjà installée partout, rien n'empêche" cl 2 rolling-check 0.5.4 || true
+
 echo "== Bascule automatique (arrêt brutal du primaire) =="
 kill_patroni_hard 2
 wait_for 90 "n1 est promu automatiquement (quorum etcd n1+n3)" is_leader 1 1
@@ -392,7 +406,7 @@ else
   expect_eq "secondaire : connexion refusée (lecture seule)" "503/replica" "$(hc $PR POST /api/auth/login "{\"username\":\"admin\",\"password\":\"$PW\"}")/$(hcode)"
   expect_eq "secondaire : la session ouverte sur le leader reste lisible" "200" "$(hc $PR GET /api/users)"
   expect_eq "secondaire : écriture refusée proprement (503)" "503/replica" "$(hc $PR POST /api/users "{\"username\":\"intrus\",\"role\":\"viewer\",\"password\":\"$PW\"}")/$(hcode)"
-  expect_eq "secondaire : déploiement refusé et aucun fichier écrit" "503/0" "$(hc $PR POST /api/system/apply '{"deploy":true}')/$(ls -A "$B/congen$RN" | grep -c '^\.deployed$')"
+  expect_eq "secondaire : déploiement refusé et aucun fichier écrit" "503/0" "$(hc $PR POST /api/system/apply '{"deploy":true}')/$([ -e "$B/congen$RN/.deployed" ] && echo 1 || echo 0)"
   expect_eq "secondaire : l'utilisateur refusé n'existe pas" "0" "$(sql $RN -c "select count(*) from users where username = 'intrus'")"
   # états publiés par root (follow) lus par les deux consoles
   fol "$LN" >/dev/null 2>&1; fol "$RN" >/dev/null 2>&1
