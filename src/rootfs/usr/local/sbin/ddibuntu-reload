@@ -13,7 +13,12 @@ STATE="${DDI_STATE_DIR:-/var/lib/ddibuntu}"
 CLUSTER_DIR="${DDI_CLUSTER_DIR:-/etc/ddibuntu-cluster}"      # lu seulement s'il existe : racine de confiance (root), jamais écrit par la console
 KEA_HOOKS="${DDI_KEA_HOOKS_DIR:-}"                            # vide = recherche /usr/lib/*/kea/hooks
 KEA_LEASES="${DDI_KEA_LEASE_FILE:-/var/lib/kea/kea-leases4.csv}"
-KEA_ONLY=0; if [ "${1:-}" = "--kea-only" ]; then KEA_ONLY=1; fi   # nœud secondaire : applique seulement Kea (BIND secondaire : itération 4)
+case "${1:-}" in
+  "") MODE=full ;;
+  --kea-only) MODE=kea-only ;;     # applique seulement Kea (nœud primaire dont les fichiers BIND ne changent pas)
+  --replica) MODE=replica ;;       # nœud secondaire : Kea + BIND secondaire (zones transférées)
+  *) echo "usage : ddibuntu-reload [--kea-only|--replica]" >&2; exit 2 ;;
+esac
 BACKUP="$STATE/backup"
 STATUS="$STATE/reload-status"; ROLLED_BACK=0
 log() { printf 'ddibuntu-reload: %s\n' "$*"; logger -t ddibuntu-reload -- "$*" 2>/dev/null || true; }
@@ -31,7 +36,10 @@ fail() {
 }
 
 [ "$(id -u)" -eq 0 ] || fail "à lancer en root"
-req="named.conf.options named.conf.zones kea-dhcp4.conf"; if [ "$KEA_ONLY" -eq 1 ]; then req="kea-dhcp4.conf"; fi
+# une seule application à la fois (la console, « follow » du cluster et les essais peuvent la lancer en même temps)
+exec 9>"${DDI_LOCK_FILE:-/run/ddibuntu-reload.lock}"
+flock -w 120 9 || fail "une autre application de configuration est en cours depuis plus de 2 minutes"
+req="named.conf.options named.conf.zones kea-dhcp4.conf"; if [ "$MODE" = kea-only ]; then req="kea-dhcp4.conf"; fi
 for f in $req; do [ -f "$GEN/$f" ] || fail "fichier absent : $GEN/$f"; done
 
 # ---- Contrôles de la frontière de privilèges ----
@@ -67,63 +75,134 @@ for lg in k.get("loggers", []):
 PY
 }
 
-# ---- Haute disponibilité Kea ----
-# Le bloc « hooks-libraries » n'est JAMAIS accepté depuis la console (exécution de code en root) : il est ajouté ici, par root, à partir de la
-# configuration du cluster (fichier root). Les baux passent en fichier local (la base de données est en lecture seule sur le secondaire) :
-# c'est le hook HA qui les synchronise entre les deux serveurs, en TLS mutuel sur le réseau dédié.
-ha_py() {   # ha_py MODE FICHIER : MODE = probe (code 0 si le HA s'applique) | render (configuration finale sur stdout)
-  python3 - "$1" "$2" "$CLUSTER_DIR" "$KEA_HOOKS" "$KEA_LEASES" <<'PY'
+# ---- Cluster : Kea HA et BIND primaire/secondaire ----
+# Tout ce qui suit est ajouté ICI, par root, à partir de la configuration du cluster (cluster.conf, fichier root) : jamais depuis la console.
+#  · Kea : le bloc « hooks-libraries » (exécution de code) est refusé s'il vient de la console ; les baux passent en fichier local (la base est en
+#    lecture seule sur le secondaire), le hook HA les synchronise en TLS mutuel sur le réseau dédié.
+#  · BIND : clé TSIG « ddi-xfr », écoute sur l'adresse du réseau dédié, transfert de zone réservé à cette clé, NOTIFY signé ; le secondaire est dérivé
+#    des mêmes fichiers (zones primaires → secondaires), RPZ comprise. Une ligne inattendue fait REFUSER la transformation (jamais « au mieux »).
+# Codes de sortie des sondes : 0 = s'applique, 1 = ne s'applique pas (pas de cluster, arbitre, un seul nœud de données), 2 = cluster.conf invalide.
+cluster_py() {
+  python3 - "$@" <<'PY'
 import glob, ipaddress, json, os, re, sys
-mode, src, cldir, hooks, leases = sys.argv[1:6]
-d = json.load(open(src))
-conf = os.path.join(cldir, "cluster.conf")
-def passthrough():
-    if mode == "probe": sys.exit(1)
+mode, cldir = sys.argv[1], sys.argv[2]
+def die(m): sys.stderr.write("cluster : %s\n" % m); sys.exit(2)
+def cluster():
+    conf = os.path.join(cldir, "cluster.conf")
+    if not os.path.isfile(conf): return None
+    c = {}
+    for line in open(conf, encoding="utf-8"):
+        line = line.rstrip("\n")
+        if not line or line.startswith("#"): continue
+        m = re.fullmatch(r"([A-Z_]+)=([A-Za-z0-9._:/,= -]*)", line)
+        if not m: die("cluster.conf : ligne illisible")
+        c[m.group(1)] = m.group(2)
+    name, role = c.get("NODE_NAME", ""), c.get("NODE_ROLE", "")
+    if role != "data": return None
+    if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", name): die("NODE_NAME invalide")
+    try: ipaddress.IPv4Address(c.get("NODE_IP", ""))
+    except ValueError: die("NODE_IP invalide")
+    data = []
+    for p in c.get("PEERS", "").split():
+        m = re.fullmatch(r"([a-z][a-z0-9-]{1,30})=([0-9.]+):(data|witness)", p)
+        if not m: die("PEERS invalide")
+        try: ipaddress.IPv4Address(m.group(2))
+        except ValueError: die("adresse de pair invalide")
+        if m.group(3) == "data": data.append((m.group(1), m.group(2)))
+    if len(data) != 2: return None
+    if name not in [n for n, _ in data]: die("ce nœud ne figure pas dans PEERS")
+    data.sort()                       # même ordre sur les deux nœuds : le premier par nom est « primary » du hook HA de Kea
+    return name, c["NODE_IP"], data
+
+cl = cluster()
+if mode in ("kea-probe", "bind-probe"): sys.exit(0 if cl else 1)
+
+if mode == "kea-render":
+    src, hooks, leases = sys.argv[3:6]
+    d = json.load(open(src))
+    if not cl:
+        json.dump(d, sys.stdout, indent=2); sys.stdout.write("\n"); sys.exit(0)
+    name, _, data = cl
+    lib = lambda n: (glob.glob(os.path.join(hooks, n)) if hooks else glob.glob("/usr/lib/*/kea/hooks/" + n))
+    ha_lib, lc_lib = lib("libdhcp_ha.so"), lib("libdhcp_lease_cmds.so")
+    if not ha_lib or not lc_lib: die("bibliothèques Kea HA introuvables (paquet kea-dhcp4-server)")
+    pki = os.path.join(cldir, "pki")
+    for f in ("ca.crt", "node.crt", "node.key"):
+        if not os.path.isfile(os.path.join(pki, f)): die("matériel TLS du cluster absent : pki/" + f)   # « kea-dhcp4 -t » ne lit pas ces fichiers
+    k = d["Dhcp4"]
+    k["lease-database"] = {"type": "memfile", "persist": True, "name": leases, "lfc-interval": 3600}
+    k["hooks-libraries"] = [
+      {"library": lc_lib[0]},
+      {"library": ha_lib[0], "parameters": {"high-availability": [{
+        "this-server-name": name, "mode": "load-balancing",
+        "heartbeat-delay": 10000, "max-response-delay": 60000, "max-ack-delay": 5000, "max-unacked-clients": 5,
+        "multi-threading": {"enable-multi-threading": True, "http-dedicated-listener": True, "http-listener-threads": 4, "http-client-threads": 4},
+        "trust-anchor": os.path.join(pki, "ca.crt"), "cert-file": os.path.join(pki, "node.crt"), "key-file": os.path.join(pki, "node.key"),
+        "peers": [{"name": n, "url": "https://%s:8000/" % ip, "role": ("primary" if i == 0 else "secondary"), "auto-failover": True} for i, (n, ip) in enumerate(data)],
+      }]}},
+    ]
     json.dump(d, sys.stdout, indent=2); sys.stdout.write("\n"); sys.exit(0)
-if not os.path.isfile(conf): passthrough()
-c = {}
-for line in open(conf, encoding="utf-8"):
-    line = line.rstrip("\n")
-    if not line or line.startswith("#"): continue
-    m = re.fullmatch(r"([A-Z_]+)=([A-Za-z0-9._:/,= -]*)", line)
-    if not m: sys.exit("cluster.conf : ligne illisible")
-    c[m.group(1)] = m.group(2)
-name, role = c.get("NODE_NAME", ""), c.get("NODE_ROLE", "")
-if role != "data": passthrough()
-if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", name): sys.exit("cluster.conf : NODE_NAME invalide")
-data = []
-for p in c.get("PEERS", "").split():
-    m = re.fullmatch(r"([a-z][a-z0-9-]{1,30})=([0-9.]+):(data|witness)", p)
-    if not m: sys.exit("cluster.conf : PEERS invalide")
-    try: ipaddress.IPv4Address(m.group(2))
-    except ValueError: sys.exit("cluster.conf : adresse de pair invalide")
-    if m.group(3) == "data": data.append((m.group(1), m.group(2)))
-data.sort()                                # même ordre sur les deux nœuds : le premier par nom est « primary » du hook HA
-if len(data) != 2: passthrough()          # un seul nœud de données : pas encore de HA
-if name not in [n for n, _ in data]: sys.exit("cluster.conf : ce nœud ne figure pas dans PEERS")
-if mode == "probe": sys.exit(0)
-lib = lambda n: (glob.glob(os.path.join(hooks, n)) if hooks else glob.glob("/usr/lib/*/kea/hooks/" + n))
-ha_lib, lc_lib = lib("libdhcp_ha.so"), lib("libdhcp_lease_cmds.so")
-if not ha_lib or not lc_lib: sys.exit("bibliothèques Kea HA introuvables (paquet kea-dhcp4-server)")
-pki = os.path.join(cldir, "pki")
-for f in ("ca.crt", "node.crt", "node.key"):
-    if not os.path.isfile(os.path.join(pki, f)): sys.exit("matériel TLS du cluster absent : pki/" + f)   # « kea-dhcp4 -t » ne lit pas ces fichiers : on les exige ici
-k = d["Dhcp4"]
-k["lease-database"] = {"type": "memfile", "persist": True, "name": leases, "lfc-interval": 3600}
-k["hooks-libraries"] = [
-  {"library": lc_lib[0]},
-  {"library": ha_lib[0], "parameters": {"high-availability": [{
-    "this-server-name": name, "mode": "load-balancing",
-    "heartbeat-delay": 10000, "max-response-delay": 60000, "max-ack-delay": 5000, "max-unacked-clients": 5,
-    "multi-threading": {"enable-multi-threading": True, "http-dedicated-listener": True, "http-listener-threads": 4, "http-client-threads": 4},
-    "trust-anchor": os.path.join(pki, "ca.crt"), "cert-file": os.path.join(pki, "node.crt"), "key-file": os.path.join(pki, "node.key"),
-    "peers": [{"name": n, "url": "https://%s:8000/" % ip, "role": ("primary" if i == 0 else "secondary"), "auto-failover": True} for i, (n, ip) in enumerate(data)],
-  }]}},
-]
-json.dump(d, sys.stdout, indent=2); sys.stdout.write("\n")
+
+if mode == "bind-render":
+    role, opts_src, zones_src, out_opts, out_zones, keyfile = sys.argv[3:9]
+    if not cl: die("pas de cluster à deux nœuds de données")
+    if role not in ("primary", "secondary"): die("rôle BIND inconnu")
+    name, node_ip, data = cl
+    peer = [ip for n, ip in data if n != name][0]
+    if not os.path.isfile(keyfile): die("clé de transfert TSIG absente : " + keyfile)
+    out, seen, replaced = [], False, False
+    for l in open(opts_src, encoding="utf-8").read().split("\n"):
+        if role == "secondary" and re.fullmatch(r'include "[^"]*ddi-ddns\.key";', l): continue      # pas de mise à jour dynamique sur le secondaire
+        if l == "options {":
+            out.append(l); seen = True
+            out.append("  listen-on { %s; };" % node_ip)                                          # le pair joint ce nœud sur le réseau dédié
+            out.append('  also-notify { %s key "ddi-xfr"; };' % peer if role == "primary" else "  notify no;")
+            continue
+        if l.strip() == "allow-transfer { none; };":
+            out.append('  allow-transfer { key "ddi-xfr"; };' if role == "primary" else l); replaced = True; continue
+        out.append(l)
+    if not seen or not replaced: die("named.conf.options inattendu (bloc options ou allow-transfer global absent)")
+    open(out_opts, "w", encoding="utf-8").write('include "%s";\n' % keyfile + "\n".join(out))
+    prop = re.compile(r'\s*(notify yes;|allow-update \{ key "ddi-ddns"; \};|allow-query \{ none; \};|allow-transfer \{ ([^{}"]*) \};)')
+    zo = []
+    for l in open(zones_src, encoding="utf-8").read().split("\n"):
+        if l == "" or l.startswith("//") or re.match(r'zone "[^"]+" \{ type (secondary|forward);', l):
+            if l.startswith("zone") and "ddi-" in l: die("zone externe inattendue")
+            zo.append(l); continue
+        m = re.fullmatch(r'zone "([^"]+)" \{ type primary; file "([^"]+)";(.*) \};', l)
+        if not m: die("ligne de zone inattendue : " + l[:80])
+        z, f, rest = m.group(1), m.group(2), m.group(3)
+        user_acl, quiet, ddns, pos = "", False, False, 0
+        while pos < len(rest):
+            pm = prop.match(rest, pos)
+            if not pm:
+                if rest[pos:].strip() == "": break
+                die("propriété de zone inattendue : " + rest[pos:pos + 60])
+            t = pm.group(1)
+            if t.startswith("allow-transfer"): user_acl = pm.group(2).strip()
+            elif t.startswith("allow-query"): quiet = True
+            elif t.startswith("allow-update"): ddns = True
+            pos = pm.end()
+        if role == "primary":
+            acl = (user_acl.rstrip(";").strip() + "; " if user_acl else "") + 'key "ddi-xfr";'
+            zo.append('zone "%s" { type primary; file "%s"; notify yes; allow-transfer { %s };%s%s };' % (z, f, acl, ' allow-update { key "ddi-ddns"; };' if ddns else "", " allow-query { none; };" if quiet else ""))
+        else:
+            zo.append('zone "%s" { type secondary; primaries { %s key "ddi-xfr"; }; file "%s";%s };' % (z, peer, f, " allow-query { none; };" if quiet else ""))
+    zo.append('server %s { keys "ddi-xfr"; };' % peer)
+    open(out_zones, "w", encoding="utf-8").write("\n".join(zo) + "\n")
+    sys.exit(0)
+die("mode inconnu")
 PY
 }
+ha_py() {   # ha_py probe|render [FICHIER]
+  case "$1" in
+    probe) cluster_py kea-probe "$CLUSTER_DIR" ;;
+    render) cluster_py kea-render "$CLUSTER_DIR" "$2" "$KEA_HOOKS" "$KEA_LEASES" ;;
+  esac
+}
+probe_rc() { local rc=0; cluster_py "$1" "$CLUSTER_DIR" 2>"$STATE/cluster-probe.err" || rc=$?; if [ "$rc" -gt 1 ]; then fail "cluster.conf refusé : $(tr '\n' ' ' < "$STATE/cluster-probe.err")"; fi; return "$rc"; }
 KEA_GROUP="$(getent group _kea >/dev/null && echo _kea || echo root)"
+XFR_KEY="$BIND_ETC/ddi-xfr.key"
 install_kea() {   # écrit la configuration finale (avec bloc HA éventuel) de façon atomique
   local tmp; install -d -m 0755 "$KEA_ETC"
   tmp="$(mktemp "$KEA_ETC/.kea-dhcp4.XXXXXX")"
@@ -132,90 +211,106 @@ install_kea() {   # écrit la configuration finale (avec bloc HA éventuel) de f
   mv -f "$tmp" "$KEA_ETC/kea-dhcp4.conf"
 }
 verify_kea() {    # avec HA, la configuration finale est relue par Kea lui-même (bibliothèques, TLS, pairs) avant tout rechargement
-  ha_py probe "$GEN/kea-dhcp4.conf" || return 0
+  probe_rc kea-probe || return 0
   command -v kea-dhcp4 >/dev/null 2>&1 || { log "kea-dhcp4 absent : configuration HA non vérifiée"; return 0; }
   kea-dhcp4 -t "$KEA_ETC/kea-dhcp4.conf" >"$STATE/kea-verify.out" 2>&1 || { tail -n 5 "$STATE/kea-verify.out" >&2; return 1; }
 }
+install_named() {
+  if [ "$bind_role" = none ]; then
+    install -m 0644 -o root -g bind "$GEN/named.conf.options" "$BIND_ETC/named.conf.options"
+    install -m 0644 -o root -g bind "$GEN/named.conf.zones" "$BIND_ETC/named.conf.local"
+    return 0
+  fi
+  local t; t="$(mktemp -d)"
+  if ! cluster_py bind-render "$CLUSTER_DIR" "$bind_role" "$GEN/named.conf.options" "$GEN/named.conf.zones" "$t/options" "$t/local" "$XFR_KEY" 2>"$STATE/cluster-probe.err"; then
+    tr '\n' ' ' < "$STATE/cluster-probe.err" >&2; rm -rf "$t"; return 1
+  fi
+  install -m 0644 -o root -g bind "$t/options" "$BIND_ETC/named.conf.options"
+  install -m 0644 -o root -g bind "$t/local" "$BIND_ETC/named.conf.local"
+  rm -rf "$t"
+}
+# Rôle BIND de ce nœud : primary (déploiement local avec un pair) · secondary (--replica : zones transférées) · none (nœud seul / arbitre)
+bind_role=none
+if [ "$MODE" = replica ]; then
+  probe_rc bind-probe || fail "--replica exige un cluster à deux nœuds de données"
+  [ -f "$XFR_KEY" ] || fail "clé de transfert TSIG absente ($XFR_KEY) : rattacher le nœud avec un lot récent"
+  bind_role=secondary
+elif [ "$MODE" = full ] && probe_rc bind-probe; then
+  if [ -f "$XFR_KEY" ]; then bind_role=primary; else log "AVERTISSEMENT : clé de transfert TSIG absente ($XFR_KEY) : BIND reste sans secondaire"; fi
+fi
 
 log "contrôle du contenu déposé"
-if [ "$KEA_ONLY" -eq 1 ]; then
-  check_kea "$GEN/kea-dhcp4.conf"
-  install -d -m 0750 "$STATE/backup-kea"
-  if [ -f "$KEA_ETC/kea-dhcp4.conf" ]; then cp -p "$KEA_ETC/kea-dhcp4.conf" "$STATE/backup-kea/kea-dhcp4.conf.prev"; else rm -f "$STATE/backup-kea/kea-dhcp4.conf.prev"; fi
-  restore_kea() {
-    ROLLED_BACK=1; log "retour arrière (Kea)"
-    if [ -f "$STATE/backup-kea/kea-dhcp4.conf.prev" ]; then cp -p "$STATE/backup-kea/kea-dhcp4.conf.prev" "$KEA_ETC/kea-dhcp4.conf"; else rm -f "$KEA_ETC/kea-dhcp4.conf"; fi
-    if [ -z "${DDI_RELOAD_NOSERVICES:-}" ] && [ -f "$KEA_ETC/kea-dhcp4.conf" ]; then systemctl reload-or-restart kea-dhcp4-server >/dev/null 2>&1 || log "Kea n'a pas pu relire l'ancienne configuration"; fi
-  }
-  install_kea || fail "installation de la configuration Kea impossible"
-  verify_kea || { restore_kea; fail "kea-dhcp4 -t a refusé la configuration finale (HA)"; }
-  if [ -z "${DDI_RELOAD_NOSERVICES:-}" ]; then
-    if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["Dhcp4"].get("subnet4") else 1)' "$KEA_ETC/kea-dhcp4.conf"; then
-      systemctl enable kea-dhcp4-server >/dev/null 2>&1
-      systemctl reload-or-restart kea-dhcp4-server || { restore_kea; fail "Kea ne démarre pas avec la nouvelle configuration"; }
-    else
-      systemctl disable --now kea-dhcp4-server >/dev/null 2>&1 || true
-    fi
-  fi
-  date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-reload-kea"
-  status 1 "configuration Kea appliquée (nœud de données)"
-  log "configuration Kea appliquée"
-  exit 0
-fi
-check_named "$GEN/named.conf.options"; check_named "$GEN/named.conf.zones"; check_kea "$GEN/kea-dhcp4.conf"
+check_kea "$GEN/kea-dhcp4.conf"
+if [ "$MODE" != kea-only ]; then check_named "$GEN/named.conf.options"; check_named "$GEN/named.conf.zones"; fi
 shopt -s nullglob
-for z in "$GEN"/zones/db.*; do check_zone "$z"; done
+if [ "$MODE" = full ]; then for z in "$GEN"/zones/db.*; do check_zone "$z"; done; fi
 
 # ---- Sauvegarde puis installation ----
 install -d -m 0750 "$BACKUP"
-rm -rf "$BACKUP/zones"; install -d -m 0750 "$BACKUP/zones"
-for f in "$ZONES"/db.*; do cp -p "$f" "$BACKUP/zones/"; done
-for f in "$BIND_ETC/named.conf.options" "$BIND_ETC/named.conf.local" "$KEA_ETC/kea-dhcp4.conf"; do [ -f "$f" ] && cp -p "$f" "$BACKUP/$(basename "$f").prev"; done
+if [ "$MODE" = full ]; then
+  rm -rf "$BACKUP/zones"; install -d -m 0750 "$BACKUP/zones"
+  for f in "$ZONES"/db.*; do cp -p "$f" "$BACKUP/zones/"; done
+fi
+rm -f "$BACKUP"/*.prev
+for f in "$BIND_ETC/named.conf.options" "$BIND_ETC/named.conf.local" "$KEA_ETC/kea-dhcp4.conf"; do
+  [ "$MODE" != kea-only ] || [ "$(basename "$f")" = kea-dhcp4.conf ] || continue
+  [ -f "$f" ] && cp -p "$f" "$BACKUP/$(basename "$f").prev"
+done
 # Les services ont peut-être déjà relu la NOUVELLE configuration : après avoir remis les anciens fichiers, on leur fait relire l'ancienne.
 reload_after_restore() {
   [ -z "${DDI_RELOAD_NOSERVICES:-}" ] || return 0
-  systemctl reload named >/dev/null 2>&1 || systemctl restart named >/dev/null 2>&1 || log "BIND n'a pas pu relire l'ancienne configuration"
+  if [ "$MODE" != kea-only ]; then systemctl reload named >/dev/null 2>&1 || systemctl restart named >/dev/null 2>&1 || log "BIND n'a pas pu relire l'ancienne configuration"; fi
   if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["Dhcp4"].get("subnet4") else 1)' "$KEA_ETC/kea-dhcp4.conf" 2>/dev/null; then
     systemctl reload-or-restart kea-dhcp4-server >/dev/null 2>&1 || log "Kea n'a pas pu relire l'ancienne configuration"
   fi
 }
 restore() {
   ROLLED_BACK=1; log "retour arrière"
-  for f in "$ZONES"/db.*; do rm -f "$f"; done
-  for f in "$BACKUP/zones"/db.*; do cp -p "$f" "$ZONES/"; done
+  if [ "$MODE" = full ]; then
+    for f in "$ZONES"/db.*; do rm -f "$f"; done
+    for f in "$BACKUP/zones"/db.*; do cp -p "$f" "$ZONES/"; done
+  fi
   for p in "$BACKUP"/*.prev; do
     b="$(basename "$p" .prev)"
     case "$b" in kea-dhcp4.conf) cp -p "$p" "$KEA_ETC/$b" ;; *) cp -p "$p" "$BIND_ETC/$b" ;; esac
   done
+  # fichier absent avant l'application (première installation de Kea) : on le retire plutôt que de laisser la configuration refusée
+  [ -f "$BACKUP/kea-dhcp4.conf.prev" ] || rm -f "$KEA_ETC/kea-dhcp4.conf"
   reload_after_restore
 }
 
-install -d -m 0750 -o bind -g bind "$ZONES"
-new=()
-for z in "$GEN"/zones/db.*; do install -m 0640 -o bind -g bind "$z" "$ZONES/$(basename "$z")"; new+=("$(basename "$z")"); done
-# fichiers de zone retirés de la configuration : suppression des seuls fichiers « db.* » qui ne sont plus déclarés
-for old in "$ZONES"/db.*; do
-  b="$(basename "$old")"
-  if ! printf '%s\n' "${new[@]:-}" | grep -qxF "$b" && ! grep -qF "\"$ZONES/$b\"" "$GEN/named.conf.zones"; then rm -f "$old" "$old.jnl"; fi
-done
-
-install -m 0644 -o root -g bind "$GEN/named.conf.options" "$BIND_ETC/named.conf.options"
-install -m 0644 -o root -g bind "$GEN/named.conf.zones" "$BIND_ETC/named.conf.local"
+if [ "$MODE" = full ]; then
+  install -d -m 0750 -o bind -g bind "$ZONES"
+  new=()
+  for z in "$GEN"/zones/db.*; do install -m 0640 -o bind -g bind "$z" "$ZONES/$(basename "$z")"; new+=("$(basename "$z")"); done
+  # fichiers de zone retirés de la configuration : suppression des seuls fichiers « db.* » qui ne sont plus déclarés
+  for old in "$ZONES"/db.*; do
+    b="$(basename "$old")"
+    if ! printf '%s\n' "${new[@]:-}" | grep -qxF "$b" && ! grep -qF "\"$ZONES/$b\"" "$GEN/named.conf.zones"; then rm -f "$old" "$old.jnl"; fi
+  done
+fi
+if [ "$MODE" != kea-only ]; then install_named || { restore; fail "transformation BIND du cluster refusée"; }; fi
 install -d -m 0755 "$KEA_ETC"
 install_kea || { restore; fail "installation de la configuration Kea impossible"; }
 verify_kea || { restore; fail "kea-dhcp4 -t a refusé la configuration finale (HA)"; }
 
-named-checkconf "$BIND_ETC/named.conf" || { restore; fail "named-checkconf a refusé la configuration installée"; }
-for z in "$ZONES"/db.*; do
-  # shellcheck disable=SC2016
-  zname="$(grep -m1 -E '^\$ORIGIN ' "$z" | awk '{print $2}' | sed 's/\.$//')"
-  [ -n "$zname" ] || continue
-  named-checkzone -k warn "$zname" "$z" >/dev/null || { restore; fail "named-checkzone a refusé la zone $zname"; }
-done
+if [ "$MODE" != kea-only ]; then
+  named-checkconf "$BIND_ETC/named.conf" || { restore; fail "named-checkconf a refusé la configuration installée"; }
+fi
+if [ "$MODE" = full ]; then
+  for z in "$ZONES"/db.*; do
+    # shellcheck disable=SC2016
+    zname="$(grep -m1 -E '^\$ORIGIN ' "$z" | awk '{print $2}' | sed 's/\.$//')"
+    [ -n "$zname" ] || continue
+    named-checkzone -k warn "$zname" "$z" >/dev/null || { restore; fail "named-checkzone a refusé la zone $zname"; }
+  done
+fi
 
 # ---- Rechargement des services (sauté dans les tests sans systemd) ----
 if [ -z "${DDI_RELOAD_NOSERVICES:-}" ]; then
-  if ! systemctl reload named; then systemctl restart named || { restore; fail "BIND ne redémarre pas"; }; fi
+  if [ "$MODE" != kea-only ]; then
+    if ! systemctl reload named; then systemctl restart named || { restore; fail "BIND ne redémarre pas"; }; fi
+  fi
   if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["Dhcp4"].get("subnet4") else 1)' "$KEA_ETC/kea-dhcp4.conf"; then
     systemctl enable kea-dhcp4-server >/dev/null 2>&1
     if ! systemctl reload-or-restart kea-dhcp4-server; then restore; fail "Kea ne démarre pas avec la nouvelle configuration"; fi
@@ -223,6 +318,8 @@ if [ -z "${DDI_RELOAD_NOSERVICES:-}" ]; then
     systemctl disable --now kea-dhcp4-server >/dev/null 2>&1 || true   # aucune étendue : le service reste arrêté
   fi
 fi
-date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-reload"
-log "configuration appliquée"
-status 1 "configuration appliquée"
+case "$MODE" in
+  full) date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-reload"; log "configuration appliquée"; status 1 "configuration appliquée" ;;
+  replica) date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-reload"; log "configuration appliquée (réplica)"; status 1 "configuration appliquée (nœud secondaire : DHCP et DNS)" ;;
+  kea-only) date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-reload-kea"; log "configuration Kea appliquée"; status 1 "configuration Kea appliquée (nœud de données)" ;;
+esac

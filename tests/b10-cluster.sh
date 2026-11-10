@@ -121,11 +121,79 @@ printf 'pw-tamper' | gpg --homedir "$W/gh" --batch --quiet --yes --pinentry-mode
 R="$(mkroot j5)"
 check_fail "manifeste incohérent (contenu modifié) : refusé" joinb "$R" "$d/t.bundle" "pw-tamper" --wipe-local-db --no-activate
 
+echo "== Clé de transfert de zone (TSIG) dans les lots =="
+XK='key "ddi-xfr" {
+    algorithm hmac-sha256;
+    secret "Zm9vYmFyYmF6cXV4cXV1eHF1dXV4YWFhYWJiYmJjY2M=";
+};
+'
+# autorité et certificat de nœud de test (le lot doit être complet pour qu'un join puisse aller jusqu'à l'installation de la clé)
+PK="$W/pki"; mkdir -p "$PK"
+openssl ecparam -name prime256v1 -genkey -noout -out "$PK/ca.key" 2>/dev/null
+openssl req -x509 -new -key "$PK/ca.key" -subj /CN=test-ca -days 2 -out "$PK/ca.crt" 2>/dev/null
+openssl ecparam -name prime256v1 -genkey -noout -out "$PK/node.key" 2>/dev/null
+openssl req -new -key "$PK/node.key" -subj /CN=n2 -out "$PK/n.csr" 2>/dev/null
+openssl x509 -req -in "$PK/n.csr" -CA "$PK/ca.crt" -CAkey "$PK/ca.key" -CAcreateserial -days 2 -out "$PK/node.crt" 2>/dev/null
+mkbundle2() { # mkbundle2 nom conf-file contenu-clé
+  local d="$W/bnd-$1"; rm -rf "$d"; mkdir -p "$d/b"; cp "$2" "$d/b/cluster.conf"; printf '%s' "$3" > "$d/b/ddi-xfr.key"; cp "$PK/ca.crt" "$PK/node.crt" "$PK/node.key" "$d/b/"
+  ( cd "$d/b" && sha256sum cluster.conf ddi-xfr.key ca.crt node.crt node.key > MANIFEST )
+  tar -C "$d/b" -cf "$d/b.tar" .
+  printf 'pw-%s' "$1" | gpg --homedir "$W/gh" --batch --quiet --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 -o "$d/out.bundle" "$d/b.tar" 2>/dev/null
+  echo "$d/out.bundle"
+}
+B="$(mkbundle2 k1 "$W/c-ok" "$XK")"; R="$(mkroot k1)"
+check "join d'un nœud de données avec clé TSIG" joinb "$R" "$B" "pw-k1" --wipe-local-db --no-activate
+check "clé TSIG installée à l'identique" bash -c "printf '%s' \"\$1\" | cmp - \"\$2\"" _ "$XK" "$R/etc/bind/ddi-xfr.key"
+expect_eq "clé TSIG : droits 0640" "640" "$(stat -c %a "$R/etc/bind/ddi-xfr.key" 2>/dev/null)"
+B="$(mkbundle2 k2 "$W/c-ok" "$XK"'include "/etc/shadow";
+')"; R="$(mkroot k2)"
+check_fail "clé TSIG avec directive en plus (include) : lot refusé" joinb "$R" "$B" "pw-k2" --wipe-local-db --no-activate
+expect_eq "…rien installé" "no" "$([ -e "$R/etc/bind/ddi-xfr.key" ] || [ -e "$R/etc/ddibuntu-cluster/cluster.conf" ] && echo yes || echo no)"
+B="$(mkbundle2 k3 "$W/c-ok" 'key "ddi-xfr" { algorithm hmac-md5; secret "AAAA"; };
+')"; R="$(mkroot k3)"
+check_fail "clé TSIG au mauvais format / algorithme : lot refusé" joinb "$R" "$B" "pw-k3" --wipe-local-db --no-activate
+sed 's/^NODE_ROLE=data/NODE_ROLE=witness/; s/^NODE_NAME=n2/NODE_NAME=n3/; s/^NODE_IP=.*/NODE_IP=10.9.0.3/' "$W/c-ok" > "$W/c-wit"
+B="$(mkbundle2 k4 "$W/c-wit" "$XK")"; R="$(mkroot k4)"
+check "join d'un arbitre dont le lot contiendrait une clé" joinb "$R" "$B" "pw-k4" --no-activate
+expect_eq "…l'arbitre n'installe pas la clé de zone" "no" "$([ -e "$R/etc/bind/ddi-xfr.key" ] && echo yes || echo no)"
+
+echo "== VIP de service (Keepalived) =="
+vipconf() { goodconf | sed "s|^CA_NODE=0|CA_NODE=0\nVIP=$1\nVIP_IFACE=$2\nVIP_VRID=$3|"; }
+vbad() { local r; r="$(mkroot vbad)"; vipconf "$2" "$3" "$4" > "$r/etc/ddibuntu-cluster/cluster.conf"; check_fail "VIP refusée : $1" env DDI_VRRP_IFACE=eth9 DDI_ROOT="$r" DDI_TEST=1 DDI_TEST_NOUSERS=1 bash "$CL" render; }
+vbad "sans masque" 192.168.1.50 eth0 51
+vbad "adresse invalide" 192.168.1.500/24 eth0 51
+vbad "interface avec caractères spéciaux" 192.168.1.50/24 'eth0;id' 51
+vbad "interface en majuscules" 192.168.1.50/24 ETH0 51
+vbad "VRID = 0" 192.168.1.50/24 eth0 0
+vbad "VRID > 255" 192.168.1.50/24 eth0 300
+R="$(mkroot vip1)"; vipconf 192.168.1.50/24 eth0 77 > "$R/etc/ddibuntu-cluster/cluster.conf"
+check "render avec VIP" env DDI_VRRP_IFACE=eth9 DDI_ROOT="$R" DDI_TEST=1 DDI_TEST_NOUSERS=1 bash "$CL" render
+KA="$R/etc/keepalived/keepalived.conf"
+expect_grep "keepalived : scripts exécutés en root, sécurisés" 'enable_script_security' "$KA"
+expect_grep "keepalived : test de santé = leader Patroni" 'script ".*ddibuntu-cluster vip-check"' "$KA"
+expect_grep "keepalived : annonces VRRP sur l'interface du réseau dédié" 'interface eth9' "$KA"
+expect_grep "keepalived : annonces en unicast vers le pair de données uniquement" 'unicast_src_ip 10\.9\.0\.1' "$KA"
+expect_eq "keepalived : un seul pair (l'arbitre n'annonce rien)" "1" "$(awk '/unicast_peer/{f=1;next} f&&/}/{exit} f{n++} END{print n+0}' "$KA")"
+expect_grep "keepalived : le pair est n2" '^    10\.9\.0\.2$' "$KA"
+expect_grep "keepalived : VIP posée sur l'interface de service" '192\.168\.1\.50/24 dev eth0' "$KA"
+expect_grep "keepalived : identifiant de routeur VRRP" 'virtual_router_id 77' "$KA"
+expect_grep "keepalived : instance suit le test de santé" 'track_script \{' "$KA"
+R="$(mkroot vip2)"; goodconf > "$R/etc/ddibuntu-cluster/cluster.conf"
+run "$R" render >/dev/null 2>&1
+expect_eq "sans VIP : aucune configuration Keepalived" "no" "$([ -e "$R/etc/keepalived/keepalived.conf" ] && echo yes || echo no)"
+R="$(mkroot vip3)"; vipconf 192.168.1.50/24 eth0 51 | sed 's/^NODE_ROLE=data/NODE_ROLE=witness/' > "$R/etc/ddibuntu-cluster/cluster.conf"
+DDI_VRRP_IFACE=eth9 run "$R" render >/dev/null 2>&1
+expect_eq "arbitre : jamais de Keepalived" "no" "$([ -e "$R/etc/keepalived/keepalived.conf" ] && echo yes || echo no)"
+R="$(mkroot vip4)"; vipconf 192.168.1.50/24 eth0 51 > "$R/etc/ddibuntu-cluster/cluster.conf"
+check_fail "VRRP sans interface portant l'adresse du réseau dédié : refus explicite" env DDI_ROOT="$R" DDI_TEST=1 DDI_TEST_NOUSERS=1 bash "$CL" render
+check_fail "vip-check sans Patroni joignable : code non nul (aucune VIP)" env DDI_ROOT="$R" DDI_TEST=1 DDI_TEST_NOUSERS=1 bash "$CL" vip-check
+
 echo "== Pare-feu : ports du cluster réservés aux pairs =="
 FWD="$W/fw"; mkdir -p "$FWD"
 fwr() { DDI_ROOT="$FWD" DDI_LIBDIR="$RFS/usr/local/lib/ddibuntu" DDI_FW_CONF="$FWD/firewall.conf" DDI_FW_STATE="$FWD/state" bash "$FW" "$@"; }
 check "set CLUSTER_PEERS" fwr set CLUSTER_PEERS "10.9.0.2,10.9.0.3"
 fwr render > "$W/nft.out" 2>&1
+expect_grep "règle : VRRP (protocole 112) depuis le jeu des pairs" 'ip saddr @cluster4 ip protocol 112 accept' "$W/nft.out"
 expect_grep "règle : 2379/2380/5432/8000/8008 depuis le jeu des pairs" 'ip saddr @cluster4 tcp dport \{ 2379, 2380, 5432, 8000, 8008 \} accept' "$W/nft.out"
 expect_grep "jeu des pairs : deux adresses /32" 'elements = \{ 10\.9\.0\.2/32, 10\.9\.0\.3/32 \}' "$W/nft.out"
 expect_nogrep "aucun de ces ports n'est ouvert à tous" '^\s+tcp dport \{[^}]*(2379|2380|5432|8000|8008)' "$W/nft.out"

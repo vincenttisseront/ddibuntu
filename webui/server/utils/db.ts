@@ -338,7 +338,13 @@ create table rendered_configs (
 );
 `
 
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }]
+// Itération 4 : le secondaire BIND dérive sa configuration des fichiers named déployés (les zones, elles, arrivent par transfert signé TSIG).
+const SCHEMA_7 = String.raw`
+alter table rendered_configs drop constraint rendered_configs_name_check;
+alter table rendered_configs add constraint rendered_configs_name_check check (name in ('kea-dhcp4.conf', 'named.conf.options', 'named.conf.zones'));
+`
+
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

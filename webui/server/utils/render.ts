@@ -40,6 +40,8 @@ export function renderNamedOptions(s: DnsSettings, anyDdns: boolean): string {
     '  recursion yes;',
     `  allow-recursion { ${acl(s.allowRecursion, 'none')} };`,
     `  allow-query { ${acl(s.allowQuery)} };`,
+    // BIND autorise par défaut le transfert de zone à tout le monde : refusé partout, sauf liste explicite par zone (et clé TSIG du cluster, ajoutée par root)
+    '  allow-transfer { none; };',
     s.forwarders.length ? `  forwarders { ${acl(s.forwarders)} };` : '',
     `  dnssec-validation ${s.dnssecValidation};`,
     '  check-names primary warn;',

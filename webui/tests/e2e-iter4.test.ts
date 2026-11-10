@@ -94,7 +94,7 @@ let W: Awaited<ReturnType<typeof mk>>
 describe('points de restauration des données', () => {
   it('migration 2 appliquée, version 0.4.0', async () => {
     const i = (await admin.get('/api/system/info')).json
-    expect([i.schema, i.version]).toEqual([6, '0.4.0'])   // 1 socle, 2 points de restauration/origine IPAM, 3 journal des requêtes, 4 espaces/conteneurs/pools IPAM
+    expect([i.schema, i.version]).toEqual([7, '0.4.0'])   // 1 socle, 2 points de restauration/origine IPAM, 3 journal des requêtes, 4 espaces/conteneurs/pools IPAM
     expect((await rows("select column_name from information_schema.columns where table_name = 'addresses' and column_name in ('source','external_id','last_seen') order by 1")).map((r) => r.column_name)).toEqual(['external_id', 'last_seen', 'source'])
   })
   it('droits : lecteur refusé, opérateur peut créer un point, seul l\'administrateur restaure, supprime, épingle', async () => {

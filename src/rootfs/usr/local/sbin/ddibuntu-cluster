@@ -14,7 +14,8 @@
 #   sync                                                                        relit le registre des nœuds (etcd) : pairs et pare-feu à jour
 #   status                                                                      état JSON (etcd, Patroni, membres, retard de réplication)
 #   switchover [--candidate N]                                                  bascule contrôlée du primaire
-#   follow                                                                      (nœud de données) applique la configuration Kea (HA load-balancing) : primaire = fichiers de la console, secondaire = copie répliquée en base
+#   follow                                                                      (nœud de données) aligne Kea (HA) et BIND (primaire/secondaire) : primaire = fichiers de la console, secondaire = copie répliquée en base
+#   vip-check                                                                   (Keepalived) code 0 si ce nœud est le leader Patroni ; « init --vip CIDR --vip-iface IFACE [--vip-vrid N] » active la VIP de service
 #
 # Variables de test : DDI_GENERATED_DIR, DDI_RELOAD_CMD, DDI_KEA_SOCKET, DDI_DB_NAME ; DDI_ROOT (préfixe de tous les chemins), DDI_TEST=1 (ni systemctl ni exigence root), DDI_PY (interpréteur de Patroni)
 set -euo pipefail
@@ -53,10 +54,11 @@ valid_port() { [[ "$1" =~ ^[0-9]{2,5}$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 
 
 # cluster.conf : lecture STRICTE clé=valeur (jamais « source » d'un fichier modifiable) ; clés connues, valeurs à jeu de caractères restreint
 declare -A C=()
-CONF_KEYS="CLUSTER_NAME NODE_NAME NODE_ROLE NODE_IP REPL_NET PEERS CA_NODE ETCD_STATE ETCD_INITIAL_CLUSTER ETCD_CLIENT_PORT ETCD_PEER_PORT PG_PORT PG_LOCAL_LISTEN PG_SOCKET_DIR PG_CONFIG_DIR PATRONI_PORT PGVER"
+CONF_KEYS="CLUSTER_NAME NODE_NAME NODE_ROLE NODE_IP REPL_NET PEERS CA_NODE ETCD_STATE ETCD_INITIAL_CLUSTER ETCD_CLIENT_PORT ETCD_PEER_PORT PG_PORT PG_LOCAL_LISTEN PG_SOCKET_DIR PG_CONFIG_DIR PATRONI_PORT PGVER VIP VIP_IFACE VIP_VRID"
 conf_defaults() {
   C[ETCD_CLIENT_PORT]=2379; C[ETCD_PEER_PORT]=2380; C[PG_PORT]=5432; C[PG_LOCAL_LISTEN]=127.0.0.1; C[PG_SOCKET_DIR]=/var/run/postgresql; C[PG_CONFIG_DIR]=/etc/postgresql/16/main
   C[PATRONI_PORT]=8008; C[PGVER]=16; C[ETCD_STATE]=new; C[CA_NODE]=0; C[ETCD_INITIAL_CLUSTER]=""; C[PEERS]=""
+  C[VIP]=""; C[VIP_IFACE]=""; C[VIP_VRID]=51
 }
 conf_load() {
   local f="${1:-$CONF}" line k v
@@ -81,6 +83,11 @@ conf_check() {
   [[ "${C[PG_SOCKET_DIR]}" =~ ^/[A-Za-z0-9._/-]*$ ]] || die "PG_SOCKET_DIR invalide"
   [ -z "${C[PG_CONFIG_DIR]}" ] || [[ "${C[PG_CONFIG_DIR]}" =~ ^/[A-Za-z0-9._/-]*$ ]] || die "PG_CONFIG_DIR invalide"
   [ -z "${C[PG_LOCAL_LISTEN]}" ] || valid_ip "${C[PG_LOCAL_LISTEN]}" || die "PG_LOCAL_LISTEN invalide"
+  if [ -n "${C[VIP]}" ]; then   # adresse de service virtuelle (Keepalived) : suit le primaire PostgreSQL
+    valid_cidr "${C[VIP]}" || die "VIP invalide (attendu : adresse/préfixe)"
+    [[ "${C[VIP_IFACE]}" =~ ^[a-z][a-z0-9._-]{0,14}$ ]] || die "VIP_IFACE invalide"
+    if ! [[ "${C[VIP_VRID]}" =~ ^[0-9]{1,3}$ ]] || [ "${C[VIP_VRID]}" -lt 1 ] || [ "${C[VIP_VRID]}" -gt 255 ]; then die "VIP_VRID invalide (1 à 255)"; fi
+  fi
   local p; for p in ${C[PEERS]}; do
     [[ "$p" =~ ^([a-z][a-z0-9-]{1,30})=([0-9.]+):(data|witness)$ ]] || die "PEERS : entrée invalide « $p »"
     valid_ip "${BASH_REMATCH[2]}" || die "PEERS : adresse invalide « $p »"
@@ -287,7 +294,54 @@ fw_sync() {
     log "AVERTISSEMENT : pare-feu non mis à jour (CLUSTER_PEERS=$ips) ; les pairs ne pourront pas joindre ce nœud"
   fi
 }
-render_all() { render_etcd; render_patroni; fw_sync; }
+# ---------------------------------------------------------------- clé de transfert de zone BIND (TSIG « ddi-xfr »)
+XFRKEY="$ROOT/etc/bind/ddi-xfr.key"
+valid_xfr_key() {   # forme EXACTE attendue : rien d'autre (une directive « include » ou un second bloc dans un lot hostile serait refusé)
+  python3 - "$1" <<'PY'
+import re, sys
+try: s = open(sys.argv[1], encoding="utf-8").read()
+except Exception: sys.exit(1)
+sys.exit(0 if re.fullmatch(r'key "ddi-xfr" \{\n    algorithm hmac-sha256;\n    secret "[A-Za-z0-9+/]{43}=";\n\};\n', s) else 1)
+PY
+}
+install_xfr_key() {   # install_xfr_key SOURCE : root:bind 0640
+  valid_xfr_key "$1" || die "clé de transfert de zone invalide"
+  local own=(); [ -n "${DDI_TEST_NOUSERS:-}" ] || own=(-g bind)
+  install -d -m 0755 "$(dirname "$XFRKEY")"; install -m 0640 "${own[@]}" "$1" "$XFRKEY"
+}
+ensure_xfr_key() {   # nœud autorité, données : crée la clé si absente (clusters créés avant l'itération 4 compris)
+  [ "${C[NODE_ROLE]}" = data ] && [ -f "$XFRKEY" ] && return 0
+  [ "${C[NODE_ROLE]}" = data ] || return 0
+  local t; t="$(mktemp)"
+  printf 'key "ddi-xfr" {\n    algorithm hmac-sha256;\n    secret "%s";\n};\n' "$(openssl rand -base64 32)" > "$t"
+  install_xfr_key "$t"; rm -f "$t"
+}
+
+# ---------------------------------------------------------------- VIP de service : Keepalived, présente UNIQUEMENT sur le nœud dont Patroni est leader
+# Le test de santé (vip-check) échoue sur tout nœud non leader : son instance VRRP passe en FAULT et ne porte pas la VIP. Sans leader (quorum perdu),
+# la VIP n'est nulle part — c'est voulu. Les annonces VRRP circulent en unicast sur le réseau dédié ; la VIP, elle, est posée sur l'interface de service.
+KA_CONF="$ROOT/etc/keepalived/keepalived.conf"
+vrrp_iface() {   # interface qui porte NODE_IP (réseau dédié)
+  if [ -n "${DDI_VRRP_IFACE:-}" ]; then echo "$DDI_VRRP_IFACE"; return 0; fi
+  ip -o -4 addr show 2>/dev/null | awk -v ip="${C[NODE_IP]}" '{ split($4, a, "/"); if (a[1] == ip) { print $2; exit } }'
+}
+render_keepalived() {
+  [ "${C[NODE_ROLE]}" = data ] && [ -n "${C[VIP]}" ] || return 0
+  local p peer="" vi
+  for p in ${C[PEERS]}; do if [ "$(peer_field "$p" role)" = data ] && [ "$(peer_field "$p" name)" != "${C[NODE_NAME]}" ]; then peer="$(peer_field "$p" ip)"; fi; done
+  vi="$(vrrp_iface)"; [ -n "$vi" ] || die "aucune interface ne porte ${C[NODE_IP]} (réseau dédié) : VRRP impossible"
+  install -d -m 0755 "$(dirname "$KA_CONF")"
+  {
+    echo "# Écrit par ddibuntu-cluster — ne pas modifier à la main"
+    printf 'global_defs {\n  enable_script_security\n  script_user root\n  router_id %s\n}\n' "${C[NODE_NAME]}"
+    printf 'vrrp_script ddi_leader {\n  script "%s vip-check"\n  interval 2\n  timeout 5\n  fall 2\n  rise 1\n}\n' "${DDI_CLUSTER_BIN:-/usr/local/sbin/ddibuntu-cluster}"
+    printf 'vrrp_instance DDI_VIP {\n  state BACKUP\n  interface %s\n  virtual_router_id %s\n  priority 100\n  advert_int 1\n' "$vi" "${C[VIP_VRID]}"
+    if [ -n "$peer" ]; then printf '  unicast_src_ip %s\n  unicast_peer {\n    %s\n  }\n' "${C[NODE_IP]}" "$peer"; fi
+    printf '  virtual_ipaddress {\n    %s dev %s\n  }\n  track_script {\n    ddi_leader\n  }\n}\n' "${C[VIP]}" "${C[VIP_IFACE]}"
+  } > "$KA_CONF.new"
+  chmod 0644 "$KA_CONF.new"; mv -f "$KA_CONF.new" "$KA_CONF"
+}
+render_all() { render_etcd; render_patroni; render_keepalived; fw_sync; }
 
 # ---------------------------------------------------------------- rôles PostgreSQL de réplication (nœud qui porte déjà la base)
 psql_local() { runuser -u postgres -- psql -h "${ROOT}${C[PG_SOCKET_DIR]}" -p "${C[PG_PORT]}" -v ON_ERROR_STOP=1 -q "$@"; }
@@ -336,7 +390,10 @@ activate() {
   [ -n "${DDI_TEST:-}" ] || register_node "${C[NODE_NAME]}" "${C[NODE_IP]}" "${C[NODE_ROLE]}" 30 \
     || log "AVERTISSEMENT : inscription de ce nœud au registre impossible pour l'instant ; la synchronisation périodique réessaiera"
   sysctl_do enable --now ddibuntu-cluster-sync.timer
-  if [ "${C[NODE_ROLE]}" = data ]; then sysctl_do enable --now patroni.service; sysctl_do enable --now ddibuntu-cluster-follow.timer; fi
+  if [ "${C[NODE_ROLE]}" = data ]; then
+    sysctl_do enable --now patroni.service; sysctl_do enable --now ddibuntu-cluster-follow.timer
+    if [ -n "${C[VIP]}" ]; then sysctl_do enable --now keepalived.service; fi
+  fi
   log "services démarrés (etcd${C[NODE_ROLE]:+, patroni si nœud de données})"
 }
 
@@ -384,19 +441,25 @@ for kv in json.load(sys.stdin).get("kvs", []):
     m = re.fullmatch(r"([0-9.]+):(data|witness)", v)
     if m: print(k.rsplit("/", 1)[-1], m.group(1), m.group(2))')
   [ "$changed" -eq 1 ] || return 0
-  C[PEERS]="$new"; conf_check; conf_write; render_patroni; fw_sync
+  C[PEERS]="$new"; conf_check; conf_write; render_patroni; render_keepalived; fw_sync
   [ -n "${DDI_TEST:-}" ] || systemctl reload patroni.service 2>/dev/null || true
+  [ -n "${DDI_TEST:-}" ] || [ -z "${C[VIP]}" ] || systemctl reload keepalived.service 2>/dev/null || true
   log "pairs mis à jour : ${C[PEERS]}"
 }
 
 cmd_init() {
-  local name="" ip="" net="" role=data act=1
-  while [ $# -gt 0 ]; do case "$1" in --name) name="${2:-}"; shift 2 ;; --ip) ip="${2:-}"; shift 2 ;; --net) net="${2:-}"; shift 2 ;; --role) role="${2:-}"; shift 2 ;; --no-activate) act=0; shift ;; *) die "option inconnue : $1" ;; esac; done
+  local name="" ip="" net="" role=data act=1 vip="" vif="" vrid=""
+  while [ $# -gt 0 ]; do case "$1" in --name) name="${2:-}"; shift 2 ;; --ip) ip="${2:-}"; shift 2 ;; --net) net="${2:-}"; shift 2 ;; --role) role="${2:-}"; shift 2 ;; --no-activate) act=0; shift ;;
+    --vip) vip="${2:-}"; shift 2 ;; --vip-iface) vif="${2:-}"; shift 2 ;; --vip-vrid) vrid="${2:-}"; shift 2 ;; *) die "option inconnue : $1" ;; esac; done
   [ ! -f "$CONF" ] || die "ce nœud appartient déjà à un cluster ($CONF)"
   preflight
   conf_defaults
   C[CLUSTER_NAME]="${DDI_CLUSTER_NAME:-ddibuntu}"; C[NODE_NAME]="$name"; C[NODE_ROLE]="$role"; C[NODE_IP]="$ip"; C[REPL_NET]="$net"; C[CA_NODE]=1
   C[PEERS]="$name=$ip:$role"
+  if [ -n "$vip" ] || [ -n "$vif" ]; then
+    if [ -z "$vip" ] || [ -z "$vif" ]; then die "--vip et --vip-iface vont ensemble"; fi
+    C[VIP]="$vip"; C[VIP_IFACE]="$vif"; [ -z "$vrid" ] || C[VIP_VRID]="$vrid"
+  fi
   [ -z "${DDI_PORT_ETCD_CLIENT:-}" ] || C[ETCD_CLIENT_PORT]="$DDI_PORT_ETCD_CLIENT"; [ -z "${DDI_PORT_ETCD_PEER:-}" ] || C[ETCD_PEER_PORT]="$DDI_PORT_ETCD_PEER"
   [ -z "${DDI_PORT_PG:-}" ] || C[PG_PORT]="$DDI_PORT_PG"; [ -z "${DDI_PORT_PATRONI:-}" ] || C[PATRONI_PORT]="$DDI_PORT_PATRONI"
   [ -z "${DDI_PG_LOCAL_LISTEN+x}" ] || C[PG_LOCAL_LISTEN]="$DDI_PG_LOCAL_LISTEN"; [ -z "${DDI_PG_CONFIG_DIR+x}" ] || C[PG_CONFIG_DIR]="$DDI_PG_CONFIG_DIR"; [ -z "${DDI_PG_SOCKET_DIR:-}" ] || C[PG_SOCKET_DIR]="$DDI_PG_SOCKET_DIR"
@@ -405,6 +468,7 @@ cmd_init() {
   if [ "$role" = data ]; then log "rôles PostgreSQL de réplication"; db_roles; fi
   ca_init
   local t; t="$(mktemp -d)"; issue_cert "$name" "$ip" "$t"; install_pki "$t"; rm -rf "$t"
+  ensure_xfr_key
   conf_write; render_all
   [ "$act" -eq 0 ] || activate
   log "nœud « $name » initialisé. Ajoutez les autres nœuds avec « ddibuntu-cluster bundle »."
@@ -432,7 +496,12 @@ cmd_bundle() {
   { echo "# lot d'enrôlement du nœud $name"
     printf 'CLUSTER_NAME=%s\nNODE_NAME=%s\nNODE_ROLE=%s\nNODE_IP=%s\nREPL_NET=%s\nPEERS=%s\nCA_NODE=0\nETCD_STATE=existing\nETCD_INITIAL_CLUSTER=%s\n' \
       "${C[CLUSTER_NAME]}" "$name" "$role" "$ip" "${C[REPL_NET]}" "$peers" "$ic"
-    for k in ETCD_CLIENT_PORT ETCD_PEER_PORT PG_PORT PG_LOCAL_LISTEN PG_SOCKET_DIR PG_CONFIG_DIR PATRONI_PORT PGVER; do printf '%s=%s\n' "$k" "${C[$k]}"; done; } > "$t/b/cluster.conf"
+    for k in ETCD_CLIENT_PORT ETCD_PEER_PORT PG_PORT PG_LOCAL_LISTEN PG_SOCKET_DIR PG_CONFIG_DIR PATRONI_PORT PGVER VIP VIP_IFACE VIP_VRID; do printf '%s=%s\n' "$k" "${C[$k]}"; done; } > "$t/b/cluster.conf"
+  # clé de transfert de zone : mêmes octets sur les deux nœuds de données (jamais sur l'arbitre)
+  if [ "$role" = data ]; then
+    ensure_xfr_key
+    if [ -f "$XFRKEY" ]; then cp "$XFRKEY" "$t/b/ddi-xfr.key"; else log "AVERTISSEMENT : pas de clé de transfert de zone sur ce nœud (nœud autorité sans rôle « data ») : le secondaire BIND ne pourra pas être configuré"; fi
+  fi
   # secrets de la console : la clé secrète chiffre des données de la base — elle doit être IDENTIQUE sur tous les nœuds
   local envf="$ETC/console.env"
   if [ "$role" = data ] && [ -f "$envf" ]; then grep -E '^(DDI_DATABASE_URL|DDI_SECRET_KEY|DDI_KEA_DB_PASSWORD)=' "$envf" > "$t/b/console-secrets.env" || true; fi
@@ -468,6 +537,7 @@ cmd_join() {
   conf_load "$t/b/cluster.conf"
   [ "${C[CA_NODE]}" = 0 ] || die "un lot ne peut pas faire de ce nœud une autorité"
   install_pki "$t/b"
+  if [ "${C[NODE_ROLE]}" = data ] && [ -f "$t/b/ddi-xfr.key" ]; then install_xfr_key "$t/b/ddi-xfr.key"; fi
   if [ "${C[NODE_ROLE]}" = data ]; then
     [ "$wipe" -eq 1 ] || die "ce nœud de données va REPRENDRE la base du cluster : sa base locale sera effacée. Relancez avec --wipe-local-db pour confirmer."
     local pgdata="$ROOT/var/lib/postgresql/${C[PGVER]}/main"
@@ -497,14 +567,19 @@ cmd_status() {
   fi
   : "$cp"
   local kea="null"; if [ "${C[NODE_ROLE]}" = data ]; then kea="$(kea_ha_json)"; fi
-  KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
+  local vip="null"
+  if [ -n "${C[VIP]}" ] && [ "${C[NODE_ROLE]}" = data ]; then
+    local held=false; if ip -o -4 addr show dev "${C[VIP_IFACE]}" 2>/dev/null | awk '{print $4}' | grep -qxF "${C[VIP]}"; then held=true; fi
+    vip="{\"address\": \"${C[VIP]}\", \"iface\": \"${C[VIP_IFACE]}\", \"held\": $held}"
+  fi
+  VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
     python3 -c '
 import json, os
 pat = json.loads(os.environ["PAT"])
 print(json.dumps({"cluster": os.environ["CLUSTER"], "node": os.environ["NODE"], "role": os.environ["ROLE"],
   "etcd": {"healthy": os.environ["ETCD_OK"] == "true", "members": int(os.environ["MEMBERS"] or 0)},
   "peers": [dict(zip(("name", "ip", "role"), (p.split("=")[0], p.split("=")[1].split(":")[0], p.split(":")[-1]))) for p in os.environ["PEERS"].split()],
-  "patroni": pat, "kea": json.loads(os.environ["KEA"])}, ensure_ascii=False))'
+  "patroni": pat, "kea": json.loads(os.environ["KEA"]), "vip": json.loads(os.environ["VIP"])}, ensure_ascii=False))'
 }
 
 # ---------------------------------------------------------------- Kea HA
@@ -538,34 +613,56 @@ patroni_role() {   # leader | replica | "" (inconnu)
   curl -fsS --max-time 4 --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "https://${C[NODE_IP]}:${C[PATRONI_PORT]}/patroni" 2>/dev/null \
     | python3 -c 'import json,sys; r=json.load(sys.stdin).get("role",""); print({"master":"leader","primary":"leader","standby_leader":"leader","replica":"replica"}.get(r,""))' 2>/dev/null || true
 }
-# follow : garde la configuration Kea du nœud alignée sur celle du cluster. Rien n'est appliqué sans passer par ddibuntu-reload (mêmes contrôles qu'en local).
+# follow : garde Kea et BIND de ce nœud alignés sur le cluster. Rien n'est appliqué sans passer par ddibuntu-reload (mêmes contrôles qu'en local).
+#  · secondaire : relit les configurations déployées dans SA copie de la base, vérifie leurs empreintes, appelle « ddibuntu-reload --replica »
+#    (Kea + BIND secondaire, zones transférées par TSIG) ; les sorties de console périmées (zones/) sont retirées pour qu'un fichier de zone ancien
+#    ne remplace jamais, plus tard, la copie transférée si ce nœud devient primaire.
+#  · primaire : réapplique quand le câblage change (arrivée du second nœud de données, clé TSIG) ; le contenu, lui, est appliqué par le déploiement.
 cmd_follow() {
   conf_load; [ "${C[NODE_ROLE]}" = data ] || return 0
   install -d -m 0700 "$STATE"
+  if [ "${C[CA_NODE]}" = 1 ]; then ensure_xfr_key; fi
   local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" reload="${DDI_RELOAD_CMD:-/usr/local/sbin/ddibuntu-reload}" db="${DDI_DB_NAME:-ddibuntu}"
-  local src="$gen/kea-dhcp4.conf" marker="$STATE/kea-applied" role
+  local marker="$STATE/kea-applied" role margs="" content=""
   role="$(patroni_role)"; [ -n "$role" ] || { log "follow : rôle Patroni inconnu (réessai à la prochaine échéance)"; return 0; }
   if [ "$role" = replica ]; then
-    local meta b64 want got tmp
-    meta="$(psql_local -d "$db" -Atc "select sha256 from rendered_configs where name = 'kea-dhcp4.conf'" 2>/dev/null)" || { log "follow : base répliquée illisible (réessai)"; return 0; }
-    [ -n "$meta" ] || return 0                                   # rien n'a encore été déployé sur le primaire
-    [[ "$meta" =~ ^[0-9a-f]{64}$ ]] || die "follow : empreinte invalide dans la base"
-    b64="$(psql_local -d "$db" -Atc "select encode(convert_to(content, 'UTF8'), 'base64') from rendered_configs where name = 'kea-dhcp4.conf'" 2>/dev/null | tr -d '\n')" || return 0
-    tmp="$(mktemp "$STATE/.kea-follow.XXXXXX")"
-    printf '%s' "$b64" | base64 -d > "$tmp" 2>/dev/null || { rm -f "$tmp"; die "follow : contenu illisible"; }
-    got="$(sha256sum "$tmp" | cut -d' ' -f1)"; want="$meta"
-    [ "$got" = "$want" ] || { rm -f "$tmp"; log "follow : empreinte différente de celle annoncée (lecture en cours de mise à jour ? réessai)"; return 0; }
+    local rows tmpd n s b names=""
+    rows="$(psql_local -d "$db" -At -F ' ' -c "select name, sha256, translate(encode(convert_to(content, 'UTF8'), 'base64'), E'\n', '') from rendered_configs order by name" 2>/dev/null)" || { log "follow : base répliquée illisible (réessai)"; return 0; }
+    [ -n "$rows" ] || return 0                                   # rien n'a encore été déployé sur le primaire
+    tmpd="$(mktemp -d "$STATE/.follow.XXXXXX")"
+    while read -r n s b; do
+      case "$n" in kea-dhcp4.conf|named.conf.options|named.conf.zones) ;; *) continue ;; esac
+      if ! [[ "$s" =~ ^[0-9a-f]{64}$ ]]; then rm -rf "$tmpd"; die "follow : empreinte invalide dans la base ($n)"; fi
+      printf '%s' "$b" | base64 -d > "$tmpd/$n" 2>/dev/null || { rm -rf "$tmpd"; die "follow : contenu illisible ($n)"; }
+      if [ "$(sha256sum "$tmpd/$n" | cut -d' ' -f1)" != "$s" ]; then rm -rf "$tmpd"; log "follow : empreinte différente de celle annoncée pour $n (lecture en cours de mise à jour ? réessai)"; return 0; fi
+      names="$names $n"
+    done <<< "$rows"
+    case " $names " in *" kea-dhcp4.conf "*) ;; *) rm -rf "$tmpd"; return 0 ;; esac
     install -d -m 0755 "$gen"
-    if [ ! -f "$src" ] || ! cmp -s "$tmp" "$src"; then chmod 0644 "$tmp"; mv -f "$tmp" "$src"; else rm -f "$tmp"; fi
+    for n in $names; do if [ ! -f "$gen/$n" ] || ! cmp -s "$tmpd/$n" "$gen/$n"; then chmod 0644 "$tmpd/$n"; mv -f "$tmpd/$n" "$gen/$n"; fi; done
+    rm -rf "$tmpd" "$gen/zones"
+    case " $names " in *" named.conf.options "*" named.conf.zones "*) margs="--replica" ;; *) margs="--kea-only" ;; esac
+    local -a arr; read -ra arr <<< "$names"
+    content="$(cd "$gen" && sha256sum -- "${arr[@]}" | sha256sum | cut -d' ' -f1)"
+  else
+    [ -f "$gen/kea-dhcp4.conf" ] || return 0                     # primaire sans déploiement : rien à appliquer
+    if compgen -G "$gen/zones/db.*" >/dev/null; then margs=""; else margs="--kea-only"; fi
   fi
-  [ -f "$src" ] || return 0                                      # primaire sans déploiement : rien à appliquer
   local data="" p
   for p in ${C[PEERS]}; do if [ "$(peer_field "$p" role)" = data ]; then data="$data$(peer_field "$p" name)=$(peer_field "$p" ip)"$'\n'; fi; done
-  local now; now="$(printf '%s|%s' "$(sha256sum "$src" | cut -d' ' -f1)" "$(printf '%s' "$data" | sort | tr '\n' ' ')" | sha256sum | cut -d' ' -f1)"
+  local key="sans-cle"; if [ -f "$XFRKEY" ]; then key="avec-cle"; fi
+  local now; now="$(printf '%s|%s|%s|%s|%s' "$role" "$margs" "$content" "$key" "$(printf '%s' "$data" | sort | tr '\n' ' ')" | sha256sum | cut -d' ' -f1)"
   if [ -f "$marker" ] && [ "$(cat "$marker")" = "$now" ]; then return 0; fi
-  log "follow ($role) : application de la configuration Kea"
-  if DDI_GENERATED_DIR="$gen" "$reload" --kea-only; then printf '%s\n' "$now" > "$marker"; log "follow : configuration Kea appliquée"
-  else die "follow : ddibuntu-reload --kea-only a échoué (voir le journal) ; réessai à la prochaine échéance"; fi
+  log "follow ($role${margs:+ $margs}) : application de la configuration"
+  # shellcheck disable=SC2086  # margs est soit vide, soit une option unique choisie ci-dessus
+  if DDI_GENERATED_DIR="$gen" "$reload" $margs; then printf '%s\n' "$now" > "$marker"; log "follow : configuration appliquée"
+  else die "follow : ddibuntu-reload $margs a échoué (voir le journal) ; réessai à la prochaine échéance"; fi
+}
+
+# vip-check : appelé par Keepalived — code 0 seulement si CE nœud est le leader Patroni
+cmd_vip_check() {
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || exit 1
+  curl -fsS -o /dev/null --max-time 3 --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "https://${C[NODE_IP]}:${C[PATRONI_PORT]}/primary" 2>/dev/null
 }
 
 cmd_switchover() {
@@ -588,5 +685,7 @@ case "${1:-}" in
   switchover) shift; cmd_switchover "$@" ;;
   sync) cmd_sync ;;
   follow) cmd_follow ;;
+  vip-check) cmd_vip_check ;;
+  keepalived) conf_load; render_keepalived ;;
   *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

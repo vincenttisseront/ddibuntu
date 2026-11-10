@@ -65,7 +65,7 @@ in_target systemctl enable ddibuntu-firstboot.service nftables.service postgresq
 in_target systemctl disable kea-dhcp4-server.service
 # Cluster : etcd et Patroni ne démarrent QUE sur ordre de « ddibuntu-cluster » (le paquet etcd démarrerait sinon un magasin en clair sur 127.0.0.1)
 in_target groupadd -f ddicluster
-in_target systemctl disable etcd.service patroni.service 2>/dev/null || true
+in_target systemctl disable etcd.service patroni.service keepalived.service 2>/dev/null || true
 in_target systemctl mask ctrl-alt-del.target
 
 log "contrôles finaux"
