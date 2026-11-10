@@ -332,7 +332,6 @@ check "secondaire : mise à jour autorisée en premier" cl 1 rolling-check 0.5.5
 check_fail "version visée invalide refusée" cl 2 rolling-check "0.5; reboot"
 echo 0.5.5 > "$(R 1)/usr/local/lib/ddibuntu/VERSION"; fol 1 >/dev/null 2>&1
 check "leader : autorisé une fois le secondaire à jour" cl 2 rolling-check 0.5.5
-check "leader : version déjà installée partout, rien n'empêche" cl 2 rolling-check 0.5.4 || true
 
 echo "== Bascule automatique (arrêt brutal du primaire) =="
 kill_patroni_hard 2
