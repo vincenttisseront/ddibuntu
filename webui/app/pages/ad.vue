@@ -104,6 +104,13 @@ async function applyForwarders() {
             <dt class="text-muted">{{ t('ad.krb.enctypes') }}</dt><dd class="font-mono">{{ kt.enctypes.join(', ') }}</dd>
             <dt class="text-muted">{{ t('ad.krb.installed') }}</dt><dd>{{ when(kt.mtime) }}</dd>
           </template>
+          <template v-if="info?.sync">
+            <dt class="text-muted">{{ t('ad.krb.sync') }}</dt>
+            <dd class="flex items-center gap-2 flex-wrap">
+              <UBadge :color="info.sync.state === 'failed' ? 'error' : 'success'" variant="subtle" :label="t(`ad.krb.sync_${info.sync.state}`)" />
+              <span class="text-muted text-xs">{{ when(info.sync.at) }}<template v-if="info.sync.state === 'failed' && info.sync.message"> · {{ info.sync.message }}</template></span>
+            </dd>
+          </template>
           <dt class="text-muted">{{ t('ad.krb.zones') }}</dt>
           <dd><span v-if="info?.secureZones?.length" class="font-mono">{{ info.secureZones.map((z: any) => z.name).join(', ') }}</span><span v-else class="text-muted">{{ t('ad.krb.zones_none') }}</span></dd>
         </dl>

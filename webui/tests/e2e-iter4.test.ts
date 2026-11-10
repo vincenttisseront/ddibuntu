@@ -512,6 +512,18 @@ describe('Active Directory : Kerberos / GSS-TSIG et redirecteurs conditionnels',
     expect(JSON.stringify(r)).not.toContain('ne-doit-pas-sortir')
     writeFileSync(ADFILE, '{pas du json'); expect((await admin.get('/api/ad/kerberos')).json.state).toBeNull()
   })
+  it('synchronisation du keytab avec le cluster : état relayé, assaini, absent hors cluster', async () => {
+    const SYNC = join(TMP, 'ad-sync.json')
+    rmSync(SYNC, { force: true }); expect((await admin.get('/api/ad/kerberos')).json.sync).toBeNull()
+    writeFileSync(SYNC, JSON.stringify({ at: 1700000000, state: 'applied', message: 'état reçu du cluster appliqué', hash: 'abcdef012345', secret: 'ne-doit-pas-sortir' }))
+    const r = (await admin.get('/api/ad/kerberos')).json
+    expect(r.sync).toEqual({ at: 1700000000, state: 'applied', message: 'état reçu du cluster appliqué', hash: 'abcdef012345' }); expect(JSON.stringify(r)).not.toContain('ne-doit-pas-sortir')
+    writeFileSync(SYNC, JSON.stringify({ at: 1700000000, state: 'inconnu', message: 'x', hash: '' })); expect((await admin.get('/api/ad/kerberos')).json.sync).toBeNull()
+    writeFileSync(SYNC, JSON.stringify({ at: 1700000000, state: 'failed', message: 'm'.repeat(500), hash: '<script>' }))
+    const f = (await admin.get('/api/ad/kerberos')).json.sync; expect([f.state, f.message.length <= 200, f.hash]).toEqual(['failed', true, ''])
+    writeFileSync(SYNC, '{pas du json'); expect((await admin.get('/api/ad/kerberos')).json.sync).toBeNull()
+    rmSync(SYNC, { force: true })
+  })
   it('configuration du domaine : administrateurs seulement, entrées validées, une demande à la fois', async () => {
     clean()
     const body = { realm: 'corp.test', kdcs: ['dc1.corp.test', '10.0.0.5:88'] }

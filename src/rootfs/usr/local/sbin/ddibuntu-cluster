@@ -17,6 +17,7 @@
 #   rolling-check VERSION                                                       (mise à jour en ligne) autorise ou refuse : le leader attend que les secondaires soient à jour
 #   request                                                                     traite la demande de bascule déposée par la console (« .cluster-switchover » : un nom de nœud, validé)
 #   follow                                                                      (nœud de données) aligne Kea (HA) et BIND (primaire/secondaire) : primaire = fichiers de la console, secondaire = copie répliquée en base
+#   ad-sync                                                                     (nœud de données) le keytab et le domaine Kerberos suivent le cluster (chiffrés dans etcd ; l'arbitre ne les lit pas)
 #   vip-check                                                                   (Keepalived) code 0 si ce nœud est le leader Patroni ; « init --vip CIDR --vip-iface IFACE [--vip-vrid N] » active la VIP de service
 #
 # Variables de test : DDI_GENERATED_DIR, DDI_RELOAD_CMD, DDI_KEA_SOCKET, DDI_DB_NAME ; DDI_ROOT (préfixe de tous les chemins), DDI_TEST=1 (ni systemctl ni exigence root), DDI_PY (interpréteur de Patroni)
@@ -412,6 +413,86 @@ gpg_sym() { # gpg_sym enc|dec ENTRÉE SORTIE ; phrase de passe sur le descripteu
   local rc=$?; rm -rf "$gh"; return $rc
 }
 
+# ---------------------------------------------------------------- Active Directory : le keytab suit le cluster (itération 7)
+# L'état Kerberos (domaine, KDC, keytab) est stocké dans etcd, CHIFFRÉ (gpg AES-256 authentifié) avec une clé dérivée de la clé de transfert de zone « ddi-xfr » :
+# seuls les nœuds de données possèdent cette clé, l'arbitre (qui héberge etcd) ne voit que du chiffré. Chaque minute (et après toute modification locale),
+# « ad-sync » compare l'état local (L), celui d'etcd (E) et le dernier état synchronisé (S) :
+#   L = E                    rien à faire ;
+#   L ≠ S (modifié ici)      on publie L : la modification locale gagne (seul le leader reçoit des écritures de la console) ;
+#   L = S, E ≠ S             un autre nœud a publié : on applique E ici (ddibuntu-ad import-state, validé en entier avant tout changement) ;
+#   S inconnu (1er contact)  le cluster gagne s'il a un état, sinon on publie L.
+# Un retrait (aucun domaine) est publié comme un état « none » : il se propage de la même façon.
+ADSTATE=/ddibuntu-cluster/ad/state
+AD_CMD="${DDI_AD_CMD:-/usr/local/sbin/ddibuntu-ad}"
+ad_pass() {   # phrase de passe d'enveloppe, jamais sur une ligne de commande : HMAC-SHA256(clé ddi-xfr, étiquette), via l'environnement
+  local secret; secret="$(sed -n 's/^ *secret "\([A-Za-z0-9+\/=]*\)";$/\1/p' "$XFRKEY" | head -n1)"
+  [ -n "$secret" ] || return 1
+  SECRET="$secret" python3 -c 'import hashlib, hmac, os; print(hmac.new(os.environ["SECRET"].encode(), b"ddibuntu-ad-keytab-v1", hashlib.sha256).hexdigest(), end="")'
+}
+ad_note() {   # ad_note ÉTAT MESSAGE : état de la synchronisation, sans secret, lisible par la console
+  local d="$ROOT/run/ddibuntu" t; install -d -m 0755 "$d" 2>/dev/null || return 0
+  t="$(mktemp "$d/.adsync.XXXXXX" 2>/dev/null)" || return 0
+  ST="$1" MSG="$2" HASH="${3:-}" python3 -c '
+import json, os, time
+print(json.dumps({"at": int(time.time()), "state": os.environ["ST"], "message": os.environ["MSG"][:200], "hash": os.environ["HASH"][:12]}, ensure_ascii=False))' > "$t" 2>/dev/null \
+    && { chmod 0644 "$t"; mv -f "$t" "$d/ad-sync.json"; } || rm -f "$t"
+  return 0
+}
+cmd_ad_sync() {
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || return 0
+  [ -x "$AD_CMD" ] || [ -n "${DDI_AD_CMD:-}" ] || return 0
+  [ -f "$XFRKEY" ] || { log "ad-sync : pas de clé de cluster (ddi-xfr) sur ce nœud : synchronisation Kerberos impossible"; return 0; }
+  install -d -m 0700 "$STATE"
+  exec 9>"$STATE/ad-sync.lock"; flock -w 120 9 || { log "ad-sync : verrou occupé"; return 1; }
+  local dir; dir="$(mktemp -d "$STATE/.ad.XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "shred -u '$dir'/* 2>/dev/null; rm -rf '$dir'" RETURN
+  "$AD_CMD" export-state > "$dir/local" 2>/dev/null || { log "ad-sync : état local illisible"; return 1; }
+  local lh eh sh ev
+  if [ "$(cat "$dir/local")" = '{}' ]; then lh=none; else lh="$(sha256sum < "$dir/local" | cut -d' ' -f1)"; fi
+  ev="$dir/etcd"
+  if ! ectl get "$ADSTATE" --print-value-only > "$ev" 2>/dev/null; then ad_note failed "etcd injoignable" ""; log "ad-sync : etcd injoignable (réessai à la prochaine échéance)"; return 0; fi
+  eh=""; if [ -s "$ev" ]; then
+    eh="$(python3 -c 'import json,re,sys
+try: d=json.load(open(sys.argv[1])); h=d["sha"]
+except Exception: sys.exit(0)
+print(h if isinstance(h,str) and re.fullmatch(r"none|[0-9a-f]{64}",h) and d.get("v")==1 else "", end="")' "$ev" 2>/dev/null || true)"
+    [ -n "$eh" ] || { log "ad-sync : valeur d'etcd illisible : ignorée"; ad_note failed "valeur d'etcd illisible" ""; return 1; }
+  fi
+  local eeff="${eh:-none}"; sh="$(cat "$STATE/ad-synced" 2>/dev/null || true)"
+  if [ "$lh" = "$eeff" ]; then printf '%s\n' "$lh" > "$STATE/ad-synced"; ad_note synced "à jour" "$lh"; return 0; fi
+  local action
+  if [ -z "$sh" ]; then if [ "$eeff" != none ]; then action=apply; else action=publish; fi
+  elif [ "$lh" != "$sh" ]; then action=publish
+  else action=apply; fi
+  local pass; pass="$(ad_pass)" || { log "ad-sync : clé d'enveloppe illisible"; return 1; }
+  if [ "$action" = publish ]; then
+    if [ "$lh" = none ]; then printf '{"v":1,"sha":"none","blob":""}' > "$dir/value"
+    else
+      gpg_sym enc "$dir/local" "$dir/blob" 3< <(printf '%s' "$pass") || { shred -u "$dir/local" 2>/dev/null; log "ad-sync : chiffrement impossible"; return 1; }
+      LH="$lh" python3 -c 'import base64, json, os, sys; print(json.dumps({"v": 1, "sha": os.environ["LH"], "blob": base64.b64encode(open(sys.argv[1], "rb").read()).decode()}, separators=(",", ":")), end="")' "$dir/blob" > "$dir/value"
+    fi
+    if ectl put "$ADSTATE" < "$dir/value" >/dev/null 2>&1; then
+      printf '%s\n' "$lh" > "$STATE/ad-synced"; ad_note published "publié sur le cluster" "$lh"; log "ad-sync : état Kerberos publié sur le cluster"
+    else ad_note failed "publication impossible (quorum ?)" ""; log "ad-sync : publication impossible (réessai à la prochaine échéance)"; return 1; fi
+    rm -f "$dir/local" "$dir/blob"; return 0
+  fi
+  # apply : l'état d'etcd remplace l'état local
+  if [ "$eeff" = none ]; then printf '{}' > "$dir/plain"
+  else
+    python3 -c 'import base64, json, sys; open(sys.argv[2], "wb").write(base64.b64decode(json.load(open(sys.argv[1]))["blob"], validate=True))' "$ev" "$dir/blob" 2>/dev/null || { ad_note failed "état d'etcd illisible" ""; log "ad-sync : état d'etcd illisible"; return 1; }
+    gpg_sym dec "$dir/blob" "$dir/plain" 3< <(printf '%s' "$pass") 2>/dev/null || { ad_note failed "déchiffrement impossible (clé de cluster différente ?)" ""; log "ad-sync : déchiffrement impossible"; return 1; }
+    [ "$(sha256sum < "$dir/plain" | cut -d' ' -f1)" = "$eeff" ] || { ad_note failed "empreinte inattendue" ""; log "ad-sync : empreinte inattendue : état refusé"; shred -u "$dir/plain" 2>/dev/null; return 1; }
+  fi
+  if "$AD_CMD" import-state < "$dir/plain" >/dev/null 2>&1; then
+    shred -u "$dir/plain" "$dir/blob" 2>/dev/null || true
+    printf '%s\n' "$eeff" > "$STATE/ad-synced"; ad_note applied "état reçu du cluster appliqué" "$eeff"; log "ad-sync : état Kerberos du cluster appliqué"
+  else
+    shred -u "$dir/plain" "$dir/blob" 2>/dev/null || true
+    ad_note failed "état du cluster refusé par ddibuntu-ad (voir le journal)" ""; log "ad-sync : l'état du cluster a été refusé par ddibuntu-ad (rien n'a été modifié)"; return 1
+  fi
+}
+
 # ---------------------------------------------------------------- registre des nœuds (dans etcd) : chaque nœud finit par connaître tous les autres
 REG=/ddibuntu-cluster/nodes/
 register_node() { # register_node NOM IP RÔLE [ESSAIS] : etcd met quelques secondes à répondre après son démarrage
@@ -680,6 +761,7 @@ cmd_follow() {
   [ "${C[NODE_ROLE]}" = data ] || return 0
   install -d -m 0700 "$STATE"
   if [ "${C[CA_NODE]}" = 1 ]; then ensure_xfr_key; fi
+  ( cmd_ad_sync ) || log "follow : synchronisation Kerberos non terminée (réessai à la prochaine échéance)"
   local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" reload="${DDI_RELOAD_CMD:-/usr/local/sbin/ddibuntu-reload}" db="${DDI_DB_NAME:-ddibuntu}"
   local marker="$STATE/kea-applied" role margs="" content=""
   role="$(patroni_role)"; [ -n "$role" ] || { log "follow : rôle Patroni inconnu (réessai à la prochaine échéance)"; return 0; }
@@ -785,10 +867,11 @@ case "${1:-}" in
   switchover) shift; cmd_switchover "$@" ;;
   sync) cmd_sync ;;
   follow) cmd_follow ;;
+  ad-sync) cmd_ad_sync ;;
   request) cmd_request ;;
   rolling-check) shift; cmd_rolling_check "$@" ;;
   _putver) shift; cmd_putver "$@" ;;
   vip-check) cmd_vip_check ;;
   keepalived) conf_load; render_keepalived ;;
-  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

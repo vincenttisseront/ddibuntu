@@ -8,6 +8,8 @@
 #   status                                           état (JSON) : domaine, KDC, principaux du keytab, versions de clé
 #   test                                             obtient un ticket avec le keytab (KDC joignable, clé à jour) puis le détruit
 #   request                                          traite la demande déposée par la console (.ad-request, .ad-keytab) puis publie le résultat
+#   export-state                                     (cluster) état complet en JSON canonique, SECRET compris (keytab) : à ne lire que par ddibuntu-cluster ; « {} » = rien de configuré
+#   import-state                                     (cluster) applique un état reçu sur l'entrée standard ; tout est validé AVANT le moindre changement (rien d'appliqué à moitié)
 #
 # BIND n'accepte les mises à jour sécurisées (GSS-TSIG) que si, ICI, un domaine et un keytab existent : ddibuntu-reload ajoute alors « tkey-gssapi-keytab »
 # et recompose les « update-policy » à partir de ce domaine ; la console ne peut ni déclarer le keytab ni choisir un autre domaine.
@@ -26,6 +28,7 @@ STATE="$ROOT/var/lib/ddibuntu"
 RUN="$ROOT/run/ddibuntu"
 KGROUP="${DDI_KEYTAB_GROUP:-bind}"
 RELOAD="${DDI_RELOAD_CMD:-/usr/local/sbin/ddibuntu-reload}"
+CLUSTER_CMD="${DDI_CLUSTER_CMD:-/usr/local/sbin/ddibuntu-cluster}"
 MAX_KEYTAB=65536
 
 log() { printf 'ddibuntu-ad: %s\n' "$*" >&2; }
@@ -124,8 +127,8 @@ cmd_configure() {
 }
 
 # ---------------------------------------------------------------- keytab
-check_keytab() {   # $1 = fichier à contrôler ; échoue avec un message précis
-  local f="$1" realm; realm="$(realm_now)"
+check_keytab() {   # $1 = fichier à contrôler, $2 = domaine (défaut : celui qui est configuré) ; échoue avec un message précis
+  local f="$1" realm="${2:-}"; [ -n "$realm" ] || realm="$(realm_now)"
   [ -n "$realm" ] || die "aucun domaine Kerberos configuré (ddibuntu-ad configure --realm …)"
   [ -f "$f" ] && [ ! -L "$f" ] || die "keytab : fichier ordinaire attendu"
   local sz; sz="$(stat -c %s "$f")"
@@ -200,6 +203,69 @@ apply_now() {
   "$RELOAD" >/dev/null 2>&1 || { log "AVERTISSEMENT : ddibuntu-reload a échoué ; la configuration BIND n'a pas été relue"; return 1; }
 }
 
+
+# ---------------------------------------------------------------- réplication dans le cluster (appelé par ddibuntu-cluster, jamais par la console)
+# Même JSON canonique sur tous les nœuds : son empreinte sert à savoir si deux nœuds ont le même état.
+cmd_export_state() {
+  CONF="$CONF" KT="$KEYTAB" python3 - <<'PY'
+import base64, json, os
+realm, kdcs = "", []
+try:
+    for l in open(os.environ["CONF"], encoding="utf-8"):
+        if l.startswith("REALM="): realm = l[6:].strip()
+        elif l.startswith("KDCS="): kdcs = l[5:].split()
+except FileNotFoundError:
+    pass
+d = {}
+if realm:
+    d = {"realm": realm, "kdcs": kdcs}
+    try: d["keytab"] = base64.b64encode(open(os.environ["KT"], "rb").read()).decode()
+    except FileNotFoundError: pass
+print(json.dumps(d, sort_keys=True, separators=(",", ":")))
+PY
+}
+cmd_import_state() {
+  local dir; dir="$(mktemp -d "${TMPDIR:-/tmp}/.ddiimp.XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$dir'" EXIT
+  head -c $((MAX_KEYTAB * 2 + 4096)) > "$dir/in"
+  # 1. lecture stricte : un objet vide, ou {realm, kdcs[, keytab]} et rien d'autre
+  DIR="$dir" python3 - <<'PY' || die "état reçu invalide"
+import base64, json, os, sys
+d = json.load(open(os.environ["DIR"] + "/in", encoding="utf-8"))
+if not isinstance(d, dict) or not set(d) <= {"realm", "kdcs", "keytab"}: sys.exit(1)
+if d:
+    if not isinstance(d.get("realm"), str) or not isinstance(d.get("kdcs"), list) or not all(isinstance(k, str) and " " not in k for k in d["kdcs"]): sys.exit(1)
+    if "keytab" in d:
+        if not isinstance(d["keytab"], str): sys.exit(1)
+        open(os.environ["DIR"] + "/kt", "wb").write(base64.b64decode(d["keytab"], validate=True))
+    open(os.environ["DIR"] + "/realm", "w").write(d["realm"]); open(os.environ["DIR"] + "/kdcs", "w").write(" ".join(d["kdcs"]))
+else:
+    open(os.environ["DIR"] + "/empty", "w").close()
+PY
+  if [ -e "$dir/empty" ]; then cmd_remove >/dev/null; apply_now || true; return 0; fi
+  # 2. contrôles complets AVANT tout changement
+  local realm kdcs k; realm="$(cat "$dir/realm")"; kdcs="$(cat "$dir/kdcs")"
+  valid_realm "$realm" || die "état reçu : domaine invalide"
+  for k in $kdcs; do valid_kdc "$k" || die "état reçu : KDC invalide"; done
+  [ "$(wc -w <<<"$kdcs")" -le 8 ] || die "état reçu : trop de KDC"
+  if [ -f "$dir/kt" ]; then check_keytab "$dir/kt" "$realm"; fi
+  # 3. application
+  local args=(--realm "$realm"); for k in $kdcs; do args+=(--kdc "$k"); done
+  cmd_configure "${args[@]}" >/dev/null
+  if [ -f "$dir/kt" ]; then cmd_install_keytab "$dir/kt" >/dev/null
+  else rm -f "$KEYTAB"; cmd_status >/dev/null; fi
+  apply_now || true
+  log "état reçu du cluster appliqué (domaine $realm)"
+}
+# Après une modification locale : pousse l'état vers le cluster (étape facultative, réessayée chaque minute par « ddibuntu-cluster follow »).
+replicate() {
+  [ -f "$ROOT/etc/ddibuntu-cluster/cluster.conf" ] || return 0
+  [ -x "$CLUSTER_CMD" ] || [ -n "${DDI_CLUSTER_CMD:-}" ] || return 0
+  if timeout 60 "$CLUSTER_CMD" ad-sync >/dev/null 2>&1; then return 0; fi
+  log "AVERTISSEMENT : état non répliqué sur le cluster pour l'instant (réessai automatique)"; return 1
+}
+
 # ---------------------------------------------------------------- demande de la console
 cmd_request() {
   local rq="$GEN/.ad-request" kt="$GEN/.ad-keytab" action="" msg="" ok=false realm="" kdcs=""
@@ -239,6 +305,7 @@ PY
   # le keytab déposé par la console ne doit pas rester sur le disque, ni en cas de refus
   if [ -e "$kt" ] || [ -L "$kt" ]; then if [ -f "$kt" ] && [ ! -L "$kt" ]; then shred -u "$kt" 2>/dev/null || rm -f "$kt"; else rm -f "$kt"; fi; fi
   [ "$rc" -eq 0 ] && ok=true
+  if [ "$rc" -eq 0 ] && [ "$action" != test ]; then replicate 2>/dev/null || out="$out ; état non répliqué sur le cluster pour l'instant (réessai automatique)"; fi
   msg="$(printf '%s' "$out" | tr '\n\r' '  ' | sed 's/ddibuntu-ad: //g' | cut -c1-240)"
   log "demande de la console (${action:-invalide}) : ${msg:-ok}"
   install -d -m 0755 "$RUN" 2>/dev/null || return 0
@@ -258,5 +325,7 @@ case "${1:-}" in
   status) cmd_status ;;
   test) cmd_test ;;
   request) cmd_request ;;
-  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  export-state) cmd_export_state ;;
+  import-state) cmd_import_state ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

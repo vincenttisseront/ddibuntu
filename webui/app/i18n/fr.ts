@@ -973,5 +973,10 @@ const messages: Record<string, string> = {
   "grid.state..": "Libre",
   "err.map_too_large": "La grille n'est disponible que jusqu'à un /16 (65 536 adresses).",
   "err.map_unsupported_family": "La grille d'occupation n'est disponible que pour l'IPv4.",
+  "ad.krb.sync": "Cluster",
+  "ad.krb.sync_synced": "Identique sur tous les nœuds de données",
+  "ad.krb.sync_published": "Publié sur le cluster",
+  "ad.krb.sync_applied": "Reçu du cluster",
+  "ad.krb.sync_failed": "Synchronisation en échec",
 }
 export default messages

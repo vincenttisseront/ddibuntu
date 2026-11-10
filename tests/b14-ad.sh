@@ -276,4 +276,70 @@ rm -rf "$ADD"
 check "promotion sur un nœud sans domaine configuré : acceptée (aucun blocage du basculement)" rl --promote
 expect_nogrep "…sans octroi Kerberos" 'ms-self|krb5-self' "$LOC"
 
+echo "== ddibuntu-ad : export-state / import-state (réplication dans le cluster) =="
+# état propre : rien de configuré
+ad remove >/dev/null 2>&1
+expect_eq "export-state sans configuration : {}" '{}' "$(ad export-state)"
+ad configure --realm CORP.TEST --kdc dc1.corp.test >/dev/null
+expect_eq "export-state avec domaine seul : sans keytab" '{"kdcs":["dc1.corp.test"],"realm":"CORP.TEST"}' "$(ad export-state)"
+mkkt "$W/sync.kt" 18 DNS/ns1.corp.test@CORP.TEST 5
+ad install-keytab "$W/sync.kt" >/dev/null
+EXP="$(ad export-state)"
+expect_eq "export-state : JSON canonique (clés triées, sans espace)" "$(printf '%s' "$EXP" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), sort_keys=True, separators=(",", ":")))')" "$EXP"
+expect_eq "export-state : le keytab exporté est celui du disque" "$(sha256sum < "$W/sync.kt" | cut -d' ' -f1)" "$(printf '%s' "$EXP" | python3 -c 'import base64,hashlib,json,sys; print(hashlib.sha256(base64.b64decode(json.load(sys.stdin)["keytab"])).hexdigest())')"
+expect_eq "export-state : stable d'un appel à l'autre" "$EXP" "$(ad export-state)"
+# un second nœud (racine distincte) reçoit cet état
+R0="$R"; R="$W/root2"; mkdir -p "$R/etc/bind" "$R/run/ddibuntu"; GEN="$R/var/lib/ddibuntu/generated"; mkdir -p "$GEN"
+printf '[libdefaults]\n default_realm = ATHENA.MIT.EDU\n' > "$R/etc/krb5.conf"
+check "import-state : état complet reçu" bash -c "printf '%s' '$EXP' | env DDI_TEST=1 DDI_ROOT='$R' DDI_KEYTAB_GROUP=root DDI_RELOAD_CMD='$W/fake-reload' bash '$AD' import-state"
+expect_eq "import-state : même état exporté que la source" "$EXP" "$(ad export-state)"
+expect_eq "import-state : keytab identique octet pour octet" "$(sha256sum < "$W/sync.kt" | cut -d' ' -f1)" "$(sha256sum < "$R/etc/bind/krb5.keytab" | cut -d' ' -f1)"
+expect_eq "import-state : keytab 0640" "640" "$(stat -c %a "$R/etc/bind/krb5.keytab")"
+expect_grep "import-state : krb5.conf géré écrit" 'default_realm = CORP.TEST' "$R/etc/krb5.conf"
+# refus : rien ne doit changer
+BEFORE="$(ad export-state)"
+imp() { printf '%s' "$1" | env DDI_TEST=1 DDI_ROOT="$R" DDI_KEYTAB_GROUP=root DDI_RELOAD_CMD="$W/fake-reload" bash "$AD" import-state; }
+KT64() { base64 -w0 "$1"; }
+check_fail "import-state : pas du JSON" imp 'ceci n est pas du json'
+check_fail "import-state : un tableau" imp '[]'
+check_fail "import-state : clé inconnue" imp '{"realm":"CORP.TEST","kdcs":[],"evil":1}'
+check_fail "import-state : domaine invalide" imp '{"realm":"corp test","kdcs":[]}'
+check_fail "import-state : KDC invalide" imp '{"realm":"CORP.TEST","kdcs":["dc1;rm -rf /"]}'
+check_fail "import-state : KDC avec espace" imp '{"realm":"CORP.TEST","kdcs":["dc 1"]}'
+check_fail "import-state : base64 invalide" imp '{"realm":"CORP.TEST","kdcs":[],"keytab":"@@@@"}'
+check_fail "import-state : keytab d'un autre domaine" imp "{\"realm\":\"CORP.TEST\",\"kdcs\":[],\"keytab\":\"$(KT64 "$W/other-realm.kt")\"}"
+check_fail "import-state : keytab avec principal host/" imp "{\"realm\":\"CORP.TEST\",\"kdcs\":[],\"keytab\":\"$(KT64 "$W/host.kt")\"}"
+check_fail "import-state : keytab DES" imp "{\"realm\":\"CORP.TEST\",\"kdcs\":[],\"keytab\":\"$(KT64 "$W/des.kt")\"}"
+check_fail "import-state : keytab qui n'en est pas un" imp "{\"realm\":\"CORP.TEST\",\"kdcs\":[],\"keytab\":\"$(KT64 "$W/text.kt")\"}"
+check_fail "import-state : keytab valide mais pour un autre domaine que celui annoncé" imp "{\"realm\":\"OTHER.TEST\",\"kdcs\":[],\"keytab\":\"$(KT64 "$W/ok.kt")\"}"
+expect_eq "import-state : après tous les refus, l'état n'a pas bougé (rien d'appliqué à moitié)" "$BEFORE" "$(ad export-state)"
+# changement de domaine avec nouveau keytab, en une seule fois
+mkkt "$W/new.kt" 18 DNS/ns1.new.test@NEW.TEST 1
+check "import-state : changement de domaine + keytab" imp "{\"realm\":\"NEW.TEST\",\"kdcs\":[\"kdc.new.test\"],\"keytab\":\"$(KT64 "$W/new.kt")\"}"
+expect_eq "…domaine NEW.TEST" "NEW.TEST" "$(ad export-state | python3 -c 'import json,sys; print(json.load(sys.stdin)["realm"])')"
+expect_eq "…keytab du nouveau domaine" "$(sha256sum < "$W/new.kt" | cut -d' ' -f1)" "$(sha256sum < "$R/etc/bind/krb5.keytab" | cut -d' ' -f1)"
+check "import-state : domaine sans keytab retire l'ancien keytab" imp '{"realm":"NEW.TEST","kdcs":[]}'
+expect_eq "…plus de keytab" "no" "$([ -e "$R/etc/bind/krb5.keytab" ] && echo yes || echo no)"
+check "import-state : {} retire tout (propagation d'un retrait)" imp '{}'
+expect_eq "…plus de domaine" '{}' "$(ad export-state)"
+expect_eq "…krb5.conf d'origine restauré" "yes" "$(grep -q ATHENA "$R/etc/krb5.conf" && echo yes || echo no)"
+R="$R0"; GEN="$R/var/lib/ddibuntu/generated"
+# la demande de la console déclenche la réplication (et un échec de réplication n'invalide pas l'installation locale)
+printf '#!/bin/sh\necho "$@" >> "%s/cluster.calls"\nexit 0\n' "$W" > "$W/fake-cluster"; chmod +x "$W/fake-cluster"
+mkdir -p "$R/etc/ddibuntu-cluster"; : > "$R/etc/ddibuntu-cluster/cluster.conf"
+adc() { env DDI_TEST=1 DDI_ROOT="$R" DDI_KEYTAB_GROUP=root DDI_RELOAD_CMD="$W/fake-reload" DDI_CLUSTER_CMD="$W/fake-cluster" bash "$AD" "$@"; }
+rm -f "$W/cluster.calls"
+printf '{"action":"configure","realm":"CORP.TEST","kdcs":["dc9.corp.test"]}' > "$GEN/.ad-request"
+check "demande configure en cluster" adc request
+expect_eq "…ddibuntu-cluster ad-sync appelé" "ad-sync" "$(cat "$W/cluster.calls" 2>/dev/null)"
+printf '{"action":"test"}' > "$GEN/.ad-request"; rm -f "$W/cluster.calls"
+adc request >/dev/null 2>&1 || true
+expect_eq "…un simple test ne réplique rien" "no" "$([ -e "$W/cluster.calls" ] && echo yes || echo no)"
+printf '#!/bin/sh\nexit 1\n' > "$W/fake-cluster"
+printf '{"action":"configure","realm":"CORP.TEST","kdcs":["dc8.corp.test"]}' > "$GEN/.ad-request"
+check "réplication en échec : la demande locale réussit quand même" adc request
+expect_grep "…et le résultat le dit" 'non répliqué' "$RUN/ad-result.json"
+expect_grep "…domaine appliqué localement" '^KDCS=dc8.corp.test$' "$R/etc/ddibuntu-ad/ad.conf"
+rm -rf "$R/etc/ddibuntu-cluster"
+
 finish

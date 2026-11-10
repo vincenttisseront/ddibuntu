@@ -48,6 +48,16 @@ export async function readAdResult(): Promise<AdKrbResult | null> {
   } catch { return null }
 }
 
+export interface AdSync { at: number; state: 'synced' | 'published' | 'applied' | 'failed'; message: string; hash: string }
+/** État de la synchronisation du keytab avec le cluster (publié par root ; absent hors cluster). */
+export async function readAdSync(): Promise<AdSync | null> {
+  try {
+    const j = JSON.parse(await fs.readFile(join(dirname(cfg().adStatusFile), 'ad-sync.json'), 'utf8'))
+    if (typeof j?.at !== 'number' || !['synced', 'published', 'applied', 'failed'].includes(j?.state)) return null
+    return { at: j.at, state: j.state, message: str(j.message, 200), hash: /^[0-9a-f]{0,12}$/.test(j.hash ?? '') ? j.hash : '' }
+  } catch { return null }
+}
+
 export type AdRequest =
   | { action: 'configure'; realm: string; kdcs: string[] }
   | { action: 'install-keytab' } | { action: 'remove' } | { action: 'test' }

@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { audit, fail, route } from '../utils/router'
 import { one, query } from '../utils/db'
 import { cfg } from '../utils/config'
-import { KDC_RE, REALM_RE, depositAdRequest, readAdResult, readAdState } from '../utils/adkrb'
+import { KDC_RE, REALM_RE, depositAdRequest, readAdResult, readAdState, readAdSync } from '../utils/adkrb'
 import { isValidDnsName, normIp } from '../utils/net'
 
 const bumpGeneration = () => query('update config_generation set generation = generation + 1, changed_at = now() where id = 1')
@@ -24,7 +24,7 @@ async function deposit(c: any, action: string, req: Parameters<typeof depositAdR
 
 route('GET', '/ad/kerberos', 'operator', async () => {
   const zones = await query<any>("select name, ddns_secure from dns_zones where ddns_secure is not null order by name")
-  return { state: await readAdState(), result: await readAdResult(), pending: await pending(), secureZones: zones }
+  return { state: await readAdState(), result: await readAdResult(), pending: await pending(), secureZones: zones, sync: await readAdSync() }
 })
 
 const Config = z.object({

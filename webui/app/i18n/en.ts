@@ -973,5 +973,10 @@ const messages: Record<string, string> = {
   "grid.state..": "Free",
   "err.map_too_large": "The grid is only available up to a /16 (65,536 addresses).",
   "err.map_unsupported_family": "The occupancy grid is only available for IPv4.",
+  "ad.krb.sync": "Cluster",
+  "ad.krb.sync_synced": "Identical on every data node",
+  "ad.krb.sync_published": "Published to the cluster",
+  "ad.krb.sync_applied": "Received from the cluster",
+  "ad.krb.sync_failed": "Synchronisation failed",
 }
 export default messages
