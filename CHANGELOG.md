@@ -1,6 +1,6 @@
 # Journal des modifications
 
-## 0.5.2 (en cours) — itération 2 « Fondations du cluster »
+## 0.5.2 — itération 2 « Fondations du cluster »
 - **`ddibuntu-cluster`** (root) : `init`, `bundle`, `join`, `render`, `activate`, `status`, `switchover`. Un cluster = 2 nœuds de données (PostgreSQL conduit par **Patroni**) + 1 **arbitre** (etcd seul), sur le **réseau dédié**.
 - **Quorum etcd (3 membres)** en TLS mutuel, écoute limitée à l'adresse du réseau dédié. Un nœud ajouté entre comme **learner** (sans voix) puis est promu votant une fois synchronisé : le quorum n'est jamais dégradé pendant l'enrôlement.
 - **Autorité interne** (EC P-256) créée par `init` ; sa clé ne quitte jamais le premier nœud. Certificats de nœud (SAN = adresse du réseau dédié). La réplication PostgreSQL s'authentifie **par certificat client** (correspondance `pg_ident`), sans mot de passe de réplication ; l'API Patroni exige un certificat client.
@@ -10,6 +10,8 @@
 - **Console** : indicateur d'attente global (spinner + barre) sur toute écriture/déploiement/import/mise à jour dépassant 400 ms ; contrôle automatique qu'aucune boîte système (`confirm`/`alert`/`prompt`) n'est utilisée (les confirmations passent par la modale maison).
 - Paquets embarqués : `patroni`, `etcd-server`, `etcd-client`, `python3-psycopg2`, `gnupg`, `openssl`, `curl`. etcd et Patroni restent **désactivés** tant que `ddibuntu-cluster` ne les active pas (le paquet etcd démarrerait sinon un magasin en clair).
 - Tests : `b10-cluster.sh` (analyse stricte, lots hostiles, pare-feu) et `b10-cluster-live.sh` (3 nœuds simulés avec de vrais etcd/Patroni/PostgreSQL : enrôlement, réplication, bascule contrôlée, bascule automatique après arrêt brutal, réintégration, isolation sans quorum).
+- **Registre des nœuds** dans etcd + minuterie `ddibuntu-cluster-sync` (chaque minute) : chaque nœud apprend les autres, met à jour Patroni et ouvre son pare-feu à leur adresse ; commande `sync`.
+- Résultat des tests : `b10-cluster.sh` 73/73 ; `b10-cluster-live.sh` 81/81 (vrais etcd/Patroni/PostgreSQL sur 3 nœuds simulés). Console : build OK, 259 tests passent ; les 15 échecs restants sont ceux du banc sans `named`/`kea` (identiques à 0.5.1).
 - **Limites connues** : pas encore de page « Cluster » dans la console (état via `ddibuntu-cluster status`) ; la console, BIND et Kea ne suivent pas encore le primaire (itérations 3 à 5) ; une installation existante doit recevoir les paquets ci-dessus (la mise à jour en ligne ne les installe pas) ; test de panne réelle sur machines non réalisé.
 
 ## 0.5.1 — itération 1 « Smart DDI »
