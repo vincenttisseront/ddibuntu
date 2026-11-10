@@ -49,13 +49,15 @@ const recQuery = computed(() => ({ ...(zoneFilter.value ? { zone_id: zoneFilter.
 const { data: settings, refresh: refreshSettings } = await useFetch<any>('/api/dns/settings')
 const sf = reactive<any>({})
 const lists = ['listenOn', 'allowRecursion', 'allowQuery', 'forwarders']
-watch(settings, (s) => { if (s) { for (const k of lists) sf[k] = (s[k] ?? []).join(', '); sf.dnssecValidation = s.dnssecValidation; sf.queryLog = s.queryLog } }, { immediate: true })
+watch(settings, (s) => { if (s) { for (const k of lists) sf[k] = (s[k] ?? []).join(', '); sf.dnssecValidation = s.dnssecValidation; sf.queryLog = s.queryLog
+  sf.rrlEnabled = !!s.rrlEnabled; sf.rrlResponsesPerSecond = s.rrlResponsesPerSecond ?? 20; sf.rrlWindow = s.rrlWindow ?? 15; sf.rrlSlip = s.rrlSlip ?? 2; sf.rrlLogOnly = s.rrlLogOnly !== false; sf.rrlExempt = (s.rrlExempt ?? []).join(', ') } }, { immediate: true })
 const sErr = ref('')
 async function saveSettings() {
   sErr.value = ''
   const split = (v: string) => String(v ?? '').split(/[,\s]+/).filter(Boolean)
   try {
-    await api.call('PUT', '/dns/settings', { ...settings.value, listenOn: split(sf.listenOn), allowRecursion: split(sf.allowRecursion), allowQuery: split(sf.allowQuery), forwarders: split(sf.forwarders), dnssecValidation: sf.dnssecValidation, queryLog: sf.queryLog })
+    await api.call('PUT', '/dns/settings', { ...settings.value, listenOn: split(sf.listenOn), allowRecursion: split(sf.allowRecursion), allowQuery: split(sf.allowQuery), forwarders: split(sf.forwarders), dnssecValidation: sf.dnssecValidation, queryLog: sf.queryLog,
+      rrlEnabled: !!sf.rrlEnabled, rrlResponsesPerSecond: Number(sf.rrlResponsesPerSecond), rrlWindow: Number(sf.rrlWindow), rrlSlip: Number(sf.rrlSlip), rrlLogOnly: !!sf.rrlLogOnly, rrlExempt: split(sf.rrlExempt) })
     toast.add({ title: t('common.saved'), color: 'success', icon: 'i-lucide-check' }); await refreshSettings()
   } catch (e: any) { sErr.value = e.info?.message ?? t('err.internal') }
 }
@@ -83,6 +85,17 @@ async function saveSettings() {
         <UFormField :label="t('dns.allow_query')" :help="t('dns.allow_query_hint')"><UInput v-model="sf.allowQuery" class="w-full font-mono" :disabled="!isAdmin" /></UFormField>
         <UFormField :label="t('dns.dnssec')"><USelect v-model="sf.dnssecValidation" :items="[{ label: t('dns.dnssec_auto'), value: 'auto' }, { label: t('dns.dnssec_off'), value: 'no' }]" class="w-full" :disabled="!isAdmin" /></UFormField>
         <UFormField :label="t('dns.query_log')" :help="t('dns.query_log_hint')"><USwitch v-model="sf.queryLog" :disabled="!isAdmin" /></UFormField>
+        <div class="md:col-span-2 border-t border-default pt-3">
+          <div class="flex items-center gap-3"><USwitch v-model="sf.rrlEnabled" :disabled="!isAdmin" :aria-label="t('dns.rrl')" /><span class="font-medium">{{ t('dns.rrl') }}</span></div>
+          <p class="text-sm text-muted mt-1">{{ t('dns.rrl_hint') }}</p>
+        </div>
+        <template v-if="sf.rrlEnabled">
+          <UFormField :label="t('dns.rrl_rps')" :help="t('dns.rrl_rps_hint')"><UInput v-model="sf.rrlResponsesPerSecond" type="number" min="1" max="1000" class="w-full" :disabled="!isAdmin" /></UFormField>
+          <UFormField :label="t('dns.rrl_window')" :help="t('dns.rrl_window_hint')"><UInput v-model="sf.rrlWindow" type="number" min="5" max="3600" class="w-full" :disabled="!isAdmin" /></UFormField>
+          <UFormField :label="t('dns.rrl_slip')" :help="t('dns.rrl_slip_hint')"><UInput v-model="sf.rrlSlip" type="number" min="0" max="10" class="w-full" :disabled="!isAdmin" /></UFormField>
+          <UFormField :label="t('dns.rrl_logonly')" :help="t('dns.rrl_logonly_hint')"><USwitch v-model="sf.rrlLogOnly" :disabled="!isAdmin" /></UFormField>
+          <UFormField class="md:col-span-2" :label="t('dns.rrl_exempt')" :help="t('dns.rrl_exempt_hint')"><UInput v-model="sf.rrlExempt" class="w-full font-mono" :disabled="!isAdmin" /></UFormField>
+        </template>
         <div class="md:col-span-2 flex justify-end"><UButton v-if="isAdmin" type="submit" :label="t('common.save')" /></div>
       </form>
     </UCard>

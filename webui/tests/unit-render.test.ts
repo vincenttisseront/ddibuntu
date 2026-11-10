@@ -49,6 +49,18 @@ describe('validation par les outils officiels', () => {
     expect(r.map((c) => c.name).sort()).toEqual(['kea-dhcp4 -t', 'named-checkconf', 'named-checkzone 2.0.192.in-addr.arpa', 'named-checkzone example.com', 'named-checkzone rpz.ddibuntu.local'].sort())
     expect(r.every((c) => c.ok === true)).toBe(true)
   })
+  it('RRL : désactivée par défaut ; activée, une seule ligne acceptée par named-checkconf (essai à blanc, exemptions, valeurs extrêmes)', async () => {
+    expect(renderNamedOptions(DNS_DEFAULTS, false)).not.toContain('rate-limit')
+    const on = { ...DNS_DEFAULTS, rrlEnabled: true }
+    const o = renderNamedOptions(on, false)
+    expect(o).toContain('  rate-limit { responses-per-second 20; window 15; slip 2; log-only yes; exempt-clients { 127.0.0.0/8; ::1; }; };')
+    expect(o.split('\n').filter((l) => l.includes('rate-limit'))).toHaveLength(1)
+    expect(renderNamedOptions({ ...on, rrlLogOnly: false, rrlExempt: [] }, false)).toContain('rate-limit { responses-per-second 20; window 15; slip 2; log-only no; };')
+    for (const v of [{ rrlResponsesPerSecond: 1, rrlWindow: 5, rrlSlip: 0 }, { rrlResponsesPerSecond: 1000, rrlWindow: 3600, rrlSlip: 10, rrlExempt: ['10.0.0.0/8', '192.0.2.7', '2001:db8::/32'], rrlLogOnly: false }]) {
+      const r = await validateFiles([{ path: 'named.conf.options', kind: 'named', mode: 0o644, content: renderNamedOptions({ ...on, ...v }, false) }])
+      expect(r[0]!.ok, r[0]!.output).toBe(true)
+    }
+  })
   it('un fichier de zone invalide est refusé par named-checkzone', async () => {
     const bad = zoneFile(zone({ name: 'bad.test' }), [{ name: 'x', type: 'A', ttl: null, rdata: '10.0.0.1' }])   // sans NS
     const r = await validateFiles([bad])

@@ -24,9 +24,9 @@ Légende : ✅ fait · 🟡 partiel · ⬜ à faire.
 | Capacité | État | Détail |
 |---|---|---|
 | Filtrage par listes / RPZ | ✅ | Cockpit de filtrage, journal des requêtes. |
-| Limitation de débit des requêtes (RRL) | ⬜ | Réglage BIND `rate-limit`, exposé dans la console. |
-| Détection d'exfiltration / tunnel DNS | ⬜ | Heuristiques sur le journal des requêtes (longueur/entropie des noms, volume TXT/NULL par client). |
-| Hygiène IPAM : adresses fantômes | 🟡 | La découverte renseigne `last_seen` ; il manque le rapport « allouée mais muette depuis N jours » et l'alerte. |
+| Limitation de débit des requêtes (RRL) | ✅ 0.7.0 | BIND `rate-limit` (réponses/s, fenêtre, slip, clients exemptés), page DNS › Paramètres ; désactivé par défaut, « journaliser seulement » activé par défaut pour observer avant de bloquer. |
+| Détection d'exfiltration / tunnel DNS | ✅ 0.7.0 | Heuristique sur le journal : nombre de sous-noms distincts, longueur, entropie des étiquettes longues, part TXT/NULL/CNAME, par client et domaine. Bloquer ou autoriser en un clic (règle de filtrage). Pas d'alerte automatique (0.8). |
+| Hygiène IPAM : adresses fantômes | ✅ 0.7.0 | Onglet « Fantômes » : allouées, déjà vues par une découverte, muettes depuis N jours ; libération en masse (critère revérifié côté serveur). Pas d'alerte automatique, ni de découverte planifiée (0.8). |
 
 ## 4. Exploitation
 | Capacité | État | Détail |
@@ -57,7 +57,7 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
 
 ## Ordre proposé
 1. ~~**0.6.0** — Navigation latérale, recherche globale, grille d'occupation d'un réseau.~~ ✅ fait
-2. **0.7.0** — Gabarits de réseau + réservation DHCP automatique depuis l'IPAM (cohérence IPAM/DNS/DHCP).
-3. **0.8.0** — Hygiène IPAM (adresses fantômes) + RRL + détection de tunnel DNS.
+2. ~~**0.7.0**~~ ✅ fait — Hygiène IPAM (adresses fantômes), RRL, détection de tunnel DNS (les gabarits de réseau et la réservation DHCP automatique étaient déjà livrés en 0.5.1).
+3. **0.8.0** — Découverte planifiée et alertes (fantômes, tunnels).
 4. **0.9.0** — API : description OpenAPI et jetons d'API.
 5. **1.0** — Vues DNS, HA DHCP (nécessite deux appliances).

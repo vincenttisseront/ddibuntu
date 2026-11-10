@@ -30,6 +30,7 @@ options {
   allow-query { any; };
   allow-transfer { none; };
   dnssec-validation auto;
+  rate-limit { responses-per-second 20; window 15; slip 2; log-only yes; exempt-clients { 127.0.0.0/8; ::1; }; };
   response-policy { zone "rpz.ddibuntu.local" policy given; } qname-wait-recurse no;
 };
 CONF
@@ -84,6 +85,7 @@ mv "$BE/ddi-xfr.key.away" "$BE/ddi-xfr.key"
 echo "== Primaire (n1) =="
 check "reload complet sur n1" rl
 check "named-checkconf accepte" named-checkconf "$BE/named.conf"
+expect_grep "options : la limitation de débit (RRL) de la console traverse la transformation primaire" 'rate-limit \{ responses-per-second 20; window 15; slip 2; log-only yes; exempt-clients \{ 127\.0\.0\.0/8; ::1; \}; \};' "$OPT"
 expect_grep "options : clé TSIG incluse" "^include \"$BE/ddi-xfr.key\";" "$OPT"
 expect_grep "options : écoute sur l'adresse du réseau dédié" 'listen-on \{ 10\.9\.0\.1; \};' "$OPT"
 expect_grep "options : transferts et NOTIFY sourcés sur l'adresse du réseau dédié" 'transfer-source 10\.9\.0\.1;' "$OPT"
@@ -106,6 +108,7 @@ rm -f "$ZN"/db.*; printf 'ancien-contenu\n' > "$ZN/db.corp.test"; printf 'second
 rm -rf "$GEN/zones"   # le secondaire n'a PAS les fichiers de zone de la console
 check "reload --replica sur n2 sans fichiers de zone" rl --replica
 check "named-checkconf accepte" named-checkconf "$BE/named.conf"
+expect_grep "secondaire : la limitation de débit (RRL) est conservée" 'rate-limit \{ responses-per-second 20;' "$OPT"
 expect_grep "zone primaire → secondaire, primaire = n1, signé" 'zone "corp.test" \{ type secondary; primaries \{ 10\.9\.0\.1 key "ddi-xfr"; \}; file "[^"]+db\.corp\.test"; \};' "$LOC"
 expect_grep "RPZ aussi (interrogation interdite conservée)" 'zone "rpz.ddibuntu.local" \{ type secondary; primaries \{ 10\.9\.0\.1 key "ddi-xfr"; \}; file "[^"]+db\.rpz"; allow-query \{ none; \}; \};' "$LOC"
 expect_nogrep "aucune mise à jour dynamique sur le secondaire" 'allow-update' "$LOC"

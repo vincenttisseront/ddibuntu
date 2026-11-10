@@ -1,8 +1,8 @@
 <script setup lang="ts">
 const { t } = useT(); const api = useApi(); const toast = useToast()
 const { canWrite, isAdmin } = useRole(); const { ask } = useConfirm()
-const tab = useHashTab('cockpit', ['cockpit', 'lists', 'rules', 'test', 'stats', 'settings'])
-const tabs = computed(() => [{ label: t('cockpit.title'), value: 'cockpit', icon: 'i-lucide-gauge' }, { label: t('filter.lists'), value: 'lists', icon: 'i-lucide-list-x' }, { label: t('filter.rules'), value: 'rules', icon: 'i-lucide-list-checks' }, { label: t('filter.test'), value: 'test', icon: 'i-lucide-search-check' }, { label: t('filter.stats'), value: 'stats', icon: 'i-lucide-chart-line' }, { label: t('dns.settings'), value: 'settings', icon: 'i-lucide-sliders-horizontal' }])
+const tab = useHashTab('cockpit', ['cockpit', 'lists', 'rules', 'test', 'stats', 'tunnel', 'settings'])
+const tabs = computed(() => [{ label: t('cockpit.title'), value: 'cockpit', icon: 'i-lucide-gauge' }, { label: t('filter.lists'), value: 'lists', icon: 'i-lucide-list-x' }, { label: t('filter.rules'), value: 'rules', icon: 'i-lucide-list-checks' }, { label: t('filter.test'), value: 'test', icon: 'i-lucide-search-check' }, { label: t('filter.stats'), value: 'stats', icon: 'i-lucide-chart-line' }, { label: t('tunnel.title'), value: 'tunnel', icon: 'i-lucide-shield-alert' }, { label: t('dns.settings'), value: 'settings', icon: 'i-lucide-sliders-horizontal' }])
 const CATS = ['adult', 'malware', 'phishing', 'ads', 'tracking', 'gambling', 'social', 'custom']
 
 const listCols = computed(() => [{ key: 'name', label: t('common.name') }, { key: 'category', label: t('filter.category'), kind: 'badge', trans: 'filter.cat' }, { key: 'entries', label: t('filter.entries'), kind: 'num' }, { key: 'enabled', label: t('common.enabled'), kind: 'bool' }, { key: 'updated_at', label: t('filter.updated'), kind: 'date' },
@@ -93,6 +93,7 @@ async function purge() {
         <ul v-if="verdict.matches.length" class="mt-3 text-sm flex flex-col gap-1"><li v-for="(m, i) in verdict.matches" :key="i" class="font-mono text-xs">{{ m.domain }} · {{ t(`filter.match.${m.kind}`) }}<template v-if="m.source"> · {{ m.source }} ({{ t(`filter.cat.${m.category}`) }})</template></li></ul>
       </div>
     </UCard>
+    <TunnelDetection v-else-if="tab === 'tunnel'" />
     <div v-else-if="tab === 'stats'" class="flex flex-col gap-3">
       <div class="flex gap-2 items-center"><USelect v-model="range" :items="rangeOptions" class="w-28" :aria-label="t('filter.range')" /><span class="text-xs text-muted">{{ t('filter.stats_hint') }}</span></div>
       <div class="grid gap-4 lg:grid-cols-3">

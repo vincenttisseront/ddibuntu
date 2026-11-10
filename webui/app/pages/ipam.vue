@@ -4,11 +4,11 @@ import type { DCol } from '~/components/DenseTable.vue'
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm()
 const { canWrite, isAdmin } = useRole()
 // « subnets » reste l'identifiant de l'onglet Réseaux : les liens existants (#subnets) continuent de fonctionner.
-const tab = useHashTab('subnets', ['spaces', 'subnets', 'pools', 'addresses', 'templates', 'vlans', 'search', 'discovery', 'sources'])
+const tab = useHashTab('subnets', ['spaces', 'subnets', 'pools', 'addresses', 'templates', 'vlans', 'ghosts', 'search', 'discovery', 'sources'])
 const baseTabs = computed(() => [
   { label: t('ipam.spaces'), value: 'spaces', icon: 'i-lucide-layers' }, { label: t('ipam.networks'), value: 'subnets', icon: 'i-lucide-network' },
   { label: t('ipam.pools'), value: 'pools', icon: 'i-lucide-brackets' }, { label: t('ipam.addresses'), value: 'addresses', icon: 'i-lucide-list-ordered' },
-  { label: t('ipam.templates'), value: 'templates', icon: 'i-lucide-file-sliders' }, { label: t('ipam.vlans'), value: 'vlans', icon: 'i-lucide-tags' }, { label: t('common.search'), value: 'search', icon: 'i-lucide-search' }])
+  { label: t('ipam.templates'), value: 'templates', icon: 'i-lucide-file-sliders' }, { label: t('ipam.vlans'), value: 'vlans', icon: 'i-lucide-tags' }, { label: t('ghost.title'), value: 'ghosts', icon: 'i-lucide-ghost' }, { label: t('common.search'), value: 'search', icon: 'i-lucide-search' }])
 const tabs = computed(() => [...baseTabs.value, ...(canWrite.value ? [{ label: t('disc.title'), value: 'discovery', icon: 'i-lucide-radar' }] : []), ...(isAdmin.value ? [{ label: t('nbw.title'), value: 'sources', icon: 'i-lucide-database-zap' }] : [])])
 
 // ---- Contexte partagé : espace et famille d'adresses (comme les boutons V4/V6 d'une console IPAM) ----
@@ -303,6 +303,7 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
     </DenseTable>
 
     <ResourceTable v-else-if="tab === 'vlans'" endpoint="/ipam/vlans" :columns="vlanCols" :fields="vlanFields" :can-write="canWrite" create-url="/ipam/vlans" :update-url="(r: any) => `/ipam/vlans/${r.id}`" :delete-url="(r: any) => `/ipam/vlans/${r.id}`" :delete-name="(r: any) => r.name" @changed="refreshVlans" />
+    <GhostAddresses v-else-if="tab === 'ghosts'" />
     <DiscoveryWizard v-else-if="tab === 'discovery' && canWrite" />
     <NetboxWizard v-else-if="tab === 'sources' && isAdmin" />
     <div v-else-if="tab === 'search'" class="flex flex-col gap-3">

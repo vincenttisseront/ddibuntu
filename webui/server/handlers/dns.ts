@@ -160,6 +160,9 @@ const settingsBody = z.object({
   listenOn: z.array(ipS).max(20), allowRecursion: z.array(aclS).max(50), allowQuery: z.array(aclS).max(50), forwarders: z.array(ipS).max(10),
   dnssecValidation: z.enum(['auto', 'no']), queryLog: z.boolean(),
   rpzEnabled: z.boolean(), rpzZone: zoneName, rpzAction: z.enum(['nxdomain', 'nodata', 'sinkhole']), sinkhole4: ipS, sinkhole6: ipS,
+  // RRL : facultatif (un client plus ancien n'envoie pas ces champs) ; bornes prudentes
+  rrlEnabled: z.boolean().optional(), rrlResponsesPerSecond: z.number().int().min(1).max(1000).optional(), rrlWindow: z.number().int().min(5).max(3600).optional(),
+  rrlSlip: z.number().int().min(0).max(10).optional(), rrlLogOnly: z.boolean().optional(), rrlExempt: z.array(aclS).max(50).optional(),
 })
 export async function loadDnsSettings(): Promise<DnsSettings> { return { ...DNS_DEFAULTS, ...(await getSetting<Partial<DnsSettings>>('dns', {})) } }
 route('GET', '/dns/settings', 'viewer', async () => await loadDnsSettings())

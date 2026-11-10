@@ -16,6 +16,8 @@ export interface DnsSettings {
   listenOn: string[]; allowRecursion: string[]; allowQuery: string[]; forwarders: string[]
   dnssecValidation: 'auto' | 'no'; queryLog: boolean; ddnsKeyFile: string
   rpzEnabled: boolean; rpzZone: string; rpzAction: 'nxdomain' | 'nodata' | 'sinkhole'; sinkhole4: string; sinkhole6: string
+  /** Limitation de débit des réponses (RRL) : désactivée par défaut ; « log-only » journalise sans rien bloquer (essai à blanc). */
+  rrlEnabled: boolean; rrlResponsesPerSecond: number; rrlWindow: number; rrlSlip: number; rrlLogOnly: boolean; rrlExempt: string[]
   /** Domaine Kerberos configuré par root (ddibuntu-ad) : jamais saisi ici, relu de son état publié. Vide = aucune mise à jour sécurisée possible. */
   kerberosRealm?: string
 }
@@ -23,6 +25,7 @@ export const DNS_DEFAULTS: DnsSettings = {
   listenOn: [], allowRecursion: ['127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'], allowQuery: [], forwarders: [],
   dnssecValidation: 'auto', queryLog: true, ddnsKeyFile: '/etc/bind/ddi-ddns.key',
   rpzEnabled: false, rpzZone: 'rpz.ddibuntu.local', rpzAction: 'nxdomain', sinkhole4: '0.0.0.0', sinkhole6: '::',
+  rrlEnabled: false, rrlResponsesPerSecond: 20, rrlWindow: 15, rrlSlip: 2, rrlLogOnly: true, rrlExempt: ['127.0.0.0/8', '::1'],
 }
 const acl = (l: string[], fallback = 'any') => (l.length ? l.map((x) => `${x};`).join(' ') : `${fallback};`)
 
@@ -49,6 +52,8 @@ export function renderNamedOptions(s: DnsSettings, anyDdns: boolean): string {
     '  check-names primary warn;',
     // sans « querylog yes », BIND n'écrit AUCUNE requête dans le canal de journalisation déclaré plus bas
     s.queryLog ? '  querylog yes;' : '  querylog no;',
+    // une seule ligne : ddibuntu-reload (et la transformation du secondaire) relisent ce fichier ligne à ligne
+    s.rrlEnabled ? `  rate-limit { responses-per-second ${s.rrlResponsesPerSecond}; window ${s.rrlWindow}; slip ${s.rrlSlip}; log-only ${s.rrlLogOnly ? 'yes' : 'no'};${s.rrlExempt.length ? ` exempt-clients { ${acl(s.rrlExempt)} };` : ''} };` : '',
     s.rpzEnabled ? `  response-policy { zone "${s.rpzZone}" policy given; } qname-wait-recurse no;` : '',
     '};',
     s.queryLog ? 'logging {\n  channel ddi_queries { file "/var/log/named/query.log" versions 3 size 50m; severity info; print-time iso8601-utc; };\n  category queries { ddi_queries; };\n  category rpz { ddi_queries; };\n  category rpz-passthru { ddi_queries; };\n};' : '',
