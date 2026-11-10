@@ -332,7 +332,8 @@ activate() {
   sysctl_do daemon-reload
   sysctl_do enable --now etcd.service
   [ -n "${DDI_TEST_NO_PROMOTE:-}" ] || promote_self
-  register_node "${C[NODE_NAME]}" "${C[NODE_IP]}" "${C[NODE_ROLE]}"
+  [ -n "${DDI_TEST:-}" ] || register_node "${C[NODE_NAME]}" "${C[NODE_IP]}" "${C[NODE_ROLE]}" 30 \
+    || log "AVERTISSEMENT : inscription de ce nœud au registre impossible pour l'instant ; la synchronisation périodique réessaiera"
   sysctl_do enable --now ddibuntu-cluster-sync.timer
   [ "${C[NODE_ROLE]}" != data ] || sysctl_do enable --now patroni.service
   log "services démarrés (etcd${C[NODE_ROLE]:+, patroni si nœud de données})"
@@ -353,12 +354,19 @@ gpg_sym() { # gpg_sym enc|dec ENTRÉE SORTIE ; phrase de passe sur le descripteu
 
 # ---------------------------------------------------------------- registre des nœuds (dans etcd) : chaque nœud finit par connaître tous les autres
 REG=/ddibuntu-cluster/nodes/
-register_node() { # register_node NOM IP RÔLE
-  ectl put "$REG$1" "$2:$3" >/dev/null
+register_node() { # register_node NOM IP RÔLE [ESSAIS] : etcd met quelques secondes à répondre après son démarrage
+  local i tries="${4:-1}"
+  for ((i = 1; i <= tries; i++)); do
+    ectl put "$REG$1" "$2:$3" >/dev/null 2>&1 && return 0
+    [ "$i" -lt "$tries" ] && sleep 2
+  done
+  return 1
 }
 # sync : relit le registre, met à jour PEERS (ajouts/mises à jour seulement), la configuration Patroni et le pare-feu. Sans effet si rien ne change.
 cmd_sync() {
   conf_load
+  # auto-guérison : ce nœud (re)s'inscrit au registre ; échec silencieux si le quorum manque (la lecture ci-dessous le signalera)
+  register_node "${C[NODE_NAME]}" "${C[NODE_IP]}" "${C[NODE_ROLE]}" 1 || true
   local raw; raw="$(ectl get --prefix "$REG" -w json 2>/dev/null)" || die "registre illisible (quorum etcd indisponible ?)"
   local line new="${C[PEERS]}" changed=0 name ip role
   while IFS=' ' read -r name ip role; do

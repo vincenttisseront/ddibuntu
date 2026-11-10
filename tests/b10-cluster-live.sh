@@ -52,6 +52,11 @@ try: d=json.load(sys.stdin)
 except Exception: print("?"); sys.exit()
 m=[x for x in d.get("members",[]) if x["name"]==n]
 print((m[0]["role"]+"/"+m[0].get("state","?")) if m else "absent")' "n$2" 2>/dev/null; }
+wait_cond() { # wait_cond secondes "description" 'expression shell' : l'expression est ÉVALUÉE À CHAQUE ESSAI (pas une seule fois)
+  local s="$1" d="$2" e="$3" i=0
+  while [ "$i" -lt "$s" ]; do if eval "$e" >/dev/null 2>&1; then ok "$d (${i}s)"; return 0; fi; sleep 1; i=$((i + 1)); done
+  ko "$d" "délai de ${s}s dépassé"; return 1
+}
 wait_for() { # wait_for secondes "description" commande... (réussit quand la commande réussit)
   local s="$1" d="$2"; shift 2; local i=0
   while [ "$i" -lt "$s" ]; do if "$@" >/dev/null 2>&1; then ok "$d (${i}s)"; return 0; fi; sleep 1; i=$((i + 1)); done
@@ -72,7 +77,7 @@ mknode 1; initdb_local 1
 runuser -u postgres -- "$PGBIN/pg_ctl" -D "$(R 1)/var/lib/postgresql/16/main" -o "-c listen_addresses='' -c unix_socket_directories=$(R 1)/run/pg -c port=5432" -l "$(R 1)/run/pg/init.log" -w start >/dev/null 2>&1
 sql 1 -c "create table t(id int primary key, v text); insert into t values (1,'avant-cluster')"
 printf 'DDI_DATABASE_URL=postgres://ddi:s1@127.0.0.1/ddibuntu\nDDI_SECRET_KEY=CLE-DU-PRIMAIRE\nDDI_KEA_DB_PASSWORD=kea1\nAUTRE=1\n' > "$(R 1)/etc/ddibuntu/console.env"
-check "init n1" cl 1 init --name n1 --ip "$(ip 1)" --net 127.0.0.0/8
+check "init n1" cl 1 init --name n1 --ip "$(ip 1)" --net 127.0.0.0/8 --no-activate
 check_fail "init refusé si le nœud est déjà dans un cluster" cl 1 init --name n1 --ip "$(ip 1)" --net 127.0.0.0/8
 check_fail "init refuse un nom invalide" cl 9 init --name 'N 1;rm' --ip 127.0.1.9 --net 127.0.0.0/8
 check_fail "init refuse une adresse invalide" cl 9 init --name n9 --ip 127.0.1.999 --net 127.0.0.0/8
@@ -91,6 +96,7 @@ expect_nogrep "pg_hba : aucune entrée « trust » ni mot de passe de réplicati
 runuser -u postgres -- "$PGBIN/pg_ctl" -D "$(R 1)/var/lib/postgresql/16/main" -m fast -w stop >/dev/null 2>&1
 start_etcd 1
 wait_for 20 "etcd n1 sain" ectl 1 endpoint health
+check "activate n1 : inscription au registre" cl 1 activate
 start_patroni 1
 wait_for 60 "Patroni n1 devient leader sur la base existante" is_leader 1 1
 expect_eq "la base existante est conservée" "avant-cluster" "$(sql 1 -c "select v from t where id=1")"
@@ -148,7 +154,7 @@ check "sync idempotent" cl 2 sync
 
 echo "== Réplication et authentification =="
 sql 1 -c "insert into t values (2,'après-cluster')"
-wait_for 20 "la donnée écrite sur le primaire arrive sur n2" test "$(sql 2 -c "select count(*) from t" 2>/dev/null)" = 2
+wait_cond 20 "la donnée écrite sur le primaire arrive sur n2" '[ "$(sql 2 -c "select count(*) from t")" = 2 ]'
 expect_eq "n2 est bien un secondaire en lecture seule" "t" "$(sql 2 -c "select pg_is_in_recovery()")"
 check_fail "n2 refuse l'écriture" sql 2 -c "insert into t values (9,'non')"
 expect_eq "un seul primaire dans le cluster" "n1" "$(leader_name 2)"
@@ -170,7 +176,7 @@ check "switchover vers n2" cl 1 switchover --candidate n2
 wait_for 60 "n2 devient leader" is_leader 2 2
 wait_for 60 "n1 réplique à nouveau" streaming 2 1
 expect_eq "n2 accepte l'écriture après bascule" "ok" "$(sql 2 -c "insert into t values (3,'sur-n2'); select 'ok'" | tail -1)"
-wait_for 20 "n1 reçoit la donnée de n2" test "$(sql 1 -c "select count(*) from t" 2>/dev/null)" = 3
+wait_cond 20 "n1 reçoit la donnée de n2" '[ "$(sql 1 -c "select count(*) from t")" = 3 ]'
 
 echo "== Bascule automatique (arrêt brutal du primaire) =="
 kill_patroni_hard 2
@@ -182,7 +188,7 @@ echo "== Réintégration de l'ancien primaire (pg_rewind) =="
 sql 1 -c "checkpoint"
 start_patroni 2
 wait_for 120 "n2 revient comme secondaire" streaming 1 2
-wait_for 30 "n2 a rattrapé la donnée écrite pendant son absence" test "$(sql 2 -c "select count(*) from t" 2>/dev/null)" = 4
+wait_cond 30 "n2 a rattrapé la donnée écrite pendant son absence" '[ "$(sql 2 -c "select count(*) from t")" = 4 ]'
 expect_eq "toujours un seul primaire" "n1" "$(leader_name 1)"
 
 echo "== Isolation : primaire sans quorum → lecture seule =="
@@ -195,7 +201,7 @@ check_fail "n1 isolé refuse l'écriture" sql 1 -c "insert into t values (50,'sp
 start_etcd 2; start_etcd 3
 wait_for 60 "le quorum revient : etcd n2 sain" ectl 2 endpoint health
 writable_count() { for n in 1 2; do sql "$n" -c "select pg_is_in_recovery()" 2>/dev/null; done | grep -c '^f$'; }
-wait_for 150 "le cluster retrouve un primaire en écriture" test "$(writable_count)" = 1
+wait_cond 200 "le cluster retrouve un primaire en écriture" '[ "$(writable_count)" = 1 ]'
 sleep 10
 NL="$(writable_count)"
 expect_eq "après retour du quorum : exactement un primaire accessible en écriture" "1" "$NL"
