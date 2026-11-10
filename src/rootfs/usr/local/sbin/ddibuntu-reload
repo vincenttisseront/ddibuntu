@@ -17,7 +17,8 @@ case "${1:-}" in
   "") MODE=full ;;
   --kea-only) MODE=kea-only ;;     # applique seulement Kea (nœud primaire dont les fichiers BIND ne changent pas)
   --replica) MODE=replica ;;       # nœud secondaire : Kea + BIND secondaire (zones transférées)
-  *) echo "usage : ddibuntu-reload [--kea-only|--replica]" >&2; exit 2 ;;
+  --promote) MODE=promote ;;       # ce nœud vient de devenir leader : BIND passe de secondaire à primaire en gardant les zones transférées
+  *) echo "usage : ddibuntu-reload [--kea-only|--replica|--promote]" >&2; exit 2 ;;
 esac
 BACKUP="$STATE/backup"
 STATUS="$STATE/reload-status"; ROLLED_BACK=0
@@ -233,10 +234,15 @@ install_named() {
 }
 # Rôle BIND de ce nœud : primary (déploiement local avec un pair) · secondary (--replica : zones transférées) · none (nœud seul / arbitre)
 bind_role=none
+prev_bind_role="$(cat "$STATE/bind-role" 2>/dev/null || true)"     # rôle appliqué la dernière fois (écrit par ce script seul)
 if [ "$MODE" = replica ]; then
   probe_rc bind-probe || fail "--replica exige un cluster à deux nœuds de données"
   [ -f "$XFR_KEY" ] || fail "clé de transfert TSIG absente ($XFR_KEY) : rattacher le nœud avec un lot récent"
   bind_role=secondary
+elif [ "$MODE" = promote ]; then
+  probe_rc bind-probe || fail "--promote exige un cluster à deux nœuds de données"
+  [ -f "$XFR_KEY" ] || fail "clé de transfert TSIG absente ($XFR_KEY) : rattacher le nœud avec un lot récent"
+  bind_role=primary
 elif [ "$MODE" = full ] && probe_rc bind-probe; then
   if [ -f "$XFR_KEY" ]; then bind_role=primary; else log "AVERTISSEMENT : clé de transfert TSIG absente ($XFR_KEY) : BIND reste sans secondaire"; fi
 fi
@@ -246,10 +252,25 @@ check_kea "$GEN/kea-dhcp4.conf"
 if [ "$MODE" != kea-only ]; then check_named "$GEN/named.conf.options"; check_named "$GEN/named.conf.zones"; fi
 shopt -s nullglob
 if [ "$MODE" = full ]; then for z in "$GEN"/zones/db.*; do check_zone "$z"; done; fi
+ptmp=""; trap 'rm -rf "${ptmp:-}"' EXIT
+if [ "$MODE" = promote ]; then
+  # Les zones transférées sont stockées par BIND au format binaire (« raw ») avec un journal IXFR : on les convertit en texte, journal appliqué
+  # (named-compilezone -j), AVANT toute modification ; une zone illisible fait refuser la promotion (le nœud reste secondaire et continue de servir).
+  ptmp="$(mktemp -d "$STATE/.promote.XXXXXX")"
+  while IFS=$'\t' read -r zname zfile; do
+    [ -n "$zname" ] || continue
+    if [ ! -f "$zfile" ]; then log "AVERTISSEMENT : zone $zname jamais transférée ($zfile absent) : elle restera vide jusqu'au prochain déploiement"; continue; fi
+    out="$ptmp/$(basename "$zfile")"
+    named-compilezone -j -k warn -f raw -F text -o "$out" "$zname" "$zfile" >/dev/null 2>&1 \
+      || named-compilezone -j -k warn -f text -F text -o "$out" "$zname" "$zfile" >/dev/null 2>&1 \
+      || fail "zone transférée $zname illisible ou invalide : promotion refusée (le nœud reste secondaire)"
+    check_zone "$out"
+  done < <(sed -nE 's/^zone "([^"]+)" \{ type primary; file "([^"]+)";.*/\1\t\2/p' "$GEN/named.conf.zones")
+fi
 
 # ---- Sauvegarde puis installation ----
 install -d -m 0750 "$BACKUP"
-if [ "$MODE" = full ]; then
+if [ "$MODE" = full ] || [ "$MODE" = promote ]; then
   rm -rf "$BACKUP/zones"; install -d -m 0750 "$BACKUP/zones"
   for f in "$ZONES"/db.*; do cp -p "$f" "$BACKUP/zones/"; done
 fi
@@ -268,7 +289,7 @@ reload_after_restore() {
 }
 restore() {
   ROLLED_BACK=1; log "retour arrière"
-  if [ "$MODE" = full ]; then
+  if [ "$MODE" = full ] || [ "$MODE" = promote ]; then
     for f in "$ZONES"/db.*; do rm -f "$f"; done
     for f in "$BACKUP/zones"/db.*; do cp -p "$f" "$ZONES/"; done
   fi
@@ -281,6 +302,16 @@ restore() {
   reload_after_restore
 }
 
+if [ "$MODE" = replica ] && [ "$prev_bind_role" = primary ]; then
+  # ancien primaire qui redevient secondaire : ses fichiers de zone peuvent porter un numéro de série plus récent que celui du nouveau primaire
+  # (mises à jour non transférées avant la panne) ; BIND ne les remplacerait alors jamais. On repart d'un transfert complet : le nouveau primaire fait foi.
+  log "ancien primaire : fichiers de zone retirés pour un transfert complet depuis le nouveau primaire"
+  for old in "$ZONES"/db.*; do rm -f "$old" "$old.jnl"; done
+fi
+if [ "$MODE" = promote ]; then
+  # zones converties en texte : le journal du secondaire est déjà appliqué, il serait incohérent avec le nouveau fichier
+  for z in "$ptmp"/db.*; do install -m 0640 -o bind -g bind "$z" "$ZONES/$(basename "$z")"; rm -f "$ZONES/$(basename "$z").jnl"; done
+fi
 if [ "$MODE" = full ]; then
   install -d -m 0750 -o bind -g bind "$ZONES"
   new=()
@@ -320,7 +351,9 @@ if [ -z "${DDI_RELOAD_NOSERVICES:-}" ]; then
     systemctl disable --now kea-dhcp4-server >/dev/null 2>&1 || true   # aucune étendue : le service reste arrêté
   fi
 fi
+if [ "$MODE" != kea-only ]; then printf '%s\n' "$bind_role" > "$STATE/bind-role"; fi
 case "$MODE" in
+  promote) date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-reload"; log "ce nœud est maintenant le primaire BIND"; status 1 "nœud promu : BIND primaire, zones transférées conservées" ;;
   full) date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-reload"; log "configuration appliquée"; status 1 "configuration appliquée" ;;
   replica) date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-reload"; log "configuration appliquée (réplica)"; status 1 "configuration appliquée (nœud secondaire : DHCP et DNS)" ;;
   kea-only) date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-reload-kea"; log "configuration Kea appliquée"; status 1 "configuration Kea appliquée (nœud de données)" ;;

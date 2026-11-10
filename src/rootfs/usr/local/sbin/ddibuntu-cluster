@@ -647,7 +647,10 @@ cmd_follow() {
     content="$(cd "$gen" && sha256sum -- "${arr[@]}" | sha256sum | cut -d' ' -f1)"
   else
     [ -f "$gen/kea-dhcp4.conf" ] || return 0                     # primaire sans déploiement : rien à appliquer
-    if compgen -G "$gen/zones/db.*" >/dev/null; then margs=""; else margs="--kea-only"; fi
+    if compgen -G "$gen/zones/db.*" >/dev/null; then margs=""                       # la console a déployé sur ce nœud : application complète
+    elif [ "$(cat "$STATE/bind-applied" 2>/dev/null || true)" = secondary ] && [ -f "$gen/named.conf.options" ] && [ -f "$gen/named.conf.zones" ]; then
+      margs="--promote"                                                               # ce nœud était secondaire et vient de devenir leader : BIND devient primaire avec les zones transférées
+    else margs="--kea-only"; fi
   fi
   local data="" p
   for p in ${C[PEERS]}; do if [ "$(peer_field "$p" role)" = data ]; then data="$data$(peer_field "$p" name)=$(peer_field "$p" ip)"$'\n'; fi; done
@@ -656,7 +659,9 @@ cmd_follow() {
   if [ -f "$marker" ] && [ "$(cat "$marker")" = "$now" ]; then return 0; fi
   log "follow ($role${margs:+ $margs}) : application de la configuration"
   # shellcheck disable=SC2086  # margs est soit vide, soit une option unique choisie ci-dessus
-  if DDI_GENERATED_DIR="$gen" "$reload" $margs; then printf '%s\n' "$now" > "$marker"; log "follow : configuration appliquée"
+  if DDI_GENERATED_DIR="$gen" "$reload" $margs; then
+    printf '%s\n' "$now" > "$marker"; log "follow : configuration appliquée"
+    case "$margs" in --replica) echo secondary > "$STATE/bind-applied" ;; ""|--promote) echo primary > "$STATE/bind-applied" ;; esac
   else die "follow : ddibuntu-reload $margs a échoué (voir le journal) ; réessai à la prochaine échéance"; fi
 }
 

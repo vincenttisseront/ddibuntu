@@ -160,8 +160,55 @@ start_named 2
 wait_cond 40 "n2 rattrape la série 300 après redémarrage" '[ "$(q @$IP2 static.test SOA | awk "{print \$3}")" = 300 ]'
 expect_eq "n2 : enregistrement ajouté pendant son absence" "10.20.0.30" "$(q @$IP2 late.static.test A)"
 
+echo "== Promotion : n1 tombe, n2 devient primaire avec les zones transférées (ddibuntu-reload --promote) =="
+# n2 possède une copie transférée ; le DDNS reçu avant la panne (dyn.corp.test) doit survivre à la promotion (il n'existe que dans les zones, pas dans la console)
+kill "$NPID1"; wait "$NPID1" 2>/dev/null; sleep 1
+mkdir -p "$(nodes_dir 2)/gen"
+# copies répliquées par la base (follow). Sur l'appliance le chemin des zones est le même sur les deux nœuds ; sur le banc chaque nœud a le sien : on le transpose
+for f in named.conf.options named.conf.zones; do sed "s|$(nodes_dir 1)/|$(nodes_dir 2)/|g" "$(nodes_dir 1)/gen/$f" > "$(nodes_dir 2)/gen/$f"; done
+# zone transférée corrompue : la promotion est refusée et le nœud reste secondaire
+cp "$(nodes_dir 2)/zones/db.static.test" "$W/static.keep"; printf 'ceci n est pas une zone\n' > "$(nodes_dir 2)/zones/db.static.test"
+BEFORE="$(sha256sum "$(nodes_dir 2)/bind/named.conf.local" | cut -d' ' -f1)"
+check_fail "promotion refusée si une zone transférée est invalide" rl 2 --promote
+expect_eq "…rien n'a été modifié (toujours secondaire)" "$BEFORE" "$(sha256sum "$(nodes_dir 2)/bind/named.conf.local" | cut -d' ' -f1)"
+cp "$W/static.keep" "$(nodes_dir 2)/zones/db.static.test"; chown bind:bind "$(nodes_dir 2)/zones/db.static.test"
+check "n2 : ddibuntu-reload --promote" rl 2 --promote
+expect_eq "n2 : rôle BIND mémorisé = primary" "primary" "$(cat "$(nodes_dir 2)/state/bind-role")"
+expect_grep "n2 : zone déclarée primaire avec transfert signé" 'zone "corp.test" \{ type primary; file "[^"]+"; notify yes; allow-transfer \{ key "ddi-xfr"; \}' "$(nodes_dir 2)/bind/named.conf.local"
+expect_grep "n2 : NOTIFY vers n1" 'also-notify \{ 127\.0\.3\.1 key "ddi-xfr"; \}' "$(nodes_dir 2)/bind/named.conf.options"
+adapt 2; reload_named 2
+wait_cond 20 "n2 sert la zone en tant que primaire (série transférée, mise à jour dynamique comprise)" '[ "$(q @$IP2 corp.test SOA | awk "{print \$3}")" -gt 100 ]'
+expect_eq "n2 : enregistrement dynamique reçu avant la panne conservé" "10.20.0.99" "$(q @$IP2 dyn.corp.test A)"
+expect_eq "n2 : zone statique à la dernière série transférée" "300" "$(q @$IP2 static.test SOA | awk '{print $3}')"
+cat > "$W/upd3" <<UPD
+server $IP2
+zone corp.test
+update add apres.corp.test 300 A 10.20.0.77
+send
+UPD
+check "n2 accepte maintenant la mise à jour dynamique (primaire)" nsupdate -k /etc/bind/ddi-ddns.key "$W/upd3"
+expect_eq "n2 : la mise à jour est servie" "10.20.0.77" "$(q @$IP2 apres.corp.test A)"
+check "AXFR signé depuis le nouveau primaire : accepté" bash -c "dig +tries=1 +time=3 -y hmac-sha256:ddi-xfr:$XSECRET @$IP2 corp.test AXFR | grep -q 'apres.corp.test'"
+wait_cond 20 "n2 applique toujours la RPZ" 'dig +tries=1 +time=3 @$IP2 bad.example A | grep -q "status: NXDOMAIN"'
+
+echo "== Réintégration : n1 revient comme secondaire de n2 (série plus récente chez n1) =="
+# n1 avait un enregistrement dynamique que n2 n'a jamais reçu : sa copie est « plus récente » ; sans purge elle ne serait jamais remplacée
+echo primary > "$(nodes_dir 1)/state/bind-role"
+printf 'server %s\nzone corp.test\nupdate add perdu.corp.test 300 A 10.20.0.55\nsend\n' "$IP1" > "$W/upd4"
+start_named 1; wait_cond 20 "n1 redémarré (ancienne configuration primaire)" '[ -n "$(q @$IP1 www.corp.test A)" ]'
+check "mise à jour dynamique sur l'ancien primaire (jamais transférée à n2)" nsupdate -k /etc/bind/ddi-ddns.key "$W/upd4"
+kill "$NPID1"; wait "$NPID1" 2>/dev/null; sleep 1
+for f in named.conf.options named.conf.zones; do sed "s|$(nodes_dir 2)/|$(nodes_dir 1)/|g" "$(nodes_dir 2)/gen/$f" > "$(nodes_dir 1)/gen/$f"; done
+rm -rf "$(nodes_dir 1)/gen/zones"
+check "n1 : ddibuntu-reload --replica (ancien primaire)" rl 1 --replica
+expect_eq "n1 : fichiers de zone retirés pour repartir d'un transfert complet" "0" "$(ls "$(nodes_dir 1)/zones" | wc -l | tr -d ' ')"
+expect_eq "n1 : rôle mémorisé = secondary" "secondary" "$(cat "$(nodes_dir 1)/state/bind-role")"
+adapt 1; start_named 1
+wait_cond 40 "n1 reçoit la zone du nouveau primaire" '[ "$(q @$IP1 apres.corp.test A)" = 10.20.0.77 ]'
+expect_eq "n1 : l'enregistrement perdu n'est PAS revenu (le nouveau primaire fait foi)" "" "$(q @$IP1 perdu.corp.test A)"
+
 note "constaté (existant, hors cluster) : « rndc reload » n'applique PAS le fichier d'une zone dynamique (allow-update) ; seul freeze/thaw le fait, au prix des noms enregistrés dynamiquement. Voir docs/ROADMAP.md"
-note "non couvert : coupure réseau réelle entre deux machines, grandes zones (IXFR volumineux), promotion du secondaire en primaire (itération 5), DNSSEC"
+note "non couvert : coupure réseau réelle entre deux machines, grandes zones (IXFR volumineux), DNSSEC, bascule déclenchée par un vrai changement de leader Patroni (voir b10-cluster-live)"
 if [ "$T_FAIL" -gt 0 ]; then
   for n in 1 2; do echo "--- journal de named n$n (corp.test, notify, transfer, journal, error) ---"; grep -iE "corp.test|notify|transfer|journal|error|refused" "$(nodes_dir $n)/named.log" | tail -25 | cut -c1-240; done
 fi
