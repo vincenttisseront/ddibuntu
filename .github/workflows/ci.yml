@@ -1,0 +1,30 @@
+# Intégration continue : contrôles qui ne demandent ni root, ni QEMU, ni chroot. Les batteries système (b03..b08) se rejouent sur une machine Linux avec droits root (docs/TESTING.md).
+name: ci
+on: [push, pull_request]
+jobs:
+  shell:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: make lint
+      - run: bash tests/b02-i18n.sh
+      - run: bash tests/b09-selfupdate.sh
+  console:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: webui/package-lock.json }
+      - run: tools/build-console.sh
+      - run: tools/run-console-tests.sh unit
+  repo-mode:
+    runs-on: ubuntu-24.04
+    needs: console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: tools/build-console.sh
+      - run: ./build-ddibuntu.sh --stage /tmp/stage && tools/make-single.sh
+      - run: ./build-ddibuntu.sh --bundle --out /tmp/bundle && tar -tzf /tmp/bundle/ddibuntu-update-*.tar.gz

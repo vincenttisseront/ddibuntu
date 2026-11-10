@@ -1,0 +1,15 @@
+[Unit]
+Description=DDI-Buntu console database, TLS and secrets initialization
+ConditionPathExists=/var/lib/ddibuntu/configured
+ConditionPathExists=!/var/lib/ddibuntu/console-initialized
+After=ddibuntu-firstboot.service postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-db-init
+RemainAfterExit=yes
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

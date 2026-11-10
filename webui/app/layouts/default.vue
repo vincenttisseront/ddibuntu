@@ -1,0 +1,66 @@
+<script setup lang="ts">
+const { t, lang, setLang } = useT()
+const user = useState<any>('user')
+const api = useApi()
+const route = useRoute()
+const pwOpen = ref(false)
+const { data: about } = useFetch<any>('/api/about', { server: false, lazy: true, default: () => null })
+const updateAvailable = computed(() => !!about.value?.update?.available)
+const nav = computed(() => [
+  { label: t('nav.dashboard'), icon: 'i-lucide-layout-dashboard', to: '/' },
+  { label: t('nav.ipam'), icon: 'i-lucide-network', to: '/ipam' },
+  { label: t('nav.dns'), icon: 'i-lucide-globe', to: '/dns' },
+  { label: t('nav.dhcp'), icon: 'i-lucide-server', to: '/dhcp' },
+  { label: t('nav.filtering'), icon: 'i-lucide-shield-ban', to: '/filtering' },
+  { label: t('nav.import'), icon: 'i-lucide-file-input', to: '/import' },
+  ...(user.value?.role === 'admin' ? [{ label: t('nav.system'), icon: 'i-lucide-settings', to: '/system', ...(updateAvailable.value ? { badge: t('update.badge'), to: '/system#updates' } : {}) }] : []),
+])
+const title = computed(() => nav.value.find((n) => (n.to === '/' ? route.path === '/' : route.path.startsWith(n.to)))?.label ?? '')
+async function logout() {
+  try { await api.call('POST', '/auth/logout', {}, { silent: true }) } catch { /* session déjà fermée */ }
+  useState<any>('user').value = null
+  await navigateTo('/login')
+}
+</script>
+
+<template>
+  <UDashboardGroup>
+    <UDashboardSidebar collapsible resizable :min-size="14" :default-size="16">
+      <template #header="{ collapsed }">
+        <div class="flex items-center gap-2 px-1">
+          <UIcon name="i-lucide-network" class="size-6 text-primary shrink-0" />
+          <div v-if="!collapsed" class="flex flex-col leading-tight min-w-0">
+            <span class="font-semibold tracking-tight font-mono">DDI-Buntu</span>
+            <span v-if="about?.version" class="text-xs text-muted font-mono truncate" :title="about?.hostname">v{{ about.version }}<template v-if="about?.hostname"> · {{ about.hostname }}</template></span>
+          </div>
+        </div>
+      </template>
+      <template #default="{ collapsed }">
+        <UNavigationMenu :items="nav" orientation="vertical" :collapsed="collapsed" :aria-label="t('nav.label')" />
+      </template>
+      <template #footer="{ collapsed }">
+        <div class="flex items-center gap-2 w-full" :class="collapsed ? 'justify-center' : 'justify-between'">
+          <span v-if="!collapsed" class="text-sm truncate" :title="user?.username">{{ user?.displayName || user?.username }}</span>
+          <span v-else-if="about?.version" class="sr-only">v{{ about.version }}</span>
+          <UButton v-if="user?.source === 'local'" icon="i-lucide-key-round" color="neutral" variant="ghost" size="sm" :aria-label="t('login.change_password')" @click="pwOpen = true" />
+          <UButton icon="i-lucide-log-out" color="neutral" variant="ghost" size="sm" :aria-label="t('nav.logout')" @click="logout" />
+        </div>
+      </template>
+    </UDashboardSidebar>
+
+    <UDashboardPanel>
+      <template #header>
+        <UDashboardNavbar :title="title">
+          <template #right>
+            <UButton color="neutral" variant="ghost" size="sm" :label="lang === 'fr' ? 'EN' : 'FR'" :aria-label="t('nav.language')" @click="setLang(lang === 'fr' ? 'en' : 'fr')" />
+            <UColorModeButton :aria-label="t('nav.theme')" />
+          </template>
+        </UDashboardNavbar>
+      </template>
+      <template #body>
+        <slot />
+      </template>
+    </UDashboardPanel>
+    <PasswordDialog v-model:open="pwOpen" />
+  </UDashboardGroup>
+</template>

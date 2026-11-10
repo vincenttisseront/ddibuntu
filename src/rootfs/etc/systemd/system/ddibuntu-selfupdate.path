@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for an update request from the DDI-Buntu console
+
+[Path]
+PathChanged=/var/lib/ddibuntu/generated/.update-request
+Unit=ddibuntu-selfupdate.service
+
+[Install]
+WantedBy=multi-user.target

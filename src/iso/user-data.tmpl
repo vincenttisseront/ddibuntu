@@ -1,0 +1,29 @@
+#cloud-config
+# DDI-Buntu @@VERSION@@ — installation automatique (Subiquity). Généré par build-ddibuntu.sh.
+autoinstall:
+  version: 1
+  # pas de mise à jour de l'installateur depuis Internet : la chaîne reste celle de l'ISO vérifiée
+  refresh-installer:
+    update: false
+  # aucune question pendant l'installation : réseau, nom, compte sont demandés par l'assistant
+  interactive-sections: []
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  # compte d'installation : mot de passe aléatoire jeté à la construction, supprimé par l'assistant
+  identity:
+    hostname: ddibuntu
+    username: ddisetup
+    password: "@@PASSHASH@@"
+  ssh:
+    install-server: true
+    allow-pw: false
+  storage:
+    layout:
+      name: lvm
+  apt:
+    geoip: false
+    fallback: offline-install
+  late-commands:
+    - bash /cdrom/ddibuntu/late.sh
+  shutdown: reboot

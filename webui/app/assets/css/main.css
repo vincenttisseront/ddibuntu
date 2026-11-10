@@ -1,0 +1,39 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+/* Polices embarquées (aucun téléchargement externe : l'appliance fonctionne hors ligne) */
+@import "@fontsource/fira-sans/latin-400.css";
+@import "@fontsource/fira-sans/latin-500.css";
+@import "@fontsource/fira-sans/latin-600.css";
+@import "@fontsource/fira-sans/latin-700.css";
+@import "@fontsource/fira-code/latin-400.css";
+@import "@fontsource/fira-code/latin-500.css";
+
+@theme static {
+  --font-sans: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Fira Code", ui-monospace, "SFMono-Regular", monospace;
+
+  /* Bleu « données » : 800 = #1E40AF (primaire), 500 = #3B82F6 (secondaire) */
+  --color-brand-50: #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+  --color-brand-700: #1d4ed8;
+  --color-brand-800: #1e40af;
+  --color-brand-900: #1e3a8a;
+  --color-brand-950: #172554;
+
+  /* Accent ambre (#F59E0B) : alertes, seuils d'occupation */
+  --color-accent-500: #f59e0b;
+  --color-accent-600: #d97706;
+}
+
+:root { --ui-radius: 0.5rem; }
+
+/* Accessibilité : focus visible partout, curseur sur les éléments cliquables, mouvement réduit */
+:focus-visible { outline: 2px solid var(--color-brand-500); outline-offset: 2px; }
+button, [role="tab"], [role="button"], summary, select { cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { *, ::before, ::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; } }
+.num { font-variant-numeric: tabular-nums; }

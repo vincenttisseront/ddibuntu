@@ -1,0 +1,31 @@
+[Unit]
+Description=DDI-Buntu web console (HTTPS)
+After=postgresql.service ddibuntu-db-init.service network-online.target
+Wants=postgresql.service ddibuntu-db-init.service
+ConditionPathExists=/etc/ddibuntu/console.env
+
+[Service]
+User=ddiconsole
+Group=ddiconsole
+EnvironmentFile=/etc/ddibuntu/console.env
+ExecStart=/usr/local/lib/ddibuntu/console-start
+Restart=on-failure
+RestartSec=3
+# Moindre privilège : écriture seulement dans le dossier de dépôt ; le port 443 par capacité, pas par root
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ddibuntu/generated
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

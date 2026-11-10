@@ -1,0 +1,11 @@
+[Unit]
+Description=DDI-Buntu: daily check for a new version
+
+[Timer]
+OnBootSec=15min
+OnCalendar=daily
+RandomizedDelaySec=4h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

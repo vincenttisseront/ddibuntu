@@ -1,0 +1,2 @@
+{ "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler", "strict": true, "noEmit": true, "skipLibCheck": true, "types": ["node"], "esModuleInterop": true, "noUncheckedIndexedAccess": false, "baseUrl": ".", "paths": {"~~/*": ["./*"]} },
+  "include": ["server/utils/**/*.ts", "server/handlers/**/*.ts"] }

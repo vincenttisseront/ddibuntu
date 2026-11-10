@@ -1,0 +1,9 @@
+[Unit]
+Description=DDI-Buntu: look for a new version (no installation)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-selfupdate check --auto
+TimeoutStartSec=5min

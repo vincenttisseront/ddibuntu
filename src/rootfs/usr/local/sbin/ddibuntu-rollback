@@ -1,0 +1,141 @@
+#!/bin/bash
+# ddibuntu-rollback — points de restauration de la configuration système (nom, réseau, clavier, langue,
+# fuseau, réseaux d'administration, pare-feu). Un point de restauration contient ddibuntu.conf (sans secret) ;
+# restaurer = ré-appliquer cette configuration avec ddibuntu-apply, donc par le même chemin validé.
+# DDI_ROOT non vide = mode hors-ligne (tests) : fichiers sous ce préfixe, aucun service touché.
+set -euo pipefail
+umask 077
+
+DDI_LIBDIR="${DDI_LIBDIR:-/usr/local/lib/ddibuntu}"
+# shellcheck source=/dev/null
+. "$DDI_LIBDIR/common.sh"
+
+SNAPDIR="$DDI_STATEDIR/snapshots"
+KEEP="${DDI_SNAPSHOT_KEEP:-20}"
+APPLY_BIN="${DDI_APPLY_BIN:-/usr/local/sbin/ddibuntu-apply}"
+SYSTEMD_RUN="${DDI_SYSTEMD_RUN:-systemd-run}"
+SYSTEMCTL="${DDI_SYSTEMCTL:-systemctl}"
+PENDING="$DDI_STATEDIR/revert-pending"
+SELF="${DDI_SELF:-$0}"
+
+usage() {
+  cat <<'USAGE'
+Usage : ddibuntu-rollback COMMANDE
+  create [RAISON]         crée un point de restauration de la configuration actuelle (affiche son identifiant)
+  list [--porcelain]      liste les points de restauration, du plus récent au plus ancien
+  show ID                 détaille un point de restauration
+  last                    identifiant du point de restauration le plus récent
+  restore ID [--yes]      ré-applique la configuration d'un point de restauration ; l'état actuel est
+                          conservé dans un nouveau point « avant-restauration » (la restauration est donc réversible)
+  arm N ID                programme un retour automatique vers ID dans N secondes (minuteur systemd)
+  confirm                 annule le retour automatique programmé (la configuration est conservée)
+  prune [N]               ne garde que les N points les plus récents (défaut : 20)
+USAGE
+}
+
+valid_id() { [[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z(-[a-z0-9-]{1,40})?$ ]]; }
+slug() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-40; }
+need_id() { valid_id "${1:-}" || ddi_die "identifiant de point de restauration invalide : ${1:-(vide)}"; [ -d "$SNAPDIR/$1" ] || ddi_die "point de restauration introuvable : $1"; }
+meta() { sed -n "s/^$2=//p" "$SNAPDIR/$1/meta" 2>/dev/null | head -1; }
+
+cmd_create() {
+  local reason="${1:-${DDI_SNAPSHOT_REASON:-manuel}}" id base n=1 d f
+  [ -f "$DDI_CONFFILE" ] || ddi_die "aucune configuration à sauvegarder ($DDI_CONFFILE absent)"
+  reason="$(slug "$reason")"
+  base="$(date -u +%Y%m%dT%H%M%SZ)"; [ -z "$reason" ] || base="$base-$reason"
+  id="$base"; while [ -e "$SNAPDIR/$id" ]; do n=$((n + 1)); id="$base-$n"; done
+  mkdir -p "$SNAPDIR"; chmod 0700 "$SNAPDIR"
+  d="$SNAPDIR/$id.tmp"; rm -rf "$d"; mkdir -p "$d"
+  cp -p "$DDI_CONFFILE" "$d/ddibuntu.conf"
+  # copies à titre d'audit, jamais de secret (ni clé TLS, ni jeton) : seuls ces fichiers fixes sont conservés
+  for f in etc/hostname etc/hosts etc/timezone etc/default/keyboard etc/netplan/50-ddibuntu.yaml etc/ddibuntu/nftables.nft; do
+    if [ -f "${DDI_ROOT}/$f" ]; then mkdir -p "$d/files/$(dirname "$f")"; cp -p "${DDI_ROOT}/$f" "$d/files/$f"; fi
+  done
+  {
+    printf 'date=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'reason=%s\n' "${reason:-manuel}"
+    printf 'version=%s\n' "$(ddi_version)"
+    printf 'user=%s\n' "${SUDO_USER:-$(id -un)}"
+  } > "$d/meta"
+  mv "$d" "$SNAPDIR/$id"
+  printf '%s\n' "$id" > "$DDI_STATEDIR/last-snapshot"
+  cmd_prune "$KEEP" >/dev/null
+  printf '%s\n' "$id"
+}
+
+# Du plus récent au plus ancien, d'après la date exacte de création (le nom seul ne départage pas deux points créés dans la même seconde).
+list_ids() { [ -d "$SNAPDIR" ] || return 0; find "$SNAPDIR" -mindepth 1 -maxdepth 1 -type d ! -name '*.tmp' -printf '%T@ %f\n' | sort -rn | cut -d' ' -f2-; }
+
+cmd_list() {
+  local id
+  while IFS= read -r id; do
+    if [ "${1:-}" = "--porcelain" ]; then printf '%s\t%s\t%s\n' "$id" "$(meta "$id" date)" "$(meta "$id" reason)"
+    else printf '%s  %s  %s  (version %s)\n' "$id" "$(meta "$id" date)" "$(meta "$id" reason)" "$(meta "$id" version)"; fi
+  done < <(list_ids)
+}
+
+cmd_show() {
+  need_id "${1:-}"
+  cat "$SNAPDIR/$1/meta"
+  printf '%s\n' '--- configuration ---'
+  cat "$SNAPDIR/$1/ddibuntu.conf"
+}
+
+cmd_last() {
+  local id=""
+  [ ! -f "$DDI_STATEDIR/last-snapshot" ] || id="$(head -1 "$DDI_STATEDIR/last-snapshot")"
+  if valid_id "$id" && [ -d "$SNAPDIR/$id" ]; then printf '%s\n' "$id"; else list_ids | head -1; fi
+}
+
+cmd_prune() {
+  local n="${1:-$KEEP}" id i=0
+  if ! [[ "$n" =~ ^[0-9]+$ ]] || [ "$n" -lt 1 ]; then ddi_die "prune attend un nombre >= 1"; fi
+  while IFS= read -r id; do
+    i=$((i + 1)); if [ "$i" -gt "$n" ]; then rm -rf "${SNAPDIR:?}/$id"; fi
+  done < <(list_ids)
+}
+
+cmd_restore() {
+  local id="${1:-}" pre
+  need_id "$id"; shift || true
+  [ -f "$SNAPDIR/$id/ddibuntu.conf" ] || ddi_die "point de restauration sans configuration : $id"
+  [ "$(id -u)" -eq 0 ] || ddi_die "à lancer en root (sudo)"
+  # l'état actuel est conservé d'abord : restaurer est lui-même réversible
+  pre="$(cmd_create avant-restauration)"
+  if ! DDI_NO_SNAPSHOT=1 "$APPLY_BIN" --config "$SNAPDIR/$id/ddibuntu.conf" >/dev/null; then
+    ddi_warn "la restauration de $id a échoué : retour à l'état précédent ($pre)"
+    DDI_NO_SNAPSHOT=1 "$APPLY_BIN" --config "$SNAPDIR/$pre/ddibuntu.conf" >/dev/null || ddi_warn "le retour à l'état précédent a lui aussi échoué : voir « ddibuntu-rollback list »"
+    exit 1
+  fi
+  ddi_log "configuration restaurée depuis $id (état précédent : $pre)"
+  printf 'Restauré : %s ; état précédent conservé : %s\n' "$id" "$pre"
+}
+
+cmd_arm() {
+  local n="${1:-}" id="${2:-}"
+  if ! [[ "$n" =~ ^[0-9]+$ ]] || [ "$n" -lt 10 ] || [ "$n" -gt 3600 ]; then ddi_die "arm attend un délai entre 10 et 3600 secondes"; fi
+  need_id "$id"
+  cmd_confirm
+  "$SYSTEMD_RUN" --quiet --unit=ddibuntu-revert --on-active="${n}s" --collect "$SELF" restore "$id" --yes
+  printf '%s %s\n' "$id" "$(( $(date +%s) + n ))" > "$PENDING"
+  printf 'Retour automatique vers %s dans %s s ; lancer « ddibuntu-rollback confirm » pour conserver la configuration.\n' "$id" "$n"
+}
+
+cmd_confirm() {
+  "$SYSTEMCTL" stop ddibuntu-revert.timer ddibuntu-revert.service >/dev/null 2>&1 || true
+  rm -f "$PENDING"
+}
+
+CMD="${1:-}"; shift || true
+case "$CMD" in
+  create)  cmd_create "$@" ;;
+  list)    cmd_list "$@" ;;
+  show)    cmd_show "$@" ;;
+  last)    cmd_last ;;
+  restore) cmd_restore "$@" ;;
+  arm)     cmd_arm "$@" ;;
+  confirm) cmd_confirm ;;
+  prune)   cmd_prune "$@" ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

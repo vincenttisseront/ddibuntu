@@ -1,0 +1,21 @@
+# Publier une version
+
+## Publication automatique (recommandée) — ce que les appliances interrogent
+1. Mettre à jour `src/VERSION` et `CHANGELOG.md` (la section `## X.Y.Z` devient les notes de version affichées dans la console).
+2. `git tag vX.Y.Z && git push origin vX.Y.Z` : le workflow `release.yml` vérifie que le tag = `src/VERSION`, construit la console, lance lint et tests, produit `ddibuntu-update-X.Y.Z.tar.gz` (`build-ddibuntu.sh --bundle`) et le fichier unique, **signe `SHA256SUMS` (Ed25519)** avec le secret `UPDATE_SIGNING_KEY`, contrôle la signature avec la clé publique du dépôt, puis crée la release.
+3. Les appliances voient la nouvelle version à leur prochaine recherche (quotidienne ou bouton) ; l'administrateur l'installe depuis la console.
+
+**Clé de signature** : la clé publique `src/rootfs/etc/ddibuntu/update-pubkey.pem` est embarquée dans chaque appliance ; la clé privée n'existe que dans le secret GitHub `UPDATE_SIGNING_KEY`. Pour la renouveler : `openssl genpkey -algorithm ed25519 -out k.pem`, `openssl pkey -in k.pem -pubout -out src/rootfs/etc/ddibuntu/update-pubkey.pem`, `gh secret set UPDATE_SIGNING_KEY < k.pem`, puis publier une version signée avec **l'ancienne** clé qui embarque la nouvelle clé publique (les appliances n'acceptent que ce qui est signé par la clé qu'elles ont déjà). Une clé perdue ou compromise impose de réinstaller par ISO ou de poser le nouveau fichier à la main sur chaque appliance.
+
+**Dépôt privé** : poser un jeton GitHub en lecture seule dans `/etc/ddibuntu/update-token` (root, 0600) sur chaque appliance. Dépôt autre : éditer `REPO` dans `/etc/ddibuntu/update.conf`.
+
+L'archive de mise à jour ne contient ni Ubuntu, ni paquets, ni Node.js : elle remplace la console, les scripts et les unités. Les paquets système (BIND, Kea…) restent à jour par `apt` ; un changement de Node.js passe par l'ISO (mode Update).
+
+## Publication manuelle (fichiers seuls)
+
+1. Mettre à jour `src/VERSION` et `CHANGELOG.md`.
+2. `tools/build-console.sh`, puis `make test-unit`, `make test-e2e` et `make test-shell`.
+3. `make single` produit `dist/build-ddibuntu.sh` (script racine + charge utile).
+4. `dist/build-ddibuntu.sh --makeps1 --out dist` produit le lanceur Windows `build-ddibuntu.ps1` (l'empreinte du fichier unique y est vérifiée au lancement).
+5. `cd dist && sha256sum build-ddibuntu.sh build-ddibuntu.ps1 > SHA256SUMS.txt`.
+6. Créer une *release* GitHub avec ces trois fichiers ; l'ISO n'est pas publiée (elle dépend de l'ISO Canonical, construite par chaque utilisateur).

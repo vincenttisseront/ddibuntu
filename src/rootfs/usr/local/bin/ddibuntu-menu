@@ -1,0 +1,73 @@
+#!/bin/bash
+# ddibuntu-menu — menu console affiché après la connexion d'un administrateur.
+set -uo pipefail
+
+DDI_LIBDIR="${DDI_LIBDIR:-/usr/local/lib/ddibuntu}"
+# shellcheck source=/dev/null
+. "$DDI_LIBDIR/common.sh"
+# shellcheck source=/dev/null
+. "$DDI_LIBDIR/logo.sh"
+export TERM="${TERM:-linux}"
+[ -t 0 ] && [ -t 1 ] || exit 0
+
+ddi_cfg_reset
+if [ -f "$DDI_CONFFILE" ]; then ddi_cfg_read "$DDI_CONFFILE"; fi
+ddi_load_lang "${CFG_LANGUAGE:-fr}"
+
+DDI_BACKTITLE="DDI-Buntu $(ddi_version) - DNS / DHCP / IPAM"
+wt_yesno() { whiptail --title "$M_TITLE" --backtitle "$DDI_BACKTITLE" --yesno "$1" 12 74; }
+
+show_status() {
+  local fw ssh
+  fw="$(systemctl is-active nftables 2>/dev/null || true)"
+  ssh="$(systemctl is-active ssh 2>/dev/null || true)"
+  whiptail --title "$M_TITLE" --backtitle "$DDI_BACKTITLE" --msgbox "$(ddi_logo plain)"$'\n\n'"$(ddi_fmt "$M_STATUS_FMT" "$(ddi_version)" "$(hostname)" "$fw" "$ssh" "$(ip -br address | grep -v '^lo ')")" 24 76
+}
+
+show_console() {
+  local ip tok
+  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  tok="$(sudo cat /var/lib/ddibuntu/setup-token 2>/dev/null || echo '-')"
+  whiptail --title "$M_TITLE" --backtitle "$DDI_BACKTITLE" --msgbox "$(ddi_fmt "$M_CONSOLE_FMT" "${ip:-?}" "$tok")" 16 74
+}
+
+# Tout changement de configuration est annulé automatiquement sans confirmation (anti-verrouillage) :
+# 60 s depuis une session SSH (le pare-feu a son propre minuteur), 120 s sur la console.
+setup() {
+  if [ -n "${SSH_CONNECTION:-}" ]; then
+    sudo /usr/local/sbin/ddibuntu-setup --fw-confirm 60 --arm 60 "$@"
+  else
+    sudo /usr/local/sbin/ddibuntu-setup --arm 120 "$@"
+  fi
+}
+
+while :; do
+  choice="$(whiptail --title "$M_TITLE" --backtitle "$DDI_BACKTITLE" --cancel-button "$M_MENU_QUIT" \
+    --menu "$(ddi_fmt "$M_MENU_PROMPT" "$(ddi_version)" "$(hostname)")" 23 76 12 \
+    status "$M_MENU_STATUS" \
+    console "$M_MENU_CONSOLE" \
+    network "$M_MENU_NETWORK" \
+    adminnets "$M_MENU_ADMINNETS" \
+    language "$M_MENU_LANGUAGE" \
+    keyboard "$M_MENU_KEYBOARD" \
+    restore "$M_MENU_RESTORE" \
+    password "$M_MENU_PASSWORD" \
+    logs "$M_MENU_LOGS" \
+    reboot "$M_MENU_REBOOT" \
+    shutdown "$M_MENU_SHUTDOWN" \
+    shell "$M_MENU_SHELL" 3>&1 1>&2 2>&3)" || break
+  case "$choice" in
+    status)    show_status ;;
+    console)   show_console ;;
+    network)   setup --network ;;
+    adminnets) setup --adminnets ;;
+    language)  setup --language; ddi_cfg_reset; ddi_cfg_read "$DDI_CONFFILE"; ddi_load_lang "${CFG_LANGUAGE:-fr}" ;;
+    keyboard)  setup --keyboard ;;
+    restore)   setup --restore ;;
+    password)  passwd ;;
+    logs)      sudo journalctl -n 300 --no-pager | less ;;
+    reboot)    if wt_yesno "$M_CONFIRM_REBOOT"; then sudo systemctl reboot; fi ;;
+    shutdown)  if wt_yesno "$M_CONFIRM_SHUTDOWN"; then sudo systemctl poweroff; fi ;;
+    shell)     break ;;
+  esac
+done

@@ -1,0 +1,7 @@
+[Unit]
+Description=Apply the DDI-Buntu DNS and DHCP configuration (privileged)
+After=named.service postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-reload

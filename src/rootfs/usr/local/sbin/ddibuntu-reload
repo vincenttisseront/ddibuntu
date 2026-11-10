@@ -1,0 +1,129 @@
+#!/bin/bash
+# ddibuntu-reload — applique, en root, la configuration déposée par la console web (utilisateur sans privilège).
+# Frontière de privilèges : le contenu vient d'un processus non privilégié, donc il est contrôlé avant installation
+# (pas d'include arbitraire, pas de hooks Kea, chemins imposés), validé par les outils officiels, et restauré en cas d'échec.
+set -euo pipefail
+umask 022
+
+GEN="${DDI_GENERATED_DIR:-/var/lib/ddibuntu/generated}"
+BIND_ETC="${DDI_BIND_ETC:-/etc/bind}"
+ZONES="${DDI_ZONES_RUNTIME_DIR:-/var/lib/bind/ddibuntu}"
+KEA_ETC="${DDI_KEA_ETC:-/etc/kea}"
+STATE="${DDI_STATE_DIR:-/var/lib/ddibuntu}"
+BACKUP="$STATE/backup"
+STATUS="$STATE/reload-status"; ROLLED_BACK=0
+log() { printf 'ddibuntu-reload: %s\n' "$*"; logger -t ddibuntu-reload -- "$*" 2>/dev/null || true; }
+# Résultat lisible par la console web (aucune donnée sensible) : at=epoch, ok=1|0, message=une ligne
+status() {
+  local m; m="$(printf '%s' "$2" | tr '\n\r' '  ' | cut -c1-300)"
+  mkdir -p "$STATE" 2>/dev/null || return 0
+  { printf 'at=%s\nok=%s\nmessage=%s\n' "$(date +%s)" "$1" "$m" > "$STATUS.new" && chmod 0644 "$STATUS.new" && mv -f "$STATUS.new" "$STATUS"; } 2>/dev/null || true
+}
+fail() {
+  local m="$*"
+  if [ "$ROLLED_BACK" -eq 1 ]; then m="$m (retour arrière automatique effectué)"; fi
+  printf 'ddibuntu-reload: ERREUR : %s\n' "$m" >&2; logger -t ddibuntu-reload -p user.err -- "$m" 2>/dev/null || true
+  status 0 "$m"; exit 1
+}
+
+[ "$(id -u)" -eq 0 ] || fail "à lancer en root"
+for f in named.conf.options named.conf.zones kea-dhcp4.conf; do [ -f "$GEN/$f" ] || fail "fichier absent : $GEN/$f"; done
+
+# ---- Contrôles de la frontière de privilèges ----
+check_named() {   # $1 = fichier de configuration BIND généré
+  local f="$1" bad
+  bad="$(grep -nE '^[[:space:]]*include[[:space:]]' "$f" | grep -vF 'include "/etc/bind/ddi-ddns.key";' || true)"
+  [ -z "$bad" ] || fail "directive include refusée dans $(basename "$f") : $bad"
+  if grep -nE '(^|[^a-zA-Z-])(controls|dyndb|plugin|trust-anchors|managed-keys|session-keyfile|pid-file|lock-file)([^a-zA-Z-]|$)' "$f" | grep -q .; then fail "directive interdite dans $(basename "$f")"; fi
+  bad="$(grep -oE '(^|[^a-zA-Z-])(directory|file) "[^"]*"' "$f" | sed -E 's/^[^a-z]*//' | grep -vE "^file \"($ZONES/[A-Za-z0-9._-]+|/var/log/named/query\.log)\"$|^directory \"/var/cache/bind\"$" || true)"
+  [ -z "$bad" ] || fail "chemin refusé dans $(basename "$f") : $bad"
+}
+check_zone() {    # $1 = fichier de zone
+  # shellcheck disable=SC2016  # « $INCLUDE » est une directive de zone littérale, pas une variable
+  if grep -qiE '^[[:space:]]*\$(INCLUDE|GENERATE)' "$1"; then fail "directive \$INCLUDE/\$GENERATE refusée dans $(basename "$1")"; fi
+  case "$(basename "$1")" in db.*) ;; *) fail "nom de fichier de zone inattendu : $1" ;; esac
+}
+check_kea() {     # $1 = kea-dhcp4.conf
+  python3 - "$1" <<'PY' || fail "configuration Kea refusée (voir ci-dessus)"
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception as e:
+    sys.exit("JSON illisible : %s" % e)
+if set(d) != {"Dhcp4"}: sys.exit("clés de premier niveau inattendues : %s" % sorted(d))
+k = d["Dhcp4"]
+if "hooks-libraries" in k: sys.exit("hooks-libraries interdit (exécution de code)")
+sock = k.get("control-socket", {}).get("socket-name", "")
+if not sock.startswith("/run/kea/") or ".." in sock: sys.exit("socket de contrôle hors de /run/kea")
+if k.get("lease-database", {}).get("host", "127.0.0.1") not in ("127.0.0.1", "localhost"): sys.exit("base de baux distante refusée")
+for lg in k.get("loggers", []):
+    for o in lg.get("output_options", []):
+        if o.get("output") not in ("stdout", "stderr", "syslog"): sys.exit("sortie de journal refusée : %s" % o.get("output"))
+PY
+}
+
+log "contrôle du contenu déposé"
+check_named "$GEN/named.conf.options"; check_named "$GEN/named.conf.zones"; check_kea "$GEN/kea-dhcp4.conf"
+shopt -s nullglob
+for z in "$GEN"/zones/db.*; do check_zone "$z"; done
+
+# ---- Sauvegarde puis installation ----
+install -d -m 0750 "$BACKUP"
+rm -rf "$BACKUP/zones"; install -d -m 0750 "$BACKUP/zones"
+for f in "$ZONES"/db.*; do cp -p "$f" "$BACKUP/zones/"; done
+for f in "$BIND_ETC/named.conf.options" "$BIND_ETC/named.conf.local" "$KEA_ETC/kea-dhcp4.conf"; do [ -f "$f" ] && cp -p "$f" "$BACKUP/$(basename "$f").prev"; done
+# Les services ont peut-être déjà relu la NOUVELLE configuration : après avoir remis les anciens fichiers, on leur fait relire l'ancienne.
+reload_after_restore() {
+  [ -z "${DDI_RELOAD_NOSERVICES:-}" ] || return 0
+  systemctl reload named >/dev/null 2>&1 || systemctl restart named >/dev/null 2>&1 || log "BIND n'a pas pu relire l'ancienne configuration"
+  if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["Dhcp4"].get("subnet4") else 1)' "$KEA_ETC/kea-dhcp4.conf" 2>/dev/null; then
+    systemctl reload-or-restart kea-dhcp4-server >/dev/null 2>&1 || log "Kea n'a pas pu relire l'ancienne configuration"
+  fi
+}
+restore() {
+  ROLLED_BACK=1; log "retour arrière"
+  for f in "$ZONES"/db.*; do rm -f "$f"; done
+  for f in "$BACKUP/zones"/db.*; do cp -p "$f" "$ZONES/"; done
+  for p in "$BACKUP"/*.prev; do
+    b="$(basename "$p" .prev)"
+    case "$b" in kea-dhcp4.conf) cp -p "$p" "$KEA_ETC/$b" ;; *) cp -p "$p" "$BIND_ETC/$b" ;; esac
+  done
+  reload_after_restore
+}
+
+install -d -m 0750 -o bind -g bind "$ZONES"
+new=()
+for z in "$GEN"/zones/db.*; do install -m 0640 -o bind -g bind "$z" "$ZONES/$(basename "$z")"; new+=("$(basename "$z")"); done
+# fichiers de zone retirés de la configuration : suppression des seuls fichiers « db.* » qui ne sont plus déclarés
+for old in "$ZONES"/db.*; do
+  b="$(basename "$old")"
+  if ! printf '%s\n' "${new[@]:-}" | grep -qxF "$b" && ! grep -qF "\"$ZONES/$b\"" "$GEN/named.conf.zones"; then rm -f "$old" "$old.jnl"; fi
+done
+
+install -m 0644 -o root -g bind "$GEN/named.conf.options" "$BIND_ETC/named.conf.options"
+install -m 0644 -o root -g bind "$GEN/named.conf.zones" "$BIND_ETC/named.conf.local"
+install -d -m 0755 "$KEA_ETC"
+KEA_GROUP="$(getent group _kea >/dev/null && echo _kea || echo root)"
+install -m 0640 -o root -g "$KEA_GROUP" "$GEN/kea-dhcp4.conf" "$KEA_ETC/kea-dhcp4.conf"
+
+named-checkconf "$BIND_ETC/named.conf" || { restore; fail "named-checkconf a refusé la configuration installée"; }
+for z in "$ZONES"/db.*; do
+  # shellcheck disable=SC2016
+  zname="$(grep -m1 -E '^\$ORIGIN ' "$z" | awk '{print $2}' | sed 's/\.$//')"
+  [ -n "$zname" ] || continue
+  named-checkzone -k warn "$zname" "$z" >/dev/null || { restore; fail "named-checkzone a refusé la zone $zname"; }
+done
+
+# ---- Rechargement des services (sauté dans les tests sans systemd) ----
+if [ -z "${DDI_RELOAD_NOSERVICES:-}" ]; then
+  if ! systemctl reload named; then systemctl restart named || { restore; fail "BIND ne redémarre pas"; }; fi
+  if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["Dhcp4"].get("subnet4") else 1)' "$KEA_ETC/kea-dhcp4.conf"; then
+    systemctl enable kea-dhcp4-server >/dev/null 2>&1
+    if ! systemctl reload-or-restart kea-dhcp4-server; then restore; fail "Kea ne démarre pas avec la nouvelle configuration"; fi
+  else
+    systemctl disable --now kea-dhcp4-server >/dev/null 2>&1 || true   # aucune étendue : le service reste arrêté
+  fi
+fi
+date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-reload"
+log "configuration appliquée"
+status 1 "configuration appliquée"

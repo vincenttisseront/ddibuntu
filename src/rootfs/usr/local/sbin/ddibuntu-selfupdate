@@ -1,0 +1,298 @@
+#!/bin/bash
+# ddibuntu-selfupdate — détection et installation d'une nouvelle version depuis les releases GitHub, EN ROOT.
+# Frontière de privilèges : la console web (sans privilège) ne fait que DÉPOSER une demande
+# (/var/lib/ddibuntu/generated/.update-request) et LIRE l'état (/var/lib/ddibuntu/update-status.json).
+# Ce script ne fait confiance à rien de la demande : il redemande lui-même la dernière release, n'installe que
+# cette version, et seulement après avoir vérifié la signature Ed25519 (clé publique épinglée) puis la somme SHA-256.
+#
+#   check              interroge GitHub, écrit l'état (aucune installation)
+#   request            traite la demande déposée par la console (check | apply <version>)
+#   apply <version>    installe cette version si c'est la dernière release signée
+#
+# Variables de test : DDI_ROOT, DDI_TEST=1, DDI_UPDATE_API, DDI_UPDATE_PUBKEY, DDI_NO_SYSTEMD=1
+set -euo pipefail
+umask 022
+
+# Le script se remplace lui-même pendant l'installation (il fait partie des fichiers déployés) : exécution depuis une copie.
+if [ -z "${DDI_SU_COPY:-}" ]; then
+  _cp="$(mktemp "${DDI_RUNDIR:-/run}/ddibuntu-selfupdate.XXXXXX")"
+  cp -- "$0" "$_cp"
+  DDI_SU_COPY="$_cp" exec bash "$_cp" "$@"
+fi
+trap 'rm -f -- "${DDI_SU_COPY:-}"' EXIT
+
+DDI_LIBDIR="${DDI_LIBDIR:-/usr/local/lib/ddibuntu}"
+# shellcheck source=/dev/null
+. "$DDI_LIBDIR/common.sh"
+
+TEST="${DDI_TEST:-0}"
+CONF="$DDI_CONFDIR/update.conf"
+STATUS="$DDI_STATEDIR/update-status.json"
+GEN="$DDI_STATEDIR/generated"
+REQ="$GEN/.update-request"
+WORKDIR="$DDI_STATEDIR/update-work"
+BACKUPS="$DDI_STATEDIR/update-backup"
+PUBKEY="${DDI_UPDATE_PUBKEY:-$DDI_CONFDIR/update-pubkey.pem}"
+TOKFILE="$DDI_CONFDIR/update-token"
+API="${DDI_UPDATE_API:-https://api.github.com}"
+APP="$DDI_ROOT/opt/ddibuntu"
+REPO=""; AUTO_CHECK=1
+MAX_BUNDLE=$((400 * 1024 * 1024))
+
+log() { printf 'ddibuntu-selfupdate: %s\n' "$*"; logger -t ddibuntu-selfupdate -- "$*" 2>/dev/null || true; }
+
+# ---- état lisible par la console (JSON, sans secret) ----
+st() {   # st clé=valeur … : fusionne dans update-status.json (écriture atomique)
+  mkdir -p "$DDI_STATEDIR"
+  python3 - "$STATUS" "$@" <<'PY'
+import json, os, sys, time
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}
+for kv in sys.argv[2:]:
+    k, _, v = kv.partition('=')
+    if k == 'available':
+        d[k] = (v == '1')
+    elif k in ('checked_at',):
+        d[k] = int(v)
+    else:
+        d[k] = v[:4000]
+d['updated_at'] = int(time.time())
+tmp = p + '.new'
+with open(tmp, 'w') as f:
+    json.dump(d, f)
+os.chmod(tmp, 0o644)
+os.replace(tmp, p)
+PY
+}
+die() {
+  printf 'ddibuntu-selfupdate: ERREUR : %s\n' "$*" >&2; logger -t ddibuntu-selfupdate -p user.err -- "$*" 2>/dev/null || true
+  st state=failed "message=$*" "error=$*" || true
+  exit 1
+}
+
+load_conf() {
+  local line k v
+  if [ -f "$CONF" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in ''|'#'*) continue ;; esac
+      k="${line%%=*}"; v="${line#*=}"; v="${v#\"}"; v="${v%\"}"
+      case "$k" in REPO) REPO="$v" ;; AUTO_CHECK) AUTO_CHECK="$v" ;; *) ;; esac
+    done < "$CONF"
+  fi
+  [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die "dépôt de mises à jour invalide ou absent dans $CONF"
+}
+
+# curl vers GitHub ; le jeton éventuel (dépôt privé) passe par l'entrée standard, jamais dans la ligne de commande
+gh_curl() {
+  local proto='=https' tok=""
+  [ "$TEST" = 1 ] && proto='=http,https'
+  [ -r "$TOKFILE" ] && tok="$(tr -d '\n\r \t' < "$TOKFILE")"
+  if [ -n "$tok" ]; then
+    printf 'header = "Authorization: Bearer %s"\n' "$tok" | curl -K - -fsSL --proto "$proto" --connect-timeout 15 --max-time 1800 -H 'X-GitHub-Api-Version: 2022-11-28' "$@"
+  else
+    curl -fsSL --proto "$proto" --connect-timeout 15 --max-time 1800 -H 'X-GitHub-Api-Version: 2022-11-28' "$@"
+  fi
+}
+
+# ---- release la plus récente ----
+REL_JSON=""; LATEST=""; NOTES=""; PAGE=""; PUBLISHED=""; BUNDLE_URL=""; SUMS_URL=""; SIG_URL=""; BUNDLE_NAME=""
+fetch_release() {
+  REL_JSON="$(mktemp)"
+  gh_curl -H 'Accept: application/vnd.github+json' "$API/repos/$REPO/releases/latest" -o "$REL_JSON" || { rm -f "$REL_JSON"; return 1; }
+  local out
+  out="$(python3 - "$REL_JSON" <<'PY'
+import json, re, sys
+d = json.load(open(sys.argv[1]))
+tag = str(d.get('tag_name', ''))
+m = re.fullmatch(r'v?(\d+\.\d+\.\d+)', tag)
+if not m or d.get('draft') or d.get('prerelease'):
+    sys.exit(3)
+ver = m.group(1)
+want = {'ddibuntu-update-%s.tar.gz' % ver: 'bundle', 'SHA256SUMS': 'sums', 'SHA256SUMS.sig': 'sig'}
+urls = {}
+for a in d.get('assets', []):
+    k = want.get(a.get('name'))
+    if k and re.fullmatch(r'https?://[^\s"\']+', str(a.get('url', ''))):
+        urls[k] = a['url']
+b = lambda s: s.replace('\n', ' ').replace('\r', ' ')
+print(ver)
+print(urls.get('bundle', ''))
+print(urls.get('sums', ''))
+print(urls.get('sig', ''))
+print(b(str(d.get('html_url', '')))[:300])
+print(b(str(d.get('published_at', '')))[:40])
+print((d.get('body') or '').replace('\r', '')[:3500].replace('\n', '\\n'))
+PY
+)" || { rm -f "$REL_JSON"; return 2; }
+  rm -f "$REL_JSON"
+  { IFS= read -r LATEST; IFS= read -r BUNDLE_URL; IFS= read -r SUMS_URL; IFS= read -r SIG_URL; IFS= read -r PAGE; IFS= read -r PUBLISHED; IFS= read -r NOTES; } <<< "$out"
+  BUNDLE_NAME="ddibuntu-update-$LATEST.tar.gz"
+  NOTES="${NOTES//\\n/$'\n'}"
+  return 0
+}
+
+newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }   # $1 est plus récente que $2
+
+cmd_check() {
+  load_conf
+  local cur rc=0
+  cur="$(ddi_version)"
+  st "current=$cur" state=checking "message=" error=
+  fetch_release || rc=$?
+  if [ "$rc" -eq 1 ]; then st state=idle "current=$cur" "checked_at=$(date +%s)" "error=Impossible de joindre GitHub (réseau, dépôt introuvable ou privé sans jeton)" "message=" ; log "GitHub injoignable"; return 1; fi
+  if [ "$rc" -eq 2 ]; then st state=idle "current=$cur" "checked_at=$(date +%s)" "error=Aucune version stable publiée (ou numéro de version invalide)" "message="; return 1; fi
+  local avail=0 err=""
+  if newer "$LATEST" "$cur"; then
+    avail=1
+    if [ -z "$BUNDLE_URL" ] || [ -z "$SUMS_URL" ] || [ -z "$SIG_URL" ]; then
+      avail=0; err="La release $LATEST n'a pas tous ses fichiers signés (archive, SHA256SUMS, SHA256SUMS.sig) : installation impossible"
+    fi
+  fi
+  st state=idle "current=$cur" "latest=$LATEST" "available=$avail" "notes=$NOTES" "url=$PAGE" "published_at=$PUBLISHED" "checked_at=$(date +%s)" "message=" "error=$err"
+  log "version installée $cur, dernière release $LATEST (disponible : $avail)"
+  return 0
+}
+
+# ---- installation ----
+rollback_needed=0; OLD_CONSOLE=""; BACKUP_DIR=""
+svc() { if [ "${DDI_NO_SYSTEMD:-0}" = 1 ]; then return 0; fi; systemctl "$@"; }
+
+do_rollback() {
+  log "RETOUR ARRIÈRE"
+  svc stop ddibuntu-console.service 2>/dev/null || true
+  if [ -n "$OLD_CONSOLE" ] && [ -d "$OLD_CONSOLE" ]; then rm -rf "$APP/console"; mv "$OLD_CONSOLE" "$APP/console"; fi
+  if [ -f "$BACKUP_DIR/replaced-files.tar.gz" ]; then tar -C "$DDI_ROOT/" -xzpf "$BACKUP_DIR/replaced-files.tar.gz" --numeric-owner 2>/dev/null || true; fi
+  if [ -f "$BACKUP_DIR/installed-version" ]; then cp "$BACKUP_DIR/installed-version" "$DDI_STATEDIR/installed-version" || true; fi
+  svc daemon-reload 2>/dev/null || true
+  svc start ddibuntu-console.service 2>/dev/null || true
+}
+
+health_ok() {
+  if [ "$TEST" = 1 ] && [ "${DDI_TEST_HEALTH_FAIL:-0}" = 1 ]; then return 1; fi
+  [ "${DDI_NO_SYSTEMD:-0}" = 1 ] && return 0
+  local port=443 p
+  p="$(sed -n 's/^NITRO_PORT=\([0-9]*\)$/\1/p' "$DDI_CONFDIR/console.env" 2>/dev/null | head -1)"; [ -z "$p" ] || port="$p"
+  curl -ksf --max-time 5 "https://127.0.0.1:$port/api/health" >/dev/null 2>&1
+}
+
+cmd_apply() {
+  local want="${1:-}" cur
+  [[ "$want" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "numéro de version demandé invalide"
+  load_conf
+  [ -f "$PUBKEY" ] || die "clé publique de signature absente ($PUBKEY) : mise à jour refusée"
+  cur="$(ddi_version)"
+  st "current=$cur" state=checking "message=Recherche de la version $want" error= "target=$want"
+  fetch_release || die "impossible de relire la dernière release sur GitHub"
+  [ "$LATEST" = "$want" ] || die "la version demandée ($want) n'est plus la dernière release ($LATEST) : relancer la recherche"
+  newer "$LATEST" "$cur" || die "la version $LATEST n'est pas plus récente que la version installée ($cur)"
+  if [ -z "$BUNDLE_URL" ] || [ -z "$SUMS_URL" ] || [ -z "$SIG_URL" ]; then die "la release $LATEST n'a pas tous ses fichiers signés"; fi
+
+  rm -rf "$WORKDIR"; mkdir -p "$WORKDIR"; chmod 0700 "$WORKDIR"
+  st state=downloading "message=Téléchargement de la version $LATEST"
+  gh_curl -H 'Accept: application/octet-stream' --max-filesize 1048576 "$SUMS_URL" -o "$WORKDIR/SHA256SUMS" || die "téléchargement de SHA256SUMS impossible"
+  gh_curl -H 'Accept: application/octet-stream' --max-filesize 4096 "$SIG_URL" -o "$WORKDIR/SHA256SUMS.sig" || die "téléchargement de la signature impossible"
+  gh_curl -H 'Accept: application/octet-stream' --max-filesize "$MAX_BUNDLE" "$BUNDLE_URL" -o "$WORKDIR/$BUNDLE_NAME" || die "téléchargement de $BUNDLE_NAME impossible"
+
+  st state=verifying "message=Vérification de la signature et de l'empreinte"
+  openssl pkeyutl -verify -pubin -inkey "$PUBKEY" -rawin -in "$WORKDIR/SHA256SUMS" -sigfile "$WORKDIR/SHA256SUMS.sig" >/dev/null 2>&1 \
+    || die "SIGNATURE INVALIDE : la mise à jour est refusée (rien n'a été modifié)"
+  local want_hash got_hash
+  want_hash="$(awk -v n="$BUNDLE_NAME" '$2 == n || $2 == "*" n {print $1; exit}' "$WORKDIR/SHA256SUMS")"
+  [[ "$want_hash" =~ ^[0-9a-f]{64}$ ]] || die "$BUNDLE_NAME absent de SHA256SUMS signé"
+  got_hash="$(sha256sum "$WORKDIR/$BUNDLE_NAME" | cut -d' ' -f1)"
+  [ "$want_hash" = "$got_hash" ] || die "somme SHA-256 de $BUNDLE_NAME incorrecte : mise à jour refusée"
+
+  mkdir -p "$WORKDIR/b"
+  tar -xzf "$WORKDIR/$BUNDLE_NAME" -C "$WORKDIR/b" || die "archive de mise à jour illisible"
+  local f
+  for f in rootfs.tar rootfs.tar.sha256 console.tar.gz VERSION; do [ -f "$WORKDIR/b/$f" ] || die "archive incomplète : $f absent"; done
+  [ "$(tr -d '\n' < "$WORKDIR/b/VERSION")" = "$LATEST" ] || die "la version contenue dans l'archive ne correspond pas à la release"
+  ( cd "$WORKDIR/b" && sha256sum -c --quiet rootfs.tar.sha256 ) || die "rootfs.tar corrompu"
+  if tar -tf "$WORKDIR/b/rootfs.tar" | grep -qE '(^|/)\.\.(/|$)'; then die "chemin dangereux dans rootfs.tar"; fi
+  if tar -tzf "$WORKDIR/b/console.tar.gz" | grep -qE '(^|/)\.\.(/|$)|^/'; then die "chemin dangereux dans console.tar.gz"; fi
+  local avail; avail="$(df -Pk "$DDI_STATEDIR" | awk 'NR==2{print $4}')"
+  [ "${avail:-0}" -ge 1048576 ] || die "moins de 1 Go libre : mise à jour refusée"
+
+  # ---- sauvegarde : dump de la base (cohérent, serveur en marche) + fichiers remplacés ----
+  st state=backup "message=Sauvegarde de la base et des fichiers remplacés"
+  BACKUP_DIR="$BACKUPS/$(date -u +%Y%m%dT%H%M%SZ)-$cur"
+  mkdir -p "$BACKUP_DIR"; chmod 0700 "$BACKUPS" "$BACKUP_DIR"
+  if command -v pg_dump >/dev/null 2>&1 && [ "${DDI_NO_SYSTEMD:-0}" != 1 ]; then
+    runuser -u postgres -- pg_dump -Fc -p "${DDI_PGPORT:-5432}" ddibuntu > "$BACKUP_DIR/db.dump" 2>"$BACKUP_DIR/db.dump.err" || die "sauvegarde de la base impossible (voir $BACKUP_DIR/db.dump.err) : mise à jour annulée"
+    [ -s "$BACKUP_DIR/db.dump" ] || die "sauvegarde de la base vide : mise à jour annulée"
+  fi
+  local list; list="$(mktemp)"
+  tar -tf "$WORKDIR/b/rootfs.tar" | sed 's,^\./,,;s,/$,,' | awk 'NF && $0 != "."' | while IFS= read -r f; do
+    if [ -e "$DDI_ROOT/$f" ] || [ -L "$DDI_ROOT/$f" ]; then [ -d "$DDI_ROOT/$f" ] && [ ! -L "$DDI_ROOT/$f" ] || printf '%s\n' "$f"; fi
+  done > "$list"
+  [ ! -d "$APP/node" ] || true
+  tar -C "$DDI_ROOT/" -czf "$BACKUP_DIR/replaced-files.tar.gz" --numeric-owner -T "$list" || { rm -f "$list"; die "sauvegarde des fichiers remplacés impossible"; }
+  rm -f "$list"
+  cp "$DDI_STATEDIR/installed-version" "$BACKUP_DIR/installed-version" 2>/dev/null || true
+
+  # ---- déploiement ----
+  st state=installing "message=Installation de la version $LATEST"
+  rollback_needed=1
+  trap 'rc=$?; if [ "$rollback_needed" = 1 ]; then do_rollback; st state=failed "message=Échec de la mise à jour, retour arrière effectué (sauvegarde : $BACKUP_DIR)" "error=Échec de la mise à jour, retour arrière effectué"; fi; rm -f -- "${DDI_SU_COPY:-}"; exit $rc' EXIT
+  svc stop ddibuntu-console.service
+  local ex=() n="$APP/console.new"
+  [ ! -e "$DDI_CONFDIR/firewall.conf" ] || ex+=(--exclude=./etc/ddibuntu/firewall.conf)
+  [ ! -e "$DDI_CONFDIR/nftables.nft" ] || ex+=(--exclude=./etc/ddibuntu/nftables.nft)
+  [ ! -e "$DDI_CONFDIR/update.conf" ] || ex+=(--exclude=./etc/ddibuntu/update.conf)
+  rm -rf "$n" "$APP/console.old"; mkdir -p "$n"
+  tar -xzf "$WORKDIR/b/console.tar.gz" --no-same-owner -C "$n"
+  [ -f "$n/app/server/index.mjs" ] || die "console de l'archive incomplète"
+  mv "$APP/console" "$APP/console.old"; OLD_CONSOLE="$APP/console.old"
+  mv "$n" "$APP/console"
+  chown -R 0:0 "$APP/console"
+  tar -xpf "$WORKDIR/b/rootfs.tar" --numeric-owner "${ex[@]}" -C "$DDI_ROOT/"
+  cp "$WORKDIR/b/VERSION" "$DDI_STATEDIR/installed-version"
+  svc daemon-reload
+  "$DDI_ROOT/usr/local/sbin/ddibuntu-fw" write >/dev/null 2>&1 || log "avertissement : règles du pare-feu non re-rendues"
+  svc enable ddibuntu-update-check.timer ddibuntu-selfupdate.path >/dev/null 2>&1 || true
+  svc start ddibuntu-update-check.timer ddibuntu-selfupdate.path >/dev/null 2>&1 || true
+  st state=restarting "message=Redémarrage de la console"
+  svc start ddibuntu-console.service
+  local ok=0
+  for _ in $(seq "${DDI_HEALTH_TRIES:-45}"); do if health_ok; then ok=1; break; fi; sleep "${DDI_HEALTH_SLEEP:-2}"; done
+  [ "$ok" = 1 ] || die "la console ne répond pas après la mise à jour"
+  rollback_needed=0
+  trap 'rm -f -- "${DDI_SU_COPY:-}"' EXIT
+  rm -rf "$OLD_CONSOLE"
+  printf '%s -> %s le %s (en ligne)\n' "$cur" "$LATEST" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$DDI_STATEDIR/update-history"
+  find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | tail -n +4 | while IFS= read -r f; do rm -rf "$f"; done
+  rm -rf "$WORKDIR"
+  st state=done "current=$LATEST" "latest=$LATEST" available=0 "message=Mise à jour vers $LATEST terminée" error= "checked_at=$(date +%s)"
+  log "mise à jour $cur -> $LATEST terminée"
+}
+
+cmd_request() {
+  [ -f "$REQ" ] && [ ! -L "$REQ" ] || exit 0
+  local body action version
+  body="$(head -c 2048 "$REQ" | python3 -c 'import json,re,sys
+try:
+    d=json.load(sys.stdin)
+    a=d.get("action"); v=str(d.get("version",""))
+    if a=="check": print("check -")
+    elif a=="apply" and re.fullmatch(r"\d+\.\d+\.\d+", v): print("apply "+v)
+except Exception: pass' || true)"
+  rm -f "$REQ"
+  [ -n "$body" ] || { log "demande ignorée (format invalide)"; exit 0; }
+  action="${body%% *}"; version="${body#* }"
+  case "$action" in check) cmd_check ;; apply) cmd_apply "$version" ;; esac
+}
+
+[ "$(id -u)" -eq 0 ] || [ "$TEST" = 1 ] || { echo "à lancer en root" >&2; exit 2; }
+mkdir -p "$DDI_STATEDIR" "$GEN" 2>/dev/null || true
+exec 9>"${DDI_RUNDIR:-/run}/ddibuntu-selfupdate.lock"
+flock -n 9 || { log "une opération de mise à jour est déjà en cours"; exit 0; }
+
+case "${1:-}" in
+  check) load_conf; if [ "$AUTO_CHECK" = 0 ] && [ "${2:-}" = --auto ]; then exit 0; fi; cmd_check ;;
+  request) cmd_request ;;
+  apply) cmd_apply "${2:-}" ;;
+  *) echo "Usage : ddibuntu-selfupdate check [--auto] | request | apply <version>" >&2; exit 2 ;;
+esac

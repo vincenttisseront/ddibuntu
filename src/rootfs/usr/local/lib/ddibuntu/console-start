@@ -1,0 +1,10 @@
+#!/bin/bash
+# Démarre la console web en HTTPS : Nitro lit le certificat et la clé dans l'environnement (contenu PEM).
+set -euo pipefail
+TLS="${DDI_TLS_DIR:-/etc/ddibuntu/tls}"
+NODE="${DDI_NODE:-/opt/ddibuntu/node/bin/node}"
+APP="${DDI_CONSOLE_APP:-/opt/ddibuntu/console/app/server/index.mjs}"
+if ! { [ -r "$TLS/console.crt" ] && [ -r "$TLS/console.key" ]; }; then echo "console-start : certificat TLS absent ($TLS)" >&2; exit 1; fi
+NITRO_SSL_CERT="$(cat "$TLS/console.crt")"; NITRO_SSL_KEY="$(cat "$TLS/console.key")"
+export NITRO_SSL_CERT NITRO_SSL_KEY
+exec "$NODE" "$APP"

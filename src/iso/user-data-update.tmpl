@@ -1,0 +1,10 @@
+#cloud-config
+# DDI-Buntu @@VERSION@@ — mode MISE À JOUR (Subiquity, entrée « Update » du menu). Généré par build-ddibuntu.sh.
+# update.sh s'exécute avant toute étape de stockage et ne rend JAMAIS la main (arrêt de la machine) :
+# l'installateur ne parvient donc pas à l'étape qui effacerait le disque.
+autoinstall:
+  version: 1
+  refresh-installer:
+    update: false
+  early-commands:
+    - bash /cdrom/ddibuntu/update.sh

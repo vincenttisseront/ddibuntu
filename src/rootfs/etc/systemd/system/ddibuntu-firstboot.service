@@ -1,0 +1,22 @@
+[Unit]
+Description=DDI-Buntu first-boot setup wizard
+ConditionPathExists=!/var/lib/ddibuntu/configured
+After=systemd-user-sessions.service plymouth-quit-wait.service
+Before=getty@tty1.service getty.target
+
+[Service]
+Type=oneshot
+Environment=TERM=linux
+ExecStart=/usr/local/sbin/ddibuntu-setup --first-boot
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+RemainAfterExit=yes
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

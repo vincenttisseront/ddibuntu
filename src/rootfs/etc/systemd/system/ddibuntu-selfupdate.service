@@ -1,0 +1,9 @@
+[Unit]
+Description=DDI-Buntu online update: process the request filed by the console (privileged)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-selfupdate request
+TimeoutStartSec=45min

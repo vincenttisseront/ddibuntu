@@ -1,0 +1,272 @@
+#!/bin/bash
+# ddibuntu-setup — assistant de configuration : langue, clavier, fuseau, nom, réseau,
+# réseaux d'administration, compte administrateur. L'application des choix est faite par
+# ddibuntu-apply (testable sans terminal) ; cet assistant ne fait que poser les questions.
+# shellcheck disable=SC2034  # CFG_* sont lues par expansion indirecte (${!v})
+set -euo pipefail
+
+DDI_LIBDIR="${DDI_LIBDIR:-/usr/local/lib/ddibuntu}"
+# shellcheck source=/dev/null
+. "$DDI_LIBDIR/common.sh"
+export TERM="${TERM:-linux}"
+APPLY_BIN="${DDI_APPLY_BIN:-/usr/local/sbin/ddibuntu-apply}"
+FW_BIN="${DDI_FW_BIN:-/usr/local/sbin/ddibuntu-fw}"
+ROLLBACK_BIN="${DDI_ROLLBACK_BIN:-/usr/local/sbin/ddibuntu-rollback}"
+# shellcheck source=/dev/null
+. "$DDI_LIBDIR/logo.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage : ddibuntu-setup [--first-boot | --network | --adminnets | --language | --keyboard | --restore]
+  (sans option)  assistant complet
+  --first-boot   mode service : recommence tant que la configuration n'est pas terminée
+  --network      nom de machine et réseau
+  --adminnets    réseaux autorisés à administrer l'appliance
+  --language     langue et clavier
+  --keyboard     disposition du clavier, appliquée tout de suite, avec test de saisie
+  --restore      rétablir un point de restauration de la configuration
+  --arm N        retour arrière automatique après N s sans confirmation (réseau, pare-feu, restauration)
+  --fw-confirm N pare-feu : retour arrière automatique après N s sans confirmation
+USAGE
+}
+
+FIRST_BOOT=0; MODE=full; FW_CONFIRM=0; ARM=0; SPLASH_DONE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --fw-confirm) FW_CONFIRM="${2:-}"; shift ;;
+    --first-boot) FIRST_BOOT=1 ;;
+    --network) MODE=network ;;
+    --adminnets) MODE=adminnets ;;
+    --language) MODE=language ;;
+    --keyboard) MODE=keyboard ;;
+    --restore) MODE=restore ;;
+    --arm) ARM="${2:-}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+[ "$(id -u)" -eq 0 ] || ddi_die "à lancer en root (sudo ddibuntu-setup)"
+if ! { [ -t 0 ] && [ -t 1 ]; }; then ddi_die "un terminal interactif est nécessaire"; fi
+
+[[ "$FW_CONFIRM" =~ ^[0-9]+$ ]] || ddi_die "--fw-confirm attend un nombre de secondes"
+[[ "$ARM" =~ ^[0-9]+$ ]] || ddi_die "--arm attend un nombre de secondes"
+export DDI_FW_CONFIRM="$FW_CONFIRM"
+
+ddi_cfg_reset
+if [ -f "$DDI_CONFFILE" ]; then ddi_cfg_read "$DDI_CONFFILE"; fi
+ddi_load_lang "${CFG_LANGUAGE:-fr}"
+DDI_BACKTITLE="DDI-Buntu $(ddi_version) - DNS / DHCP / IPAM"
+
+# ---- Primitives d'interface : la valeur saisie sort sur stdout, code 1 = annulation ----
+wt_input() { whiptail --title "$M_TITLE" --backtitle "$DDI_BACKTITLE" --inputbox "$1" 12 74 "${2-}" 3>&1 1>&2 2>&3; }
+wt_pass()  { whiptail --title "$M_TITLE" --backtitle "$DDI_BACKTITLE" --passwordbox "$1" 10 74 3>&1 1>&2 2>&3; }
+wt_menu()  { local t="$1"; shift; whiptail --title "$M_TITLE" --backtitle "$DDI_BACKTITLE" --menu "$t" 18 74 8 "$@" 3>&1 1>&2 2>&3; }
+wt_msg()   { whiptail --title "$M_TITLE" --backtitle "$DDI_BACKTITLE" --msgbox "$1" 16 74; }
+wt_yesno() { whiptail --title "$M_TITLE" --backtitle "$DDI_BACKTITLE" --yesno "$1" 18 74; }
+
+valid_opt_domain() { [ -z "$1" ] || ddi_valid_domain "$1"; }
+valid_dns_list() {
+  local d
+  while IFS= read -r d || [ -n "$d" ]; do ddi_valid_ip "$d" || return 1; done < <(ddi_split_list "$1")
+}
+valid_nets() {
+  local n
+  while IFS= read -r n || [ -n "$n" ]; do ddi_norm_net "$n" >/dev/null || return 1; done < <(ddi_split_list "$1")
+}
+valid_user_wizard() { ddi_valid_user "$1"; }
+
+# ask VARIABLE "question" "valeur par défaut" fonction_de_validation "message d'erreur (%s)"
+ask() {
+  local __var="$1" prompt="$2" val="$3" validator="$4" err="$5" out
+  while :; do
+    out="$(wt_input "$prompt" "$val")" || return 1
+    if "$validator" "$out"; then printf -v "$__var" '%s' "$out"; return 0; fi
+    wt_msg "$(ddi_fmt "$err" "$out")"
+    val="$out"
+  done
+}
+
+physical_ifaces() {
+  local d
+  for d in "${DDI_SYSNET:-/sys/class/net}"/*; do
+    if [ "${d##*/}" != lo ] && [ -e "$d/device" ]; then printf '%s\n' "${d##*/}"; fi
+  done
+}
+
+kbd_menu() {
+  local items=() k
+  for k in $DDI_KBD_LIST; do items+=("$k" "$(ddi_kbd_name "$k")"); done
+  wt_menu "$M_KBD_PROMPT" "${items[@]}"
+}
+
+# Test de saisie : l'utilisateur tape les six premières lettres de sa rangée du haut. 0 = disposition acceptée, 1 = en choisir une autre.
+kbd_test() {
+  local want got choice
+  want="$(ddi_kbd_testword "$1")"
+  while :; do
+    got="$(wt_input "$(ddi_fmt "$M_KBD_TEST" "$(ddi_kbd_name "$1")")" "")" || return 1
+    got="$(printf '%s' "$got" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+    if [ "$got" = "$want" ]; then return 0; fi
+    choice="$(wt_menu "$(ddi_fmt "$M_KBD_MISMATCH" "$got" "$(ddi_kbd_name "$1")" "$want")" retry "$M_KBD_RETRY" other "$M_KBD_OTHER" keep "$M_KBD_KEEP")" || return 1
+    case "$choice" in retry) ;; other) return 1 ;; keep) return 0 ;; esac
+  done
+}
+
+# La disposition est appliquée TOUT DE SUITE (le nom, l'identifiant et le mot de passe sont saisis plus loin avec elle), puis vérifiée.
+step_keyboard() {
+  local k
+  while :; do
+    k="$(kbd_menu)" || return 1
+    CFG_KEYBOARD="$k"
+    ddi_kbd_write "$k"
+    if ! ddi_kbd_apply_now "$k"; then wt_msg "$M_KBD_UNAPPLIED"; fi
+    if ! ddi_kbd_on_console; then return 0; fi
+    if kbd_test "$k"; then return 0; fi
+  done
+}
+
+step_language() {
+  local l
+  l="$(wt_menu 'Langue / Language' fr 'Français' en 'English')" || return 1
+  CFG_LANGUAGE="$l"; ddi_load_lang "$l"
+  step_keyboard || return 1
+}
+
+step_network() {
+  ask CFG_HOSTNAME "$M_HOST_PROMPT" "${CFG_HOSTNAME:-ddibuntu}" ddi_valid_hostname "$M_HOST_INVALID" || return 1
+  ask CFG_TIMEZONE "$M_TZ_PROMPT" "${CFG_TIMEZONE:-Europe/Paris}" ddi_valid_tz "$M_TZ_INVALID" || return 1
+  CFG_NET_MODE="$(wt_menu "$M_NET_MODE_PROMPT" dhcp "$M_NET_DHCP" static "$M_NET_STATIC")" || return 1
+  local ifaces n
+  ifaces="$(physical_ifaces)"
+  n="$(printf '%s' "$ifaces" | grep -c . || true)"
+  if [ "$n" -eq 0 ]; then wt_msg "$M_NET_NOIFACE"; return 1; fi
+  if [ "$n" -eq 1 ]; then
+    CFG_NET_IFACE="$ifaces"
+  else
+    local items=() i
+    for i in $ifaces; do items+=("$i" "$i"); done
+    CFG_NET_IFACE="$(wt_menu "$M_NET_IFACE_PROMPT" "${items[@]}")" || return 1
+  fi
+  if [ "$CFG_NET_MODE" = static ]; then
+    ask CFG_NET_ADDR "$M_NET_ADDR_PROMPT" "${CFG_NET_ADDR:-192.168.1.10/24}" ddi_valid_ifaddr "$M_NET_ADDR_INVALID" || return 1
+    ask CFG_NET_GW "$M_NET_GW_PROMPT" "${CFG_NET_GW:-}" ddi_valid_ip "$M_NET_GW_INVALID" || return 1
+    ask CFG_NET_DNS "$M_NET_DNS_PROMPT" "${CFG_NET_DNS:-}" valid_dns_list "$M_NET_DNS_INVALID" || return 1
+    ask CFG_NET_DOMAIN "$M_NET_DOMAIN_PROMPT" "${CFG_NET_DOMAIN:-}" valid_opt_domain "$M_NET_DOMAIN_INVALID" || return 1
+  else
+    CFG_NET_ADDR=""; CFG_NET_GW=""; CFG_NET_DNS=""; CFG_NET_DOMAIN=""
+  fi
+}
+
+step_adminnets() {
+  local def="${CFG_ADMIN_NETS:-}"
+  if [ -z "$def" ] && [ "${CFG_NET_MODE:-}" = static ] && [ -n "${CFG_NET_ADDR:-}" ]; then
+    def="$(ddi_norm_net "$CFG_NET_ADDR")"
+  fi
+  ask CFG_ADMIN_NETS "$M_ADMIN_NETS_PROMPT" "$def" valid_nets "$M_ADMIN_NETS_INVALID" || return 1
+}
+
+PW=""
+step_account() {
+  ask CFG_ADMIN_USER "$M_USER_PROMPT" "${CFG_ADMIN_USER:-}" valid_user_wizard "$M_USER_INVALID" || return 1
+  if grep -q "^${CFG_ADMIN_USER}:" /etc/passwd; then PW=""; return 0; fi
+  local p1 p2
+  while :; do
+    p1="$(wt_pass "$M_PASS_PROMPT"$'\n'"$(ddi_fmt "$M_PASS_LAYOUT" "$(ddi_kbd_name "${CFG_KEYBOARD:-fr}")")")" || return 1
+    p2="$(wt_pass "$M_PASS_CONFIRM")" || return 1
+    if [ "$p1" != "$p2" ]; then wt_msg "$M_PASS_MISMATCH"; continue; fi
+    if ! ddi_valid_password "$p1" "$CFG_ADMIN_USER"; then wt_msg "$M_PASS_INVALID"; continue; fi
+    PW="$p1"; return 0
+  done
+}
+
+summary() {
+  ddi_fmt "$M_SUMMARY" "$CFG_LANGUAGE" "$CFG_KEYBOARD" "$CFG_TIMEZONE" "$CFG_HOSTNAME" \
+    "$CFG_NET_MODE" "${CFG_NET_ADDR:--}" "${CFG_NET_GW:--}" "${CFG_ADMIN_NETS:--}" "${CFG_ADMIN_USER:--}"
+}
+
+apply_choices() {
+  local cfg out rc=0
+  cfg="$(mktemp)"; chmod 0600 "$cfg"
+  {
+    local k v
+    for k in $DDI_KEYS; do v="CFG_$k"; printf "%s='%s'\n" "$k" "${!v}"; done
+  } > "$cfg"
+  if [ -n "$PW" ]; then
+    out="$(printf '%s\n' "$PW" | "$APPLY_BIN" --config "$cfg" --password-stdin 2>&1)" || rc=$?
+  else
+    out="$("$APPLY_BIN" --config "$cfg" 2>&1)" || rc=$?
+  fi
+  rm -f "$cfg"; PW=""
+  if [ "$rc" -ne 0 ]; then wt_msg "${M_APPLY_FAILED}"$'\n\n'"${out}"; return 1; fi
+  return 0
+}
+
+splash() {   # écran d'accueil avec le logo, une seule fois
+  [ "$SPLASH_DONE" -eq 0 ] || return 0
+  SPLASH_DONE=1
+  wt_msg "$(ddi_logo plain)"$'\n\n'"DDI-Buntu $(ddi_version)  -  Bienvenue / Welcome"
+}
+
+# Après un changement qui peut couper l'accès (réseau, pare-feu, restauration) : retour arrière automatique sauf confirmation.
+# $1 = point de restauration d'avant. Retour 0 = configuration conservée, 1 = annulée.
+confirm_or_revert() {
+  local prev="${1:-}" armed=0
+  if [ "$ARM" -gt 0 ]; then
+    if [ -n "$prev" ] && "$ROLLBACK_BIN" arm "$ARM" "$prev" >/dev/null 2>&1; then armed=1; else wt_msg "$M_ARM_FAILED"; fi
+  fi
+  if [ "$armed" -eq 0 ] && [ "$FW_CONFIRM" -le 0 ]; then return 0; fi
+  if wt_yesno "$(ddi_fmt "$M_KEEP_CONFIG" "$(( armed ? ARM : FW_CONFIRM ))")"; then
+    if [ "$FW_CONFIRM" -gt 0 ]; then "$FW_BIN" confirm; fi
+    if [ "$armed" -eq 1 ]; then "$ROLLBACK_BIN" confirm; fi
+    return 0
+  fi
+  if [ "$FW_CONFIRM" -gt 0 ]; then "$FW_BIN" rollback; fi
+  if [ "$armed" -eq 1 ]; then "$ROLLBACK_BIN" confirm; "$ROLLBACK_BIN" restore "$prev" --yes >/dev/null 2>&1 || true; fi
+  wt_msg "$M_CONFIG_REVERTED"
+  return 1
+}
+
+run_restore() {
+  local items=() id date reason out prev
+  while IFS=$'\t' read -r id date reason; do items+=("$id" "$date $reason"); done < <("$ROLLBACK_BIN" list --porcelain 2>/dev/null)
+  if [ "${#items[@]}" -eq 0 ]; then wt_msg "$M_RESTORE_NONE"; return 0; fi
+  id="$(wt_menu "$M_RESTORE_PROMPT" "${items[@]}")" || return 0
+  wt_yesno "$(ddi_fmt "$M_RESTORE_CONFIRM" "$id")" || return 0
+  if ! out="$("$ROLLBACK_BIN" restore "$id" --yes 2>&1)"; then wt_msg "${M_RESTORE_FAILED}"$'\n\n'"${out}"; return 1; fi
+  prev="$("$ROLLBACK_BIN" last 2>/dev/null || true)"
+  confirm_or_revert "$prev" || return 0
+  wt_msg "$M_RESTORE_DONE"
+}
+
+run_wizard() {
+  local had_conf=0 prev=""
+  [ ! -f "$DDI_CONFFILE" ] || had_conf=1
+  case "$MODE" in
+    language)  step_language || return 1 ;;
+    keyboard)  step_keyboard || return 1 ;;
+    network)   step_network || return 1 ;;
+    adminnets) step_adminnets || return 1 ;;
+    restore)   run_restore; return $? ;;
+    full)
+      splash
+      step_language || return 1
+      step_network || return 1
+      step_adminnets || return 1
+      step_account || return 1
+      ;;
+  esac
+  wt_yesno "$(summary)"$'\n\n'"${M_CONFIRM_APPLY}" || return 1
+  apply_choices || return 1
+  ddi_load_lang "$CFG_LANGUAGE"
+  if [ "$had_conf" -eq 1 ]; then prev="$("$ROLLBACK_BIN" last 2>/dev/null || true)"; fi
+  confirm_or_revert "$prev" || return 0
+  wt_msg "${M_FINISHED}"$'\n\n'"$(hostname -I 2>/dev/null || true)"
+}
+
+if [ "$FIRST_BOOT" -eq 1 ]; then
+  until run_wizard; do wt_msg "$M_FIRSTBOOT_REQUIRED"; done
+else
+  run_wizard
+fi

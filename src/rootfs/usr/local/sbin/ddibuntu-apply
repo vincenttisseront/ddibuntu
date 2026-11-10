@@ -1,0 +1,202 @@
+#!/bin/bash
+# ddibuntu-apply — applique la configuration de l'appliance de façon idempotente.
+# Entrée : fichier CLE='valeur' (--config) ; mot de passe administrateur sur l'entrée standard
+# (--password-stdin), jamais en argument, jamais journalisé.
+# DDI_ROOT non vide = mode hors-ligne : fichiers écrits sous ce préfixe, aucun service touché.
+set -euo pipefail
+umask 022
+
+DDI_LIBDIR="${DDI_LIBDIR:-/usr/local/lib/ddibuntu}"
+# shellcheck source=/dev/null
+. "$DDI_LIBDIR/common.sh"
+# shellcheck source=/dev/null
+. "$DDI_LIBDIR/logo.sh"
+export DDI_ROOT DDI_LIBDIR
+
+usage() {
+  cat <<'USAGE'
+Usage : ddibuntu-apply [--config FICHIER] [--password-stdin] [--check]
+  --config FICHIER    clés : LANGUAGE KEYBOARD TIMEZONE HOSTNAME NET_MODE NET_IFACE NET_ADDR
+                      NET_GW NET_DNS NET_DOMAIN ADMIN_NETS ADMIN_USER
+  --password-stdin    lit le mot de passe de ADMIN_USER sur la première ligne de l'entrée
+  --check             valide seulement, n'écrit rien
+Variable : DDI_ROOT=/chemin  (mode hors-ligne pour tests et chroot)
+Un point de restauration (ddibuntu-rollback) est créé AVANT toute modification d'une configuration existante ;
+sans lui, rien n'est modifié. DDI_NO_SNAPSHOT=1 le désactive (utilisé par ddibuntu-rollback lui-même).
+USAGE
+}
+
+CONFIG_FILE=""; PW_STDIN=0; CHECK_ONLY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --config) CONFIG_FILE="${2:?--config attend un fichier}"; shift ;;
+    --password-stdin) PW_STDIN=1 ;;
+    --check) CHECK_ONLY=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+[ "$(id -u)" -eq 0 ] || [ "$CHECK_ONLY" -eq 1 ] || ddi_die "à lancer en root (sudo)"
+
+# ---- Chargement : valeurs existantes, puis surcharge par --config, puis défauts ----
+ddi_cfg_reset
+if [ -f "$DDI_CONFFILE" ]; then ddi_cfg_read "$DDI_CONFFILE"; fi
+if [ -n "$CONFIG_FILE" ]; then ddi_cfg_read "$CONFIG_FILE"; fi
+: "${CFG_LANGUAGE:=fr}"; [ -n "$CFG_LANGUAGE" ] || CFG_LANGUAGE=fr
+[ -n "$CFG_KEYBOARD" ] || CFG_KEYBOARD=fr
+[ -n "$CFG_TIMEZONE" ] || CFG_TIMEZONE=Europe/Paris
+[ -n "$CFG_HOSTNAME" ] || CFG_HOSTNAME=ddibuntu
+[ -n "$CFG_NET_MODE" ] || CFG_NET_MODE=dhcp
+
+PW=""
+if [ "$PW_STDIN" -eq 1 ]; then IFS= read -r PW || true; fi
+
+# ---- Validation (tout est vérifié avant la moindre écriture) ----
+case "$CFG_LANGUAGE" in fr|en) ;; *) ddi_die "LANGUAGE doit valoir fr ou en" ;; esac
+ddi_valid_keyboard "$CFG_KEYBOARD" || ddi_die "KEYBOARD non pris en charge : $CFG_KEYBOARD"
+ddi_valid_tz "$CFG_TIMEZONE"       || ddi_die "TIMEZONE inconnu : $CFG_TIMEZONE"
+ddi_valid_hostname "$CFG_HOSTNAME" || ddi_die "HOSTNAME invalide : $CFG_HOSTNAME"
+case "$CFG_NET_MODE" in
+  dhcp) ;;
+  static)
+    ddi_valid_ifaddr "$CFG_NET_ADDR" || ddi_die "NET_ADDR invalide (adresse/masque attendu) : $CFG_NET_ADDR"
+    ddi_valid_ip "$CFG_NET_GW"       || ddi_die "NET_GW invalide : $CFG_NET_GW"
+    ;;
+  *) ddi_die "NET_MODE doit valoir dhcp ou static" ;;
+esac
+if [ -n "$CFG_NET_IFACE" ]; then ddi_valid_iface "$CFG_NET_IFACE" || ddi_die "NET_IFACE invalide : $CFG_NET_IFACE"; fi
+if [ -n "$CFG_NET_DOMAIN" ]; then ddi_valid_domain "$CFG_NET_DOMAIN" || ddi_die "NET_DOMAIN invalide : $CFG_NET_DOMAIN"; fi
+DNS_LIST=""
+while IFS= read -r d || [ -n "$d" ]; do
+  ddi_valid_ip "$d" || ddi_die "serveur DNS invalide : $d"
+  DNS_LIST="${DNS_LIST:+$DNS_LIST, }\"$d\""
+done < <(ddi_split_list "$CFG_NET_DNS")
+NETS_NORM=""
+while IFS= read -r n || [ -n "$n" ]; do
+  norm="$(ddi_norm_net "$n")" || ddi_die "réseau d'administration invalide : $n"
+  NETS_NORM="${NETS_NORM:+$NETS_NORM,}$norm"
+done < <(ddi_split_list "$CFG_ADMIN_NETS")
+if [ -n "$CFG_ADMIN_USER" ]; then
+  ddi_valid_user "$CFG_ADMIN_USER" || ddi_die "ADMIN_USER invalide ou réservé : $CFG_ADMIN_USER"
+  if ! grep -q "^${CFG_ADMIN_USER}:" "${DDI_ROOT}/etc/passwd" 2>/dev/null; then
+    [ "$PW_STDIN" -eq 1 ] || ddi_die "mot de passe requis pour créer ${CFG_ADMIN_USER} (--password-stdin)"
+    ddi_valid_password "$PW" "$CFG_ADMIN_USER" || ddi_die "mot de passe refusé (12 caractères minimum, sans l'identifiant)"
+  fi
+fi
+[ "$CHECK_ONLY" -eq 0 ] || { printf 'Configuration valide.\n'; exit 0; }
+[ -n "$NETS_NORM" ] || ddi_warn "aucun réseau d'administration : SSH et console web resteront fermés"
+
+# ---- Point de restauration AVANT la première écriture : s'il échoue, rien n'est modifié ----
+# hors-ligne (DDI_ROOT), l'outil est celui du système cible, pas celui de la machine qui exécute
+ROLLBACK="${DDI_ROLLBACK_BIN:-${DDI_ROOT}/usr/local/sbin/ddibuntu-rollback}"
+FIRST_CONFIG=0; [ -f "$DDI_CONFFILE" ] || FIRST_CONFIG=1
+if [ "$FIRST_CONFIG" -eq 0 ] && [ -z "${DDI_NO_SNAPSHOT:-}" ]; then
+  "$ROLLBACK" create "${DDI_SNAPSHOT_REASON:-avant-application}" >/dev/null || ddi_die "point de restauration impossible : rien n'a été modifié"
+fi
+
+ddi_load_lang "$CFG_LANGUAGE"
+R="$DDI_ROOT"
+ROOTOPT=(); if [ -n "$R" ]; then ROOTOPT=(-R "$R"); fi
+
+# ---- Nom de machine ----
+printf '%s\n' "$CFG_HOSTNAME" > "$R/etc/hostname"
+if ! ddi_offline; then hostnamectl set-hostname "$CFG_HOSTNAME"; fi
+{ grep -v '^127\.0\.1\.1[[:space:]]' "$R/etc/hosts" 2>/dev/null || true; printf '127.0.1.1 %s\n' "$CFG_HOSTNAME"; } > "$R/etc/hosts.new"
+mv -f "$R/etc/hosts.new" "$R/etc/hosts"
+
+# ---- Fuseau horaire et clavier ----
+ln -sf "/usr/share/zoneinfo/$CFG_TIMEZONE" "$R/etc/localtime"
+printf '%s\n' "$CFG_TIMEZONE" > "$R/etc/timezone"
+mkdir -p "$R/etc/default"
+ddi_kbd_write "$CFG_KEYBOARD"
+ddi_kbd_apply_now "$CFG_KEYBOARD" save || ddi_warn "le clavier n'a pas pu être appliqué à la console (effectif au prochain démarrage)"
+
+# ---- Réseau (netplan) ----
+IFACE="$CFG_NET_IFACE"
+if [ -z "$IFACE" ]; then
+  if ddi_offline; then
+    IFACE="eth0"
+  else
+    for dev in /sys/class/net/*; do
+      name="${dev##*/}"
+      if [ "$name" != lo ] && [ -e "$dev/device" ]; then IFACE="$name"; break; fi
+    done
+    [ -n "$IFACE" ] || ddi_die "aucune interface réseau physique détectée (renseigner NET_IFACE)"
+  fi
+fi
+mkdir -p "$R/etc/netplan"
+NP="$R/etc/netplan/50-ddibuntu.yaml"
+{
+  printf '# Généré par ddibuntu-apply — ne pas modifier à la main.\n'
+  printf 'network:\n  version: 2\n  renderer: networkd\n  ethernets:\n    %s:\n' "$IFACE"
+  if [ "$CFG_NET_MODE" = dhcp ]; then
+    printf '      dhcp4: true\n      dhcp6: false\n'
+  else
+    printf '      dhcp4: false\n      dhcp6: false\n      addresses: ["%s"]\n' "$CFG_NET_ADDR"
+    printf '      routes:\n        - to: default\n          via: "%s"\n' "$CFG_NET_GW"
+  fi
+  if [ -n "$DNS_LIST" ] || [ -n "$CFG_NET_DOMAIN" ]; then
+    printf '      nameservers:\n'
+    if [ -n "$DNS_LIST" ]; then printf '        addresses: [%s]\n' "$DNS_LIST"; fi
+    if [ -n "$CFG_NET_DOMAIN" ]; then printf '        search: ["%s"]\n' "$CFG_NET_DOMAIN"; fi
+  fi
+} > "$NP.new"
+chmod 0600 "$NP.new"; mv -f "$NP.new" "$NP"
+rm -f "$R/etc/netplan/00-installer-config.yaml" "$R/etc/netplan/50-cloud-init.yaml"
+if ! ddi_offline; then netplan apply; fi
+
+# ---- Compte administrateur ----
+if [ -n "$CFG_ADMIN_USER" ]; then
+  groupadd "${ROOTOPT[@]}" -f ddiadmin
+  if ! grep -q "^${CFG_ADMIN_USER}:" "$R/etc/passwd"; then
+    useradd "${ROOTOPT[@]}" -m -s /bin/bash -G sudo,ddiadmin "$CFG_ADMIN_USER"
+    printf '%s:%s\n' "$CFG_ADMIN_USER" "$PW" | chpasswd "${ROOTOPT[@]}"
+  else
+    usermod "${ROOTOPT[@]}" -aG sudo,ddiadmin "$CFG_ADMIN_USER"
+  fi
+  # le compte d'installation (mot de passe aléatoire jeté) n'a plus de raison d'exister
+  if grep -q '^ddisetup:' "$R/etc/passwd"; then
+    userdel "${ROOTOPT[@]}" -r ddisetup 2>/dev/null || ddi_warn "le compte d'installation ddisetup n'a pas pu être supprimé"
+  fi
+fi
+PW=""
+
+# ---- Pare-feu : réseaux d'administration ----
+FW="${DDI_FW_BIN:-/usr/local/sbin/ddibuntu-fw}"
+"$FW" set ADMIN_NETS "$NETS_NORM"
+if ddi_offline; then
+  "$FW" write
+elif [ "${DDI_FW_CONFIRM:-0}" -gt 0 ]; then
+  "$FW" apply --confirm "$DDI_FW_CONFIRM"
+else
+  "$FW" apply
+fi
+
+# ---- Bannières (le code \n de la console est un code agetty, pas un saut de ligne) ----
+VER="$(ddi_version)"
+{
+  ddi_logo_issue
+  printf '%s\n' "DDI-Buntu ${VER}  -  \\n  -  \\l"
+  printf '%s : \\4  \\6\n' "$M_ISSUE_NET"
+  printf '%s\n\n' "$M_ISSUE_HELP"
+} > "$R/etc/issue"
+{ ddi_logo plain; printf 'DDI-Buntu %s - %s\n' "$VER" "$M_ISSUE_SSH"; } > "$R/etc/issue.net"
+
+# ---- Persistance de la configuration (sans secret) et marqueur ----
+mkdir -p "$DDI_CONFDIR" "$DDI_STATEDIR"
+{
+  printf '# Configuration DDI-Buntu (sans secret). Modifiable via ddibuntu-setup.\n'
+  printf "LANGUAGE='%s'\nKEYBOARD='%s'\nTIMEZONE='%s'\nHOSTNAME='%s'\n" "$CFG_LANGUAGE" "$CFG_KEYBOARD" "$CFG_TIMEZONE" "$CFG_HOSTNAME"
+  printf "NET_MODE='%s'\nNET_IFACE='%s'\nNET_ADDR='%s'\nNET_GW='%s'\nNET_DNS='%s'\nNET_DOMAIN='%s'\n" "$CFG_NET_MODE" "$IFACE" "$CFG_NET_ADDR" "$CFG_NET_GW" "$CFG_NET_DNS" "$CFG_NET_DOMAIN"
+  printf "ADMIN_NETS='%s'\nADMIN_USER='%s'\n" "$NETS_NORM" "$CFG_ADMIN_USER"
+} > "$DDI_CONFFILE.new"
+chmod 0644 "$DDI_CONFFILE.new"; mv -f "$DDI_CONFFILE.new" "$DDI_CONFFILE"
+printf '%s %s\n' "$VER" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DDI_STATEDIR/configured"
+ddi_log "configuration appliquée (version ${VER})"
+# première configuration : l'état initial devient lui-même un point de restauration
+if [ "$FIRST_CONFIG" -eq 1 ] && [ -z "${DDI_NO_SNAPSHOT:-}" ]; then
+  "$ROLLBACK" create etat-initial >/dev/null || ddi_warn "point de restauration initial impossible"
+fi
+printf '%s\n' "$M_APPLY_DONE"

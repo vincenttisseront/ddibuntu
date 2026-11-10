@@ -1,0 +1,66 @@
+<#
+ build-ddibuntu.ps1 - DDI-Buntu @@VERSION@@
+ Lanceur Windows genere par "build-ddibuntu.sh --makeps1". Ne pas modifier.
+ Le script de construction est embarque (compresse) ; son empreinte SHA-256 est verifiee a chaque
+ lancement, puis l'ISO est construite dans Docker Desktop.
+ Prerequis : Windows 10/11, PowerShell 5.1 ou superieur, Docker Desktop demarre.
+#>
+#Requires -Version 5.1
+[CmdletBinding()]
+param(
+    [string]$OutDir = (Get-Location).Path,
+    [int]$Timeout = 10,
+    [switch]$KeepWork
+)
+
+$ErrorActionPreference = 'Stop'
+$ExpectedSha256 = '@@SHA256@@'
+$Version = '@@VERSION@@'
+
+$PayloadB64 = @'
+@@B64@@
+'@
+
+function Fail([string]$Message) {
+    Write-Host ("ERREUR : " + $Message) -ForegroundColor Red
+    exit 1
+}
+
+Write-Host ("==> DDI-Buntu " + $Version + " : verification du script embarque")
+$gz = [Convert]::FromBase64String(($PayloadB64 -replace '\s', ''))
+$inStream = [System.IO.MemoryStream]::new($gz)
+$gzStream = [System.IO.Compression.GZipStream]::new($inStream, [System.IO.Compression.CompressionMode]::Decompress)
+$outStream = [System.IO.MemoryStream]::new()
+$gzStream.CopyTo($outStream)
+$bytes = $outStream.ToArray()
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$actual = ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant()
+if ($actual -ne $ExpectedSha256) {
+    Fail ("empreinte SHA-256 du script embarque incorrecte (attendu " + $ExpectedSha256 + ", obtenu " + $actual + ") : fichier modifie ou corrompu")
+}
+Write-Host ("    SHA-256 verifie : " + $actual)
+
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    Fail "Docker n'est pas installe. Installez Docker Desktop puis relancez."
+}
+& docker info *> $null
+if ($LASTEXITCODE -ne 0) {
+    Fail "Docker Desktop ne repond pas. Demarrez-le, attendez qu'il soit pret, puis relancez."
+}
+
+if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
+$Out = (Resolve-Path -LiteralPath $OutDir).Path
+$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('ddibuntu-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $Work | Out-Null
+try {
+    # ecriture en octets : les fins de ligne LF du script bash sont conservees
+    [System.IO.File]::WriteAllBytes((Join-Path $Work 'build-ddibuntu.sh'), $bytes)
+    Write-Host "==> Construction dans Docker (ubuntu:24.04). Dossier de sortie : $Out"
+    & docker run --rm --platform linux/amd64 -v "${Work}:/ddi-src:ro" -v "${Out}:/ddi-out" ubuntu:24.04 `
+        bash /ddi-src/build-ddibuntu.sh --in-container --out /ddi-out --timeout $Timeout
+    if ($LASTEXITCODE -ne 0) { Fail ("la construction a echoue (code " + $LASTEXITCODE + ")") }
+    Write-Host ("==> Termine. ISO dans : " + $Out)
+}
+finally {
+    if (-not $KeepWork) { Remove-Item -Recurse -Force -LiteralPath $Work -ErrorAction SilentlyContinue }
+}

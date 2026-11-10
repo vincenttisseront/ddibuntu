@@ -1,0 +1,18 @@
+# dépendances et constructions
+node_modules/
+webui/.output/
+webui/.nuxt/
+webui/.data/
+dist/
+# résultats de tests
+tests/artifacts/
+tests/logs/
+# ISO et caches de construction
+*.iso
+*.iso.sha256
+.ddibuntu-cache/
+.ddibuntu-ca.pem
+# divers
+*.log
+.env
+.DS_Store

@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for a configuration deployed by the DDI-Buntu console
+
+[Path]
+PathChanged=/var/lib/ddibuntu/generated/.deployed
+Unit=ddibuntu-reload.service
+
+[Install]
+WantedBy=multi-user.target

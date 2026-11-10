@@ -1,0 +1,81 @@
+#!/bin/bash
+# ddibuntu-db-init — première initialisation de la console web, SANS rien télécharger :
+# rôles et base PostgreSQL, schéma des baux Kea, secrets, certificat TLS, jeton de première configuration.
+# Idempotent : ne fait rien si /var/lib/ddibuntu/console-initialized existe.
+set -euo pipefail
+umask 077
+
+STATE=/var/lib/ddibuntu; ETC=/etc/ddibuntu; TLS="$ETC/tls"
+ENVF="$ETC/console.env"; DONE="$STATE/console-initialized"
+PORT="${DDI_PGPORT:-5432}"; CONSOLE_PORT="${DDI_CONSOLE_PORT:-443}"
+KEA_SCHEMA=/usr/share/kea/scripts/pgsql/dhcpdb_create.pgsql
+log() { printf 'ddibuntu-db-init: %s\n' "$*"; logger -t ddibuntu-db-init -- "$*" 2>/dev/null || true; }
+fail() { printf 'ddibuntu-db-init: ERREUR : %s\n' "$*" >&2; exit 1; }
+
+[ -f "$DONE" ] && { log "déjà initialisé"; exit 0; }
+[ "$(id -u)" -eq 0 ] || fail "à lancer en root"
+getent group ddiconsole >/dev/null || fail "le groupe ddiconsole n'existe pas (installation incomplète)"
+[ -f "$KEA_SCHEMA" ] || fail "schéma Kea introuvable : $KEA_SCHEMA (paquet kea-admin)"
+
+log "attente de PostgreSQL"
+for _ in $(seq 60); do pg_isready -q -h 127.0.0.1 -p "$PORT" && break; sleep 1; done
+pg_isready -q -h 127.0.0.1 -p "$PORT" || fail "PostgreSQL ne répond pas sur 127.0.0.1:$PORT"
+
+DB_PW="$(openssl rand -hex 24)"; KEA_PW="$(openssl rand -hex 24)"
+SECRET="$(openssl rand -base64 48 | tr -d '\n')"; TOKEN="$(openssl rand -hex 16)"
+
+log "rôles et base de données"
+# les mots de passe sont en hexadécimal (aucun caractère spécial) et passent par l'entrée standard, jamais en argument
+runuser -u postgres -- psql -p "$PORT" -v ON_ERROR_STOP=1 -q <<SQL
+do \$\$ begin
+  if not exists (select from pg_roles where rolname = 'ddi') then create role ddi login; end if;
+  if not exists (select from pg_roles where rolname = 'kea') then create role kea login; end if;
+end \$\$;
+alter role ddi password '$DB_PW';
+alter role kea password '$KEA_PW';
+select 'create database ddibuntu owner ddi' where not exists (select from pg_database where datname = 'ddibuntu') \gexec
+grant connect on database ddibuntu to kea;
+SQL
+runuser -u postgres -- psql -p "$PORT" -d ddibuntu -v ON_ERROR_STOP=1 -q -c 'grant usage, create on schema public to kea'
+
+log "schéma des baux Kea"
+if ! PGPASSWORD="$KEA_PW" psql -h 127.0.0.1 -p "$PORT" -U kea -d ddibuntu -Atqc "select to_regclass('public.lease4') is not null" | grep -qx t; then
+  PGPASSWORD="$KEA_PW" psql -h 127.0.0.1 -p "$PORT" -U kea -d ddibuntu -v ON_ERROR_STOP=1 -q -f "$KEA_SCHEMA" >/dev/null
+fi
+PGPASSWORD="$KEA_PW" psql -h 127.0.0.1 -p "$PORT" -U kea -d ddibuntu -v ON_ERROR_STOP=1 -q -c 'grant select on all tables in schema public to ddi'
+
+log "certificat TLS auto-signé"
+install -d -m 0750 -o root -g ddiconsole "$TLS"
+if [ ! -f "$TLS/console.crt" ]; then
+  HN="$(hostname)"; SAN="DNS:$HN,DNS:localhost,IP:127.0.0.1"
+  for ip in $(hostname -I 2>/dev/null); do case "$ip" in *:*) ;; *) SAN="$SAN,IP:$ip" ;; esac; done
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 825 -subj "/CN=$HN" -addext "subjectAltName=$SAN" \
+    -keyout "$TLS/console.key" -out "$TLS/console.crt" 2>/dev/null
+fi
+chown root:ddiconsole "$TLS/console.key" "$TLS/console.crt"; chmod 0640 "$TLS/console.key"; chmod 0644 "$TLS/console.crt"
+
+log "clé TSIG des mises à jour dynamiques et dossiers de service"
+if [ ! -f /etc/bind/ddi-ddns.key ]; then tsig-keygen -a hmac-sha256 ddi-ddns > /etc/bind/ddi-ddns.key; fi
+chown root:bind /etc/bind/ddi-ddns.key; chmod 0640 /etc/bind/ddi-ddns.key
+install -d -m 0750 -o bind -g bind /var/lib/bind/ddibuntu
+# journal des requêtes : écrit par BIND, LU par la console (cockpit de filtrage) via le groupe ddiconsole ; jamais en écriture
+install -d -m 0750 -o bind -g ddiconsole /var/log/named
+install -d -m 0750 -o ddiconsole -g ddiconsole "$STATE/generated"
+
+log "environnement de la console"
+cat > "$ENVF.new" <<ENV
+NODE_ENV=production
+NITRO_HOST=0.0.0.0
+NITRO_PORT=$CONSOLE_PORT
+DDI_DATABASE_URL=postgresql://ddi:$DB_PW@127.0.0.1:$PORT/ddibuntu
+DDI_SECRET_KEY=$SECRET
+DDI_SETUP_TOKEN=$TOKEN
+DDI_KEA_DB_PASSWORD=$KEA_PW
+DDI_GENERATED_DIR=$STATE/generated
+DDI_ZONES_RUNTIME_DIR=/var/lib/bind/ddibuntu
+ENV
+chown root:ddiconsole "$ENVF.new"; chmod 0640 "$ENVF.new"; mv -f "$ENVF.new" "$ENVF"
+printf '%s\n' "$TOKEN" > "$STATE/setup-token"; chmod 0600 "$STATE/setup-token"
+
+touch "$DONE"
+log "console initialisée (jeton de première configuration : voir le menu de la console)"
