@@ -1,7 +1,7 @@
 // Lit en continu le journal des requêtes de BIND (lecture seule), applique la rétention et rétablit le blocage à la fin d'une pause.
 import { promises as fs } from 'node:fs'
 import { cfg } from '../utils/config'
-import { getSetting, query, setSetting } from '../utils/db'
+import { getSetting, inRecovery, query, setSetting } from '../utils/db'
 import { ingestLogText } from '../utils/ingest'
 import { loadCockpit, resumeIfExpired } from '../utils/filterstate'
 
@@ -13,6 +13,7 @@ export default defineNitroPlugin(() => {
     if (busy) return
     busy = true
     try {
+      if (await inRecovery()) return    // secondaire : la base est en lecture seule (le journal local ne peut pas être enregistré)
       if (!pos) pos = await getSetting<{ ino: number; off: number }>('querylog_pos', { ino: 0, off: 0 })
       const st = await fs.stat(file).catch(() => null)
       if (st) {

@@ -289,12 +289,31 @@ wait_for 60 "n2 devient leader" is_leader 2 2
 wait_for 60 "n1 réplique à nouveau" streaming 2 1
 expect_eq "n2 accepte l'écriture après bascule" "ok" "$(sql 2 -c "insert into t values (3,'sur-n2'); select 'ok'" | tail -1)"
 wait_cond 20 "n1 reçoit la donnée de n2" '[ "$(sql 1 -c "select count(*) from t")" = 3 ]'
+# le suiveur suit le changement de leader : n2 (devenu leader) promeut son BIND, n1 (devenu secondaire) redevient secondaire
+bindrole() { cat "$(R "$1")/kstate/bind-role" 2>/dev/null || echo -; }
+expect_eq "avant : n1 primaire BIND, n2 secondaire" "primary/secondary" "$(bindrole 1)/$(bindrole 2)"
+C2="$(calls 2)"; C1="$(calls 1)"
+check "follow sur n2 (nouveau leader) : promotion BIND" fol 2
+expect_eq "n2 : un appel à ddibuntu-reload" "$((C2 + 1))" "$(calls 2)"
+expect_eq "n2 : BIND primaire" "primary" "$(bindrole 2)"
+expect_grep "n2 : zone primaire, transfert signé" 'zone "lab.test" \{ type primary;.*allow-transfer \{ key "ddi-xfr"; \}' "$(R 2)/etc/bind/named.conf.local"
+expect_grep "n2 : NOTIFY vers n1" 'also-notify \{ 127\.0\.1\.1 key "ddi-xfr"; \}' "$(R 2)/etc/bind/named.conf.options"
+check "follow sur n2 idempotent après promotion" fol 2
+check "follow sur n1 (devenu secondaire) : retour en secondaire" fol 1
+expect_eq "n1 : un appel à ddibuntu-reload" "$((C1 + 1))" "$(calls 1)"
+expect_eq "n1 : BIND secondaire" "secondary" "$(bindrole 1)"
+expect_grep "n1 : zone secondaire du nouveau leader" 'zone "lab.test" \{ type secondary; primaries \{ 127\.0\.1\.2 key "ddi-xfr"; \}' "$(R 1)/etc/bind/named.conf.local"
+expect_grep "n1 : plus de also-notify" 'notify no;' "$(R 1)/etc/bind/named.conf.options"
 
 echo "== Bascule automatique (arrêt brutal du primaire) =="
 kill_patroni_hard 2
 wait_for 90 "n1 est promu automatiquement (quorum etcd n1+n3)" is_leader 1 1
 expect_eq "aucune donnée validée perdue" "3" "$(sql 1 -c "select count(*) from t")"
 expect_eq "le nouveau primaire accepte l'écriture" "ok" "$(sql 1 -c "insert into t values (4,'après-panne'); select 'ok'" | tail -1)"
+C1="$(calls 1)"
+check "follow sur n1 (promu par Patroni, n2 injoignable) : promotion BIND" fol 1
+expect_eq "n1 : un appel à ddibuntu-reload" "$((C1 + 1))" "$(calls 1)"
+expect_eq "n1 : BIND de nouveau primaire" "primary" "$(bindrole 1)"
 
 echo "== Réintégration de l'ancien primaire (pg_rewind) =="
 sql 1 -c "checkpoint"
@@ -302,6 +321,10 @@ start_patroni 2
 wait_for 120 "n2 revient comme secondaire" streaming 1 2
 wait_cond 30 "n2 a rattrapé la donnée écrite pendant son absence" '[ "$(sql 2 -c "select count(*) from t")" = 4 ]'
 expect_eq "toujours un seul primaire" "n1" "$(leader_name 1)"
+C2="$(calls 2)"
+check "follow sur n2 (ancien primaire revenu) : retour en secondaire" fol 2
+expect_eq "n2 : un appel à ddibuntu-reload" "$((C2 + 1))" "$(calls 2)"
+expect_eq "n2 : BIND secondaire" "secondary" "$(bindrole 2)"
 
 echo "== Isolation : primaire sans quorum → lecture seule =="
 # n1 est primaire. On coupe etcd sur n2 et n3 : n1 perd le quorum et doit se rétrograder lui-même.

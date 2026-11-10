@@ -350,7 +350,24 @@ export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1
 let schemaReady = false
 export const isSchemaReady = () => schemaReady
 
+// Vrai sur un nœud secondaire du cluster : la base est répliquée en lecture seule (le schéma y arrive du leader).
+let recoveryCache: { at: number; v: boolean } | null = null
+export async function inRecovery(maxAgeMs = 2000): Promise<boolean> {
+  if (recoveryCache && Date.now() - recoveryCache.at < maxAgeMs) return recoveryCache.v
+  const v = (await getPool().query('select pg_is_in_recovery() as r')).rows[0].r === true
+  recoveryCache = { at: Date.now(), v }
+  return v
+}
+export class SchemaPendingError extends Error {}
+
 export async function migrate(): Promise<number[]> {
+  if (await inRecovery(0)) {
+    // secondaire : aucune écriture possible. Le schéma est géré par le leader ; on n'annonce « prêt » que lorsqu'il est au niveau attendu par ce logiciel.
+    const have = Number((await getPool().query('select coalesce(max(version), 0) as v from schema_migrations').catch(() => ({ rows: [{ v: 0 }] }))).rows[0].v)
+    if (have >= MIGRATIONS[MIGRATIONS.length - 1]!.version) { schemaReady = true; return [] }
+    schemaReady = false
+    throw new SchemaPendingError(`nœud secondaire : schéma en attente du leader (version ${have}/${MIGRATIONS[MIGRATIONS.length - 1]!.version})`)
+  }
   const c = await getPool().connect()
   const applied: number[] = []
   try {

@@ -79,7 +79,8 @@ export async function sessionFromToken(token: string): Promise<SessionUser | nul
         and s.last_seen > now() - make_interval(mins => $2) and not u.disabled`,
     [sha256hex(token), c.idleMinutes])
   if (!r) return null
-  await query('update sessions set last_seen = now() where id = $1 and last_seen < now() - interval \'30 seconds\'', [r.sid])
+  // meilleur effort : sur un nœud secondaire la base est en lecture seule (la session, répliquée, reste lisible)
+  await query('update sessions set last_seen = now() where id = $1 and last_seen < now() - interval \'30 seconds\'', [r.sid]).catch((e: any) => { if (e?.code !== '25006') throw e })
   return { id: r.id, username: r.username, role: r.role, source: r.source, displayName: r.display_name, csrf: r.csrf_token, sessionId: Number(r.sid) }
 }
 export async function destroySession(token: string) { await query('delete from sessions where token_hash = $1', [sha256hex(token)]) }

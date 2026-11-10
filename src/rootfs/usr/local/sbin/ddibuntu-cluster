@@ -618,8 +618,26 @@ patroni_role() {   # leader | replica | "" (inconnu)
 #    (Kea + BIND secondaire, zones transférées par TSIG) ; les sorties de console périmées (zones/) sont retirées pour qu'un fichier de zone ancien
 #    ne remplace jamais, plus tard, la copie transférée si ce nœud devient primaire.
 #  · primaire : réapplique quand le câblage change (arrivée du second nœud de données, clé TSIG) ; le contenu, lui, est appliqué par le déploiement.
+# État du cluster lisible par la console (sans secret), remplacé atomiquement. Ne fait jamais échouer « follow ».
+publish_state() {
+  local d="$ROOT/run/ddibuntu" t lrole="" bind=""
+  install -d -m 0755 "$d" 2>/dev/null || return 0
+  t="$(mktemp "$d/.cluster.XXXXXX" 2>/dev/null)" || return 0
+  if [ "${C[NODE_ROLE]}" = data ]; then lrole="$(patroni_role)"; bind="$(cat "$STATE/bind-applied" 2>/dev/null || true)"; fi
+  if cmd_status 2>/dev/null | LROLE="$lrole" BIND="$bind" python3 -c '
+import json, os, sys, time
+d = json.load(sys.stdin)
+d["local_role"] = os.environ["LROLE"] or "unknown"
+d["bind"] = os.environ["BIND"] or None
+d["at"] = int(time.time())
+print(json.dumps(d, ensure_ascii=False))' > "$t" 2>/dev/null; then
+    chmod 0644 "$t"; mv -f "$t" "$d/cluster-status.json"
+  else rm -f "$t"; fi
+  return 0
+}
 cmd_follow() {
-  conf_load; [ "${C[NODE_ROLE]}" = data ] || return 0
+  conf_load; publish_state || true
+  [ "${C[NODE_ROLE]}" = data ] || return 0
   install -d -m 0700 "$STATE"
   if [ "${C[CA_NODE]}" = 1 ]; then ensure_xfr_key; fi
   local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" reload="${DDI_RELOAD_CMD:-/usr/local/sbin/ddibuntu-reload}" db="${DDI_DB_NAME:-ddibuntu}"

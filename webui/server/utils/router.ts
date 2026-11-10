@@ -4,7 +4,7 @@ import { createError, deleteCookie, getCookie, getMethod, getQuery, getRequestHe
 import type { H3Event } from 'h3'
 import type { ZodType } from 'zod'
 import { cfg } from './config'
-import { query } from './db'
+import { inRecovery, query } from './db'
 import { ROLE_RANK, safeEqual, sessionFromToken } from './auth'
 import type { Role, SessionUser } from './auth'
 
@@ -58,6 +58,7 @@ export async function audit(c: Ctx, action: string, entity?: string, entityId?: 
 const PG_MESSAGES: Record<string, [number, string]> = {
   '23505': [409, 'duplicate'], '23503': [409, 'in_use'], '23514': [400, 'constraint'], '23502': [400, 'missing_field'],
   '22P02': [400, 'invalid_input'], '22007': [400, 'invalid_input'], '22003': [400, 'invalid_input'], '22023': [400, 'invalid_input'],
+  '25006': [503, 'replica'],
   '22021': [400, 'invalid_input'], '22P05': [400, 'invalid_input'], '22001': [400, 'invalid_input'], '22008': [400, 'invalid_input'],
 }
 const PG_RAISED = new Set(['ip_outside_subnet', 'pool_outside_subnet', 'pool_overlap'])
@@ -108,6 +109,8 @@ export async function dispatch(event: H3Event): Promise<unknown> {
       fail(404, 'not_found')
     }
     if (unsafe) {
+      // nœud secondaire du cluster : aucune écriture (ni déploiement de fichiers) ; les modifications se font sur le leader / l'adresse de service
+      if (await inRecovery()) fail(503, 'replica')
       checkOrigin(event)
       const len = Number(getRequestHeader(event, 'content-length') ?? 0)
       if (len > cfg().maxBodyBytes) fail(413, 'too_large')
