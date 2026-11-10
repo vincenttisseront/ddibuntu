@@ -1,6 +1,7 @@
 // État du cluster publié par root (ddibuntu-cluster follow, chaque minute) : fichier JSON sans secret, lu ici en lecture seule.
 // La console ne pilote jamais le cluster : les demandes d'action passent par un fichier de demande traité par root (voir demandes de bascule).
 import { promises as fs } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { cfg } from './config'
 
 export interface ClusterNode { name: string; ip: string; role: string; host?: string; state?: string; patroniRole?: string; lagBytes?: number | null; timeline?: number | null }
@@ -53,4 +54,20 @@ export async function readClusterState(): Promise<ClusterState | null> {
     if (!st.isFile() || st.size > 256 * 1024) return null
     return parseClusterState(await fs.readFile(cfg().clusterStatusFile, 'utf8'))
   } catch { return null }
+}
+
+export interface SwitchoverResult { at: number; candidate: string; ok: boolean; message: string }
+export async function readSwitchoverResult(): Promise<SwitchoverResult | null> {
+  try {
+    const f = join(dirname(cfg().clusterStatusFile), 'cluster-result.json')
+    const j = JSON.parse(await fs.readFile(f, 'utf8'))
+    if (typeof j?.at !== 'number') return null
+    return { at: j.at, candidate: str(j.candidate, 31), ok: j.ok === true, message: str(j.message, 200) }
+  } catch { return null }
+}
+
+// Vérifie une demande de bascule contre l'état publié par root : un seul candidat possible = un secondaire de données en bonne santé.
+export function switchoverCandidates(st: ClusterState | null): string[] {
+  if (!st || st.stale || !st.etcd.healthy) return []
+  return st.nodes.filter((n) => n.role === 'data' && n.name !== st.leader && n.patroniRole !== undefined && ['running', 'streaming'].includes(n.state ?? '')).map((n) => n.name)
 }

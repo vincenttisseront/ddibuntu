@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for a controlled switchover requested from the DDI-Buntu console
+ConditionPathExists=/etc/ddibuntu-cluster/cluster.conf
+
+[Path]
+PathChanged=/var/lib/ddibuntu/generated/.cluster-switchover
+Unit=ddibuntu-cluster-request.service
+
+[Install]
+WantedBy=multi-user.target

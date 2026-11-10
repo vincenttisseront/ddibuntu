@@ -284,7 +284,22 @@ check "named-checkconf accepte la configuration de n2" named-checkconf "$(R 2)/e
 
 echo "== Bascule contrôlée =="
 # patronictl lit sa configuration : on l'exécute avec l'environnement du nœud 1
-check "switchover vers n2" cl 1 switchover --candidate n2
+# la console dépose une demande (fichier d'une ligne) ; root la valide puis lance la bascule. Les demandes invalides ne font rien.
+req() { # req CONTENU : dépose la demande sur n1 puis la fait traiter
+  printf '%s' "$1" > "$(R 1)/gen/.cluster-switchover"
+  DDI_GENERATED_DIR="$(R 1)/gen" cl 1 request >"$B/req.out" 2>&1; echo $?
+}
+rmsg() { python3 -c "import json; print(json.load(open('$(R 1)/run/ddibuntu/cluster-result.json'))['message'])"; }
+expect_eq "demande vide : refusée" "demande invalide" "$(req '' >/dev/null; rmsg)"
+expect_eq "demande piégée (injection) : refusée" "demande invalide" "$(req $'n2; touch /tmp/pwn' >/dev/null; rmsg)"
+expect_eq "…rien exécuté" "no" "$([ -e /tmp/pwn ] && echo yes || echo no)"
+expect_eq "arbitre candidat : refusé" "nœud candidat inconnu ou sans base de données" "$(req n3 >/dev/null; rmsg)"
+expect_eq "nœud inconnu : refusé" "nœud candidat inconnu ou sans base de données" "$(req n9 >/dev/null; rmsg)"
+expect_eq "le leader candidat : refusé" "le candidat est déjà le leader" "$(req n1 >/dev/null; rmsg)"
+ln -sf /etc/hostname "$(R 1)/gen/.cluster-switchover"; DDI_GENERATED_DIR="$(R 1)/gen" cl 1 request >/dev/null 2>&1
+expect_eq "lien symbolique : refusé et supprimé" "demande invalide/no" "$(rmsg)/$([ -e "$(R 1)/gen/.cluster-switchover" ] || [ -L "$(R 1)/gen/.cluster-switchover" ] && echo yes || echo no)"
+check "la demande valide déclenche la bascule vers n2" test "$(req n2)" = 0
+expect_eq "résultat publié pour la console" "bascule effectuée" "$(rmsg)"
 wait_for 60 "n2 devient leader" is_leader 2 2
 wait_for 60 "n1 réplique à nouveau" streaming 2 1
 expect_eq "n2 accepte l'écriture après bascule" "ok" "$(sql 2 -c "insert into t values (3,'sur-n2'); select 'ok'" | tail -1)"

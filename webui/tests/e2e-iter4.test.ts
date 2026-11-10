@@ -1,7 +1,7 @@
 // Bout en bout (serveur CONSTRUIT, PostgreSQL réel, outils BIND/Kea réels) : points de restauration, retour arrière,
 // import NetBox, import AD (transfert de zone), découverte réseau.
 import { spawn, type ChildProcess } from 'node:child_process'
-import { chmodSync, mkdtempSync, existsSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, existsSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 const PORT = 3398, BASE = `http://127.0.0.1:${PORT}`
 const DBURL = 'postgresql://ddi:ddi-test-pw@127.0.0.1:5432/ddibuntu_test'
 const SETUP_TOKEN = 'jeton-de-test-0123456789abcdef', PW = 'Correct-Horse-Battery-9'
-const TMP = mkdtempSync(join(tmpdir(), 'ddi-i4-')), GEN = join(TMP, 'gen'), STATUS = join(TMP, 'reload-status'), DIG = join(TMP, 'dig')
+const TMP = mkdtempSync(join(tmpdir(), 'ddi-i4-')), GEN = join(TMP, 'gen'), STATUS = join(TMP, 'reload-status'), DIG = join(TMP, 'dig'), CLFILE = join(TMP, 'cluster-status.json')
 let srv: ChildProcess, db: pg.Client, srvLog = ''
 
 class Client {
@@ -66,7 +66,7 @@ beforeAll(async () => {
   db = new pg.Client({ connectionString: DBURL }); await db.connect()
   await db.query('drop schema public cascade; create schema public')
   srv = spawn('node', ['.output/server/index.mjs'], { env: { ...process.env, NODE_ENV: 'production', PORT: String(PORT), NITRO_HOST: '127.0.0.1', DDI_TEST_MODE: '1', DDI_COOKIE_SECURE: 'false', DDI_DATABASE_URL: DBURL,
-    DDI_SECRET_KEY: 'cle-secrete-de-test-0123456789abcdefghij', DDI_SETUP_TOKEN: SETUP_TOKEN, DDI_PBKDF2_ITERATIONS: '2000', DDI_GENERATED_DIR: GEN, DDI_ALLOW_PRIVATE_FETCH: '1', DDI_DIG: DIG, DDI_RELOAD_STATUS: STATUS } })
+    DDI_SECRET_KEY: 'cle-secrete-de-test-0123456789abcdefghij', DDI_SETUP_TOKEN: SETUP_TOKEN, DDI_PBKDF2_ITERATIONS: '2000', DDI_GENERATED_DIR: GEN, DDI_ALLOW_PRIVATE_FETCH: '1', DDI_DIG: DIG, DDI_RELOAD_STATUS: STATUS, DDI_CLUSTER_STATUS: CLFILE } })
   srv.stdout!.on('data', (d) => { srvLog += d }); srv.stderr!.on('data', (d) => { srvLog += d })
   await until(async () => (await fetch(BASE + '/api/health')).status === 200)
   const su = await anon.post('/api/setup/admin', { token: SETUP_TOKEN, username: 'admin', password: PW })
@@ -90,11 +90,12 @@ const mk = async () => {
   return { vlan, s1, s2, z }
 }
 let W: Awaited<ReturnType<typeof mk>>
+const MIGRATIONS_LAST = 7   // dernière migration du schéma
 
 describe('points de restauration des données', () => {
   it('migration 2 appliquée, version 0.4.0', async () => {
     const i = (await admin.get('/api/system/info')).json
-    expect([i.schema, i.version]).toEqual([7, '0.4.0'])   // 1 socle, 2 points de restauration/origine IPAM, 3 journal des requêtes, 4 espaces/conteneurs/pools IPAM
+    expect([i.schema, i.version]).toEqual([MIGRATIONS_LAST, '0.4.0'])   // 1 socle, 2 points de restauration/origine IPAM, 3 journal des requêtes, 4 espaces/conteneurs/pools IPAM
     expect((await rows("select column_name from information_schema.columns where table_name = 'addresses' and column_name in ('source','external_id','last_seen') order by 1")).map((r) => r.column_name)).toEqual(['external_id', 'last_seen', 'source'])
   })
   it('droits : lecteur refusé, opérateur peut créer un point, seul l\'administrateur restaure, supprime, épingle', async () => {
@@ -445,5 +446,48 @@ describe('traductions des nouveaux codes d\'erreur', () => {
     const codes = ['netbox_url_invalid', 'netbox_url_forbidden', 'netbox_https_required', 'netbox_token_missing', 'netbox_auth', 'netbox_tls', 'netbox_unreachable', 'netbox_timeout', 'netbox_redirect', 'netbox_bad_next', 'netbox_bad_response', 'netbox_too_large', 'netbox_not_found', 'netbox_http', 'plan_expired',
       'ad_incomplete', 'ad_unreachable', 'ad_search_failed', 'axfr_server_not_allowed', 'axfr_failed', 'axfr_unavailable', 'zone_missing', 'snapshot_schema_mismatch', 'discovery_running', 'discovery_too_large', 'discovery_forbidden_range', 'discovery_empty']
     for (const c of codes) { expect((fr as any)[`err.${c}`], `fr err.${c}`).toBeTruthy(); expect((en as any)[`err.${c}`], `en err.${c}`).toBeTruthy() }
+  })
+})
+
+describe('cluster : état publié par root, droits, demande de bascule', () => {
+  const state = (over: Record<string, unknown> = {}) => ({
+    cluster: 'lab', node: 'n1', role: 'data', local_role: 'leader', at: Math.floor(Date.now() / 1000), bind: 'primary', etcd: { healthy: true, members: 3 },
+    peers: [{ name: 'n1', ip: '10.9.0.1', role: 'data' }, { name: 'n2', ip: '10.9.0.2', role: 'data' }, { name: 'n3', ip: '10.9.0.3', role: 'witness' }],
+    patroni: { members: [{ name: 'n1', role: 'leader', state: 'running' }, { name: 'n2', role: 'replica', state: 'streaming', lag: 0 }] }, kea: null, vip: null, ...over })
+  const publish = (o?: Record<string, unknown>) => writeFileSync(CLFILE, JSON.stringify(state(o)))
+  it('hors cluster : état vide, aucun candidat, demande refusée', async () => {
+    rmSync(CLFILE, { force: true })
+    const r = await viewer.get('/api/cluster/status'); expect(r.status).toBe(200); expect(r.json).toMatchObject({ clustered: false, replica: false, state: null, candidates: [] })
+    code(await admin.post('/api/cluster/switchover', { candidate: 'n2' }), 409, 'not_clustered')
+    expect((await anon.get('/api/cluster/role')).json).toEqual({ replica: false })   // public et minimal
+    code(await anon.get('/api/cluster/status'), 401, 'unauthenticated')
+  })
+  it('dans un cluster : nœuds, leader et candidats', async () => {
+    publish()
+    const r = (await viewer.get('/api/cluster/status')).json
+    expect(r.clustered).toBe(true); expect(r.state.leader).toBe('n1'); expect(r.candidates).toEqual(['n2']); expect(r.state.nodes).toHaveLength(3)
+  })
+  it('demande de bascule : réservée aux administrateurs, candidat vérifié, rien d\'autre n\'est écrit', async () => {
+    code(await viewer.post('/api/cluster/switchover', { candidate: 'n2' }), 403, 'forbidden'); code(await operator.post('/api/cluster/switchover', { candidate: 'n2' }), 403, 'forbidden')
+    code(await anon.post('/api/cluster/switchover', { candidate: 'n2' }), 401, 'unauthenticated')
+    for (const bad of ['', 'N2', 'n2; rm -rf /', '../x', 'n'.repeat(40)]) code(await admin.post('/api/cluster/switchover', { candidate: bad }), 400, 'validation')
+    code(await admin.post('/api/cluster/switchover', { candidate: 'n2', extra: 1 }), 400, 'validation')
+    for (const c of ['n1', 'n3', 'n9']) code(await admin.post('/api/cluster/switchover', { candidate: c }), 409, 'invalid_candidate')   // leader, arbitre, inconnu
+    publish({ etcd: { healthy: false, members: 1 } }); code(await admin.post('/api/cluster/switchover', { candidate: 'n2' }), 409, 'invalid_candidate')   // pas de quorum
+    publish({ at: Math.floor(Date.now() / 1000) - 900 }); code(await admin.post('/api/cluster/switchover', { candidate: 'n2' }), 409, 'cluster_state_stale')
+    expect(existsSync(join(GEN, '.cluster-switchover'))).toBe(false)
+    publish()
+    expect((await admin.post('/api/cluster/switchover', { candidate: 'n2' })).json).toEqual({ accepted: true })
+    expect(readFileSync(join(GEN, '.cluster-switchover'), 'utf8')).toBe('n2\n')
+    expect((await rows("select username, entity_id from audit_log where action = 'cluster.switchover'"))[0]).toEqual({ username: 'admin', entity_id: 'n2' })
+  })
+  it('le résultat laissé par root est relayé à la console', async () => {
+    writeFileSync(join(TMP, 'cluster-result.json'), JSON.stringify({ at: 1234, candidate: 'n2', ok: false, message: 'le candidat n\'est pas un secondaire en bonne santé' }))
+    const r = (await admin.get('/api/cluster/status')).json
+    expect(r.result).toEqual({ at: 1234, candidate: 'n2', ok: false, message: 'le candidat n\'est pas un secondaire en bonne santé' })
+  })
+  it('codes d\'erreur traduits', async () => {
+    const fr = (await import('../app/i18n/fr')).default, en = (await import('../app/i18n/en')).default
+    for (const c of ['replica', 'not_clustered', 'cluster_state_stale', 'invalid_candidate', 'schema_pending']) { expect((fr as any)[`err.${c}`]).toBeTruthy(); expect((en as any)[`err.${c}`]).toBeTruthy() }
   })
 })

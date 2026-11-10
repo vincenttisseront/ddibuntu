@@ -14,6 +14,7 @@
 #   sync                                                                        relit le registre des nœuds (etcd) : pairs et pare-feu à jour
 #   status                                                                      état JSON (etcd, Patroni, membres, retard de réplication)
 #   switchover [--candidate N]                                                  bascule contrôlée du primaire
+#   request                                                                     traite la demande de bascule déposée par la console (« .cluster-switchover » : un nom de nœud, validé)
 #   follow                                                                      (nœud de données) aligne Kea (HA) et BIND (primaire/secondaire) : primaire = fichiers de la console, secondaire = copie répliquée en base
 #   vip-check                                                                   (Keepalived) code 0 si ce nœud est le leader Patroni ; « init --vip CIDR --vip-iface IFACE [--vip-vrid N] » active la VIP de service
 #
@@ -391,7 +392,7 @@ activate() {
     || log "AVERTISSEMENT : inscription de ce nœud au registre impossible pour l'instant ; la synchronisation périodique réessaiera"
   sysctl_do enable --now ddibuntu-cluster-sync.timer
   if [ "${C[NODE_ROLE]}" = data ]; then
-    sysctl_do enable --now patroni.service; sysctl_do enable --now ddibuntu-cluster-follow.timer
+    sysctl_do enable --now patroni.service; sysctl_do enable --now ddibuntu-cluster-follow.timer; sysctl_do enable --now ddibuntu-cluster-request.path
     if [ -n "${C[VIP]}" ]; then sysctl_do enable --now keepalived.service; fi
   fi
   log "services démarrés (etcd${C[NODE_ROLE]:+, patroni si nœud de données})"
@@ -699,6 +700,42 @@ cmd_switchover() {
   runuser -u postgres -- "${DDI_PY:-python3}" /usr/bin/patronictl -c "$PATRONI_CFG" switchover "${C[CLUSTER_NAME]}" --leader "$leader" "${args[@]}"
 }
 
+# request : traite la demande de bascule déposée par la console (fichier « .cluster-switchover » : UNE ligne = nom du nœud candidat).
+# Le fichier vient d'un processus sans privilège : il est borné, relu comme un simple nom, et vérifié contre cluster.conf et l'état réel de Patroni ;
+# le résultat (message fixe, jamais le contenu reçu) est publié pour la console.
+cmd_request() {
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || return 0
+  local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" f cand="" msg="" ok=false d="$ROOT/run/ddibuntu"
+  f="$gen/.cluster-switchover"
+  [ -e "$f" ] || [ -L "$f" ] || return 0
+  if [ -f "$f" ] && [ ! -L "$f" ]; then cand="$(head -c 64 "$f" | head -n1 | tr -d '\r')"; fi
+  rm -f "$f"
+  local leader="" p found=0 state=""
+  if [ -z "$cand" ] || ! valid_name "$cand"; then msg="demande invalide"
+  else
+    for p in ${C[PEERS]}; do if [ "$(peer_field "$p" name)" = "$cand" ] && [ "$(peer_field "$p" role)" = data ]; then found=1; fi; done
+    if [ "$found" -ne 1 ]; then msg="nœud candidat inconnu ou sans base de données"
+    else
+      state="$(curl -fsS --max-time 4 --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "https://${C[NODE_IP]}:${C[PATRONI_PORT]}/cluster" 2>/dev/null || true)"
+      leader="$(printf '%s' "$state" | python3 -c 'import json,sys; print(next((m["name"] for m in json.load(sys.stdin)["members"] if m["role"] in ("leader","master","primary")), ""))' 2>/dev/null || true)"
+      if [ -z "$leader" ]; then msg="aucun leader : bascule impossible"
+      elif [ "$leader" = "$cand" ]; then msg="le candidat est déjà le leader"
+      elif ! printf '%s' "$state" | CAND="$cand" python3 -c 'import json,os,sys; m=[x for x in json.load(sys.stdin)["members"] if x["name"]==os.environ["CAND"]]; sys.exit(0 if m and m[0].get("state") in ("running","streaming") else 1)' 2>/dev/null; then msg="le candidat n'est pas un secondaire en bonne santé"
+      elif ( cmd_switchover --candidate "$cand" ) >/dev/null 2>&1; then ok=true; msg="bascule effectuée"
+      else msg="la bascule a échoué (voir le journal)"; fi
+    fi
+  fi
+  log "demande de bascule de la console : $msg"
+  install -d -m 0755 "$d" 2>/dev/null || return 0
+  local t; t="$(mktemp "$d/.result.XXXXXX")" || return 0
+  CAND="$cand" OK="$ok" MSG="$msg" python3 -c '
+import json, os, re, time
+c = os.environ["CAND"] if re.fullmatch(r"[a-z][a-z0-9-]{1,30}", os.environ["CAND"]) else ""
+print(json.dumps({"at": int(time.time()), "candidate": c, "ok": os.environ["OK"] == "true", "message": os.environ["MSG"]}, ensure_ascii=False))' > "$t"
+  chmod 0644 "$t"; mv -f "$t" "$d/cluster-result.json"
+  [ "$ok" = true ] || return 1
+}
+
 case "${1:-}" in
   init) shift; cmd_init "$@" ;;
   bundle) shift; cmd_bundle "$@" ;;
@@ -709,6 +746,7 @@ case "${1:-}" in
   switchover) shift; cmd_switchover "$@" ;;
   sync) cmd_sync ;;
   follow) cmd_follow ;;
+  request) cmd_request ;;
   vip-check) cmd_vip_check ;;
   keepalived) conf_load; render_keepalived ;;
   *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;

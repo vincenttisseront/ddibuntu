@@ -5,6 +5,9 @@ const api = useApi()
 const route = useRoute()
 const pwOpen = ref(false)
 const { data: about } = useFetch<any>('/api/about', { server: false, lazy: true, default: () => null })
+const { data: clusterInfo } = useFetch<any>('/api/cluster/status', { server: false, lazy: true, default: () => null })
+const clusterOn = computed(() => !!clusterInfo.value?.clustered)
+const replicaNode = computed(() => !!clusterInfo.value?.replica)
 const updateAvailable = computed(() => !!about.value?.update?.available)
 const nav = computed(() => [
   { label: t('nav.dashboard'), icon: 'i-lucide-layout-dashboard', to: '/' },
@@ -13,6 +16,7 @@ const nav = computed(() => [
   { label: t('nav.dhcp'), icon: 'i-lucide-server', to: '/dhcp' },
   { label: t('nav.filtering'), icon: 'i-lucide-shield-ban', to: '/filtering' },
   { label: t('nav.import'), icon: 'i-lucide-file-input', to: '/import' },
+  ...(clusterOn.value ? [{ label: t('nav.cluster'), icon: 'i-lucide-server-cog', to: '/cluster' }] : []),
   ...(user.value?.role === 'admin' ? [{ label: t('nav.system'), icon: 'i-lucide-settings', to: '/system', ...(updateAvailable.value ? { badge: t('update.badge'), to: '/system#updates' } : {}) }] : []),
 ])
 const title = computed(() => nav.value.find((n) => (n.to === '/' ? route.path === '/' : route.path.startsWith(n.to)))?.label ?? '')
@@ -58,6 +62,7 @@ async function logout() {
         </UDashboardNavbar>
       </template>
       <template #body>
+        <UAlert v-if="replicaNode" class="mb-3" color="info" variant="subtle" icon="i-lucide-copy" :title="t('cluster.replica_title')" :description="t('cluster.replica_desc')" />
         <slot />
       </template>
     </UDashboardPanel>
