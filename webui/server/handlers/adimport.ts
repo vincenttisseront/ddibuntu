@@ -25,7 +25,7 @@ async function discover() {
 
 route('POST', '/import/ad/discover', 'admin', async () => {
   const { d } = await discover()
-  const have = new Set((await query<any>('select text(cidr) as c from subnets')).map((r) => r.c))
+  const have = new Set((await query<any>('select text(cidr) as c from subnets where space_id = 1')).map((r) => r.c))
   return { server: d.server, sites: d.sites, subnets: d.subnets.map((x) => ({ ...x, exists: have.has(x.cidr) })), dcs: allowedDcHosts((await loadAd()).s) }
 })
 
@@ -37,7 +37,7 @@ route('POST', '/import/ad/subnets', 'admin', async (c) => {
   let created = 0, updated = 0
   await tx(async (cl) => {
     for (const r of rows) {
-      const ins = await cl.query("insert into subnets (cidr, name, site, description, source) values ($1,$2,$3,$4,'ad') on conflict (cidr) do nothing returning id", [r.cidr, r.name, r.site || null, r.description || null])
+      const ins = await cl.query("insert into subnets (cidr, name, site, description, source) values ($1,$2,$3,$4,'ad') on conflict (space_id, cidr) do nothing returning id", [r.cidr, r.name, r.site || null, r.description || null])
       if (ins.rowCount) created++
       else if (r.site) updated += (await cl.query("update subnets set site = $2 where cidr = $1 and (site is null or site = '')", [r.cidr, r.site])).rowCount ?? 0
     }

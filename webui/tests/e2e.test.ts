@@ -534,7 +534,7 @@ describe('pages rendues côté serveur : accès, traductions, accessibilité', (
   let frKeys: Record<string, string> = {}
   beforeAll(async () => { frKeys = (await import('../app/i18n/fr')).default })
   const PAGES: Array<[string, string, string]> = [
-    ['/', 'Tableau de bord', 'Dashboard'], ['/ipam', 'Sous-réseaux', 'Subnets'], ['/dns', 'Zones', 'Zones'], ['/dhcp', 'Étendues', 'Scopes'], ['/filtering', 'Listes', 'Lists'], ['/import', 'Zone DNS', 'DNS zone'], ['/system', 'Utilisateurs', 'Users'],
+    ['/', 'Tableau de bord', 'Dashboard'], ['/ipam', 'Réseaux', 'Networks'], ['/dns', 'Zones', 'Zones'], ['/dhcp', 'Étendues', 'Scopes'], ['/filtering', 'Listes', 'Lists'], ['/import', 'Zone DNS', 'DNS zone'], ['/system', 'Utilisateurs', 'Users'],
   ]
   it('sans session : redirection vers la connexion pour chaque page', async () => {
     for (const [p] of PAGES) { const r = await anon.get(p); expect([p, r.status, r.headers.get('location')]).toEqual([p, 302, '/login']) }

@@ -226,7 +226,7 @@ export interface Q { query: (text: string, params?: any[]) => Promise<{ rows: an
 export async function loadExisting(cl: Q): Promise<Existing> {
   const ex: Existing = { vlans: new Map(), subnets: new Map(), addresses: new Map() }
   for (const r of (await cl.query('select id, vlan_id, name, description, source from vlans')).rows) ex.vlans.set(r.vlan_id, r)
-  for (const r of (await cl.query('select s.id, text(s.cidr) as c, s.name, s.description, s.site, v.vlan_id as vid, s.tags, s.source from subnets s left join vlans v on v.id = s.vlan_id')).rows) ex.subnets.set(r.c, { ...r, vid: r.vid ?? null })
+  for (const r of (await cl.query('select s.id, text(s.cidr) as c, s.name, s.description, s.site, v.vlan_id as vid, s.tags, s.source from subnets s left join vlans v on v.id = s.vlan_id where s.space_id = 1')).rows) ex.subnets.set(r.c, { ...r, vid: r.vid ?? null })
   for (const r of (await cl.query('select id, host(ip) as ip, status, hostname, description, source from addresses')).rows) if (!ex.addresses.has(r.ip)) ex.addresses.set(r.ip, r)
   return ex
 }
@@ -238,11 +238,11 @@ export async function applyNetbox(cl: Q, plan: NbPlan): Promise<void> {
     else await cl.query("update vlans set name = $2, description = $3, source = 'netbox', external_id = $4 where id = $1", [o.id, o.row.name, o.row.description || null, o.row.ext])
   }
   if (plan.prune.vlans.length) await cl.query('delete from vlans where id = any($1)', [plan.prune.vlans])
-  const subnetId = new Map<string, number>((await cl.query('select id, text(cidr) as c from subnets')).rows.map((r: any) => [r.c as string, r.id as number]))
+  const subnetId = new Map<string, number>((await cl.query('select id, text(cidr) as c from subnets where space_id = 1')).rows.map((r: any) => [r.c as string, r.id as number]))
   for (const o of plan.subnets) {
     const vid = o.row.vid !== null ? (vlanId.get(o.row.vid) ?? null) : null
     if (o.op === 'create') {
-      const r = await cl.query("insert into subnets (cidr, name, description, site, vlan_id, tags, source, external_id) values ($1,$2,$3,$4,$5,$6,'netbox',$7) on conflict (cidr) do nothing returning id", [o.row.cidr, o.row.name, o.row.description || null, o.row.site, vid, o.row.tags, o.row.ext])
+      const r = await cl.query("insert into subnets (cidr, name, description, site, vlan_id, tags, source, external_id) values ($1,$2,$3,$4,$5,$6,'netbox',$7) on conflict (space_id, cidr) do nothing returning id", [o.row.cidr, o.row.name, o.row.description || null, o.row.site, vid, o.row.tags, o.row.ext])
       if (r.rows[0]) subnetId.set(o.row.cidr, r.rows[0].id)
     } else await cl.query("update subnets set name = $2, description = $3, site = $4, vlan_id = $5, tags = $6, source = 'netbox', external_id = $7, updated_at = now() where id = $1", [o.id, o.row.name, o.row.description || null, o.row.site, vid, o.row.tags, o.row.ext])
   }

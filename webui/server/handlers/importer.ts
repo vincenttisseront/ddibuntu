@@ -76,7 +76,7 @@ async function dhcpCommit(cl: PoolClient, text: string) {
   const out = { scopes: 0, scopesSkipped: 0, subnetsCreated: 0, pools: 0, reservations: 0, reservationsSkipped: 0 }
   for (const sc of plan.scopes) {
     const net = parseCidr(sc.cidr)!
-    let sub = (await cl.query('select id from subnets where cidr = $1', [sc.cidr])).rows[0]
+    let sub = (await cl.query('select id from subnets where space_id = 1 and cidr = $1', [sc.cidr])).rows[0]
     if (!sub) { sub = (await cl.query('insert into subnets (cidr, name) values ($1,$2) returning id', [sc.cidr, sc.name])).rows[0]; out.subnetsCreated++ }
     const have = (await cl.query('select 1 from dhcp_scopes where subnet_id = $1', [sub.id])).rowCount
     if (have) { out.scopesSkipped++; continue }
@@ -99,7 +99,7 @@ async function dhcpCommit(cl: PoolClient, text: string) {
 route('POST', '/import/dhcp/preview', 'operator', async (c) => {
   const b = await c.body(content)
   const plan = parseDhcpExport(b.content)
-  const exist = new Set((await query<any>('select text(cidr) as c from subnets')).map((r) => r.c))
+  const exist = new Set((await query<any>('select text(cidr) as c from subnets where space_id = 1')).map((r) => r.c))
   return {
     scopes: plan.scopes.map((s) => ({ cidr: s.cidr, name: s.name, leaseTime: s.leaseTime, enabled: s.enabled, pools: s.pools.length, reservations: s.reservations.length, exclusions: s.exclusions.length, subnetExists: exist.has(s.cidr) })),
     totals: { scopes: plan.scopes.length, pools: plan.scopes.reduce((n, s) => n + s.pools.length, 0), reservations: plan.scopes.reduce((n, s) => n + s.reservations.length, 0) },
@@ -120,7 +120,7 @@ route('POST', '/import/dhcp/commit', 'operator', async (c) => {
 route('POST', '/import/ad-subnets/preview', 'operator', async (c) => {
   const b = await c.body(content)
   const { rows, errors } = parseAdSubnets(b.content)
-  const exist = new Set((await query<any>('select text(cidr) as c from subnets')).map((r) => r.c))
+  const exist = new Set((await query<any>('select text(cidr) as c from subnets where space_id = 1')).map((r) => r.c))
   return { total: rows.length, new: rows.filter((r) => !exist.has(r.cidr)).length, existing: rows.filter((r) => exist.has(r.cidr)).length, errors: errors.slice(0, 100), sample: rows.slice(0, 20) }
 })
 route('POST', '/import/ad-subnets/commit', 'operator', async (c) => {
@@ -130,7 +130,7 @@ route('POST', '/import/ad-subnets/commit', 'operator', async (c) => {
   let created = 0, updated = 0
   await tx(async (cl) => {
     for (const r of rows) {
-      const res = await cl.query('insert into subnets (cidr, name, site, description) values ($1,$2,$3,$4) on conflict (cidr) do nothing returning id', [r.cidr, r.site ? `${r.site} — ${r.cidr}` : r.cidr, r.site || null, r.description || null])
+      const res = await cl.query('insert into subnets (cidr, name, site, description) values ($1,$2,$3,$4) on conflict (space_id, cidr) do nothing returning id', [r.cidr, r.site ? `${r.site} — ${r.cidr}` : r.cidr, r.site || null, r.description || null])
       if (res.rowCount) created++
       else if (r.site) { const u = await cl.query("update subnets set site = $2 where cidr = $1 and (site is null or site = '')", [r.cidr, r.site]); updated += u.rowCount ?? 0 }
     }
@@ -155,12 +155,12 @@ route('POST', '/import/ipam-csv/commit', 'operator', async (c) => {
           const cidr = parseCidr(r.cidr ?? '')
           if (!cidr) { out.errors.push({ line, code: 'cidr' }); continue }
           const gw = r.gateway ? normIp(r.gateway) : null
-          const res = await cl.query('insert into subnets (cidr, name, description, site, gateway) values ($1,$2,$3,$4,$5) on conflict (cidr) do nothing returning id', [cidrToString(cidr), r.name || cidrToString(cidr), r.description || null, r.site || null, gw])
+          const res = await cl.query('insert into subnets (cidr, name, description, site, gateway) values ($1,$2,$3,$4,$5) on conflict (space_id, cidr) do nothing returning id', [cidrToString(cidr), r.name || cidrToString(cidr), r.description || null, r.site || null, gw])
           if (res.rowCount) out.created++; else out.skipped++
         } else {
           const ip = normIp(r.ip ?? '')
           if (!ip) { out.errors.push({ line, code: 'ip' }); continue }
-          const sub = (await cl.query('select id from subnets where cidr >>= $1::inet order by masklen(cidr) desc limit 1', [ip])).rows[0]
+          const sub = (await cl.query('select id from subnets where space_id = 1 and cidr >>= $1::inet order by masklen(cidr) desc limit 1', [ip])).rows[0]
           if (!sub) { out.errors.push({ line, code: 'no_subnet' }); continue }
           const mac = r.mac ? normMac(r.mac) : null
           if (r.mac && !mac) { out.errors.push({ line, code: 'mac' }); continue }

@@ -7,7 +7,7 @@ import { fail } from './router'
 
 // Ordre = dépendances (parents d'abord). Les listes de blocage (volumineuses, retéléchargeables), les utilisateurs,
 // sessions, journaux, statistiques et baux Kea n'en font pas partie.
-export const SNAPSHOT_TABLES = ['vlans', 'subnets', 'addresses', 'dns_zones', 'dns_records', 'dhcp_scopes', 'dhcp_pools', 'dhcp_reservations', 'filter_rules'] as const
+export const SNAPSHOT_TABLES = ['vlans', 'ipam_spaces', 'subnets', 'ipam_pools', 'addresses', 'dns_zones', 'dns_records', 'dhcp_scopes', 'dhcp_pools', 'dhcp_reservations', 'filter_rules'] as const
 const SETTING_KEYS = ['dns', 'dhcp']
 export type SnapshotKind = 'manual' | 'deploy' | 'pre-import' | 'pre-restore'
 const KEEP = 40, KEEP_DEPLOY = 20
@@ -38,7 +38,7 @@ export async function captureSnapshot(kind: SnapshotKind, label: string, usernam
 }
 
 const LABELS: Record<string, (x: any) => string> = {
-  vlans: (x) => `VLAN ${x.vlan_id} ${x.name}`, subnets: (x) => String(x.cidr), addresses: (x) => String(x.ip), dns_zones: (x) => String(x.name),
+  vlans: (x) => `VLAN ${x.vlan_id} ${x.name}`, ipam_spaces: (x) => String(x.name), ipam_pools: (x) => `${x.name} ${x.start_ip} – ${x.end_ip}`, subnets: (x) => String(x.cidr), addresses: (x) => String(x.ip), dns_zones: (x) => String(x.name),
   dns_records: (x) => `${x.name} ${x.type} ${x.rdata}`, dhcp_scopes: (x) => `scope #${x.id}`, dhcp_pools: (x) => `${x.start_ip} – ${x.end_ip}`,
   dhcp_reservations: (x) => `${x.mac} → ${x.ip}`, filter_rules: (x) => `${x.action} ${x.domain}`,
 }
@@ -54,7 +54,7 @@ export async function diffSnapshot(id: number): Promise<Record<string, TableDiff
   const cur = await readState(getPool()), old = row.data as Record<string, any>
   const out: Record<string, TableDiff> = {}
   for (const t of SNAPSHOT_TABLES) {
-    const a = new Map<number, any>((cur[t] as any[]).map((x) => [x.id, x])), b = new Map<number, any>((old[t] as any[]).map((x) => [x.id, x]))
+    const a = new Map<number, any>((cur[t] as any[]).map((x) => [x.id, x])), b = new Map<number, any>(((old[t] ?? []) as any[]).map((x) => [x.id, x]))
     const d: TableDiff = { removed: 0, restored: 0, changed: 0, samples: { removed: [], restored: [], changed: [] } }
     const lab = LABELS[t]!
     for (const [k, x] of a) { if (!b.has(k)) { d.removed++; if (d.samples.removed.length < 8) d.samples.removed.push(lab(x)) } else if (strip(x) !== strip(b.get(k))) { d.changed++; if (d.samples.changed.length < 8) d.samples.changed.push(lab(b.get(k))) } }

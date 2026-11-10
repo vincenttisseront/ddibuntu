@@ -60,7 +60,7 @@ const PG_MESSAGES: Record<string, [number, string]> = {
   '22P02': [400, 'invalid_input'], '22007': [400, 'invalid_input'], '22003': [400, 'invalid_input'], '22023': [400, 'invalid_input'],
   '22021': [400, 'invalid_input'], '22P05': [400, 'invalid_input'], '22001': [400, 'invalid_input'], '22008': [400, 'invalid_input'],
 }
-const PG_RAISED = new Set(['ip_outside_subnet'])
+const PG_RAISED = new Set(['ip_outside_subnet', 'pool_outside_subnet', 'pool_overlap'])
 
 function sanitize(e: any): never {
   if (e?.statusCode) throw e

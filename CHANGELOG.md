@@ -1,6 +1,15 @@
 # Journal des modifications
 
-## 0.4.2 (en cours)
+## 0.5.0 (en cours)
+- **IPAM multi-espaces** : table des espaces (le même plan d'adressage peut exister dans plusieurs espaces, façon VRF). L'existant migre dans l'espace « Défaut » ; l'unicité du CIDR devient « par espace » (migration 4).
+- **Hiérarchie** : conteneurs (regroupent des réseaux, sans adresses) et réseaux imbriqués, parent déduit de l'inclusion des préfixes dans l'espace ; agrégats par conteneur (taille, % alloué, % d'IP utilisées sur tous les descendants).
+- **Pools d'adresses** : plages nommées dans un réseau (sans chevauchement, contenues dans le réseau, contrôlé en base), taux d'utilisation, « prochaine IP libre » dans un pool donné.
+- **Nouvelle page IPAM** : onglets Espaces / Réseaux / Pools / Adresses ; tableau dense (filtre par colonne, tri, sélection multiple, arborescence repliable, compteur de résultats, export CSV de la vue), sélecteur d'espace et boutons IPv4/IPv6, actions groupées (déplacer vers un espace, supprimer). Vue « toutes les adresses » transverse avec pagination côté serveur.
+- Points de restauration : espaces et pools inclus (les points antérieurs à la 0.5.0 restent consultables mais ne sont pas restaurables : schéma différent).
+- Garde-fou : une étendue DHCP ne se crée que sur un réseau de l'espace par défaut (Kea ne distingue pas les espaces) et jamais sur un conteneur.
+- Feuille de route : `docs/ROADMAP.md`.
+
+## 0.4.2
 - Mises à jour en ligne : la recherche distingue « aucune release publiée sur le dépôt » (HTTP 404), « accès refusé / limite de débit » et une vraie panne réseau ; auparavant tout s'affichait « Impossible de joindre GitHub ».
 - `make-iso.ps1 -BundleOnly` : produit seulement l'archive de mise à jour signée (sans reconstruire l'ISO).
 

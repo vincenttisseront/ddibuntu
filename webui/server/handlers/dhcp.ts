@@ -36,9 +36,12 @@ route('GET', '/dhcp/scopes/:id', 'viewer', async (c) => {
 const scopeBody = z.object({ subnet_id: z.number().int(), name: z.string().trim().max(100).nullable().optional(), lease_time: z.number().int().min(60).max(31536000).default(86400), enabled: z.boolean().default(true), options: optionsS.default({}) })
 route('POST', '/dhcp/scopes', 'operator', async (c) => {
   const b = await c.body(scopeBody)
-  const s = await one<any>('select family(cidr) as fam from subnets where id = $1', [b.subnet_id])
+  const s = await one<any>('select family(cidr) as fam, space_id, kind from subnets where id = $1', [b.subnet_id])
   if (!s) fail(400, 'subnet_not_found')
   if (s.fam !== 4) fail(400, 'ipv4_only')
+  // Kea ne distingue pas les espaces : deux plans identiques produiraient des sous-réseaux en conflit
+  if (s.space_id !== 1) fail(400, 'dhcp_space_only')
+  if (s.kind === 'container') fail(400, 'container_no_addresses')
   const r = await one<any>('insert into dhcp_scopes (subnet_id, name, lease_time, enabled, options) values ($1,$2,$3,$4,$5::jsonb) returning id', [b.subnet_id, b.name ?? null, b.lease_time, b.enabled, JSON.stringify(cleanOptions(b.options))])
   await audit(c, 'scope_create', 'dhcp_scope', r.id)
   return { id: r.id }

@@ -230,7 +230,50 @@ create index dns_queries_domain on dns_queries (domain, at desc);
 create index dns_queries_client on dns_queries (client, at desc);
 `
 
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }]
+
+// Version 4 : espaces IPAM (même plan d'adressage réutilisable), conteneurs de réseaux, pools d'adresses.
+// L'existant migre dans l'espace « Défaut » (id 1) ; la hiérarchie reste déduite de l'inclusion des préfixes dans un espace.
+const SCHEMA_4 = String.raw`
+create table ipam_spaces (
+  id serial primary key,
+  name text not null, description text,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create unique index ipam_spaces_name on ipam_spaces (lower(name));
+insert into ipam_spaces (id, name, description) values (1, 'Défaut', 'Espace créé automatiquement');
+select setval(pg_get_serial_sequence('ipam_spaces', 'id'), 1);
+alter table subnets add column space_id int not null default 1 references ipam_spaces(id) on delete restrict,
+  add column kind text not null default 'network' check (kind in ('network','container'));
+alter table subnets drop constraint subnets_cidr_key;
+create unique index subnets_space_cidr on subnets (space_id, cidr);
+create index subnets_space on subnets (space_id);
+create table ipam_pools (
+  id serial primary key,
+  subnet_id int not null references subnets(id) on delete cascade,
+  name text not null, description text,
+  start_ip inet not null, end_ip inet not null,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  check (family(start_ip) = family(end_ip) and start_ip <= end_ip)
+);
+create index ipam_pools_subnet on ipam_pools (subnet_id);
+create function ipam_pools_check() returns trigger language plpgsql as $$
+declare c cidr;
+begin
+  select cidr into c from subnets where id = new.subnet_id;
+  if not (new.start_ip <<= c and new.end_ip <<= c) then
+    raise exception 'pool_outside_subnet' using errcode = 'P0001';
+  end if;
+  if exists (select 1 from ipam_pools p where p.subnet_id = new.subnet_id and p.id <> coalesce(new.id, 0)
+             and p.start_ip <= new.end_ip and p.end_ip >= new.start_ip) then
+    raise exception 'pool_overlap' using errcode = 'P0001';
+  end if;
+  return new;
+end $$;
+create trigger ipam_pools_check_trg before insert or update of start_ip, end_ip, subnet_id on ipam_pools
+  for each row execute function ipam_pools_check();
+`
+
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }]
 
 export async function migrate(): Promise<number[]> {
   const c = await getPool().connect()

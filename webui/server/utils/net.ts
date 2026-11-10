@@ -124,6 +124,16 @@ export function nextFree(c: Cidr, taken: Set<bigint>, excluded: Array<[bigint, b
   return null
 }
 
+/** Première adresse IPv4 libre d'une plage [lo, hi] (bornes incluses), hors adresses prises et plages exclues. */
+export function nextFreeInRange(lo: bigint, hi: bigint, taken: Set<bigint>, excluded: Array<[bigint, bigint]> = []): string | null {
+  for (let n = lo; n <= hi; n++) {
+    if (taken.has(n)) continue
+    if (excluded.some(([a, b]) => n >= a && n <= b)) continue
+    return ipToString({ v: 4, n })
+  }
+  return null
+}
+
 /** Nom PTR d'une adresse (in-addr.arpa / ip6.arpa), sans point final. */
 export function ptrName(ip: Ip): string {
   if (ip.v === 4) return ipToString(ip).split('.').reverse().join('.') + '.in-addr.arpa'

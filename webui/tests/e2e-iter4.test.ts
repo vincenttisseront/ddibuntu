@@ -94,7 +94,7 @@ let W: Awaited<ReturnType<typeof mk>>
 describe('points de restauration des données', () => {
   it('migration 2 appliquée, version 0.4.0', async () => {
     const i = (await admin.get('/api/system/info')).json
-    expect([i.schema, i.version]).toEqual([3, '0.4.0'])   // 1 socle, 2 points de restauration/origine IPAM, 3 journal des requêtes
+    expect([i.schema, i.version]).toEqual([4, '0.4.0'])   // 1 socle, 2 points de restauration/origine IPAM, 3 journal des requêtes, 4 espaces/conteneurs/pools IPAM
     expect((await rows("select column_name from information_schema.columns where table_name = 'addresses' and column_name in ('source','external_id','last_seen') order by 1")).map((r) => r.column_name)).toEqual(['external_id', 'last_seen', 'source'])
   })
   it('droits : lecteur refusé, opérateur peut créer un point, seul l\'administrateur restaure, supprime, épingle', async () => {
@@ -112,7 +112,7 @@ describe('points de restauration des données', () => {
     expect(meta.counts).toMatchObject({ vlans: 1, subnets: 2, addresses: 1, dns_zones: 1, dns_records: 3 })
     const raw = JSON.stringify((await rows('select data from config_snapshots where id = $1', [snapA]))[0].data)
     expect(raw).not.toMatch(/password_hash|token_hash|csrf|session/i)
-    expect(Object.keys((await rows('select data from config_snapshots where id = $1', [snapA]))[0].data).sort()).toEqual(['addresses', 'dhcp_pools', 'dhcp_reservations', 'dhcp_scopes', 'dns_records', 'dns_zones', 'filter_rules', 'settings', 'subnets', 'vlans'])
+    expect(Object.keys((await rows('select data from config_snapshots where id = $1', [snapA]))[0].data).sort()).toEqual(['addresses', 'dhcp_pools', 'dhcp_reservations', 'dhcp_scopes', 'dns_records', 'dns_zones', 'filter_rules', 'ipam_pools', 'ipam_spaces', 'settings', 'subnets', 'vlans'])
   })
   it('diff : annonce ce que fera la restauration (supprimé / rétabli / modifié)', async () => {
     await admin.del(`/api/ipam/subnets/${W.s2.id}`)                                  // sera rétabli
