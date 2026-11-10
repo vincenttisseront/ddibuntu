@@ -156,6 +156,8 @@ if mode == "bind-render":
         if l == "options {":
             out.append(l); seen = True
             out.append("  listen-on { %s; };" % node_ip)                                          # le pair joint ce nœud sur le réseau dédié
+            out.append("  transfer-source %s;" % node_ip)                                         # transferts, NOTIFY et rafraîchissements partent de l'adresse du réseau dédié :
+            out.append("  notify-source %s;" % node_ip)                                           # c'est celle que le pair a dans ses « primaries » / son pare-feu
             out.append('  also-notify { %s key "ddi-xfr"; };' % peer if role == "primary" else "  notify no;")
             continue
         if l.strip() == "allow-transfer { none; };":
