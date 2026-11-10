@@ -1,5 +1,14 @@
 # Journal des modifications
 
+## 0.5.3 — itération 3 « Kea HA load-balancing »
+- **Kea en haute disponibilité** (mode `load-balancing`, hooks `libdhcp_ha` + `libdhcp_lease_cmds`) dès qu'un cluster compte deux nœuds de données. Synchronisation des baux par un écouteur HTTP dédié de Kea (port 8000) en **TLS mutuel** avec les certificats du cluster, sur le réseau dédié.
+- **Frontière de privilèges** : la console ne peut toujours pas déclarer de hook ; `ddibuntu-reload` (root) ajoute le bloc HA à partir de `cluster.conf`, exige les fichiers TLS, relit la configuration finale avec `kea-dhcp4 -t` et revient en arrière en cas d'échec. Rôles `primary`/`secondary` du hook déterminés par l'ordre des noms (identique sur les deux nœuds). Base de baux locale (fichier) en mode cluster ; le mot de passe de la base de baux n'est jamais copié.
+- **Le secondaire suit la configuration** : migration 6 (`rendered_configs`, répliquée) alimentée à chaque déploiement ; `ddibuntu-cluster follow` (minuterie `ddibuntu-cluster-follow`, 1 min) vérifie l'empreinte, dépose le fichier et appelle `ddibuntu-reload --kea-only`. Sur le primaire, `follow` réapplique à l'arrivée du second nœud (le HA s'active sans nouveau déploiement).
+- `ddibuntu-cluster status` : état HA de Kea (rôle, état local, état du partenaire, clients sans réponse) lu sur la socket de contrôle.
+- Pare-feu : port 8000 ouvert aux seuls pairs du cluster. Utilisateur `_kea` ajouté au groupe `ddicluster` (lecture de la clé du nœud).
+- Tests : `b11-kea-ha.sh` (injection, ordre des rôles, hostiles, retour arrière, vrai `kea-dhcp4 -t`) ; `b11-kea-ha-live.sh` (deux vrais Kea : load-balancing, TLS mutuel, 14 baux obtenus par de vrais échanges DHCP via un relais et retrouvés chez le partenaire, arrêt brutal du partenaire → `partner-down` → l'autre sert 10/10 nouveaux clients, retour → baux rattrapés) ; `b10-cluster-live.sh` étendu (`follow` sur un vrai Patroni : secondaire, primaire, empreinte altérée, hook injecté en base refusé).
+- **Limites connues** : minuteries accélérées dans le test réel (production : 10 s / 60 s) ; pas de coupure réseau réelle entre machines ; les relais doivent lister les deux nœuds (le DHCP ne passe pas par la VIP) ; la console du secondaire ne suit pas encore le primaire (itération 5) ; DHCP en cluster = fichier de baux (les baux déjà en base PostgreSQL ne sont pas migrés).
+
 ## 0.5.2 — itération 2 « Fondations du cluster »
 - **`ddibuntu-cluster`** (root) : `init`, `bundle`, `join`, `render`, `activate`, `status`, `switchover`. Un cluster = 2 nœuds de données (PostgreSQL conduit par **Patroni**) + 1 **arbitre** (etcd seul), sur le **réseau dédié**.
 - **Quorum etcd (3 membres)** en TLS mutuel, écoute limitée à l'adresse du réseau dédié. Un nœud ajouté entre comme **learner** (sans voix) puis est promu votant une fois synchronisé : le quorum n'est jamais dégradé pendant l'enrôlement.

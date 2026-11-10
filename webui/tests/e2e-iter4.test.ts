@@ -174,6 +174,18 @@ describe('déploiement : point de restauration et résultat réel', () => {
     expect(d.snapshot_id).toBeGreaterThan(0); expect(d.applied).toBeNull()
     expect((await rows('select kind from config_snapshots where id = $1', [d.snapshot_id]))[0].kind).toBe('deploy')
   })
+  it('cluster : la configuration Kea déployée est copiée en base pour le secondaire, sans secret ni hook', async () => {
+    const r = (await rows("select content, generation, sha256 from rendered_configs where name = 'kea-dhcp4.conf'"))[0]
+    expect(r).toBeTruthy()
+    const { createHash } = await import('node:crypto')
+    expect(createHash('sha256').update(r.content).digest('hex')).toBe(r.sha256)
+    const k = JSON.parse(r.content).Dhcp4
+    expect(k['lease-database']).toMatchObject({ type: 'memfile', persist: true })   // jamais PostgreSQL : pas de mot de passe dans la base répliquée
+    expect(r.content).not.toMatch(/password/i); expect(k['hooks-libraries']).toBeUndefined()
+    expect(Number(r.generation)).toBeGreaterThan(0)
+    expect(await admin.post('/api/system/apply', { deploy: true })).toBeTruthy()
+    expect((await rows("select count(*)::int c from rendered_configs"))[0].c).toBe(1)   // une seule ligne, mise à jour à chaque déploiement
+  })
   it('résultat réel du rechargement privilégié : succès, puis échec avec retour arrière automatique', async () => {
     expect((await admin.get('/api/system/reload-status')).json.status).toBeNull()   // pas encore de fichier
     const at = Math.floor(Date.now() / 1000) + 5

@@ -11,7 +11,7 @@ Appliance **DDI** (DNS, DHCP, IPAM) sur Ubuntu Server 24.04 LTS, installable par
 - **Retour arrière partout** : un point de restauration est créé avant chaque configuration, déploiement ou import ; les changements réseau s'annulent seuls sans confirmation.
 - **Sécurité** : chaîne d'approvisionnement vérifiée (signatures et empreintes), console sans privilège, application privilégiée séparée et contrôlée, pare-feu nftables, durcissement.
 
-> État : version de développement **0.5.2**. Voir « Limites connues » ci-dessous avant tout usage en production.
+> État : version de développement **0.5.3**. Voir « Limites connues » ci-dessous avant tout usage en production.
 
 ## Démarrage rapide
 
@@ -49,7 +49,7 @@ docs/                    architecture, installation, tests, publication
 
 Principes de travail : une fonction n'est « faite » que si un test réel l'a prouvée ; un test qui échoue est d'abord soupçonné d'être faux, puis vérifié ; aucune donnée réelle (messages, clients, secrets) dans les tests.
 
-## Cluster (en construction — itération 2 sur 6)
+## Cluster (en construction — itération 3 sur 6)
 
 Deux nœuds de données + un arbitre, sur un réseau dédié ; architecture et décisions : [docs/ARCHITECTURE-CLUSTER.md](docs/ARCHITECTURE-CLUSTER.md).
 
@@ -64,7 +64,7 @@ ddibuntu-cluster join n2.bundle --wipe-local-db
 ddibuntu-cluster status          # état JSON
 ddibuntu-cluster switchover      # bascule contrôlée
 ```
-Ajoutez d'abord l'arbitre, puis le second nœud de données. Pas encore de page console ; la console, BIND et Kea ne suivent pas encore le primaire (itérations suivantes).
+Ajoutez d'abord l'arbitre, puis le second nœud de données. Dès que deux nœuds de données existent, Kea passe en **HA load-balancing** (configuration ajoutée par root ; `ddibuntu-cluster status` montre l'état HA) : les relais DHCP doivent lister les deux adresses réelles des nœuds. Pas encore de page console ; la console et BIND ne suivent pas encore le primaire (itérations suivantes).
 
 ## Limites connues
 

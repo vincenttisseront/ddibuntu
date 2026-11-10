@@ -170,6 +170,57 @@ check_fail "API Patroni refuse un client sans certificat" curl -sf --max-time 5 
 check_fail "etcd refuse un client sans certificat" env ETCDCTL_API=3 etcdctl --endpoints "https://$(ip 1):2379" --cacert "$C1/pki/ca.crt" endpoint health
 OUT="$(cl 1 status 2>&1)"; echo "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["etcd"]["healthy"] and d["etcd"]["members"]==3 and len(d["patroni"]["members"])==2' 2>/dev/null && ok "status : JSON cohérent (etcd 3 membres, 2 nœuds de données)" || ko "status" "$OUT"
 
+echo "== Configuration Kea : « follow » (primaire = fichiers de la console, secondaire = copie répliquée en base) =="
+kea_json() { printf '{"Dhcp4":{"interfaces-config":{"interfaces":["lo"]},"control-socket":{"socket-type":"unix","socket-name":"/run/kea/kea4-ctrl-socket"},"lease-database":{"type":"memfile","persist":false},"subnet4":[{"id":1,"subnet":"%s","pools":[{"pool":"%s"}]}]}}' "$1" "$2"; }
+for n in 1 2; do
+  mkdir -p "$(R $n)/gen" "$(R $n)/kea" "$(R $n)/kstate"
+  printf '#!/bin/bash\necho run >> %s/reload-calls\nexec env DDI_KEA_ETC=%s DDI_STATE_DIR=%s DDI_CLUSTER_DIR=%s DDI_RELOAD_NOSERVICES=1 DDI_KEA_LEASE_FILE=%s/leases.csv bash %s/usr/local/sbin/ddibuntu-reload "$@"\n' \
+    "$(R $n)" "$(R $n)/kea" "$(R $n)/kstate" "$(R $n)/etc/ddibuntu-cluster" "$(R $n)" "$RFS" > "$(R $n)/reload.sh"; chmod 755 "$(R $n)/reload.sh"
+done
+fol() { local n="$1"; shift; DDI_GENERATED_DIR="$(R "$n")/gen" DDI_RELOAD_CMD="$(R "$n")/reload.sh" DDI_DB_NAME=postgres cl "$n" follow "$@"; }
+calls() { local f; f="$(R "$1")/reload-calls"; [ -f "$f" ] && wc -l < "$f" | tr -d ' ' || echo 0; }
+store() { # store GEN SUBNET POOL [EMPREINTE_FORCÉE] : écrit la ligne sur le primaire (n1)
+  local f="$B/kea-row.json"; kea_json "$2" "$3" > "$f"
+  local sha="${4:-$(sha256sum "$f" | cut -d' ' -f1)}"
+  sql 1 -c "insert into rendered_configs (name, content, generation, sha256) values ('kea-dhcp4.conf', \$\$$(cat "$f")\$\$, $1, '$sha') on conflict (name) do update set content = excluded.content, generation = excluded.generation, sha256 = excluded.sha256" >/dev/null
+}
+sql 1 -c "create table rendered_configs (name text primary key, content text not null, generation bigint not null, sha256 text not null, deployed_at timestamptz not null default now())" >/dev/null
+expect_eq "follow sur le secondaire sans rien déployé : rien à faire" "00" "$(fol 2 >/dev/null 2>&1; echo $?)$(calls 2)"
+store 1 10.50.0.0/24 "10.50.0.10 - 10.50.0.200"
+wait_cond 20 "la configuration Kea arrive sur n2 par la réplication PostgreSQL" '[ "$(sql 2 -c "select count(*) from rendered_configs")" = 1 ]'
+check "follow sur n2 (secondaire)" fol 2
+expect_eq "n2 : copie de la console écrite dans son dossier généré" "10.50.0.0/24" "$(python3 -c "import json; print(json.load(open('$(R 2)/gen/kea-dhcp4.conf'))['Dhcp4']['subnet4'][0]['subnet'])")"
+expect_eq "n2 : ddibuntu-reload --kea-only appelé une fois" "1" "$(calls 2)"
+expect_eq "n2 : HA injecté par root (this-server-name = n2)" "n2" "$(python3 -c "import json; d=json.load(open('$(R 2)/kea/kea-dhcp4.conf'))['Dhcp4']; print(d['hooks-libraries'][1]['parameters']['high-availability'][0]['this-server-name'])")"
+expect_eq "n2 : les deux nœuds de données sont pairs HA, l'arbitre non" "2" "$(python3 -c "import json; d=json.load(open('$(R 2)/kea/kea-dhcp4.conf'))['Dhcp4']; print(len(d['hooks-libraries'][1]['parameters']['high-availability'][0]['peers']))")"
+check "follow idempotent : second passage sans rechargement" fol 2
+expect_eq "n2 : toujours un seul appel" "1" "$(calls 2)"
+GOOD2="$(sha256sum "$(R 2)/kea/kea-dhcp4.conf" | cut -d' ' -f1)"
+store 2 10.50.0.0/24 "10.50.0.10 - 10.50.0.200" "$(printf '0%.0s' $(seq 64))"
+wait_cond 20 "empreinte altérée répliquée sur n2" '[ "$(sql 2 -c "select sha256 from rendered_configs")" = "$(printf "0%.0s" $(seq 64))" ]'
+fol 2 >"$B/fol-bad.out" 2>&1
+expect_grep "empreinte non conforme : refus signalé" 'empreinte' "$B/fol-bad.out"
+expect_eq "…aucun rechargement" "1" "$(calls 2)"
+expect_eq "…configuration en place intacte" "$GOOD2" "$(sha256sum "$(R 2)/kea/kea-dhcp4.conf" | cut -d' ' -f1)"
+store 3 10.60.0.0/24 "10.60.0.10 - 10.60.0.200"
+wait_cond 20 "nouvelle génération répliquée" '[ "$(sql 2 -c "select generation from rendered_configs")" = 3 ]'
+check "follow applique la nouvelle génération" fol 2
+expect_eq "n2 : nouveau sous-réseau en service" "10.60.0.0/24" "$(python3 -c "import json; print(json.load(open('$(R 2)/kea/kea-dhcp4.conf'))['Dhcp4']['subnet4'][0]['subnet'])")"
+# une base compromise ne doit pas permettre d'exécuter du code : même avec une empreinte « correcte », le hook est refusé par root
+GOOD2="$(sha256sum "$(R 2)/kea/kea-dhcp4.conf" | cut -d' ' -f1)"
+printf '%s' '{"Dhcp4":{"interfaces-config":{"interfaces":["lo"]},"control-socket":{"socket-type":"unix","socket-name":"/run/kea/kea4-ctrl-socket"},"lease-database":{"type":"memfile","persist":false},"hooks-libraries":[{"library":"/tmp/evil.so"}],"subnet4":[]}}' > "$B/evil.json"
+sql 1 -c "update rendered_configs set content = \$\$$(cat "$B/evil.json")\$\$, sha256 = '$(sha256sum "$B/evil.json" | cut -d' ' -f1)', generation = 4" >/dev/null
+wait_cond 20 "ligne piégée répliquée sur n2" '[ "$(sql 2 -c "select generation from rendered_configs")" = 4 ]'
+check_fail "base compromise : hook refusé par ddibuntu-reload" fol 2
+expect_eq "…configuration Kea en place intacte" "$GOOD2" "$(sha256sum "$(R 2)/kea/kea-dhcp4.conf" | cut -d' ' -f1)"
+store 5 10.60.0.0/24 "10.60.0.10 - 10.60.0.200"
+echo "-- primaire (n1) : lit les fichiers de la console --"
+kea_json 10.70.0.0/24 "10.70.0.10 - 10.70.0.20" > "$(R 1)/gen/kea-dhcp4.conf"
+check "follow sur n1 (primaire)" fol 1
+expect_eq "n1 : HA injecté (this-server-name = n1)" "n1" "$(python3 -c "import json; d=json.load(open('$(R 1)/kea/kea-dhcp4.conf'))['Dhcp4']; print(d['hooks-libraries'][1]['parameters']['high-availability'][0]['this-server-name'])")"
+expect_eq "n1 : sous-réseau de la console" "10.70.0.0/24" "$(python3 -c "import json; print(json.load(open('$(R 1)/kea/kea-dhcp4.conf'))['Dhcp4']['subnet4'][0]['subnet'])")"
+expect_eq "status : l'état Kea est présent (null si Kea ne tourne pas)" "True" "$(cl 1 status | python3 -c 'import json,sys; print("kea" in json.load(sys.stdin))')"
+
 echo "== Bascule contrôlée =="
 # patronictl lit sa configuration : on l'exécute avec l'environnement du nœud 1
 check "switchover vers n2" cl 1 switchover --candidate n2

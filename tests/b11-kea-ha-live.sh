@@ -25,7 +25,7 @@ for n in 1 2; do
   cp "$W/ca.crt" "$d/cl/pki/ca.crt"
   openssl ecparam -name prime256v1 -genkey -noout -out "$d/cl/pki/node.key" 2>/dev/null
   openssl req -new -key "$d/cl/pki/node.key" -subj "/CN=n$n" -out "$d/n.csr" 2>/dev/null
-  eval "ipn=\$IP$n"; printf 'subjectAltName=IP:%s\n' "$ipn" > "$d/ext"
+  if [ "$n" = 1 ]; then ipn=$IP1; else ipn=$IP2; fi; printf 'subjectAltName=IP:%s\n' "$ipn" > "$d/ext"
   openssl x509 -req -in "$d/n.csr" -CA "$W/ca.crt" -CAkey "$W/ca.key" -CAcreateserial -days 2 -extfile "$d/ext" -out "$d/cl/pki/node.crt" 2>/dev/null
   printf 'CLUSTER_NAME=lab\nNODE_NAME=n%s\nNODE_ROLE=data\nNODE_IP=%s\nREPL_NET=127.0.2.0/24\nPEERS=n1=%s:data n2=%s:data\nCA_NODE=0\n' "$n" "$ipn" "$IP1" "$IP2" > "$d/cl/cluster.conf"
   cat > "$d/gen/kea-dhcp4.conf" <<JSON
