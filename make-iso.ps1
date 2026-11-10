@@ -13,7 +13,11 @@ param(
     [string]$OutDir = (Join-Path $PSScriptRoot 'dist'),
     [int]$Timeout = 10,
     [string]$CaCert = '',
-    [switch]$SkipConsole
+    [switch]$SkipConsole,
+    # -Bundle : produit aussi l'archive de mise a jour en ligne (ddibuntu-update-<version>.tar.gz)
+    [switch]$Bundle,
+    # -SigningKey cle.pem : signe SHA256SUMS (Ed25519) ; les 3 fichiers sont a joindre a une release GitHub (voir docs/RELEASING.md)
+    [string]$SigningKey = ''
 )
 $ErrorActionPreference = 'Stop'
 function Fail($m) { Write-Host "ERREUR : $m" -ForegroundColor Red; exit 1 }
@@ -49,3 +53,21 @@ if ($CaCert) {
     bash /ddi-src/build-ddibuntu.sh --in-container --out /ddi-out --timeout $Timeout @extra
 if ($LASTEXITCODE -ne 0) { Fail "la construction de l'ISO a echoue (code $LASTEXITCODE)" }
 Write-Host "==> Termine. ISO dans : $Out" -ForegroundColor Green
+
+# --- 3. (option) archive de mise a jour en ligne, signee
+if ($Bundle -or $SigningKey) {
+    $ver = (Get-Content -LiteralPath (Join-Path $Root 'src\VERSION') -Raw).Trim()
+    Write-Host "==> [3/3] Archive de mise a jour $ver"
+    & docker run --rm -v "${Root}:/ddi-src:ro" -v "${Out}:/ddi-out" ubuntu:24.04 bash /ddi-src/build-ddibuntu.sh --bundle --out /ddi-out
+    if ($LASTEXITCODE -ne 0) { Fail "la construction de l'archive a echoue (code $LASTEXITCODE)" }
+    if ($SigningKey) {
+        if (-not (Test-Path -LiteralPath $SigningKey)) { Fail "cle de signature introuvable : $SigningKey" }
+        $Key = (Resolve-Path -LiteralPath $SigningKey).Path
+        $sign = 'set -e; cd /ddi-out; sha256sum ddibuntu-update-' + $ver + '.tar.gz > SHA256SUMS; openssl pkeyutl -sign -inkey /key.pem -rawin -in SHA256SUMS -out SHA256SUMS.sig; openssl pkeyutl -verify -pubin -inkey /ddi-src/src/rootfs/etc/ddibuntu/update-pubkey.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig'
+        & docker run --rm -v "${Root}:/ddi-src:ro" -v "${Out}:/ddi-out" -v "${Key}:/key.pem:ro" node:22-bookworm bash -c $sign
+        if ($LASTEXITCODE -ne 0) { Fail "la signature a echoue ou ne correspond pas a la cle publique du depot (code $LASTEXITCODE)" }
+        Write-Host "==> Signe et verifie. A joindre a la release v${ver} : ddibuntu-update-${ver}.tar.gz, SHA256SUMS, SHA256SUMS.sig (dans $Out)" -ForegroundColor Green
+    } else {
+        Write-Host "==> Archive non signee : relancer avec -SigningKey pour la publier (une appliance refuse une archive non signee)." -ForegroundColor Yellow
+    }
+}

@@ -11,6 +11,9 @@
 
 L'archive de mise à jour ne contient ni Ubuntu, ni paquets, ni Node.js : elle remplace la console, les scripts et les unités. Les paquets système (BIND, Kea…) restent à jour par `apt` ; un changement de Node.js passe par l'ISO (mode Update).
 
+## Publication depuis un poste Windows (sans GitHub Actions)
+`.\make-iso.ps1 -Bundle -SigningKey dist\update-signing.key` construit l'ISO **et** `ddibuntu-update-<version>.tar.gz`, puis signe `SHA256SUMS` (contrôle avec la clé publique du dépôt). Créer ensuite la release en joignant `ddibuntu-update-<version>.tar.gz`, `SHA256SUMS` et `SHA256SUMS.sig` : `gh release create v<version> dist/ddibuntu-update-<version>.tar.gz dist/SHA256SUMS dist/SHA256SUMS.sig --title "DDI-Buntu <version>" --notes-file notes.md` (ou depuis la page Releases de GitHub).
+
 ## Publication manuelle (fichiers seuls)
 
 1. Mettre à jour `src/VERSION` et `CHANGELOG.md`.
