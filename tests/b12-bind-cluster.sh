@@ -102,7 +102,7 @@ S1="$(sha256sum "$LOC" "$OPT" | sha256sum)"; rl >/dev/null 2>&1; expect_eq "idem
 
 echo "== Secondaire (n2, --replica) =="
 conf n2 data 10.9.0.2 "$PEERS3"
-rm -f "$ZN"/db.*; printf 'ancien-contenu\n' > "$ZN/db.corp.test"
+rm -f "$ZN"/db.*; printf 'ancien-contenu\n' > "$ZN/db.corp.test"; printf 'secondary\n' > "$ST/bind-role"   # déjà secondaire : ses zones transférées sont conservées
 rm -rf "$GEN/zones"   # le secondaire n'a PAS les fichiers de zone de la console
 check "reload --replica sur n2 sans fichiers de zone" rl --replica
 check "named-checkconf accepte" named-checkconf "$BE/named.conf"
@@ -119,6 +119,40 @@ expect_grep "zone secondaire externe inchangée" 'zone "autre.test" \{ type seco
 expect_grep "server : vers n1" '^server 10\.9\.0\.1 \{ keys "ddi-xfr"; \};' "$LOC"
 expect_eq "fichiers de zone existants (transférés) non touchés" "ancien-contenu" "$(cat "$ZN/db.corp.test")"
 expect_grep "statut : réplica" '^ok=1' "$ST/reload-status"
+
+echo "== Ancien primaire qui redevient secondaire : repart d'un transfert complet =="
+printf 'primary\n' > "$ST/bind-role"; printf 'perime\n' > "$ZN/db.corp.test"; printf 'x\n' > "$ZN/db.corp.test.jnl"
+check "reload --replica depuis le rôle primaire" rl --replica
+expect_eq "fichiers de zone et journaux retirés" "0" "$(ls "$ZN" | wc -l | tr -d ' ')"
+expect_eq "rôle mémorisé = secondary" "secondary" "$(cat "$ST/bind-role")"
+
+echo "== Promotion (--promote) : zones transférées au format raw → texte =="
+if command -v named-compilezone >/dev/null 2>&1; then
+  conf n2 data 10.9.0.2 "$PEERS3"
+  # copies répliquées de la console (deux zones) ; les fichiers de zone sont ceux qu'un secondaire a reçus : format binaire + journal
+  cp "$GEN/named.conf.options" "$GEN/named.conf.zones" "$W/promote-gen/" 2>/dev/null || { mkdir -p "$W/promote-gen"; cp "$GEN/named.conf.options" "$GEN/named.conf.zones" "$W/promote-gen/"; }
+  rm -rf "$GEN/zones"
+  printf '$ORIGIN corp.test.\n$TTL 300\n@ IN SOA ns1.corp.test. root.corp.test. ( 7 3600 600 86400 300 )\n@ IN NS ns1.corp.test.\nns1 IN A 10.9.0.1\nwww IN A 10.20.0.10\n' > "$W/z.txt"
+  named-compilezone -q -f text -F raw -o "$ZN/db.corp.test" corp.test "$W/z.txt" >/dev/null
+  chown bind:bind "$ZN/db.corp.test" 2>/dev/null || true
+  expect_eq "banc : le fichier reçu est bien binaire" "raw" "$(if head -c 4 "$ZN/db.corp.test" | grep -q '^\$ORIGIN'; then echo text; else echo raw; fi)"
+  printf 'secondary\n' > "$ST/bind-role"
+  check "reload --promote" rl --promote
+  expect_eq "rôle mémorisé = primary" "primary" "$(cat "$ST/bind-role")"
+  expect_grep "zone redevenue primaire, transfert signé" 'zone "corp.test" \{ type primary; file "[^"]+db\.corp\.test"; notify yes; allow-transfer \{ key "ddi-xfr"; \}' "$LOC"
+  expect_grep "also-notify vers le pair" '^  also-notify \{ 10\.9\.0\.1 key "ddi-xfr"; \};' "$OPT"
+  expect_grep "fichier converti en texte (lisible)" '^www\.corp\.test\.\s+300 IN A\s+10\.20\.0\.10' "$ZN/db.corp.test"
+  check "named-checkconf accepte" named-checkconf "$BE/named.conf"
+  expect_eq "fichier appartenant à bind, non lisible par tous" "bind 640" "$(stat -c '%U %a' "$ZN/db.corp.test")"
+  printf 'corrompu\n' > "$ZN/db.corp.test"; printf 'secondary\n' > "$ST/bind-role"; H="$(sha256sum "$LOC" | cut -d' ' -f1)"
+  check_fail "zone illisible : promotion refusée" rl --promote
+  expect_eq "…configuration BIND inchangée" "$H" "$(sha256sum "$LOC" | cut -d' ' -f1)"
+  expect_eq "…rôle inchangé" "secondary" "$(cat "$ST/bind-role")"
+  rm -f "$ZN"/db.*
+  check "zone jamais transférée : promotion acceptée avec avertissement" rl --promote
+else
+  note "named-compilezone absent : promotion non testée"
+fi
 
 echo "== Entrées hostiles ou inattendues : refus, rien ne change =="
 GOOD="$(sha256sum "$LOC" "$OPT" | sha256sum)"
