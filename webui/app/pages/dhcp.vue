@@ -10,6 +10,7 @@ const free = computed(() => (subnets.value?.items ?? []).filter((s: any) => s.fa
 const scopeOptions = computed(() => (scopes.value?.items ?? []).map((s: any) => ({ label: `${s.cidr} — ${s.name ?? s.subnet_name}`, value: s.id })))
 const sel = ref<number | null>(null)
 watch(scopes, (s) => { if (sel.value === null && s?.items?.length) sel.value = s.items[0].id }, { immediate: true })
+useQueryId('scope', (id) => { sel.value = id })
 
 const scopeCols = computed(() => [{ key: 'cidr', label: 'CIDR', kind: 'mono' }, { key: 'name', label: t('common.name') }, { key: 'lease_time', label: t('dhcp.lease_time'), kind: 'num' }, { key: 'enabled', label: t('common.enabled'), kind: 'bool' }, { key: 'pools', label: t('dhcp.pools'), kind: 'num' }, { key: 'reservations', label: t('dhcp.reservations'), kind: 'num' },
   { key: 'options.routers', label: t('dhcp.routers'), kind: 'list' }, { key: 'options.dnsServers', label: 'DNS', kind: 'list' }])

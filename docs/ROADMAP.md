@@ -31,8 +31,8 @@ Légende : ✅ fait · 🟡 partiel · ⬜ à faire.
 ## 4. Exploitation
 | Capacité | État | Détail |
 |---|---|---|
-| Vue graphique d'un réseau (grille libre/occupé) | ⬜ | Grille compacte par réseau, clic → fiche de l'IP. |
-| Navigation latérale par module + recherche globale | ⬜ 0.6.0 | |
+| Vue graphique d'un réseau (grille libre/occupé) | ✅ 0.6.0 | Grille par réseau IPv4 (jusqu'au /16), clic → l'adresse (filtre) ou sa création si libre. |
+| Navigation latérale par module + recherche globale | ✅ 0.6.0 | Groupes Réseau / Sécurité / Exploitation, `Ctrl+K` (IP, CIDR, MAC, noms), liens profonds. Hors recherche : baux Kea, journal DNS. |
 | Traçabilité bail ↔ MAC ↔ nom ↔ utilisateur AD | ⬜ | Corrélation baux Kea, DNS dynamique et ouvertures de session AD. |
 | API REST complète et documentée | 🟡 | Toute l'interface passe par l'API ; il manque la description OpenAPI publiée et les jetons d'API (hors session). |
 | Mises à jour en ligne signées | ✅ 0.4.1 | |
@@ -54,7 +54,7 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
 **Règles d'interface permanentes** (demande du 2026-11-10) : toute action un peu longue affiche un indicateur d'attente ; aucune boîte système (`confirm`/`alert`/`prompt`) — uniquement des modales du design de la console. Contrôlé par `tests/b10-cluster.sh`.
 
 ## Ordre proposé
-1. **0.6.0** — Navigation latérale, recherche globale, grille d'occupation d'un réseau.
+1. ~~**0.6.0** — Navigation latérale, recherche globale, grille d'occupation d'un réseau.~~ ✅ fait
 2. **0.7.0** — Gabarits de réseau + réservation DHCP automatique depuis l'IPAM (cohérence IPAM/DNS/DHCP).
 3. **0.8.0** — Hygiène IPAM (adresses fantômes) + RRL + détection de tunnel DNS.
 4. **0.9.0** — API : description OpenAPI et jetons d'API.

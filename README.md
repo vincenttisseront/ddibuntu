@@ -11,7 +11,7 @@ Appliance **DDI** (DNS, DHCP, IPAM) sur Ubuntu Server 24.04 LTS, installable par
 - **Retour arrière partout** : un point de restauration est créé avant chaque configuration, déploiement ou import ; les changements réseau s'annulent seuls sans confirmation.
 - **Sécurité** : chaîne d'approvisionnement vérifiée (signatures et empreintes), console sans privilège, application privilégiée séparée et contrôlée, pare-feu nftables, durcissement.
 
-> État : version de développement **0.5.6**. Voir « Limites connues » ci-dessous avant tout usage en production.
+> État : version de développement **0.6.0**. Voir « Limites connues » ci-dessous avant tout usage en production.
 
 ## Démarrage rapide
 

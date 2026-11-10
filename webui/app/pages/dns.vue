@@ -7,6 +7,7 @@ const { data: zones, refresh: refreshZones } = await useFetch<any>('/api/dns/zon
 const { data: types } = await useFetch<any>('/api/dns/types')
 const primary = computed(() => (zones.value?.items ?? []).filter((z: any) => z.type === 'primary').map((z: any) => ({ label: z.name, value: z.id })))
 const zoneFilter = ref(0), typeFilter = ref('')
+useQueryId('zone', (id) => { zoneFilter.value = id })
 const zoneFilterOptions = computed(() => [{ label: t('common.all'), value: 0 }, ...(zones.value?.items ?? []).map((z: any) => ({ label: z.name, value: z.id }))])
 const typeOptions = computed(() => (types.value?.items ?? []).map((v: string) => ({ label: v, value: v })))
 const typeFilterOptions = computed(() => [{ label: t('common.all'), value: '' }, ...typeOptions.value])

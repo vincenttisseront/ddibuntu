@@ -107,17 +107,27 @@ async function removePool(row: any) {
 
 // ---- Adresses (vue transverse, pagination côté serveur) ----
 const addrSubnet = ref(0), addrQ = ref(''), addrStatus = ref(''), addrOffset = ref(0)
+useQueryId('subnet', (id) => { addrSubnet.value = id; addrOffset.value = 0 })
 const LIMIT = 200
 const addrQuery = computed(() => ({ limit: LIMIT, offset: addrOffset.value, ...(spaceId.value ? { space_id: spaceId.value } : {}), ...(fam.value ? { family: fam.value } : {}), ...(addrSubnet.value ? { subnet_id: addrSubnet.value } : {}), ...(addrQ.value ? { q: addrQ.value } : {}), ...(addrStatus.value ? { status: addrStatus.value } : {}) }))
 const { data: addrs, pending: addrsPending, refresh: refreshAddrs } = await useFetch<any>('/api/ipam/addresses', { query: addrQuery, watch: [addrQuery] })
+// Grille d'occupation : recalculée à chaque rechargement des adresses ; un clic filtre le tableau sur l'IP, ou ouvre la création si elle est libre
+const gridKey = ref(0)
+watch(addrs, () => { gridKey.value++ })
+function pickCell(c: { ip: string; state: string; item: unknown }) {
+  const free = ['.', 'o', 'p'].includes(c.state)
+  if (free && canWrite.value) { addrPrefill.value = c.ip; openForm('addr') } else { addrQ.value = c.ip; addrOffset.value = 0 }
+}
 watch([spaceId, fam, addrSubnet, addrQ, addrStatus], () => { addrOffset.value = 0 })
 const addrCols = computed<DCol[]>(() => [
   { key: 'ip', label: 'IP', kind: 'mono' }, { key: 'status', label: t('common.status'), kind: 'badge', trans: 'ipam.status' }, { key: 'hostname', label: t('ipam.hostname') }, { key: 'mac', label: 'MAC', kind: 'mono' },
   { key: 'description', label: t('common.description') }, { key: 'owner', label: t('ipam.owner') }, { key: 'cidr', label: t('ipam.network'), kind: 'mono' }, { key: 'space', label: t('ipam.space'), hidden: !!spaceId.value },
 ])
+const addrPrefill = ref('')
+watch(() => form.open, (o) => { if (!o) addrPrefill.value = '' })
 const addrFields = computed(() => [
   { key: 'subnet_id', label: t('ipam.network'), type: 'select', options: leafOptions.value, required: true, createOnly: true, default: addrSubnet.value || leafOptions.value[0]?.value },
-  { key: 'ip', label: 'IP', type: 'text', required: true, createOnly: true, mono: true }, { key: 'status', label: t('common.status'), type: 'select', options: statusOptions.value, default: 'used' },
+  { key: 'ip', label: 'IP', type: 'text', required: true, createOnly: true, mono: true, default: addrPrefill.value }, { key: 'status', label: t('common.status'), type: 'select', options: statusOptions.value, default: 'used' },
   { key: 'hostname', label: t('ipam.hostname'), type: 'text', placeholder: 'srv-app-01' }, { key: 'mac', label: 'MAC', type: 'text', placeholder: 'aa:bb:cc:dd:ee:ff' },
   { key: 'description', label: t('common.description'), type: 'text' }, { key: 'owner', label: t('ipam.owner'), type: 'text' },
   { key: 'dns_zone_id', label: t('ipam.dns_sync'), type: 'select', options: zoneOptions.value, default: 0, createOnly: true, hint: t('ipam.dns_sync_hint') },
@@ -208,6 +218,7 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
 <template>
   <div class="flex flex-col gap-3">
     <UTabs v-model="tab" :items="tabs" :content="false" :aria-label="t('nav.ipam')" />
+    <OccupancyGrid v-if="tab === 'addresses' && addrSubnet" :subnet-id="addrSubnet" :refresh-key="gridKey" @pick="pickCell" />
 
     <!-- Contexte commun : espace + famille -->
     <div v-if="['subnets', 'pools', 'addresses'].includes(tab)" class="flex items-center gap-2 flex-wrap">

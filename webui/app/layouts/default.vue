@@ -9,17 +9,30 @@ const { data: clusterInfo } = useFetch<any>('/api/cluster/status', { server: fal
 const clusterOn = computed(() => !!clusterInfo.value?.clustered)
 const replicaNode = computed(() => !!clusterInfo.value?.replica)
 const updateAvailable = computed(() => !!about.value?.update?.available)
-const nav = computed(() => [
-  { label: t('nav.dashboard'), icon: 'i-lucide-layout-dashboard', to: '/' },
-  { label: t('nav.ipam'), icon: 'i-lucide-network', to: '/ipam' },
-  { label: t('nav.dns'), icon: 'i-lucide-globe', to: '/dns' },
-  { label: t('nav.dhcp'), icon: 'i-lucide-server', to: '/dhcp' },
-  { label: t('nav.filtering'), icon: 'i-lucide-shield-ban', to: '/filtering' },
-  { label: t('nav.import'), icon: 'i-lucide-file-input', to: '/import' },
-  ...(['admin', 'operator'].includes(user.value?.role) ? [{ label: t('nav.ad'), icon: 'i-lucide-building-2', to: '/ad' }] : []),
-  ...(clusterOn.value ? [{ label: t('nav.cluster'), icon: 'i-lucide-server-cog', to: '/cluster' }] : []),
-  ...(user.value?.role === 'admin' ? [{ label: t('nav.system'), icon: 'i-lucide-settings', to: '/system', ...(updateAvailable.value ? { badge: t('update.badge'), to: '/system#updates' } : {}) }] : []),
-])
+const role = computed(() => user.value?.role)
+// Navigation par module : données (IPAM, DNS, DHCP), sécurité, puis exploitation. Les groupes vides n'apparaissent pas.
+const navGroups = computed(() => {
+  const g: Array<{ label?: string; items: any[] }> = [
+    { items: [{ label: t('nav.dashboard'), icon: 'i-lucide-layout-dashboard', to: '/' }] },
+    { label: t('nav.grp_ddi'), items: [
+      { label: t('nav.ipam'), icon: 'i-lucide-network', to: '/ipam' },
+      { label: t('nav.dns'), icon: 'i-lucide-globe', to: '/dns' },
+      { label: t('nav.dhcp'), icon: 'i-lucide-server', to: '/dhcp' },
+    ] },
+    { label: t('nav.grp_security'), items: [{ label: t('nav.filtering'), icon: 'i-lucide-shield-ban', to: '/filtering' }] },
+    { label: t('nav.grp_ops'), items: [
+      { label: t('nav.import'), icon: 'i-lucide-file-input', to: '/import' },
+      ...(['admin', 'operator'].includes(role.value) ? [{ label: t('nav.ad'), icon: 'i-lucide-building-2', to: '/ad' }] : []),
+      ...(clusterOn.value ? [{ label: t('nav.cluster'), icon: 'i-lucide-server-cog', to: '/cluster' }] : []),
+      ...(role.value === 'admin' ? [{ label: t('nav.system'), icon: 'i-lucide-settings', to: '/system', ...(updateAvailable.value ? { badge: t('update.badge'), to: '/system#updates' } : {}) }] : []),
+    ] },
+  ]
+  return g.filter((x) => x.items.length)
+})
+const navMenu = computed(() => navGroups.value.map((g) => [...(g.label ? [{ label: g.label, type: 'label' as const }] : []), ...g.items]))
+const nav = computed(() => navGroups.value.flatMap((g) => g.items))
+const searchOpen = ref(false)
+defineShortcuts({ meta_k: { handler: () => { searchOpen.value = true }, usingInput: true }, '/': () => { searchOpen.value = true } })
 const title = computed(() => nav.value.find((n) => (n.to === '/' ? route.path === '/' : route.path.startsWith(n.to)))?.label ?? '')
 async function logout() {
   try { await api.call('POST', '/auth/logout', {}, { silent: true }) } catch { /* session déjà fermée */ }
@@ -41,7 +54,10 @@ async function logout() {
         </div>
       </template>
       <template #default="{ collapsed }">
-        <UNavigationMenu :items="nav" orientation="vertical" :collapsed="collapsed" :aria-label="t('nav.label')" />
+        <UButton :icon="'i-lucide-search'" color="neutral" variant="outline" size="sm" :block="!collapsed" :square="collapsed" :label="collapsed ? undefined : t('search.open')" :aria-label="t('search.open')" class="mb-2" @click="searchOpen = true">
+          <template v-if="!collapsed" #trailing><UKbd value="meta" /><UKbd value="K" /></template>
+        </UButton>
+        <UNavigationMenu :items="navMenu" orientation="vertical" :collapsed="collapsed" :aria-label="t('nav.label')" />
       </template>
       <template #footer="{ collapsed }">
         <div class="flex items-center gap-2 w-full" :class="collapsed ? 'justify-center' : 'justify-between'">
@@ -68,5 +84,6 @@ async function logout() {
       </template>
     </UDashboardPanel>
     <PasswordDialog v-model:open="pwOpen" />
+    <GlobalSearch v-model:open="searchOpen" />
   </UDashboardGroup>
 </template>
