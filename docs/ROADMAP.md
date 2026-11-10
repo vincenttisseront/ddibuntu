@@ -8,8 +8,8 @@ Légende : ✅ fait · 🟡 partiel · ⬜ à faire.
 |---|---|---|
 | Espaces IP qui se chevauchent | ✅ 0.5.0 | Espaces, CIDR unique par espace. Limite : DHCP/Kea limité à l'espace par défaut. |
 | Orchestration IPAM → DNS | 🟡 | A/AAAA + PTR créés à l'allocation d'une adresse (transaction unique). |
-| Orchestration IPAM → DHCP | ⬜ | Une adresse « Réservation DHCP » ne crée pas encore la réservation Kea. |
-| Gabarits (templates) de réseau | ⬜ | Zone DNS associée, options DHCP par défaut, règle de nommage appliquées à la création d'un réseau. |
+| Orchestration IPAM → DHCP | ✅ 0.5.1 | Réservation créée/maj/retirée dans la même transaction que l'adresse. |
+| Gabarits (templates) de réseau | ✅ 0.5.1 | Étendue DHCP, options, zone DNS des hôtes, règle de nommage appliquées à la création. |
 | Hiérarchie conteneurs / réseaux / pools | ✅ 0.5.0 | |
 
 ## 2. DHCP et DNS
@@ -36,6 +36,9 @@ Légende : ✅ fait · 🟡 partiel · ⬜ à faire.
 | Traçabilité bail ↔ MAC ↔ nom ↔ utilisateur AD | ⬜ | Corrélation baux Kea, DNS dynamique et ouvertures de session AD. |
 | API REST complète et documentée | 🟡 | Toute l'interface passe par l'API ; il manque la description OpenAPI publiée et les jetons d'API (hors session). |
 | Mises à jour en ligne signées | ✅ 0.4.1 | |
+
+## Cluster (décisions validées : voir `ARCHITECTURE-CLUSTER.md`)
+Itérations 2 à 5 (PKI et réplication PostgreSQL, Kea HA, BIND primaire/secondaire + Keepalived, bascule automatique avec arbitre), puis l'AD (itération 6). Elles priment sur l'ordre ci-dessous, qui ne concerne que les fonctions hors cluster.
 
 ## Ordre proposé
 1. **0.6.0** — Navigation latérale, recherche globale, grille d'occupation d'un réseau.

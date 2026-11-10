@@ -4,6 +4,8 @@ import { audit, fail, intParam, qint, qstr, route } from '../utils/router'
 import { one, query, tx } from '../utils/db'
 import { capacity, nextFree, nextFreeInRange, isHostname, normIp, normMac, parseCidr, cidrToString, cidrContainsIp, parseIp, ptrName } from '../utils/net'
 import type { PoolClient } from 'pg'
+import { cleanOptions, optionsS } from '../utils/dhcpopts'
+import { checkHostnameRule, patternError, resolveDnsZone, syncReservation } from '../utils/smartddi'
 
 const cidrS = z.string().trim().refine((v) => !!parseCidr(v), 'cidr')
 const ipS = z.string().trim().refine((v) => !!normIp(v), 'ip')
@@ -17,8 +19,8 @@ const SUBNET_SQL = `select s.id, s.space_id, sp.name as space, s.kind, text(s.ci
   (select p.id from subnets p where p.space_id = s.space_id and p.cidr >> s.cidr order by masklen(p.cidr) desc limit 1) as parent_id,
   (select coalesce(sum(case when family(q.start_ip) = 4 then q.end_ip - q.start_ip + 1 else 0 end), 0)::float8 from ipam_pools q where q.subnet_id = s.id) as pooled,
   (select count(*)::int from ipam_pools q where q.subnet_id = s.id) as pools,
-  exists (select 1 from dhcp_scopes d where d.subnet_id = s.id) as has_dhcp
-  from subnets s join ipam_spaces sp on sp.id = s.space_id left join vlans v on v.id = s.vlan_id`
+  exists (select 1 from dhcp_scopes d where d.subnet_id = s.id) as has_dhcp, s.template_id, t.name as template
+  from subnets s join ipam_spaces sp on sp.id = s.space_id left join vlans v on v.id = s.vlan_id left join network_templates t on t.id = s.template_id`
 
 const pct = (num: bigint, den: bigint) => (den <= 0n ? null : Math.min(100, Number((num * 1000n) / den) / 10))
 
@@ -88,7 +90,7 @@ const subnetBody = z.object({
   cidr: cidrS, name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional(),
   vlan_id: z.number().int().nullable().optional(), site: z.string().max(100).nullable().optional(),
   gateway: ipS.nullable().optional(), tags: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
-  space_id: z.number().int().min(1).optional(), kind: z.enum(['network', 'container']).optional(),
+  space_id: z.number().int().min(1).optional(), kind: z.enum(['network', 'container']).optional(), template_id: z.number().int().min(1).nullable().optional(),
 })
 async function checkSpace(id: number) { if (!(await one('select 1 from ipam_spaces where id = $1', [id]))) fail(400, 'space_not_found') }
 function checkGateway(cidr: string, gw: string | null | undefined) {
@@ -104,14 +106,27 @@ route('POST', '/ipam/subnets', 'operator', async (c) => {
   const spaceId = b.space_id ?? 1
   await checkSpace(spaceId)
   if (b.kind === 'container' && b.gateway) fail(400, 'container_no_addresses')
-  const id = await tx(async (cl) => {
-    const r = (await cl.query('insert into subnets (cidr, name, description, vlan_id, site, gateway, tags, space_id, kind) values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id',
-      [cidr, b.name, b.description ?? null, b.vlan_id ?? null, b.site ?? null, b.gateway ? normIp(b.gateway) : null, b.tags ?? [], spaceId, b.kind ?? 'network'])).rows[0].id
+  const kind = b.kind ?? 'network'
+  const out = await tx(async (cl) => {
+    const tpl = b.template_id ? (await cl.query('select id, create_scope, lease_time, dhcp_options from network_templates where id = $1', [b.template_id])).rows[0] : null
+    if (b.template_id && !tpl) fail(400, 'template_not_found')
+    const r = (await cl.query('insert into subnets (cidr, name, description, vlan_id, site, gateway, tags, space_id, kind, template_id) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id',
+      [cidr, b.name, b.description ?? null, b.vlan_id ?? null, b.site ?? null, b.gateway ? normIp(b.gateway) : null, b.tags ?? [], spaceId, kind, b.template_id ?? null])).rows[0].id as number
     if (b.gateway) await cl.query("insert into addresses (subnet_id, ip, status, hostname, description) values ($1,$2,'gateway','gateway','Passerelle') on conflict do nothing", [r, normIp(b.gateway)])
-    return r as number
+    // gabarit : l'étendue DHCP naît avec le réseau, dans la même transaction (IPv4, réseau, espace par défaut : Kea ne distingue pas les espaces)
+    let dhcp: 'scope_created' | 'scope_skipped' | null = null
+    if (tpl?.create_scope) {
+      if (parseCidr(cidr)!.v === 4 && kind === 'network' && spaceId === 1) {
+        const opts = { ...cleanOptions(tpl.dhcp_options) }
+        if (!opts.routers && b.gateway) opts.routers = [normIp(b.gateway)]
+        await cl.query('insert into dhcp_scopes (subnet_id, name, lease_time, enabled, options) values ($1,$2,$3,true,$4::jsonb)', [r, b.name, tpl.lease_time, JSON.stringify(opts)])
+        dhcp = 'scope_created'
+      } else dhcp = 'scope_skipped'
+    }
+    return { id: r, dhcp }
   })
-  await audit(c, 'subnet_create', 'subnet', id, { cidr, space_id: spaceId })
-  return { id }
+  await audit(c, 'subnet_create', 'subnet', out.id, { cidr, space_id: spaceId, template_id: b.template_id ?? null })
+  return out
 })
 route('PUT', '/ipam/subnets/:id', 'operator', async (c) => {
   const id = intParam(c, 'id')
@@ -120,11 +135,12 @@ route('PUT', '/ipam/subnets/:id', 'operator', async (c) => {
   if (!cur) fail(404, 'not_found')
   if (b.space_id !== undefined) await checkSpace(b.space_id)
   if (b.kind === 'container' && cur.n > 0) fail(409, 'container_no_addresses')
+  if (b.template_id && !(await one('select 1 from network_templates where id = $1', [b.template_id]))) fail(400, 'template_not_found')
   if (b.cidr && cidrToString(parseCidr(b.cidr)!) !== cur.cidr) fail(400, 'cidr_immutable')
   checkGateway(cur.cidr, b.gateway)
   await query(`update subnets set name = coalesce($2, name), description = coalesce($3, description), vlan_id = $4, site = coalesce($5, site),
-    gateway = coalesce($6, gateway), tags = coalesce($7, tags), space_id = coalesce($8, space_id), kind = coalesce($9, kind), updated_at = now() where id = $1`,
-    [id, b.name ?? null, b.description ?? null, b.vlan_id === undefined ? (await one<any>('select vlan_id from subnets where id = $1', [id]))?.vlan_id ?? null : b.vlan_id, b.site ?? null, b.gateway ? normIp(b.gateway) : null, b.tags ?? null, b.space_id ?? null, b.kind ?? null])
+    gateway = coalesce($6, gateway), tags = coalesce($7, tags), space_id = coalesce($8, space_id), kind = coalesce($9, kind), template_id = case when $10::boolean then $11::int else template_id end, updated_at = now() where id = $1`,
+    [id, b.name ?? null, b.description ?? null, b.vlan_id === undefined ? (await one<any>('select vlan_id from subnets where id = $1', [id]))?.vlan_id ?? null : b.vlan_id, b.site ?? null, b.gateway ? normIp(b.gateway) : null, b.tags ?? null, b.space_id ?? null, b.kind ?? null, b.template_id !== undefined, b.template_id ?? null])
   await audit(c, 'subnet_update', 'subnet', id)
   return { ok: true }
 })
@@ -146,7 +162,7 @@ route('GET', '/ipam/subnets/:id/addresses', 'viewer', async (c) => {
   return { items }
 })
 
-const addrBody = z.object({ ip: ipS, status: status.default('used'), hostname: host.nullable().optional(), mac: mac.nullable().optional(), description: z.string().max(500).nullable().optional(), owner: z.string().max(100).nullable().optional(), dns_zone_id: z.number().int().optional() })
+const addrBody = z.object({ ip: ipS, status: status.default('used'), hostname: host.nullable().optional(), mac: mac.nullable().optional(), description: z.string().max(500).nullable().optional(), owner: z.string().max(100).nullable().optional(), dns_zone_id: z.number().int().nullable().optional() })
 
 /** Crée les enregistrements A/AAAA et PTR correspondant à une adresse (si une zone inverse primaire existe). */
 async function syncDns(cl: PoolClient, ip: string, hostname: string, zoneId: number): Promise<void> {
@@ -168,20 +184,22 @@ route('POST', '/ipam/subnets/:id/addresses', 'operator', async (c) => {
   const b = await c.body(addrBody)
   const ip = normIp(b.ip)!
   if ((await one<any>('select kind from subnets where id = $1', [sid]))?.kind === 'container') fail(400, 'container_no_addresses')
-  const id = await tx(async (cl) => {
+  const out = await tx(async (cl) => {
+    await checkHostnameRule(cl, sid, b.hostname)
     const r = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, mac, description, owner) values ($1,$2,$3,$4,$5,$6,$7) returning id',
-      [sid, ip, b.status, b.hostname ?? null, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null])).rows[0].id
-    if (b.dns_zone_id && b.hostname) await syncDns(cl, ip, b.hostname, b.dns_zone_id)
-    return r as number
+      [sid, ip, b.status, b.hostname ?? null, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null])).rows[0].id as number
+    const zone = b.hostname ? await resolveDnsZone(cl, sid, b.dns_zone_id) : null
+    if (zone && b.hostname) await syncDns(cl, ip, b.hostname, zone)
+    return { id: r, dhcp: await syncReservation(cl, r), dns: !!zone }
   })
-  await audit(c, 'address_create', 'address', id, { ip })
-  return { id }
+  await audit(c, 'address_create', 'address', out.id, { ip })
+  return out
 })
 
 // Prochaine adresse libre : hors adresses prises, passerelle, réseau/diffusion et plages DHCP
 route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
   const sid = intParam(c, 'id')
-  const b = await c.body(z.object({ status: status.default('used'), hostname: host.nullable().optional(), description: z.string().max(500).nullable().optional(), dns_zone_id: z.number().int().optional(), pool_id: z.number().int().optional() }))
+  const b = await c.body(z.object({ status: status.default('used'), hostname: host.nullable().optional(), description: z.string().max(500).nullable().optional(), dns_zone_id: z.number().int().nullable().optional(), pool_id: z.number().int().optional() }))
   const out = await tx(async (cl) => {
     await cl.query('select 1 from subnets where id = $1 for update', [sid])
     const s = (await cl.query('select text(cidr) as cidr, kind from subnets where id = $1', [sid])).rows[0]
@@ -189,6 +207,7 @@ route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
     if (s.kind === 'container') fail(400, 'container_no_addresses')
     const cidr = parseCidr(s.cidr)!
     if (cidr.v !== 4) fail(400, 'ipv4_only')
+    await checkHostnameRule(cl, sid, b.hostname)
     const taken = new Set<bigint>((await cl.query('select host(ip) as ip from addresses where subnet_id = $1', [sid])).rows.map((r) => parseIp(r.ip)!.n))
     const pools = (await cl.query('select host(p.start_ip) s, host(p.end_ip) e from dhcp_pools p join dhcp_scopes d on d.id = p.scope_id where d.subnet_id = $1', [sid])).rows
     const excl = pools.map((p) => [parseIp(p.s)!.n, parseIp(p.e)!.n] as [bigint, bigint])
@@ -203,8 +222,9 @@ route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
       if (!ip) fail(409, 'subnet_full')
     }
     const id = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, description) values ($1,$2,$3,$4,$5) returning id', [sid, ip, b.status, b.hostname ?? null, b.description ?? null])).rows[0].id
-    if (b.dns_zone_id && b.hostname) await syncDns(cl, ip, b.hostname, b.dns_zone_id)
-    return { id: id as number, ip }
+    const zone = b.hostname ? await resolveDnsZone(cl, sid, b.dns_zone_id) : null
+    if (zone && b.hostname) await syncDns(cl, ip, b.hostname, zone)
+    return { id: id as number, ip, dhcp: await syncReservation(cl, id as number), dns: !!zone }
   })
   await audit(c, 'address_allocate', 'address', out.id, { ip: out.ip })
   return out
@@ -213,11 +233,17 @@ route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
 route('PUT', '/ipam/addresses/:id', 'operator', async (c) => {
   const id = intParam(c, 'id')
   const b = await c.body(addrBody.omit({ ip: true, dns_zone_id: true }).partial())
-  await query(`update addresses set status = coalesce($2, status), hostname = case when $3::boolean then $4 else hostname end, mac = case when $5::boolean then $6::macaddr else mac end,
-    description = coalesce($7, description), owner = coalesce($8, owner), updated_at = now() where id = $1`,
-    [id, b.status ?? null, b.hostname !== undefined, b.hostname ?? null, b.mac !== undefined, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null])
+  const dhcp = await tx(async (cl) => {
+    const cur = (await cl.query('select subnet_id from addresses where id = $1 for update', [id])).rows[0]
+    if (!cur) fail(404, 'not_found')
+    if (b.hostname) await checkHostnameRule(cl, cur.subnet_id, b.hostname)
+    await cl.query(`update addresses set status = coalesce($2, status), hostname = case when $3::boolean then $4 else hostname end, mac = case when $5::boolean then $6::macaddr else mac end,
+      description = coalesce($7, description), owner = coalesce($8, owner), updated_at = now() where id = $1`,
+      [id, b.status ?? null, b.hostname !== undefined, b.hostname ?? null, b.mac !== undefined, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null])
+    return syncReservation(cl, id)
+  })
   await audit(c, 'address_update', 'address', id)
-  return { ok: true }
+  return { ok: true, dhcp }
 })
 route('DELETE', '/ipam/addresses/:id', 'operator', async (c) => {
   const id = intParam(c, 'id')
@@ -276,6 +302,44 @@ route('GET', '/ipam/addresses', 'viewer', async (c) => {
   const items = await query(`select a.id, a.subnet_id, host(a.ip) as ip, a.status, a.hostname, a.mac::text as mac, a.description, a.owner, text(s.cidr) as cidr, s.name as network, sp.name as space
     from addresses a join subnets s on s.id = a.subnet_id join ipam_spaces sp on sp.id = s.space_id ${where} order by s.space_id, a.ip limit ${limit} offset ${offset}`, args)
   return { items, total }
+})
+
+// ---- Gabarits de réseau : règles héritées à la création d'un réseau ----
+const templateBody = z.object({
+  name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional(),
+  create_scope: z.boolean().default(true), lease_time: z.number().int().min(60).max(31536000).default(86400),
+  dhcp_options: optionsS.default({}), dns_zone_id: z.number().int().nullable().optional(),
+  hostname_pattern: z.string().trim().nullable().optional(),
+})
+async function checkTemplate(b: z.infer<typeof templateBody> | Partial<z.infer<typeof templateBody>>) {
+  if (b.hostname_pattern) { const e = patternError(b.hostname_pattern); if (e) fail(400, e) }
+  if (b.dns_zone_id && !(await one("select 1 from dns_zones where id = $1 and type = 'primary'", [b.dns_zone_id]))) fail(400, 'zone_not_primary')
+}
+route('GET', '/ipam/templates', 'viewer', async () => ({ items: await query(`select t.id, t.name, t.description, t.create_scope, t.lease_time, t.dhcp_options, t.dns_zone_id, z.name as dns_zone, t.hostname_pattern,
+  (select count(*)::int from subnets s where s.template_id = t.id) as subnets from network_templates t left join dns_zones z on z.id = t.dns_zone_id order by lower(t.name)`) }))
+route('POST', '/ipam/templates', 'operator', async (c) => {
+  const b = await c.body(templateBody)
+  await checkTemplate(b)
+  const r = await one<any>('insert into network_templates (name, description, create_scope, lease_time, dhcp_options, dns_zone_id, hostname_pattern) values ($1,$2,$3,$4,$5::jsonb,$6,$7) returning id',
+    [b.name, b.description ?? null, b.create_scope, b.lease_time, JSON.stringify(cleanOptions(b.dhcp_options)), b.dns_zone_id ?? null, b.hostname_pattern || null])
+  await audit(c, 'template_create', 'template', r.id, { name: b.name })
+  return { id: r.id }
+})
+route('PUT', '/ipam/templates/:id', 'operator', async (c) => {
+  const id = intParam(c, 'id')
+  const b = await c.body(templateBody)
+  await checkTemplate(b)
+  const r = await query('update network_templates set name = $2, description = $3, create_scope = $4, lease_time = $5, dhcp_options = $6::jsonb, dns_zone_id = $7, hostname_pattern = $8, updated_at = now() where id = $1 returning id',
+    [id, b.name, b.description ?? null, b.create_scope, b.lease_time, JSON.stringify(cleanOptions(b.dhcp_options)), b.dns_zone_id ?? null, b.hostname_pattern || null])
+  if (!r.length) fail(404, 'not_found')
+  await audit(c, 'template_update', 'template', id)
+  return { ok: true }
+})
+route('DELETE', '/ipam/templates/:id', 'operator', async (c) => {
+  const id = intParam(c, 'id')
+  await query('delete from network_templates where id = $1', [id])
+  await audit(c, 'template_delete', 'template', id)
+  return { ok: true }
 })
 
 // ---- VLAN ----

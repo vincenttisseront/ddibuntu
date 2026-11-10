@@ -273,7 +273,64 @@ create trigger ipam_pools_check_trg before insert or update of start_ip, end_ip,
   for each row execute function ipam_pools_check();
 `
 
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }]
+
+// Version 5 : génération de configuration (compteur monotone incrémenté par déclencheur, hors numéros de série et indicateurs de déploiement),
+// réservations DHCP liées à l'adresse IPAM qui les pilote, gabarits de réseau.
+const SCHEMA_5 = String.raw`
+create table config_generation (
+  id int primary key check (id = 1),
+  generation bigint not null default 1,
+  changed_at timestamptz not null default now()
+);
+insert into config_generation (id) values (1);
+create function bump_config_generation() returns trigger language plpgsql as $$
+begin
+  update config_generation set generation = generation + 1, changed_at = now() where id = 1;
+  return null;
+end $$;
+create function bump_config_generation_settings() returns trigger language plpgsql as $$
+begin
+  if (case when tg_op = 'DELETE' then old.key else new.key end) in ('dns', 'dhcp') then
+    update config_generation set generation = generation + 1, changed_at = now() where id = 1;
+  end if;
+  return null;
+end $$;
+create trigger cfg_gen_zones after insert or delete or update of name, type, masters, forwarders, allow_transfer, ddns_enabled, soa_mname, soa_rname,
+  soa_refresh, soa_retry, soa_expire, soa_minimum, default_ttl, ad_integrated, disabled on dns_zones for each statement execute function bump_config_generation();
+create trigger cfg_gen_records after insert or update or delete on dns_records for each statement execute function bump_config_generation();
+create trigger cfg_gen_scopes after insert or update or delete on dhcp_scopes for each statement execute function bump_config_generation();
+create trigger cfg_gen_dpools after insert or update or delete on dhcp_pools for each statement execute function bump_config_generation();
+create trigger cfg_gen_reservations after insert or update or delete on dhcp_reservations for each statement execute function bump_config_generation();
+create trigger cfg_gen_rules after insert or update or delete on filter_rules for each statement execute function bump_config_generation();
+create trigger cfg_gen_lists after insert or delete or update of enabled, category on block_lists for each statement execute function bump_config_generation();
+create trigger cfg_gen_entries after insert or delete on block_entries for each statement execute function bump_config_generation();
+create trigger cfg_gen_settings after insert or update or delete on settings for each row execute function bump_config_generation_settings();
+alter table deployments add column generation bigint;
+
+alter table dhcp_reservations add column address_id int references addresses(id) on delete cascade;
+create unique index dhcp_reservations_address on dhcp_reservations (address_id);
+update dhcp_reservations r set address_id = a.id from addresses a, dhcp_scopes d
+  where d.id = r.scope_id and a.subnet_id = d.subnet_id and a.ip = r.ip;
+
+create table network_templates (
+  id serial primary key,
+  name text not null, description text,
+  create_scope boolean not null default true,
+  lease_time int not null default 86400 check (lease_time between 60 and 31536000),
+  dhcp_options jsonb not null default '{}',
+  dns_zone_id int references dns_zones(id) on delete set null,
+  hostname_pattern text,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create unique index network_templates_name on network_templates (lower(name));
+alter table subnets add column template_id int references network_templates(id) on delete set null;
+`
+
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }]
+
+// Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
+let schemaReady = false
+export const isSchemaReady = () => schemaReady
 
 export async function migrate(): Promise<number[]> {
   const c = await getPool().connect()
@@ -299,6 +356,7 @@ export async function migrate(): Promise<number[]> {
     await c.query('select pg_advisory_unlock(727727)').catch(() => undefined)
     c.release()
   }
+  schemaReady = true
   return applied
 }
 

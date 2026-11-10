@@ -160,6 +160,108 @@ describe('vue transverse des adresses', () => {
   })
 })
 
+const gen = async () => (await admin.get('/api/system/config-generation')).json
+describe('génération de configuration', () => {
+  it('départ « en attente » ; les écritures DNS/DHCP l’incrémentent, pas les écritures IPAM neutres ni la mise à jour de série', async () => {
+    const g0 = await gen(); expect(g0).toMatchObject({ deployed: 0, pending: true }); expect(g0.generation).toBeGreaterThan(0)
+    const z = await admin.post('/api/dns/zones', { name: 'gen.example.org', type: 'primary' }); expect(z.status).toBe(200)
+    const g1 = await gen(); expect(g1.generation).toBeGreaterThan(g0.generation)
+    expect((await admin.post('/api/dns/records', { zone_id: z.json.id, name: 'a', type: 'A', rdata: '192.0.2.1' })).status).toBe(200)
+    const g2 = await gen(); expect(g2.generation).toBeGreaterThan(g1.generation)
+    const s = await admin.post('/api/ipam/subnets', { cidr: '10.50.0.0/24', name: 'neutre' }); await admin.post(`/api/ipam/subnets/${s.json.id}/addresses`, { ip: '10.50.0.7' })
+    expect((await gen()).generation).toBe(g2.generation)                                   // l'inventaire IPAM seul ne change pas la configuration rendue
+    await db.query('update dns_zones set serial = serial + 1, dirty = false')                // ce que fait le déploiement lui-même
+    expect((await gen()).generation).toBe(g2.generation)
+    await db.query("insert into deployments (ok, generation) values (true, $1)", [g2.generation])
+    expect(await gen()).toMatchObject({ deployed: g2.generation, pending: false })
+    expect((await admin.post('/api/filter/rules', { domain: 'bloque.example', action: 'block' })).status).toBeLessThan(500)
+    expect((await gen()).pending).toBe(true)
+    expect((await admin.get('/api/dashboard')).json.config).toHaveProperty('generation')
+    expect((await viewer.get('/api/system/config-generation')).status).toBe(200)
+  })
+})
+
+describe('réservation DHCP pilotée par l’IPAM', () => {
+  let sid = 0, noScope = 0
+  it('adresse « dhcp » + MAC + étendue : réservation créée, mise à jour, retirée', async () => {
+    sid = (await admin.post('/api/ipam/subnets', { cidr: '10.60.0.0/24', name: 'dhcp-net', gateway: '10.60.0.1' })).json.id
+    expect((await admin.post('/api/dhcp/scopes', { subnet_id: sid })).status).toBe(200)
+    const g = (await gen()).generation
+    const a = await admin.post(`/api/ipam/subnets/${sid}/addresses`, { ip: '10.60.0.50', status: 'dhcp', mac: 'aa:bb:cc:00:00:50', hostname: 'imprimante1' })
+    expect([a.status, a.json.dhcp]).toEqual([200, 'created'])
+    expect((await gen()).generation).toBeGreaterThan(g)
+    const r = (await rows('select host(ip) ip, mac::text mac, hostname, address_id from dhcp_reservations'))[0]
+    expect(r).toMatchObject({ ip: '10.60.0.50', mac: 'aa:bb:cc:00:00:50', hostname: 'imprimante1', address_id: a.json.id })
+    const u = await admin.put(`/api/ipam/addresses/${a.json.id}`, { mac: 'aa:bb:cc:00:00:51' }); expect(u.json.dhcp).toBe('updated')
+    expect((await rows('select mac::text m from dhcp_reservations'))[0].m).toBe('aa:bb:cc:00:00:51')
+    expect((await admin.put(`/api/ipam/addresses/${a.json.id}`, { status: 'used' })).json.dhcp).toBe('removed')
+    expect(await rows('select 1 from dhcp_reservations')).toHaveLength(0)
+    expect((await admin.put(`/api/ipam/addresses/${a.json.id}`, { status: 'dhcp' })).json.dhcp).toBe('created')   // la MAC existe déjà sur l’adresse : la réservation est recréée
+    code(await admin.post(`/api/ipam/subnets/${sid}/addresses`, { ip: '10.60.0.51', status: 'dhcp', mac: 'aa:bb:cc:00:00:51' }), 409, 'duplicate')   // MAC déjà réservée dans l’étendue
+    expect(await rows('select 1 from addresses where ip = $1', ['10.60.0.51'])).toHaveLength(0)                    // transaction unique : rien n’est resté à moitié fait
+  })
+  it('cas limites : sans MAC, sans étendue ; suppression de l’adresse = suppression de la réservation', async () => {
+    const nm = await admin.post(`/api/ipam/subnets/${sid}/addresses`, { ip: '10.60.0.60', status: 'dhcp' }); expect(nm.json.dhcp).toBe('no_mac')
+    noScope = (await admin.post('/api/ipam/subnets', { cidr: '10.61.0.0/24', name: 'sans-etendue' })).json.id
+    expect((await admin.post(`/api/ipam/subnets/${noScope}/addresses`, { ip: '10.61.0.9', status: 'dhcp', mac: 'aa:bb:cc:00:09:09' })).json.dhcp).toBe('no_scope')
+    const keep = (await rows('select address_id from dhcp_reservations'))[0].address_id
+    expect((await admin.del(`/api/ipam/addresses/${keep}`)).status).toBe(200)
+    expect(await rows('select 1 from dhcp_reservations')).toHaveLength(0)
+  })
+  it('côté DHCP : la réservation saisie est reliée à l’adresse, et sa suppression rend l’adresse « utilisée »', async () => {
+    const scope = (await rows('select id from dhcp_scopes where subnet_id = $1', [sid]))[0].id
+    const r = await admin.post(`/api/dhcp/scopes/${scope}/reservations`, { mac: 'aa:bb:cc:00:00:77', ip: '10.60.0.77', hostname: 'cam1' }); expect(r.status).toBe(200)
+    const link = (await rows('select r.address_id, a.status from dhcp_reservations r join addresses a on a.id = r.address_id where r.id = $1', [r.json.id]))[0]
+    expect(link.status).toBe('dhcp')
+    expect((await admin.del(`/api/dhcp/reservations/${r.json.id}`)).status).toBe(200)
+    expect((await rows('select status from addresses where id = $1', [link.address_id]))[0].status).toBe('used')
+  })
+})
+
+describe('gabarits de réseau', () => {
+  let zid = 0, tid = 0
+  it('création : validation du motif et de la zone', async () => {
+    zid = (await rows("select id from dns_zones where name = 'gen.example.org'"))[0].id
+    const base = { name: 'Serveurs', create_scope: true, lease_time: 7200, dhcp_options: { dnsServers: ['10.0.0.53'], domainName: 'gen.example.org' }, dns_zone_id: zid, hostname_pattern: 'srv-###' }
+    code(await admin.post('/api/ipam/templates', { ...base, hostname_pattern: '(a+)+$' }), 400, 'pattern_chars')
+    code(await admin.post('/api/ipam/templates', { ...base, hostname_pattern: '*a*b*c*d' }), 400, 'pattern_stars')
+    code(await admin.post('/api/ipam/templates', { ...base, dns_zone_id: 99999 }), 400, 'zone_not_primary')
+    code(await viewer.post('/api/ipam/templates', base), 403, 'forbidden')
+    const r = await admin.post('/api/ipam/templates', base); expect(r.status).toBe(200); tid = r.json.id
+    code(await admin.post('/api/ipam/templates', { ...base, name: 'serveurs' }), 409, 'duplicate')
+    expect((await admin.get('/api/ipam/templates')).json.items[0]).toMatchObject({ name: 'Serveurs', dns_zone: 'gen.example.org', hostname_pattern: 'srv-###', subnets: 0 })
+  })
+  it('un réseau créé avec le gabarit reçoit son étendue DHCP (options, durée, routeur = passerelle)', async () => {
+    const r = await admin.post('/api/ipam/subnets', { cidr: '10.70.0.0/24', name: 'prod', gateway: '10.70.0.1', template_id: tid }); expect([r.status, r.json.dhcp]).toEqual([200, 'scope_created'])
+    const sc = (await rows('select lease_time, options from dhcp_scopes where subnet_id = $1', [r.json.id]))[0]
+    expect(sc.lease_time).toBe(7200); expect(sc.options).toMatchObject({ dnsServers: ['10.0.0.53'], domainName: 'gen.example.org', routers: ['10.70.0.1'] })
+    code(await admin.post('/api/ipam/subnets', { cidr: '10.71.0.0/24', name: 'x', template_id: 99999 }), 400, 'template_not_found')
+    const v6 = await admin.post('/api/ipam/subnets', { cidr: '2001:db8:70::/64', name: 'v6', template_id: tid }); expect(v6.json.dhcp).toBe('scope_skipped')
+    expect((await admin.get('/api/ipam/templates')).json.items[0].subnets).toBe(2)
+  })
+  it('règle de nommage et DNS automatique à l’allocation', async () => {
+    const sid = (await list('?space_id=1')).find((s) => s.cidr === '10.70.0.0/24').id
+    code(await admin.post(`/api/ipam/subnets/${sid}/addresses`, { ip: '10.70.0.20', hostname: 'web1' }), 400, 'hostname_rule')
+    code(await admin.post(`/api/ipam/subnets/${sid}/next`, { hostname: 'web2' }), 400, 'hostname_rule')
+    const a = await admin.post(`/api/ipam/subnets/${sid}/addresses`, { ip: '10.70.0.21', hostname: 'srv-001' }); expect([a.status, a.json.dns]).toEqual([200, true])
+    expect((await rows("select rdata from dns_records where name = 'srv-001' and zone_id = $1", [zid]))[0].rdata).toBe('192.0.2.1'.replace('192.0.2.1', '10.70.0.21'))
+    const n = await admin.post(`/api/ipam/subnets/${sid}/next`, { hostname: 'srv-002' }); expect(n.json.dns).toBe(true)
+    const none = await admin.post(`/api/ipam/subnets/${sid}/addresses`, { ip: '10.70.0.23', hostname: 'srv-003', dns_zone_id: null }); expect(none.json.dns).toBe(false)
+    expect(await rows("select 1 from dns_records where name = 'srv-003'")).toHaveLength(0)
+    expect((await admin.put(`/api/ipam/addresses/${a.json.id}`, { hostname: 'autre' })).status).toBe(400)
+    expect((await admin.put(`/api/ipam/addresses/${a.json.id}`, { hostname: 'srv-009' })).status).toBe(200)
+  })
+  it('modifier le gabarit, détacher un réseau, supprimer le gabarit', async () => {
+    const sid = (await list('?space_id=1')).find((s) => s.cidr === '10.70.0.0/24').id
+    expect((await admin.put(`/api/ipam/templates/${tid}`, { name: 'Serveurs', create_scope: false, lease_time: 3600, dhcp_options: {}, dns_zone_id: null, hostname_pattern: null })).status).toBe(200)
+    expect((await admin.post(`/api/ipam/subnets/${sid}/addresses`, { ip: '10.70.0.30', hostname: 'quelconque' })).status).toBe(200)   // plus de règle
+    expect((await admin.put(`/api/ipam/subnets/${sid}`, { template_id: null })).status).toBe(200)
+    expect((await list('?space_id=1')).find((s) => s.id === sid)).toMatchObject({ template_id: null, template: null })
+    expect((await admin.del(`/api/ipam/templates/${tid}`)).status).toBe(200)
+    expect((await list('?space_id=1')).filter((s) => s.template_id)).toHaveLength(0)
+  })
+})
+
 describe('points de restauration et schéma', () => {
   it('un point conserve espaces, conteneurs et pools ; la restauration les rétablit', async () => {
     const sid = (await list('?space_id=1')).find((s) => s.cidr === '10.1.1.0/24').id
@@ -173,8 +275,8 @@ describe('points de restauration et schéma', () => {
     expect((await admin.post('/api/ipam/spaces', { name: 'après restauration' })).status).toBe(200)   // séquence repartie après le plus grand id
     expect((await admin.get(`/api/snapshots/${snap}/diff`)).status).toBe(200)
   })
-  it('migration : version 4 appliquée, ancienne contrainte unique(cidr) remplacée', async () => {
-    expect((await rows('select max(version)::int v from schema_migrations'))[0].v).toBe(4)
+  it('migration : version 5 appliquée, ancienne contrainte unique(cidr) remplacée', async () => {
+    expect((await rows('select max(version)::int v from schema_migrations'))[0].v).toBe(5)
     expect((await rows("select 1 from pg_constraint where conname = 'subnets_cidr_key'"))).toHaveLength(0)
     expect((await rows("select 1 from pg_indexes where indexname = 'subnets_space_cidr'"))).toHaveLength(1)
   })

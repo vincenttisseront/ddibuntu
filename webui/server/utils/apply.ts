@@ -54,8 +54,20 @@ export async function buildConfig(): Promise<{ files: OutFile[]; bumps: Array<{ 
   return { files, bumps, warnings }
 }
 
-export interface ApplyOutcome { ok: boolean; deployed: boolean; results: CheckResult[]; warnings: string[]; files: string[] }
+/** Génération de configuration : compteur monotone tenu par des déclencheurs en base (toute écriture qui change DNS/DHCP/filtrage l'incrémente). */
+export interface ConfigState { generation: number; deployed: number; pending: boolean; changed_at: string | null; deployed_at: string | null }
+export async function configState(): Promise<ConfigState> {
+  const r = await one<any>(`select (select generation::text from config_generation where id = 1) as g, (select changed_at from config_generation where id = 1) as at,
+    coalesce((select max(generation) from deployments where ok and generation is not null), 0)::text as d,
+    (select at from deployments where ok and generation is not null order by id desc limit 1) as dat`)
+  const generation = Number(r?.g ?? 0), deployed = Number(r?.d ?? 0)
+  return { generation, deployed, pending: generation > deployed, changed_at: r?.at ?? null, deployed_at: r?.dat ?? null }
+}
+
+export interface ApplyOutcome { ok: boolean; deployed: boolean; results: CheckResult[]; warnings: string[]; files: string[]; generation: number }
 export async function applyConfig(opts: { deploy: boolean; username: string | null }): Promise<ApplyOutcome> {
+  // lue AVANT le rendu : une modification survenue pendant le rendu laisse la configuration « en attente » (jamais l'inverse)
+  const generation = (await configState()).generation
   const { files, bumps, warnings } = await buildConfig()
   const results = await validateFiles(files)
   const ok = results.length > 0 && results.every((r) => r.ok === true)
@@ -66,7 +78,7 @@ export async function applyConfig(opts: { deploy: boolean; username: string | nu
       for (const b of bumps) await cl.query('update dns_zones set serial = $2, dirty = false where id = $1', [b.id, b.serial])
       // point de restauration de l'état qui vient d'être déployé : « revenir à ce déploiement » est possible à tout moment
       const snap = await captureSnapshot('deploy', 'état déployé', opts.username, cl)
-      await cl.query('insert into deployments (username, ok, files, results, snapshot_id) values ($1,$2,$3::jsonb,$4::jsonb,$5)', [opts.username, true, JSON.stringify(sums), JSON.stringify(results), snap])
+      await cl.query('insert into deployments (username, ok, files, results, snapshot_id, generation) values ($1,$2,$3::jsonb,$4::jsonb,$5,$6)', [opts.username, true, JSON.stringify(sums), JSON.stringify(results), snap, generation])
     })
     // le marqueur déclenche l'application privilégiée (unité systemd .path) : écrit en dernier
     await fs.writeFile(join(cfg().generatedDir, '.deployed'), `${Date.now()}\n`)
@@ -75,5 +87,5 @@ export async function applyConfig(opts: { deploy: boolean; username: string | nu
   } else if (opts.deploy) {
     await one('insert into deployments (username, ok, files, results) values ($1,$2,$3::jsonb,$4::jsonb) returning id', [opts.username, false, '{}', JSON.stringify(results)])
   }
-  return { ok, deployed, results, warnings, files: files.map((f) => f.path) }
+  return { ok, deployed, results, warnings, files: files.map((f) => f.path), generation }
 }

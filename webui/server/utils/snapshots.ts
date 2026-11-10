@@ -7,7 +7,7 @@ import { fail } from './router'
 
 // Ordre = dépendances (parents d'abord). Les listes de blocage (volumineuses, retéléchargeables), les utilisateurs,
 // sessions, journaux, statistiques et baux Kea n'en font pas partie.
-export const SNAPSHOT_TABLES = ['vlans', 'ipam_spaces', 'subnets', 'ipam_pools', 'addresses', 'dns_zones', 'dns_records', 'dhcp_scopes', 'dhcp_pools', 'dhcp_reservations', 'filter_rules'] as const
+export const SNAPSHOT_TABLES = ['vlans', 'ipam_spaces', 'dns_zones', 'dns_records', 'network_templates', 'subnets', 'ipam_pools', 'addresses', 'dhcp_scopes', 'dhcp_pools', 'dhcp_reservations', 'filter_rules'] as const
 const SETTING_KEYS = ['dns', 'dhcp']
 export type SnapshotKind = 'manual' | 'deploy' | 'pre-import' | 'pre-restore'
 const KEEP = 40, KEEP_DEPLOY = 20
@@ -38,7 +38,7 @@ export async function captureSnapshot(kind: SnapshotKind, label: string, usernam
 }
 
 const LABELS: Record<string, (x: any) => string> = {
-  vlans: (x) => `VLAN ${x.vlan_id} ${x.name}`, ipam_spaces: (x) => String(x.name), ipam_pools: (x) => `${x.name} ${x.start_ip} – ${x.end_ip}`, subnets: (x) => String(x.cidr), addresses: (x) => String(x.ip), dns_zones: (x) => String(x.name),
+  vlans: (x) => `VLAN ${x.vlan_id} ${x.name}`, ipam_spaces: (x) => String(x.name), network_templates: (x) => String(x.name), ipam_pools: (x) => `${x.name} ${x.start_ip} – ${x.end_ip}`, subnets: (x) => String(x.cidr), addresses: (x) => String(x.ip), dns_zones: (x) => String(x.name),
   dns_records: (x) => `${x.name} ${x.type} ${x.rdata}`, dhcp_scopes: (x) => `scope #${x.id}`, dhcp_pools: (x) => `${x.start_ip} – ${x.end_ip}`,
   dhcp_reservations: (x) => `${x.mac} → ${x.ip}`, filter_rules: (x) => `${x.action} ${x.domain}`,
 }

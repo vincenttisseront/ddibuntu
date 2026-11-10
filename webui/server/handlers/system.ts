@@ -1,7 +1,7 @@
 import { audit, fail, qstr, route } from '../utils/router'
 import { one, query } from '../utils/db'
 import { cfg } from '../utils/config'
-import { applyConfig, buildConfig } from '../utils/apply'
+import { applyConfig, buildConfig, configState } from '../utils/apply'
 import { capacity, parseCidr } from '../utils/net'
 import { RECORD_TYPES } from '../utils/dns'
 import { z } from 'zod'
@@ -9,6 +9,8 @@ import { reconcileDeployments, readReloadStatus } from '../utils/reload-status'
 import { hostInfo } from '../utils/hostinfo'
 import { ROLE_RANK } from '../utils/auth'
 import { fileUpdateRequest, installedVersion, isBusy, readUpdateStatus } from '../utils/selfupdate'
+
+route('GET', '/system/config-generation', 'viewer', async () => configState())
 
 route('GET', '/dashboard', 'viewer', async (c) => {
   const counts = await one<any>(`select (select count(*)::int from subnets) subnets, (select count(*)::int from addresses) addresses, (select count(*)::int from dns_zones) zones,
@@ -25,7 +27,7 @@ route('GET', '/dashboard', 'viewer', async (c) => {
   const isAdmin = (ROLE_RANK[c.user?.role as keyof typeof ROLE_RANK] ?? 0) >= ROLE_RANK.admin
   const upd = isAdmin ? await readUpdateStatus() : null
   const system = { version: installedVersion(), host: await hostInfo(), lastApply: await readReloadStatus(), update: upd ? { available: upd.available, latest: upd.latest, busy: isBusy(upd), state: upd.state } : null }
-  return { counts, top, byType, lastDeployment: last, day, system }
+  return { counts, top, byType, lastDeployment: last, day, system, config: await configState() }
 })
 
 // Version et mise à jour disponible, pour la barre latérale (la mise à jour n'est révélée qu'aux administrateurs)

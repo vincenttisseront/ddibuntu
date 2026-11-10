@@ -3,6 +3,7 @@ const { t } = useT()
 const { data } = await useFetch<any>('/api/dashboard')
 const c = computed(() => data.value?.counts ?? {})
 const sys = computed(() => data.value?.system ?? null)
+const cfgState = computed(() => data.value?.config ?? null)
 const tiles = computed(() => [
   { k: 'subnets', icon: 'i-lucide-network', to: '/ipam#subnets' }, { k: 'addresses', icon: 'i-lucide-list-ordered', to: '/ipam#addresses' },
   { k: 'zones', icon: 'i-lucide-globe', to: '/dns#zones' }, { k: 'records', icon: 'i-lucide-file-text', to: '/dns#records' },
@@ -56,6 +57,8 @@ const when = (s: number) => new Date(s * 1000).toLocaleString()
           <dt class="text-muted">{{ t('system.version') }}</dt><dd class="font-mono">{{ sys.version || '—' }}</dd>
           <dt class="text-muted">{{ t('dash.host') }}</dt><dd class="font-mono truncate" :title="sys.host.hostname">{{ sys.host.hostname }}</dd>
           <dt class="text-muted">{{ t('dash.uptime') }}</dt><dd>{{ uptime(sys.host.uptimeSeconds) }}</dd>
+          <template v-if="cfgState"><dt class="text-muted">{{ t('dash.config_gen') }}</dt>
+            <dd class="flex items-center gap-2"><span class="font-mono">#{{ cfgState.generation }}</span><UBadge size="sm" variant="subtle" :color="cfgState.pending ? 'warning' : 'success'" :label="cfgState.pending ? t('dash.config_pending') : t('dash.config_applied')" /></dd></template>
         </dl>
         <BarChart v-if="resources.length" :items="resources" :max="100" :label="t('dash.system')" />
         <div v-if="sys?.lastApply" class="mt-3 flex items-start gap-2 text-sm">

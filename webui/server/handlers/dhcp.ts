@@ -4,18 +4,7 @@ import { getSetting, one, query, setSetting, tx } from '../utils/db'
 import { encryptSecret } from '../utils/auth'
 import { isValidDnsName, normIp, normMac, parseCidr, parseIp, cidrContainsIp } from '../utils/net'
 import { KEA_DEFAULTS } from '../utils/render'
-
-const ip4 = z.string().trim().refine((v) => parseIp(v)?.v === 4, 'ipv4')
-const domain = z.string().trim().toLowerCase().refine((v) => isValidDnsName(v, false), 'domain')
-const optionsS = z.object({
-  routers: z.array(ip4).max(8).optional(), dnsServers: z.array(ip4).max(8).optional(), domainName: domain.optional(),
-  domainSearch: z.array(domain).max(8).optional(), ntpServers: z.array(ip4).max(8).optional(),
-  tftpServer: z.string().trim().max(253).regex(/^[A-Za-z0-9._-]*$/).optional(), bootFile: z.string().trim().max(255).regex(/^[\w./-]*$/).optional(),
-  custom: z.array(z.object({ code: z.number().int().min(224).max(254), name: z.string().regex(/^[a-z][a-z0-9-]{0,40}$/), type: z.enum(['string', 'uint8', 'uint16', 'uint32', 'ipv4-address', 'boolean']), value: z.string().max(255).regex(/^[\w .,:/@=-]*$/) })).max(10).optional(),
-}).strict()
-const cleanOptions = (o: z.infer<typeof optionsS>) => JSON.parse(JSON.stringify({
-  ...o, routers: o.routers?.map((x) => normIp(x)), dnsServers: o.dnsServers?.map((x) => normIp(x)), ntpServers: o.ntpServers?.map((x) => normIp(x)),
-}))
+import { cleanOptions, ip4, optionsS } from '../utils/dhcpopts'
 
 async function scopeSubnet(id: number) {
   const r = await one<any>('select d.id, d.subnet_id, text(s.cidr) as cidr, family(s.cidr) as fam from dhcp_scopes d join subnets s on s.id = d.subnet_id where d.id = $1', [id])
@@ -94,8 +83,9 @@ route('POST', '/dhcp/scopes/:id/reservations', 'operator', async (c) => {
   const id = await tx(async (cl) => {
     const r = (await cl.query('insert into dhcp_reservations (scope_id, mac, ip, hostname, description) values ($1,$2,$3,$4,$5) returning id', [sid, mac, ip, b.hostname ?? null, b.description ?? null])).rows[0].id
     // reflet dans l'IPAM : l'adresse apparaît comme réservée DHCP
-    await cl.query(`insert into addresses (subnet_id, ip, status, hostname, mac) values ($1,$2,'dhcp',$3,$4)
-      on conflict (subnet_id, ip) do update set status = 'dhcp', mac = excluded.mac, hostname = coalesce(excluded.hostname, addresses.hostname), updated_at = now()`, [sc.subnet_id, ip, b.hostname ?? null, mac])
+    const addr = (await cl.query(`insert into addresses (subnet_id, ip, status, hostname, mac) values ($1,$2,'dhcp',$3,$4)
+      on conflict (subnet_id, ip) do update set status = 'dhcp', mac = excluded.mac, hostname = coalesce(excluded.hostname, addresses.hostname), updated_at = now() returning id`, [sc.subnet_id, ip, b.hostname ?? null, mac])).rows[0].id
+    await cl.query('update dhcp_reservations set address_id = $2 where id = $1', [r, addr])
     return r as number
   })
   await audit(c, 'reservation_create', 'dhcp_reservation', id, { mac, ip })
@@ -103,7 +93,11 @@ route('POST', '/dhcp/scopes/:id/reservations', 'operator', async (c) => {
 })
 route('DELETE', '/dhcp/reservations/:id', 'operator', async (c) => {
   const id = intParam(c, 'id')
-  await query('delete from dhcp_reservations where id = $1', [id])
+  await tx(async (cl) => {
+    const r = (await cl.query('delete from dhcp_reservations where id = $1 returning address_id', [id])).rows[0]
+    // l'adresse IPAM ne doit pas rester « réservation DHCP » sans réservation : elle redevient simplement utilisée
+    if (r?.address_id) await cl.query("update addresses set status = 'used', updated_at = now() where id = $1 and status = 'dhcp'", [r.address_id])
+  })
   await audit(c, 'reservation_delete', 'dhcp_reservation', id)
   return { ok: true }
 })

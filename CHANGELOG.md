@@ -1,6 +1,13 @@
 # Journal des modifications
 
-## 0.5.0 (en cours)
+## 0.5.1 (en cours) — itération 1 « Smart DDI »
+- **Génération de configuration** : compteur monotone tenu par des déclencheurs en base (zones, enregistrements, étendues, pools, réservations DHCP, règles et listes de filtrage, réglages DNS/DHCP). Les numéros de série de zone et l'inventaire IPAM seul ne l'incrémentent pas. Chaque déploiement enregistre la génération rendue ; le tableau de bord affiche « déployée / à déployer » ; API `GET /api/system/config-generation`. Base de la détection d'écart entre nœuds du futur cluster.
+- **Réservation DHCP pilotée par l'IPAM** : une adresse au statut « Réservation DHCP » avec MAC crée, met à jour ou retire sa réservation Kea dans la **même transaction** ; supprimer l'adresse supprime la réservation (clé étrangère en cascade) ; supprimer la réservation côté DHCP redonne le statut « utilisée ». Les réservations existantes sont rattachées à leur adresse par la migration. Retour explicite (`dhcp: created|updated|removed|no_mac|no_scope`).
+- **Gabarits de réseau** : étendue DHCP créée avec le réseau (durée de bail, options DNS/domaine/NTP, routeur = passerelle), zone DNS des hôtes (A/AAAA + PTR automatiques à l'allocation, ou refusés explicitement avec `dns_zone_id: null`), règle de nommage par motif simple (`#` chiffre, `?` caractère, `*` suite) — volontairement pas d'expression régulière saisie (pas de ReDoS). Onglet « Gabarits » ; champ « Gabarit » sur les réseaux.
+- **Santé honnête** : `/api/health` répond 503 tant que les migrations ne sont pas terminées (la vérification de santé de la mise à jour en ligne et les tests ne peuvent plus conclure trop tôt).
+- Document d'architecture du cluster validé : `docs/ARCHITECTURE-CLUSTER.md`.
+
+## 0.5.0
 - **IPAM multi-espaces** : table des espaces (le même plan d'adressage peut exister dans plusieurs espaces, façon VRF). L'existant migre dans l'espace « Défaut » ; l'unicité du CIDR devient « par espace » (migration 4).
 - **Hiérarchie** : conteneurs (regroupent des réseaux, sans adresses) et réseaux imbriqués, parent déduit de l'inclusion des préfixes dans l'espace ; agrégats par conteneur (taille, % alloué, % d'IP utilisées sur tous les descendants).
 - **Pools d'adresses** : plages nommées dans un réseau (sans chevauchement, contenues dans le réseau, contrôlé en base), taux d'utilisation, « prochaine IP libre » dans un pool donné.
