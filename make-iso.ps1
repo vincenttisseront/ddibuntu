@@ -16,6 +16,8 @@ param(
     [switch]$SkipConsole,
     # -Bundle : produit aussi l'archive de mise a jour en ligne (ddibuntu-update-<version>.tar.gz)
     [switch]$Bundle,
+    # -BundleOnly : seulement l'archive de mise a jour (pas d'ISO) ; implique -Bundle
+    [switch]$BundleOnly,
     # -SigningKey cle.pem : signe SHA256SUMS (Ed25519) ; les 3 fichiers sont a joindre a une release GitHub (voir docs/RELEASING.md)
     [string]$SigningKey = ''
 )
@@ -41,7 +43,9 @@ if (-not $SkipConsole) {
 }
 if (-not (Test-Path -LiteralPath (Join-Path $Root 'webui\.output\server\index.mjs'))) { Fail "webui\.output absent : relancez sans -SkipConsole" }
 
+if ($BundleOnly) { $Bundle = $true }
 # --- 2. ISO
+if (-not $BundleOnly) {
 Write-Host "==> [2/2] Construction de l'ISO (ubuntu:24.04, plateforme linux/amd64)"
 $extra = @()
 if ($CaCert) {
@@ -53,6 +57,7 @@ if ($CaCert) {
     bash /ddi-src/build-ddibuntu.sh --in-container --out /ddi-out --timeout $Timeout @extra
 if ($LASTEXITCODE -ne 0) { Fail "la construction de l'ISO a echoue (code $LASTEXITCODE)" }
 Write-Host "==> Termine. ISO dans : $Out" -ForegroundColor Green
+}
 
 # --- 3. (option) archive de mise a jour en ligne, signee
 if ($Bundle -or $SigningKey) {

@@ -59,6 +59,11 @@ export DDI_TEST=1 DDI_NO_SYSTEMD=1 DDI_ROOT="$R" DDI_LIBDIR="$R/usr/local/lib/dd
 ST="$R/var/lib/ddibuntu/update-status.json"
 req() { mkdir -p "$R/var/lib/ddibuntu/generated"; printf '%s' "$1" > "$R/var/lib/ddibuntu/generated/.update-request"; bash "$SU" request >"$W/out.log" 2>&1; echo $?; }
 
+echo "== 0. Dépôt sans release publiée (404) : message distinct d'une panne réseau =="
+expect_eq "aucune release : code 1" 1 "$(bash "$SU" check >"$W/out.log" 2>&1; echo $?)"
+if jget "$ST" error | grep -q "Aucune release"; then ok "message : aucune release publiée"; else ko "message aucune release" "$(jget "$ST" error)"; fi
+if jget "$ST" error | grep -q "joindre GitHub"; then ko "ne doit PAS dire « impossible de joindre GitHub » pour un simple 404"; else ok "pas confondu avec une panne réseau"; fi
+
 echo "== 1. Détection =="
 mkrelease 0.5.0 "$W/priv.pem"
 expect_eq "check : code 0" 0 "$(bash "$SU" check >"$W/out.log" 2>&1; echo $?)"
@@ -123,7 +128,7 @@ expect_eq "apply de la même version : refus" 1 "$(req '{"action":"apply","versi
 echo "== 7. Aucun accès réseau =="
 export DDI_UPDATE_API="http://127.0.0.1:1"
 expect_eq "check sans réseau : code 1" 1 "$(bash "$SU" check >"$W/out.log" 2>&1; echo $?)"
-if jget "$ST" error | grep -q "GitHub"; then ok "erreur lisible dans l'état"; else ko "erreur" "$(jget "$ST" error)"; fi
+if jget "$ST" error | grep -q "joindre GitHub"; then ok "erreur lisible dans l'état"; else ko "erreur" "$(jget "$ST" error)"; fi
 expect_eq "check sans réseau : version actuelle conservée" 0.5.0 "$(jget "$ST" current)"
 
 finish

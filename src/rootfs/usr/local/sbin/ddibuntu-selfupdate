@@ -101,8 +101,14 @@ gh_curl() {
 REL_JSON=""; LATEST=""; NOTES=""; PAGE=""; PUBLISHED=""; BUNDLE_URL=""; SUMS_URL=""; SIG_URL=""; BUNDLE_NAME=""
 fetch_release() {
   REL_JSON="$(mktemp)"
-  gh_curl -H 'Accept: application/vnd.github+json' "$API/repos/$REPO/releases/latest" -o "$REL_JSON" || { rm -f "$REL_JSON"; return 1; }
-  local out
+  local code out
+  code="$(gh_curl -H 'Accept: application/vnd.github+json' "$API/repos/$REPO/releases/latest" -o "$REL_JSON" -w '%{http_code}' 2>/dev/null)" || true
+  case "$code" in
+    200) ;;
+    404) rm -f "$REL_JSON"; return 4 ;;      # aucune release publiée (ou dépôt privé sans jeton : GitHub répond aussi 404)
+    401|403|429) rm -f "$REL_JSON"; return 5 ;;   # jeton refusé ou limite de débit de l'API GitHub
+    *) rm -f "$REL_JSON"; return 1 ;;        # réseau, DNS, proxy, TLS : pas de réponse HTTP
+  esac
   out="$(python3 - "$REL_JSON" <<'PY'
 import json, re, sys
 d = json.load(open(sys.argv[1]))
@@ -142,7 +148,9 @@ cmd_check() {
   cur="$(ddi_version)"
   st "current=$cur" state=checking "message=" error=
   fetch_release || rc=$?
-  if [ "$rc" -eq 1 ]; then st state=idle "current=$cur" "checked_at=$(date +%s)" "error=Impossible de joindre GitHub (réseau, dépôt introuvable ou privé sans jeton)" "message=" ; log "GitHub injoignable"; return 1; fi
+  if [ "$rc" -eq 1 ]; then st state=idle "current=$cur" "checked_at=$(date +%s)" "error=Impossible de joindre GitHub (réseau, DNS, proxy ou pare-feu sortant : api.github.com:443)" "message=" ; log "GitHub injoignable"; return 1; fi
+  if [ "$rc" -eq 4 ]; then st state=idle "current=$cur" "checked_at=$(date +%s)" "error=Aucune release publiée sur $REPO (ou dépôt privé : jeton requis dans /etc/ddibuntu/update-token)" "message="; log "aucune release sur $REPO"; return 1; fi
+  if [ "$rc" -eq 5 ]; then st state=idle "current=$cur" "checked_at=$(date +%s)" "error=GitHub a refusé la requête (jeton invalide ou limite de débit atteinte) : réessayer plus tard" "message="; log "GitHub : accès refusé ou limite de débit"; return 1; fi
   if [ "$rc" -eq 2 ]; then st state=idle "current=$cur" "checked_at=$(date +%s)" "error=Aucune version stable publiée (ou numéro de version invalide)" "message="; return 1; fi
   local avail=0 err=""
   if newer "$LATEST" "$cur"; then

@@ -1,6 +1,10 @@
 # Journal des modifications
 
-## 0.4.1 (en cours)
+## 0.4.2 (en cours)
+- Mises à jour en ligne : la recherche distingue « aucune release publiée sur le dépôt » (HTTP 404), « accès refusé / limite de débit » et une vraie panne réseau ; auparavant tout s'affichait « Impossible de joindre GitHub ».
+- `make-iso.ps1 -BundleOnly` : produit seulement l'archive de mise à jour signée (sans reconstruire l'ISO).
+
+## 0.4.1
 - **Mises à jour en ligne** : onglet « Mises à jour » de la console (administrateurs) : détection quotidienne et manuelle des nouvelles versions publiées sur GitHub, notes de version, installation sur clic. Un service root (`ddibuntu-selfupdate`) vérifie la signature Ed25519 (clé publique épinglée) et la somme SHA-256, sauvegarde la base (pg_dump) et les fichiers remplacés, remplace la console, et **revient en arrière** si elle ne redémarre pas. Publication : tag `vX.Y.Z` → workflow `release.yml` (archive + fichier unique + signature).
 - **Affichage** : version et nom d'hôte dans la barre latérale, pastille « MàJ » sur Système, carte « Système » du tableau de bord (version, disponibilité, mémoire, disque, charge, dernière application DNS/DHCP) et bandeau de mise à jour disponible.
 - **Mode mise à jour** (par l'ISO) : nouvelle entrée « Update an existing DDI-Buntu installation… » dans le menu de l'ISO. Elle met à niveau une installation existante (console, Node, fichiers de l'appliance, paquets plus récents) **sans effacer le disque** ni toucher aux données (PostgreSQL, `/etc/ddibuntu`, certificat, comptes, réseau). Sauvegarde des fichiers remplacés, refus d'une ISO plus ancienne, arrêt de la machine à la fin.
