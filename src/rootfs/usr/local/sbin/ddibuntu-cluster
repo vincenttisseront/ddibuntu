@@ -641,7 +641,8 @@ cmd_follow() {
     install -d -m 0755 "$gen"
     for n in $names; do if [ ! -f "$gen/$n" ] || ! cmp -s "$tmpd/$n" "$gen/$n"; then chmod 0644 "$tmpd/$n"; mv -f "$tmpd/$n" "$gen/$n"; fi; done
     rm -rf "$tmpd" "$gen/zones"
-    case " $names " in *" named.conf.options "*" named.conf.zones "*) margs="--replica" ;; *) margs="--kea-only" ;; esac
+    margs="--kea-only"   # (deux motifs séparés : un seul motif « options * zones » exigerait deux espaces entre les noms et ne correspondrait jamais)
+    case " $names " in *" named.conf.options "*) case " $names " in *" named.conf.zones "*) margs="--replica" ;; esac ;; esac
     local -a arr; read -ra arr <<< "$names"
     content="$(cd "$gen" && sha256sum -- "${arr[@]}" | sha256sum | cut -d' ' -f1)"
   else
