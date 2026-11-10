@@ -326,7 +326,19 @@ create unique index network_templates_name on network_templates (lower(name));
 alter table subnets add column template_id int references network_templates(id) on delete set null;
 `
 
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }]
+// Itération 3 (cluster) : configuration Kea déployée, copiée dans la base répliquée. Le nœud secondaire (base en lecture seule) la relit et l'applique
+// lui-même, en root, après les mêmes contrôles. Jamais de mot de passe ni de bloc « hooks » ici : la base des baux est remplacée par un fichier local.
+const SCHEMA_6 = String.raw`
+create table rendered_configs (
+  name text primary key check (name in ('kea-dhcp4.conf')),
+  content text not null,
+  generation bigint not null,
+  sha256 text not null,
+  deployed_at timestamptz not null default now()
+);
+`
+
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

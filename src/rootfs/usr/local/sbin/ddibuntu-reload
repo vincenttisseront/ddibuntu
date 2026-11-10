@@ -10,6 +10,10 @@ BIND_ETC="${DDI_BIND_ETC:-/etc/bind}"
 ZONES="${DDI_ZONES_RUNTIME_DIR:-/var/lib/bind/ddibuntu}"
 KEA_ETC="${DDI_KEA_ETC:-/etc/kea}"
 STATE="${DDI_STATE_DIR:-/var/lib/ddibuntu}"
+CLUSTER_DIR="${DDI_CLUSTER_DIR:-/etc/ddibuntu-cluster}"      # lu seulement s'il existe : racine de confiance (root), jamais écrit par la console
+KEA_HOOKS="${DDI_KEA_HOOKS_DIR:-}"                            # vide = recherche /usr/lib/*/kea/hooks
+KEA_LEASES="${DDI_KEA_LEASE_FILE:-/var/lib/kea/kea-leases4.csv}"
+KEA_ONLY=0; if [ "${1:-}" = "--kea-only" ]; then KEA_ONLY=1; fi   # nœud secondaire : applique seulement Kea (BIND secondaire : itération 4)
 BACKUP="$STATE/backup"
 STATUS="$STATE/reload-status"; ROLLED_BACK=0
 log() { printf 'ddibuntu-reload: %s\n' "$*"; logger -t ddibuntu-reload -- "$*" 2>/dev/null || true; }
@@ -27,7 +31,8 @@ fail() {
 }
 
 [ "$(id -u)" -eq 0 ] || fail "à lancer en root"
-for f in named.conf.options named.conf.zones kea-dhcp4.conf; do [ -f "$GEN/$f" ] || fail "fichier absent : $GEN/$f"; done
+req="named.conf.options named.conf.zones kea-dhcp4.conf"; if [ "$KEA_ONLY" -eq 1 ]; then req="kea-dhcp4.conf"; fi
+for f in $req; do [ -f "$GEN/$f" ] || fail "fichier absent : $GEN/$f"; done
 
 # ---- Contrôles de la frontière de privilèges ----
 check_named() {   # $1 = fichier de configuration BIND généré
@@ -62,7 +67,101 @@ for lg in k.get("loggers", []):
 PY
 }
 
+# ---- Haute disponibilité Kea ----
+# Le bloc « hooks-libraries » n'est JAMAIS accepté depuis la console (exécution de code en root) : il est ajouté ici, par root, à partir de la
+# configuration du cluster (fichier root). Les baux passent en fichier local (la base de données est en lecture seule sur le secondaire) :
+# c'est le hook HA qui les synchronise entre les deux serveurs, en TLS mutuel sur le réseau dédié.
+ha_py() {   # ha_py MODE FICHIER : MODE = probe (code 0 si le HA s'applique) | render (configuration finale sur stdout)
+  python3 - "$1" "$2" "$CLUSTER_DIR" "$KEA_HOOKS" "$KEA_LEASES" <<'PY'
+import glob, ipaddress, json, os, re, sys
+mode, src, cldir, hooks, leases = sys.argv[1:6]
+d = json.load(open(src))
+conf = os.path.join(cldir, "cluster.conf")
+def passthrough():
+    if mode == "probe": sys.exit(1)
+    json.dump(d, sys.stdout, indent=2); sys.stdout.write("\n"); sys.exit(0)
+if not os.path.isfile(conf): passthrough()
+c = {}
+for line in open(conf, encoding="utf-8"):
+    line = line.rstrip("\n")
+    if not line or line.startswith("#"): continue
+    m = re.fullmatch(r"([A-Z_]+)=([A-Za-z0-9._:/,= -]*)", line)
+    if not m: sys.exit("cluster.conf : ligne illisible")
+    c[m.group(1)] = m.group(2)
+name, role = c.get("NODE_NAME", ""), c.get("NODE_ROLE", "")
+if role != "data": passthrough()
+if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", name): sys.exit("cluster.conf : NODE_NAME invalide")
+data = []
+for p in c.get("PEERS", "").split():
+    m = re.fullmatch(r"([a-z][a-z0-9-]{1,30})=([0-9.]+):(data|witness)", p)
+    if not m: sys.exit("cluster.conf : PEERS invalide")
+    try: ipaddress.IPv4Address(m.group(2))
+    except ValueError: sys.exit("cluster.conf : adresse de pair invalide")
+    if m.group(3) == "data": data.append((m.group(1), m.group(2)))
+data.sort()                                # même ordre sur les deux nœuds : le premier par nom est « primary » du hook HA
+if len(data) != 2: passthrough()          # un seul nœud de données : pas encore de HA
+if name not in [n for n, _ in data]: sys.exit("cluster.conf : ce nœud ne figure pas dans PEERS")
+if mode == "probe": sys.exit(0)
+lib = lambda n: (glob.glob(os.path.join(hooks, n)) if hooks else glob.glob("/usr/lib/*/kea/hooks/" + n))
+ha_lib, lc_lib = lib("libdhcp_ha.so"), lib("libdhcp_lease_cmds.so")
+if not ha_lib or not lc_lib: sys.exit("bibliothèques Kea HA introuvables (paquet kea-dhcp4-server)")
+pki = os.path.join(cldir, "pki")
+for f in ("ca.crt", "node.crt", "node.key"):
+    if not os.path.isfile(os.path.join(pki, f)): sys.exit("matériel TLS du cluster absent : pki/" + f)   # « kea-dhcp4 -t » ne lit pas ces fichiers : on les exige ici
+k = d["Dhcp4"]
+k["lease-database"] = {"type": "memfile", "persist": True, "name": leases, "lfc-interval": 3600}
+k["hooks-libraries"] = [
+  {"library": lc_lib[0]},
+  {"library": ha_lib[0], "parameters": {"high-availability": [{
+    "this-server-name": name, "mode": "load-balancing",
+    "heartbeat-delay": 10000, "max-response-delay": 60000, "max-ack-delay": 5000, "max-unacked-clients": 5,
+    "multi-threading": {"enable-multi-threading": True, "http-dedicated-listener": True, "http-listener-threads": 4, "http-client-threads": 4},
+    "trust-anchor": os.path.join(pki, "ca.crt"), "cert-file": os.path.join(pki, "node.crt"), "key-file": os.path.join(pki, "node.key"),
+    "peers": [{"name": n, "url": "https://%s:8000/" % ip, "role": ("primary" if i == 0 else "secondary"), "auto-failover": True} for i, (n, ip) in enumerate(data)],
+  }]}},
+]
+json.dump(d, sys.stdout, indent=2); sys.stdout.write("\n")
+PY
+}
+KEA_GROUP="$(getent group _kea >/dev/null && echo _kea || echo root)"
+install_kea() {   # écrit la configuration finale (avec bloc HA éventuel) de façon atomique
+  local tmp; install -d -m 0755 "$KEA_ETC"
+  tmp="$(mktemp "$KEA_ETC/.kea-dhcp4.XXXXXX")"
+  if ! ha_py render "$GEN/kea-dhcp4.conf" > "$tmp"; then rm -f "$tmp"; return 1; fi
+  chmod 0640 "$tmp"; chown "root:$KEA_GROUP" "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$KEA_ETC/kea-dhcp4.conf"
+}
+verify_kea() {    # avec HA, la configuration finale est relue par Kea lui-même (bibliothèques, TLS, pairs) avant tout rechargement
+  ha_py probe "$GEN/kea-dhcp4.conf" || return 0
+  command -v kea-dhcp4 >/dev/null 2>&1 || { log "kea-dhcp4 absent : configuration HA non vérifiée"; return 0; }
+  kea-dhcp4 -t "$KEA_ETC/kea-dhcp4.conf" >"$STATE/kea-verify.out" 2>&1 || { tail -n 5 "$STATE/kea-verify.out" >&2; return 1; }
+}
+
 log "contrôle du contenu déposé"
+if [ "$KEA_ONLY" -eq 1 ]; then
+  check_kea "$GEN/kea-dhcp4.conf"
+  install -d -m 0750 "$STATE/backup-kea"
+  if [ -f "$KEA_ETC/kea-dhcp4.conf" ]; then cp -p "$KEA_ETC/kea-dhcp4.conf" "$STATE/backup-kea/kea-dhcp4.conf.prev"; else rm -f "$STATE/backup-kea/kea-dhcp4.conf.prev"; fi
+  restore_kea() {
+    ROLLED_BACK=1; log "retour arrière (Kea)"
+    if [ -f "$STATE/backup-kea/kea-dhcp4.conf.prev" ]; then cp -p "$STATE/backup-kea/kea-dhcp4.conf.prev" "$KEA_ETC/kea-dhcp4.conf"; else rm -f "$KEA_ETC/kea-dhcp4.conf"; fi
+    if [ -z "${DDI_RELOAD_NOSERVICES:-}" ] && [ -f "$KEA_ETC/kea-dhcp4.conf" ]; then systemctl reload-or-restart kea-dhcp4-server >/dev/null 2>&1 || log "Kea n'a pas pu relire l'ancienne configuration"; fi
+  }
+  install_kea || fail "installation de la configuration Kea impossible"
+  verify_kea || { restore_kea; fail "kea-dhcp4 -t a refusé la configuration finale (HA)"; }
+  if [ -z "${DDI_RELOAD_NOSERVICES:-}" ]; then
+    if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["Dhcp4"].get("subnet4") else 1)' "$KEA_ETC/kea-dhcp4.conf"; then
+      systemctl enable kea-dhcp4-server >/dev/null 2>&1
+      systemctl reload-or-restart kea-dhcp4-server || { restore_kea; fail "Kea ne démarre pas avec la nouvelle configuration"; }
+    else
+      systemctl disable --now kea-dhcp4-server >/dev/null 2>&1 || true
+    fi
+  fi
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-reload-kea"
+  status 1 "configuration Kea appliquée (nœud de données)"
+  log "configuration Kea appliquée"
+  exit 0
+fi
 check_named "$GEN/named.conf.options"; check_named "$GEN/named.conf.zones"; check_kea "$GEN/kea-dhcp4.conf"
 shopt -s nullglob
 for z in "$GEN"/zones/db.*; do check_zone "$z"; done
@@ -103,8 +202,8 @@ done
 install -m 0644 -o root -g bind "$GEN/named.conf.options" "$BIND_ETC/named.conf.options"
 install -m 0644 -o root -g bind "$GEN/named.conf.zones" "$BIND_ETC/named.conf.local"
 install -d -m 0755 "$KEA_ETC"
-KEA_GROUP="$(getent group _kea >/dev/null && echo _kea || echo root)"
-install -m 0640 -o root -g "$KEA_GROUP" "$GEN/kea-dhcp4.conf" "$KEA_ETC/kea-dhcp4.conf"
+install_kea || { restore; fail "installation de la configuration Kea impossible"; }
+verify_kea || { restore; fail "kea-dhcp4 -t a refusé la configuration finale (HA)"; }
 
 named-checkconf "$BIND_ETC/named.conf" || { restore; fail "named-checkconf a refusé la configuration installée"; }
 for z in "$ZONES"/db.*; do

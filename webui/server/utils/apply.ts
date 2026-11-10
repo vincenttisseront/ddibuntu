@@ -1,5 +1,6 @@
 // Construction, validation et déploiement de la configuration DNS/DHCP à partir de la base.
 import { promises as fs } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { cfg } from './config'
 import { decryptSecret } from './auth'
@@ -64,6 +65,18 @@ export async function configState(): Promise<ConfigState> {
   return { generation, deployed, pending: generation > deployed, changed_at: r?.at ?? null, deployed_at: r?.dat ?? null }
 }
 
+// Copie de la configuration Kea pour le(s) nœud(s) secondaire(s) : sans mot de passe, baux en fichier local (le bloc HA est ajouté par root sur chaque nœud)
+async function storeKeaForFollowers(cl: { query: (t: string, p?: unknown[]) => Promise<unknown> }, files: OutFile[], generation: number): Promise<void> {
+  const f = files.find((x) => x.kind === 'kea')
+  if (!f) return
+  const d = JSON.parse(f.content)
+  if (d?.Dhcp4) d.Dhcp4['lease-database'] = { type: 'memfile', persist: true, name: '/var/lib/kea/kea-leases4.csv', 'lfc-interval': 3600 }
+  const content = JSON.stringify(d, null, 2) + '\n'
+  const sha = createHash('sha256').update(content).digest('hex')
+  await cl.query(`insert into rendered_configs (name, content, generation, sha256) values ('kea-dhcp4.conf', $1, $2, $3)
+    on conflict (name) do update set content = excluded.content, generation = excluded.generation, sha256 = excluded.sha256, deployed_at = now()`, [content, generation, sha])
+}
+
 export interface ApplyOutcome { ok: boolean; deployed: boolean; results: CheckResult[]; warnings: string[]; files: string[]; generation: number }
 export async function applyConfig(opts: { deploy: boolean; username: string | null }): Promise<ApplyOutcome> {
   // lue AVANT le rendu : une modification survenue pendant le rendu laisse la configuration « en attente » (jamais l'inverse)
@@ -79,6 +92,7 @@ export async function applyConfig(opts: { deploy: boolean; username: string | nu
       // point de restauration de l'état qui vient d'être déployé : « revenir à ce déploiement » est possible à tout moment
       const snap = await captureSnapshot('deploy', 'état déployé', opts.username, cl)
       await cl.query('insert into deployments (username, ok, files, results, snapshot_id, generation) values ($1,$2,$3::jsonb,$4::jsonb,$5,$6)', [opts.username, true, JSON.stringify(sums), JSON.stringify(results), snap, generation])
+      await storeKeaForFollowers(cl, files, generation)
     })
     // le marqueur déclenche l'application privilégiée (unité systemd .path) : écrit en dernier
     await fs.writeFile(join(cfg().generatedDir, '.deployed'), `${Date.now()}\n`)

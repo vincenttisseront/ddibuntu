@@ -1,0 +1,12 @@
+[Unit]
+Description=DDI-Buntu : configuration Kea du cluster (HA load-balancing)
+ConditionPathExists=/etc/ddibuntu-cluster/cluster.conf
+After=patroni.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-cluster follow
+TimeoutStartSec=120
+# sans Patroni ni base lisible, la commande ne modifie rien ; la minuterie réessaie
+PrivateTmp=yes
+ProtectHome=yes

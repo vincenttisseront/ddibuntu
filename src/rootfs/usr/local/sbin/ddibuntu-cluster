@@ -14,8 +14,9 @@
 #   sync                                                                        relit le registre des nœuds (etcd) : pairs et pare-feu à jour
 #   status                                                                      état JSON (etcd, Patroni, membres, retard de réplication)
 #   switchover [--candidate N]                                                  bascule contrôlée du primaire
+#   follow                                                                      (nœud de données) applique la configuration Kea (HA load-balancing) : primaire = fichiers de la console, secondaire = copie répliquée en base
 #
-# Variables de test : DDI_ROOT (préfixe de tous les chemins), DDI_TEST=1 (ni systemctl ni exigence root), DDI_PY (interpréteur de Patroni)
+# Variables de test : DDI_GENERATED_DIR, DDI_RELOAD_CMD, DDI_KEA_SOCKET, DDI_DB_NAME ; DDI_ROOT (préfixe de tous les chemins), DDI_TEST=1 (ni systemctl ni exigence root), DDI_PY (interpréteur de Patroni)
 set -euo pipefail
 umask 077
 
@@ -117,7 +118,7 @@ issue_cert() {
 ensure_group() {
   [ -n "${DDI_TEST_NOUSERS:-}" ] && return 0
   getent group "$GROUP" >/dev/null || groupadd --system "$GROUP"
-  local u; for u in etcd postgres; do getent passwd "$u" >/dev/null && usermod -aG "$GROUP" "$u"; done; return 0
+  local u; for u in etcd postgres _kea; do getent passwd "$u" >/dev/null && usermod -aG "$GROUP" "$u"; done; return 0
 }
 # install_pki RÉPERTOIRE_SOURCE : clés lisibles par etcd et PostgreSQL via le groupe ddicluster, jamais par les autres
 install_pki() {
@@ -335,7 +336,7 @@ activate() {
   [ -n "${DDI_TEST:-}" ] || register_node "${C[NODE_NAME]}" "${C[NODE_IP]}" "${C[NODE_ROLE]}" 30 \
     || log "AVERTISSEMENT : inscription de ce nœud au registre impossible pour l'instant ; la synchronisation périodique réessaiera"
   sysctl_do enable --now ddibuntu-cluster-sync.timer
-  [ "${C[NODE_ROLE]}" != data ] || sysctl_do enable --now patroni.service
+  if [ "${C[NODE_ROLE]}" = data ]; then sysctl_do enable --now patroni.service; sysctl_do enable --now ddibuntu-cluster-follow.timer; fi
   log "services démarrés (etcd${C[NODE_ROLE]:+, patroni si nœud de données})"
 }
 
@@ -495,14 +496,76 @@ cmd_status() {
     pat="$(curl -fsS --max-time 4 --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "https://$ip:${C[PATRONI_PORT]}/cluster" 2>/dev/null || echo null)"
   fi
   : "$cp"
-  ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
+  local kea="null"; if [ "${C[NODE_ROLE]}" = data ]; then kea="$(kea_ha_json)"; fi
+  KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
     python3 -c '
 import json, os
 pat = json.loads(os.environ["PAT"])
 print(json.dumps({"cluster": os.environ["CLUSTER"], "node": os.environ["NODE"], "role": os.environ["ROLE"],
   "etcd": {"healthy": os.environ["ETCD_OK"] == "true", "members": int(os.environ["MEMBERS"] or 0)},
   "peers": [dict(zip(("name", "ip", "role"), (p.split("=")[0], p.split("=")[1].split(":")[0], p.split(":")[-1]))) for p in os.environ["PEERS"].split()],
-  "patroni": pat}, ensure_ascii=False))'
+  "patroni": pat, "kea": json.loads(os.environ["KEA"])}, ensure_ascii=False))'
+}
+
+# ---------------------------------------------------------------- Kea HA
+kea_socket() { echo "${DDI_KEA_SOCKET:-/run/kea/kea4-ctrl-socket}"; }
+# kea_ha_json : état HA lu sur la socket de contrôle de Kea (JSON sur une ligne, « null » si Kea ne répond pas)
+kea_ha_json() {
+  python3 - "$(kea_socket)" <<'PY' 2>/dev/null || echo null
+import json, socket, sys
+try:
+    s = socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(sys.argv[1]); s.sendall(b'{"command":"status-get"}')
+    d = b""
+    while True:
+        c = s.recv(65536)
+        if not c: break
+        d += c
+        try: json.loads(d); break
+        except ValueError: pass
+    a = json.loads(d).get("arguments", {})
+    ha = (a.get("high-availability") or [None])[0]
+    if not ha: print(json.dumps({"running": True, "ha": False})); sys.exit(0)
+    sv = ha.get("ha-servers", {})
+    print(json.dumps({"running": True, "ha": True, "mode": ha.get("ha-mode"),
+      "local": {"role": sv.get("local", {}).get("role"), "state": sv.get("local", {}).get("state")},
+      "partner": {"state": sv.get("remote", {}).get("last-state"), "in_touch": sv.get("remote", {}).get("in-touch"),
+                  "interrupted": sv.get("remote", {}).get("communication-interrupted"), "unacked_clients": sv.get("remote", {}).get("unacked-clients")}}))
+except Exception:
+    print("null")
+PY
+}
+patroni_role() {   # leader | replica | "" (inconnu)
+  curl -fsS --max-time 4 --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "https://${C[NODE_IP]}:${C[PATRONI_PORT]}/patroni" 2>/dev/null \
+    | python3 -c 'import json,sys; r=json.load(sys.stdin).get("role",""); print({"master":"leader","primary":"leader","standby_leader":"leader","replica":"replica"}.get(r,""))' 2>/dev/null || true
+}
+# follow : garde la configuration Kea du nœud alignée sur celle du cluster. Rien n'est appliqué sans passer par ddibuntu-reload (mêmes contrôles qu'en local).
+cmd_follow() {
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || return 0
+  install -d -m 0700 "$STATE"
+  local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" reload="${DDI_RELOAD_CMD:-/usr/local/sbin/ddibuntu-reload}" db="${DDI_DB_NAME:-ddibuntu}"
+  local src="$gen/kea-dhcp4.conf" marker="$STATE/kea-applied" role
+  role="$(patroni_role)"; [ -n "$role" ] || { log "follow : rôle Patroni inconnu (réessai à la prochaine échéance)"; return 0; }
+  if [ "$role" = replica ]; then
+    local meta b64 want got tmp
+    meta="$(psql_local -d "$db" -Atc "select sha256 from rendered_configs where name = 'kea-dhcp4.conf'" 2>/dev/null)" || { log "follow : base répliquée illisible (réessai)"; return 0; }
+    [ -n "$meta" ] || return 0                                   # rien n'a encore été déployé sur le primaire
+    [[ "$meta" =~ ^[0-9a-f]{64}$ ]] || die "follow : empreinte invalide dans la base"
+    b64="$(psql_local -d "$db" -Atc "select encode(convert_to(content, 'UTF8'), 'base64') from rendered_configs where name = 'kea-dhcp4.conf'" 2>/dev/null | tr -d '\n')" || return 0
+    tmp="$(mktemp "$STATE/.kea-follow.XXXXXX")"
+    printf '%s' "$b64" | base64 -d > "$tmp" 2>/dev/null || { rm -f "$tmp"; die "follow : contenu illisible"; }
+    got="$(sha256sum "$tmp" | cut -d' ' -f1)"; want="$meta"
+    [ "$got" = "$want" ] || { rm -f "$tmp"; log "follow : empreinte différente de celle annoncée (lecture en cours de mise à jour ? réessai)"; return 0; }
+    install -d -m 0755 "$gen"
+    if [ ! -f "$src" ] || ! cmp -s "$tmp" "$src"; then chmod 0644 "$tmp"; mv -f "$tmp" "$src"; else rm -f "$tmp"; fi
+  fi
+  [ -f "$src" ] || return 0                                      # primaire sans déploiement : rien à appliquer
+  local data="" p
+  for p in ${C[PEERS]}; do if [ "$(peer_field "$p" role)" = data ]; then data="$data$(peer_field "$p" name)=$(peer_field "$p" ip)"$'\n'; fi; done
+  local now; now="$(printf '%s|%s' "$(sha256sum "$src" | cut -d' ' -f1)" "$(printf '%s' "$data" | sort | tr '\n' ' ')" | sha256sum | cut -d' ' -f1)"
+  if [ -f "$marker" ] && [ "$(cat "$marker")" = "$now" ]; then return 0; fi
+  log "follow ($role) : application de la configuration Kea"
+  if DDI_GENERATED_DIR="$gen" "$reload" --kea-only; then printf '%s\n' "$now" > "$marker"; log "follow : configuration Kea appliquée"
+  else die "follow : ddibuntu-reload --kea-only a échoué (voir le journal) ; réessai à la prochaine échéance"; fi
 }
 
 cmd_switchover() {
@@ -524,5 +587,6 @@ case "${1:-}" in
   status) cmd_status ;;
   switchover) shift; cmd_switchover "$@" ;;
   sync) cmd_sync ;;
+  follow) cmd_follow ;;
   *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

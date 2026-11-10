@@ -63,7 +63,7 @@ fw_nets() {    # $1 = 4|6 ; réseaux d'administration de cette famille, normalis
   printf '%s' "$out"
 }
 
-# Pairs du cluster (réseau dédié) : adresses IPv4 seulement ; uniquement ces sources atteignent quorum (2379/2380), PostgreSQL (5432) et l'API Patroni (8008).
+# Pairs du cluster (réseau dédié) : adresses IPv4 seulement ; uniquement ces sources atteignent quorum (2379/2380), PostgreSQL (5432), HA Kea (8000) et l'API Patroni (8008).
 fw_cluster() {
   local n norm out=""
   while IFS= read -r n || [ -n "$n" ]; do
@@ -81,7 +81,7 @@ fw_render() {
   v4="$(fw_nets 4)" || return 1
   v6="$(fw_nets 6)" || return 1
   cp="$(fw_cluster)" || return 1
-  if [ -n "$cp" ]; then ec="    elements = { $cp }"; r_cluster="    ip saddr @cluster4 tcp dport { 2379, 2380, 5432, 8008 } accept"; fi
+  if [ -n "$cp" ]; then ec="    elements = { $cp }"; r_cluster="    ip saddr @cluster4 tcp dport { 2379, 2380, 5432, 8000, 8008 } accept"; fi
   at="$(fw_ports "$ADMIN_TCP")" || return 1
   ot="$(fw_ports "$OPEN_TCP")" || return 1
   ou="$(fw_ports "$OPEN_UDP")" || return 1

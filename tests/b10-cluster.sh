@@ -126,9 +126,9 @@ FWD="$W/fw"; mkdir -p "$FWD"
 fwr() { DDI_ROOT="$FWD" DDI_LIBDIR="$RFS/usr/local/lib/ddibuntu" DDI_FW_CONF="$FWD/firewall.conf" DDI_FW_STATE="$FWD/state" bash "$FW" "$@"; }
 check "set CLUSTER_PEERS" fwr set CLUSTER_PEERS "10.9.0.2,10.9.0.3"
 fwr render > "$W/nft.out" 2>&1
-expect_grep "règle : 2379/2380/5432/8008 depuis le jeu des pairs" 'ip saddr @cluster4 tcp dport \{ 2379, 2380, 5432, 8008 \} accept' "$W/nft.out"
+expect_grep "règle : 2379/2380/5432/8000/8008 depuis le jeu des pairs" 'ip saddr @cluster4 tcp dport \{ 2379, 2380, 5432, 8000, 8008 \} accept' "$W/nft.out"
 expect_grep "jeu des pairs : deux adresses /32" 'elements = \{ 10\.9\.0\.2/32, 10\.9\.0\.3/32 \}' "$W/nft.out"
-expect_nogrep "aucun de ces ports n'est ouvert à tous" '^\s+tcp dport \{[^}]*(2379|2380|5432|8008)' "$W/nft.out"
+expect_nogrep "aucun de ces ports n'est ouvert à tous" '^\s+tcp dport \{[^}]*(2379|2380|5432|8000|8008)' "$W/nft.out"
 check_fail "pair IPv6 refusé" fwr set CLUSTER_PEERS "fd00::1"
 check_fail "pair invalide refusé" fwr set CLUSTER_PEERS "10.9.0.2; drop"
 expect_grep "après refus : la configuration précédente est conservée" '10\.9\.0\.2,10\.9\.0\.3' "$FWD/firewall.conf"

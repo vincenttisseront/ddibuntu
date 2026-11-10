@@ -1,0 +1,10 @@
+[Unit]
+Description=DDI-Buntu : configuration Kea du cluster (chaque minute)
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
