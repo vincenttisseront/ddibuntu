@@ -43,9 +43,11 @@ Légende : ✅ fait · 🟡 partiel · ⬜ à faire.
 | 1 Smart DDI (génération de configuration, réservation pilotée par l'IPAM, gabarits) | ✅ 0.5.1 |
 | 2 Fondations : autorité interne, enrôlement, réplication PostgreSQL (Patroni + etcd, arbitre), état | ✅ 0.5.2 (testé avec de vrais démons sur boucle locale ; pas de page console) |
 | 3 Kea HA load-balancing : bloc HA injecté par root, secondaire qui suit la configuration par la base, TLS mutuel | ✅ 0.5.3 (testé avec deux vrais Kea et de vrais échanges DHCP sur boucle locale) |
-| 4 BIND primaire/secondaire, distribution RPZ, Keepalived (VIP) | ⬜ |
+| 4 BIND primaire/secondaire (transferts TSIG), distribution RPZ, Keepalived (VIP qui suit le leader Patroni) | ✅ 0.5.4 (deux vrais `named` et un vrai Keepalived sur boucle locale / espaces de noms ; promotion du BIND secondaire → itération 5) |
 | 5 Console/BIND/Kea qui suivent le primaire, isolation, mise à jour progressive, page « Cluster » | ⬜ |
 | 6 Active Directory : Kerberos, GSS-TSIG, redirecteurs conditionnels | ⬜ |
+
+Constat à traiter : `rndc reload` ne relit pas le fichier d'une zone dynamique (`allow-update`) ; un déploiement qui modifie une telle zone doit passer par `rndc freeze`/`thaw` (qui fige les noms dynamiques) ou par un ajout via `nsupdate`. À arbitrer avec l'itération 5.
 
 Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonctions hors cluster.
 

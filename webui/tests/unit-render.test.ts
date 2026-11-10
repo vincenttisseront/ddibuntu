@@ -100,6 +100,14 @@ describe('contenu généré', () => {
     expect(renderNamedOptions(dns, true)).toContain('response-policy { zone "rpz.ddibuntu.local" policy given; }')
     expect(renderNamedOptions({ ...dns, rpzEnabled: false }, false)).not.toContain('response-policy')
   })
+  it('named.conf : formats exacts relus par root pour le secondaire du cluster', () => {
+    const dns = { ...DNS_DEFAULTS, rpzEnabled: true }
+    const lines = renderNamedOptions(dns, true).split('\n')
+    expect(lines).toContain('options {'); expect(lines.filter((l) => l.trim() === 'allow-transfer { none; };')).toHaveLength(1)   // root remplace cette ligne, une seule fois
+    const z = renderNamedZones([zone({ ddns_enabled: true, allow_transfer: ['10.0.0.0/8'] }), zone({ name: 'q.org' }), zone({ name: 's.org', type: 'secondary', masters: ['1.2.3.4'] }), zone({ name: 'f.org', type: 'forward', forwarders: ['5.6.7.8'] })], dns).split('\n')
+    for (const l of z.filter((x) => x && !x.startsWith('//'))) expect(l, l).toMatch(/^zone "[^"]+" \{ type (primary; file "[^"]+";.*|secondary;.*|forward;.*) \};$/)
+    expect(z.some((l) => /allow-update \{ key "ddi-ddns"; \}/.test(l))).toBe(true)
+  })
 })
 
 // Défauts découverts sur un vrai BIND : sans « querylog yes » AUCUNE requête n'est écrite dans le journal, et sans la catégorie

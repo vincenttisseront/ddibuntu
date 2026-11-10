@@ -184,7 +184,20 @@ describe('déploiement : point de restauration et résultat réel', () => {
     expect(r.content).not.toMatch(/password/i); expect(k['hooks-libraries']).toBeUndefined()
     expect(Number(r.generation)).toBeGreaterThan(0)
     expect(await admin.post('/api/system/apply', { deploy: true })).toBeTruthy()
-    expect((await rows("select count(*)::int c from rendered_configs"))[0].c).toBe(1)   // une seule ligne, mise à jour à chaque déploiement
+    expect((await rows("select count(*)::int c from rendered_configs"))[0].c).toBe(3)   // une ligne par fichier (Kea, options et zones BIND), mises à jour à chaque déploiement
+  })
+  it('cluster : la configuration BIND est copiée pour le secondaire dans les formats que root sait relire', async () => {
+    const { createHash } = await import('node:crypto')
+    const o = (await rows("select content, sha256 from rendered_configs where name = 'named.conf.options'"))[0]
+    const z = (await rows("select content, sha256 from rendered_configs where name = 'named.conf.zones'"))[0]
+    expect(o && z).toBeTruthy()
+    expect(createHash('sha256').update(o.content).digest('hex')).toBe(o.sha256); expect(createHash('sha256').update(z.content).digest('hex')).toBe(z.sha256)
+    expect(o.content.split('\n')).toContain('options {'); expect(o.content.split('\n')).toContain('  allow-transfer { none; };')   // root remplace exactement cette ligne
+    expect(o.content + z.content).not.toMatch(/ddi-xfr|also-notify|transfer-source/)   // la console ne connaît rien du cluster : tout cela est ajouté par root
+    for (const l of z.content.split('\n')) {
+      if (l === '' || l.startsWith('//')) continue
+      expect(l, l).toMatch(/^zone "[^"]+" \{ type (primary; file "[^"]+";|secondary;|forward;).*\};$/)
+    }
   })
   it('résultat réel du rechargement privilégié : succès, puis échec avec retour arrière automatique', async () => {
     expect((await admin.get('/api/system/reload-status')).json.status).toBeNull()   // pas encore de fichier

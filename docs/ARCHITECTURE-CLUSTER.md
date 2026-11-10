@@ -48,7 +48,7 @@ Statut : **validée** (itération 0). Aucune ligne de code de cluster n'existe e
 | 1 | Smart DDI : génération de configuration, réservation DHCP pilotée par l'IPAM, gabarits de réseau |
 | 2 | Fondations : PKI interne, enrôlement, réplication PostgreSQL, quorum, état du cluster |
 | 3 | Kea HA load-balancing (**fait**, 0.5.3 — voir ci-dessous) |
-| 4 | BIND primaire/secondaire, distribution du RPZ, Keepalived |
+| 4 | BIND primaire/secondaire, distribution du RPZ, Keepalived (**fait**, 0.5.4 — voir ci-dessous) |
 | 5 | Bascule automatique, isolation, réintégration (`pg_rewind`), mise à jour progressive |
 | 6 | Active Directory : Kerberos, GSS-TSIG, redirecteurs conditionnels |
 
@@ -60,3 +60,13 @@ Statut : **validée** (itération 0). Aucune ligne de code de cluster n'existe e
 - **Pare-feu** : le port 8000 n'est ouvert qu'aux pairs du cluster (`CLUSTER_PEERS`). Les relais DHCP doivent lister **les deux adresses réelles** des nœuds de données.
 - **Délais de production** : `heartbeat-delay` 10 s, `max-response-delay` 60 s, `max-ack-delay` 5 s, `max-unacked-clients` 5. Le serveur restant ne prend les clients du partenaire qu'après avoir constaté des clients sans réponse (champ `secs` > `max-ack-delay`) : sans trafic client, l'état reste `communication-recovery`.
 - **À vérifier au premier laboratoire** : coupure réseau réelle entre deux machines, minuteries de production, relais réels, charge. Limite connue : tant que la console ne suit pas le primaire (itération 5), un déploiement lancé depuis le secondaire échoue à l'écriture en base.
+
+## Itération 4 — BIND et adresse virtuelle : comment c'est réalisé
+- **La console ne connaît pas le cluster.** Elle écrit une configuration BIND ordinaire (`allow-transfer { none; }` global). `ddibuntu-reload` (root) lit `named.conf.options` et `named.conf.zones` de façon **stricte** (formats exacts produits par `render.ts`) et refuse toute ligne inattendue : une base compromise ne peut pas ouvrir un transfert ni charger une clé.
+- **Secondaire dérivé, jamais copié** : sur le nœud qui suit (`--replica`), chaque zone primaire devient une zone `secondary` dont le `primaries` est le pair du réseau dédié, signé par la clé `ddi-xfr`. Les fichiers de zone ne sont **pas** copiés : BIND les transfère (AXFR, puis IXFR après chaque mise à jour, y compris le DDNS). La copie locale périmée du dossier généré est supprimée à chaque passage.
+- **Primaire** : `allow-transfer { key "ddi-xfr"; }` (en plus d'une ACL propre à la zone), `also-notify` vers le pair, `notify-source`/`transfer-source`/`listen-on` sur l'adresse du réseau dédié, `server PAIR { keys "ddi-xfr"; }`.
+- **RPZ** : zone ordinaire transférée ; le secondaire applique donc les mêmes listes que le primaire sans mécanisme particulier.
+- **Clé TSIG** : créée par le nœud autorité (`init`, ou premier `follow` d'un cluster plus ancien), embarquée dans le lot d'enrôlement, validée sur sa forme exacte avant installation (`root:bind 0640`).
+- **IP virtuelle** : Keepalived (VRRP unicast sur le réseau dédié). Le script `vip-check` interroge l'API Patroni `/primary` en TLS mutuel : seul le leader PostgreSQL garde l'adresse. Sans leader, personne ne la porte (mieux vaut ne pas répondre que répondre depuis une base en lecture seule). Aucun Keepalived sur l'arbitre ; protocole 112 ouvert aux seuls pairs.
+- **Différé à l'itération 5** : promotion du BIND secondaire (changement de rôle quand le leader change), console et Kea qui suivent le primaire, page « Cluster ». Tant que le leader ne change pas, le comportement est complet ; après une bascule, le DNS reste servi par les deux nœuds mais les modifications de zones doivent attendre l'itération 5.
+- **À vérifier au premier laboratoire** : coupure réseau réelle, comportement de VRRP sur un vrai commutateur, charge des transferts, zones dynamiques (`rndc reload` ne les relit pas).

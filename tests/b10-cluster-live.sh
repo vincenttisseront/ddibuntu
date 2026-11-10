@@ -172,10 +172,13 @@ OUT="$(cl 1 status 2>&1)"; echo "$OUT" | python3 -c 'import json,sys; d=json.loa
 
 echo "== Configuration Kea : « follow » (primaire = fichiers de la console, secondaire = copie répliquée en base) =="
 kea_json() { printf '{"Dhcp4":{"interfaces-config":{"interfaces":["lo"]},"control-socket":{"socket-type":"unix","socket-name":"/run/kea/kea4-ctrl-socket"},"lease-database":{"type":"memfile","persist":false},"subnet4":[{"id":1,"subnet":"%s","pools":[{"pool":"%s"}]}]}}' "$1" "$2"; }
+mkdir -p "$B/zones"; chown bind:bind "$B/zones" 2>/dev/null || true   # même chemin de zones sur les deux nœuds : c'est le chemin écrit par la console
 for n in 1 2; do
-  mkdir -p "$(R $n)/gen" "$(R $n)/kea" "$(R $n)/kstate"
-  printf '#!/bin/bash\necho run >> %s/reload-calls\nexec env DDI_KEA_ETC=%s DDI_STATE_DIR=%s DDI_CLUSTER_DIR=%s DDI_RELOAD_NOSERVICES=1 DDI_KEA_LEASE_FILE=%s/leases.csv bash %s/usr/local/sbin/ddibuntu-reload "$@"\n' \
-    "$(R $n)" "$(R $n)/kea" "$(R $n)/kstate" "$(R $n)/etc/ddibuntu-cluster" "$(R $n)" "$RFS" > "$(R $n)/reload.sh"; chmod 755 "$(R $n)/reload.sh"
+  mkdir -p "$(R $n)/gen" "$(R $n)/kea" "$(R $n)/kstate" "$(R $n)/etc/bind"
+  printf 'include "%s/etc/bind/named.conf.options";\ninclude "%s/etc/bind/named.conf.local";\n' "$(R $n)" "$(R $n)" > "$(R $n)/etc/bind/named.conf"
+  : > "$(R $n)/etc/bind/named.conf.options"; : > "$(R $n)/etc/bind/named.conf.local"
+  printf '#!/bin/bash\necho run >> %s/reload-calls\nexec env DDI_KEA_ETC=%s DDI_BIND_ETC=%s/etc/bind DDI_ZONES_RUNTIME_DIR=%s DDI_LOCK_FILE=%s/reload.lock DDI_STATE_DIR=%s DDI_CLUSTER_DIR=%s DDI_RELOAD_NOSERVICES=1 DDI_KEA_LEASE_FILE=%s/leases.csv bash %s/usr/local/sbin/ddibuntu-reload "$@"\n' \
+    "$(R $n)" "$(R $n)/kea" "$(R $n)" "$B/zones" "$(R $n)" "$(R $n)/kstate" "$(R $n)/etc/ddibuntu-cluster" "$(R $n)" "$RFS" > "$(R $n)/reload.sh"; chmod 755 "$(R $n)/reload.sh"
 done
 fol() { local n="$1"; shift; DDI_GENERATED_DIR="$(R "$n")/gen" DDI_RELOAD_CMD="$(R "$n")/reload.sh" DDI_DB_NAME=postgres cl "$n" follow "$@"; }
 calls() { local f; f="$(R "$1")/reload-calls"; [ -f "$f" ] && wc -l < "$f" | tr -d ' ' || echo 0; }
@@ -220,6 +223,64 @@ check "follow sur n1 (primaire)" fol 1
 expect_eq "n1 : HA injecté (this-server-name = n1)" "n1" "$(python3 -c "import json; d=json.load(open('$(R 1)/kea/kea-dhcp4.conf'))['Dhcp4']; print(d['hooks-libraries'][1]['parameters']['high-availability'][0]['this-server-name'])")"
 expect_eq "n1 : sous-réseau de la console" "10.70.0.0/24" "$(python3 -c "import json; print(json.load(open('$(R 1)/kea/kea-dhcp4.conf'))['Dhcp4']['subnet4'][0]['subnet'])")"
 expect_eq "status : l'état Kea est présent (null si Kea ne tourne pas)" "True" "$(cl 1 status | python3 -c 'import json,sys; print("kea" in json.load(sys.stdin))')"
+
+echo "== BIND : clé TSIG du cluster et « follow » (secondaire = zones transférées, primaire = NOTIFY vers le pair) =="
+check "clé de transfert identique sur n1 et n2 (propagée par le lot d'enrôlement)" cmp "$(R 1)/etc/bind/ddi-xfr.key" "$(R 2)/etc/bind/ddi-xfr.key"
+expect_eq "clé de transfert : droits 0640" "640" "$(stat -c %a "$(R 2)/etc/bind/ddi-xfr.key")"
+BOPT="$B/named-options.conf"; BZON="$B/named-zones.conf"
+cat > "$BOPT" <<CONF
+// Généré par DDI-Buntu — ne pas modifier à la main.
+options {
+  directory "/var/cache/bind";
+  listen-on { 127.0.1.1; };
+  listen-on-v6 { none; };
+  recursion yes;
+  allow-recursion { 127.0.0.0/8; };
+  allow-query { any; };
+  allow-transfer { none; };
+  dnssec-validation no;
+  check-names primary warn;
+  querylog no;
+};
+CONF
+cat > "$BZON" <<CONF
+// Généré par DDI-Buntu — ne pas modifier à la main.
+zone "lab.test" { type primary; file "$B/zones/db.lab.test"; notify yes; };
+CONF
+printf '%s' "$(cat "$BOPT")" > "$BOPT.n" && mv "$BOPT.n" "$BOPT"; printf '%s' "$(cat "$BZON")" > "$BZON.n" && mv "$BZON.n" "$BZON"   # contenu sans retour final : octet pour octet ce que la base renvoie
+store_named() { # store_named GEN : écrit les deux lignes BIND sur le primaire (n1)
+  local nm f
+  for nm in named.conf.options named.conf.zones; do
+    if [ "$nm" = named.conf.options ]; then f="$BOPT"; else f="$BZON"; fi
+    sql 1 -c "insert into rendered_configs (name, content, generation, sha256) values ('$nm', \$\$$(cat "$f")\$\$, $1, '$(printf '%s' "$(cat "$f")" | sha256sum | cut -d' ' -f1)') on conflict (name) do update set content = excluded.content, generation = excluded.generation, sha256 = excluded.sha256" >/dev/null
+  done
+}
+store_named 6
+wait_cond 20 "les fichiers BIND de la console arrivent sur n2 par la réplication" '[ "$(sql 2 -c "select count(*) from rendered_configs")" = 3 ]'
+mkdir -p "$(R 2)/gen/zones"; echo "périmé" > "$(R 2)/gen/zones/db.lab.test"       # une copie locale périmée ne doit jamais écraser la zone transférée
+C0="$(calls 2)"
+check "follow sur n2 (secondaire) : Kea + BIND" fol 2
+expect_eq "n2 : ddibuntu-reload --replica appelé une fois" "$((C0 + 1))" "$(calls 2)"
+check "n2 : zone périmée supprimée du dossier généré" test ! -e "$(R 2)/gen/zones"
+expect_grep "n2 : la zone est secondaire, transférée depuis n1 avec la clé TSIG" "zone \"lab.test\" \\{ type secondary; primaries \\{ 127.0.1.1 key \"ddi-xfr\"; \\}" "$(R 2)/etc/bind/named.conf.local"
+expect_grep "n2 : écoute sur son adresse du réseau dédié" "listen-on \\{ 127.0.1.2; \\}" "$(R 2)/etc/bind/named.conf.options"
+expect_grep "n2 : ne notifie personne" "notify no;" "$(R 2)/etc/bind/named.conf.options"
+expect_grep "n2 : transferts refusés par défaut" "allow-transfer \\{ none; \\}" "$(R 2)/etc/bind/named.conf.options"
+check "n2 : aucun fichier de zone local écrit par root" test -z "$(ls "$B/zones" 2>/dev/null)"
+check "follow n2 idempotent (BIND)" fol 2
+expect_eq "n2 : aucun appel de plus" "$((C0 + 1))" "$(calls 2)"
+echo "-- primaire (n1) : zones de la console, NOTIFY et transferts signés vers n2 --"
+cp "$BOPT" "$(R 1)/gen/named.conf.options"; cp "$BZON" "$(R 1)/gen/named.conf.zones"
+mkdir -p "$(R 1)/gen/zones"
+printf '$ORIGIN lab.test.\n$TTL 300\n@ IN SOA ns1.lab.test. root.lab.test. ( 1 3600 600 86400 300 )\n@ IN NS ns1.lab.test.\nns1 IN A 127.0.1.1\nwww IN A 10.20.0.10\n' > "$(R 1)/gen/zones/db.lab.test"
+check "follow sur n1 (primaire) : rechargement complet" fol 1
+expect_grep "n1 : transfert signé par la clé TSIG du cluster" "allow-transfer \\{ key \"ddi-xfr\"; \\}" "$(R 1)/etc/bind/named.conf.options"
+expect_grep "n1 : NOTIFY vers n2 sur le réseau dédié" "also-notify \\{ 127.0.1.2 key \"ddi-xfr\"; \\}" "$(R 1)/etc/bind/named.conf.options"
+expect_grep "n1 : zone primaire avec transfert signé" "zone \"lab.test\" \\{ type primary; file \"$B/zones/db.lab.test\"; notify yes; allow-transfer \\{ key \"ddi-xfr\"; \\}" "$(R 1)/etc/bind/named.conf.local"
+check "n1 : fichier de zone installé" test -f "$B/zones/db.lab.test"
+check "follow n1 idempotent (BIND)" fol 1
+check "named-checkconf accepte la configuration de n1" named-checkconf "$(R 1)/etc/bind/named.conf"
+check "named-checkconf accepte la configuration de n2" named-checkconf "$(R 2)/etc/bind/named.conf"
 
 echo "== Bascule contrôlée =="
 # patronictl lit sa configuration : on l'exécute avec l'environnement du nœud 1
