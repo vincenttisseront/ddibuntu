@@ -9,5 +9,6 @@ useHead({ htmlAttrs: { lang: () => lang.value }, title: () => t('app.title') })
       <NuxtPage />
     </NuxtLayout>
     <ConfirmDialog />
+    <BusyIndicator />
   </UApp>
 </template>

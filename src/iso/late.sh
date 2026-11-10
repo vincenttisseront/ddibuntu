@@ -63,6 +63,9 @@ in_target systemctl enable ddibuntu-firstboot.service nftables.service postgresq
   ddibuntu-db-init.service ddibuntu-console.service ddibuntu-reload.path ddibuntu-selfupdate.path ddibuntu-update-check.timer
 # Kea ne démarre qu'après un déploiement contenant au moins une étendue (ddibuntu-reload l'active alors)
 in_target systemctl disable kea-dhcp4-server.service
+# Cluster : etcd et Patroni ne démarrent QUE sur ordre de « ddibuntu-cluster » (le paquet etcd démarrerait sinon un magasin en clair sur 127.0.0.1)
+in_target groupadd -f ddicluster
+in_target systemctl disable etcd.service patroni.service 2>/dev/null || true
 in_target systemctl mask ctrl-alt-del.target
 
 log "contrôles finaux"
@@ -70,7 +73,7 @@ for f in usr/local/sbin/ddibuntu-apply usr/local/sbin/ddibuntu-setup usr/local/s
          usr/local/bin/ddibuntu-menu usr/local/lib/ddibuntu/common.sh etc/ddibuntu/nftables.nft \
          etc/ssh/sshd_config.d/10-ddibuntu.conf etc/sysctl.d/90-ddibuntu.conf \
          usr/local/sbin/ddibuntu-db-init usr/local/sbin/ddibuntu-reload usr/local/lib/ddibuntu/console-start \
-         usr/local/sbin/ddibuntu-selfupdate etc/ddibuntu/update.conf etc/ddibuntu/update-pubkey.pem \
+         usr/local/sbin/ddibuntu-selfupdate usr/local/sbin/ddibuntu-cluster etc/ddibuntu/update.conf etc/ddibuntu/update-pubkey.pem \
          opt/ddibuntu/console/app/server/index.mjs; do
   [ -f "$TARGET/$f" ] || fail "fichier attendu absent après déploiement : /$f"
 done

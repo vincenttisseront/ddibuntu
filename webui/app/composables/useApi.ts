@@ -14,13 +14,19 @@ export function useApi() {
     return { status, code, message: msg === key ? t('err.internal') : msg, issues: body?.data?.issues ?? [] }
   }
 
-  async function call<T = any>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, body?: unknown, opts: { silent?: boolean } = {}): Promise<T> {
+  async function call<T = any>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, body?: unknown, opts: { silent?: boolean; busy?: boolean } = {}): Promise<T> {
+    // indicateur d'attente global : toute écriture (POST/PUT/DELETE) ou appel marqué « busy » ; il n'apparaît qu'au-delà de 400 ms (voir BusyIndicator)
+    const track = method !== 'GET' || opts.busy === true
+    const busy = useState<number>('busy', () => 0)
+    if (track) busy.value++
     try {
       return await $fetch<T>('/api' + url, { method, body: body as any, headers: method === 'GET' ? {} : { 'x-csrf-token': csrf.value } })
     } catch (e: any) {
       const info = describe(e)
       if (info.status === 401 && !opts.silent) { useState<any>('user').value = null; await navigateTo('/login') }
       throw Object.assign(new Error(info.code), { info })
+    } finally {
+      if (track) busy.value = Math.max(0, busy.value - 1)
     }
   }
   return { call, describe, csrf }

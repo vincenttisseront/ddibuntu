@@ -38,7 +38,18 @@ Légende : ✅ fait · 🟡 partiel · ⬜ à faire.
 | Mises à jour en ligne signées | ✅ 0.4.1 | |
 
 ## Cluster (décisions validées : voir `ARCHITECTURE-CLUSTER.md`)
-Itérations 2 à 5 (PKI et réplication PostgreSQL, Kea HA, BIND primaire/secondaire + Keepalived, bascule automatique avec arbitre), puis l'AD (itération 6). Elles priment sur l'ordre ci-dessous, qui ne concerne que les fonctions hors cluster.
+| Itération | État |
+|---|---|
+| 1 Smart DDI (génération de configuration, réservation pilotée par l'IPAM, gabarits) | ✅ 0.5.1 |
+| 2 Fondations : autorité interne, enrôlement, réplication PostgreSQL (Patroni + etcd, arbitre), état | ✅ 0.5.2 (testé avec de vrais démons sur boucle locale ; pas de page console) |
+| 3 Kea HA load-balancing | ⬜ |
+| 4 BIND primaire/secondaire, distribution RPZ, Keepalived (VIP) | ⬜ |
+| 5 Console/BIND/Kea qui suivent le primaire, isolation, mise à jour progressive, page « Cluster » | ⬜ |
+| 6 Active Directory : Kerberos, GSS-TSIG, redirecteurs conditionnels | ⬜ |
+
+Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonctions hors cluster.
+
+**Règles d'interface permanentes** (demande du 2026-11-10) : toute action un peu longue affiche un indicateur d'attente ; aucune boîte système (`confirm`/`alert`/`prompt`) — uniquement des modales du design de la console. Contrôlé par `tests/b10-cluster.sh`.
 
 ## Ordre proposé
 1. **0.6.0** — Navigation latérale, recherche globale, grille d'occupation d'un réseau.

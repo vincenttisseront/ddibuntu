@@ -14,6 +14,7 @@ const messages: Record<string, string> = {
   "nav.theme": "Change theme",
   "common.add": "Add",
   "common.all": "All",
+  "common.working": "Working…",
   "common.cancel": "Cancel",
   "common.confirm": "Confirm",
   "common.date": "Date",

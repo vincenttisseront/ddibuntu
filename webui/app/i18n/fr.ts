@@ -14,6 +14,7 @@ const messages: Record<string, string> = {
   "nav.theme": "Changer de thème",
   "common.add": "Ajouter",
   "common.all": "Tous",
+  "common.working": "Traitement en cours…",
   "common.cancel": "Annuler",
   "common.confirm": "Confirmer",
   "common.date": "Date",

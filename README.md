@@ -11,7 +11,7 @@ Appliance **DDI** (DNS, DHCP, IPAM) sur Ubuntu Server 24.04 LTS, installable par
 - **Retour arrière partout** : un point de restauration est créé avant chaque configuration, déploiement ou import ; les changements réseau s'annulent seuls sans confirmation.
 - **Sécurité** : chaîne d'approvisionnement vérifiée (signatures et empreintes), console sans privilège, application privilégiée séparée et contrôlée, pare-feu nftables, durcissement.
 
-> État : version de développement **0.5.1**. Voir « Limites connues » ci-dessous avant tout usage en production.
+> État : version de développement **0.5.2**. Voir « Limites connues » ci-dessous avant tout usage en production.
 
 ## Démarrage rapide
 
@@ -49,11 +49,28 @@ docs/                    architecture, installation, tests, publication
 
 Principes de travail : une fonction n'est « faite » que si un test réel l'a prouvée ; un test qui échoue est d'abord soupçonné d'être faux, puis vérifié ; aucune donnée réelle (messages, clients, secrets) dans les tests.
 
+## Cluster (en construction — itération 2 sur 6)
+
+Deux nœuds de données + un arbitre, sur un réseau dédié ; architecture et décisions : [docs/ARCHITECTURE-CLUSTER.md](docs/ARCHITECTURE-CLUSTER.md).
+
+```
+# nœud 1 (celui qui porte déjà la base)
+ddibuntu-cluster init --name n1 --ip 10.9.0.1 --net 10.9.0.0/24
+# sur le nœud 1, un lot par nouveau nœud (la phrase de passe s'affiche une seule fois)
+ddibuntu-cluster bundle --name n3 --ip 10.9.0.3 --role witness     # arbitre
+ddibuntu-cluster bundle --name n2 --ip 10.9.0.2 --role data
+# sur le nouveau nœud, après copie du lot (la base locale d'un nœud de données est remplacée)
+ddibuntu-cluster join n2.bundle --wipe-local-db
+ddibuntu-cluster status          # état JSON
+ddibuntu-cluster switchover      # bascule contrôlée
+```
+Ajoutez d'abord l'arbitre, puis le second nœud de données. Pas encore de page console ; la console, BIND et Kea ne suivent pas encore le primaire (itérations suivantes).
+
 ## Limites connues
 
 - Jamais exécuté sur **VMware réel**, **Docker Desktop réel** ni **PowerShell 5.1** ; l'interface web n'a pas été pilotée dans un navigateur automatisé.
 - Le DDNS reçu par BIND est écrasé au déploiement suivant ; Kea 2.4 (Ubuntu 24.04) n'a pas GSS-TSIG (DDNS sécurisé vers l'AD : Kea 3.x).
-- Certificat TLS de la console auto-signé ; pas de haute disponibilité ; pas de règles par client ni par expression régulière dans le filtrage.
+- Certificat TLS de la console auto-signé ; haute disponibilité en cours de construction (voir ci-dessus) ; pas de règles par client ni par expression régulière dans le filtrage.
 - La découverte réseau lit l'ARP dans `/proc/net/arp` ; le ping dépend des réglages du système.
 
 ## Licence

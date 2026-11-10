@@ -1,0 +1,520 @@
+#!/bin/bash
+# ddibuntu-cluster — fondations du mode cluster, EN ROOT (itération 2).
+#
+# Un cluster = 2 nœuds de données (PostgreSQL géré par Patroni) + 1 nœud arbitre (etcd seul), le tout sur un RÉSEAU DÉDIÉ.
+# etcd (3 membres) est le magasin de quorum : la promotion automatique exige 2 voix sur 3 ; un nœud isolé perd son bail et se rétrograde.
+# Tout est authentifié par une autorité interne (certificats EC P-256) : etcd (pairs et clients), API de Patroni,
+# réplication PostgreSQL (authentification par certificat client, pas de mot de passe de réplication).
+#
+#   init   --name N --ip IP --net CIDR [--role data|witness] [--no-activate]   premier nœud : autorité, certificats, configuration
+#   bundle --name N --ip IP [--role data|witness] [--out FICHIER]              (nœud autorité) lot d'enrôlement chiffré pour un nouveau nœud
+#   join   FICHIER [--wipe-local-db] [--no-activate]                           (nouveau nœud) installe le lot ; la phrase de passe est lue sur DDI_BUNDLE_PASS ou l'entrée standard
+#   render                                                                      réécrit etcd/Patroni depuis cluster.conf
+#   activate                                                                    démarre etcd et Patroni (PostgreSQL passe sous la conduite de Patroni)
+#   sync                                                                        relit le registre des nœuds (etcd) : pairs et pare-feu à jour
+#   status                                                                      état JSON (etcd, Patroni, membres, retard de réplication)
+#   switchover [--candidate N]                                                  bascule contrôlée du primaire
+#
+# Variables de test : DDI_ROOT (préfixe de tous les chemins), DDI_TEST=1 (ni systemctl ni exigence root), DDI_PY (interpréteur de Patroni)
+set -euo pipefail
+umask 077
+
+ROOT="${DDI_ROOT:-}"
+ETC="$ROOT/etc/ddibuntu"; CLDIR="$ROOT/etc/ddibuntu-cluster"; PKI="$CLDIR/pki"; CONF="$CLDIR/cluster.conf"
+STATE="$ROOT/var/lib/ddibuntu/cluster"; CADIR="$STATE/ca"
+PATRONI_CFG="$ROOT/etc/patroni/config.yml"; ETCD_CFG="$CLDIR/etcd.yml"; ETCD_DEFAULT="$ROOT/etc/default/etcd"
+GROUP=ddicluster
+
+log() { printf 'ddibuntu-cluster: %s\n' "$*" >&2; }
+die() { printf 'ddibuntu-cluster: ERREUR : %s\n' "$*" >&2; exit 1; }
+[ -n "${DDI_TEST:-}" ] || [ "$(id -u)" -eq 0 ] || die "à lancer en root"
+
+preflight() {
+  local t miss=""
+  for t in etcd etcdctl patroni patronictl openssl gpg curl python3; do command -v "$t" >/dev/null 2>&1 || miss="$miss $t"; done
+  [ -z "$miss" ] || die "composants du cluster absents :$miss (installer : apt install patroni etcd-server etcd-client python3-psycopg2 gnupg)"
+  "${DDI_PY:-python3}" -c 'import psycopg2' 2>/dev/null || die "python3-psycopg2 est requis par Patroni"
+}
+
+# ---------------------------------------------------------------- validation (rien de ce qui vient d'un fichier ou d'un argument n'est fait confiance)
+valid_name() { [[ "$1" =~ ^[a-z][a-z0-9-]{1,30}$ ]]; }
+valid_ip() {
+  [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  local i; for i in 1 2 3 4; do [ "${BASH_REMATCH[$i]}" -le 255 ] || return 1; done
+}
+valid_cidr() {
+  [[ "$1" =~ ^([0-9.]+)/([0-9]{1,2})$ ]] || return 1
+  local addr="${BASH_REMATCH[1]}" bits="${BASH_REMATCH[2]}"   # valid_ip réutilise BASH_REMATCH : on copie d'abord
+  valid_ip "$addr" && [ "$bits" -le 32 ]
+}
+valid_role() { [ "$1" = data ] || [ "$1" = witness ]; }
+valid_port() { [[ "$1" =~ ^[0-9]{2,5}$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
+
+# cluster.conf : lecture STRICTE clé=valeur (jamais « source » d'un fichier modifiable) ; clés connues, valeurs à jeu de caractères restreint
+declare -A C=()
+CONF_KEYS="CLUSTER_NAME NODE_NAME NODE_ROLE NODE_IP REPL_NET PEERS CA_NODE ETCD_STATE ETCD_INITIAL_CLUSTER ETCD_CLIENT_PORT ETCD_PEER_PORT PG_PORT PG_LOCAL_LISTEN PG_SOCKET_DIR PG_CONFIG_DIR PATRONI_PORT PGVER"
+conf_defaults() {
+  C[ETCD_CLIENT_PORT]=2379; C[ETCD_PEER_PORT]=2380; C[PG_PORT]=5432; C[PG_LOCAL_LISTEN]=127.0.0.1; C[PG_SOCKET_DIR]=/var/run/postgresql; C[PG_CONFIG_DIR]=/etc/postgresql/16/main
+  C[PATRONI_PORT]=8008; C[PGVER]=16; C[ETCD_STATE]=new; C[CA_NODE]=0; C[ETCD_INITIAL_CLUSTER]=""; C[PEERS]=""
+}
+conf_load() {
+  local f="${1:-$CONF}" line k v
+  [ -f "$f" ] || die "configuration du cluster absente : $f (lancer « init » ou « join »)"
+  conf_defaults
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    [[ "$line" =~ ^([A-Z_]+)=([A-Za-z0-9._:/,=\ -]*)$ ]] || die "ligne illisible dans $f : ${line:0:40}"
+    k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+    case " $CONF_KEYS " in *" $k "*) C[$k]="$v" ;; *) die "clé inconnue dans $f : $k" ;; esac
+  done < "$f"
+  conf_check
+}
+conf_check() {
+  local k
+  for k in CLUSTER_NAME NODE_NAME; do valid_name "${C[$k]:-}" || die "$k invalide"; done
+  valid_role "${C[NODE_ROLE]:-}" || die "NODE_ROLE invalide"
+  valid_ip "${C[NODE_IP]:-}" || die "NODE_IP invalide"
+  valid_cidr "${C[REPL_NET]:-}" || die "REPL_NET invalide"
+  for k in ETCD_CLIENT_PORT ETCD_PEER_PORT PG_PORT PATRONI_PORT; do valid_port "${C[$k]}" || die "$k invalide"; done
+  [[ "${C[PGVER]}" =~ ^[0-9]{2}$ ]] || die "PGVER invalide"
+  [[ "${C[PG_SOCKET_DIR]}" =~ ^/[A-Za-z0-9._/-]*$ ]] || die "PG_SOCKET_DIR invalide"
+  [ -z "${C[PG_CONFIG_DIR]}" ] || [[ "${C[PG_CONFIG_DIR]}" =~ ^/[A-Za-z0-9._/-]*$ ]] || die "PG_CONFIG_DIR invalide"
+  [ -z "${C[PG_LOCAL_LISTEN]}" ] || valid_ip "${C[PG_LOCAL_LISTEN]}" || die "PG_LOCAL_LISTEN invalide"
+  local p; for p in ${C[PEERS]}; do
+    [[ "$p" =~ ^([a-z][a-z0-9-]{1,30})=([0-9.]+):(data|witness)$ ]] || die "PEERS : entrée invalide « $p »"
+    valid_ip "${BASH_REMATCH[2]}" || die "PEERS : adresse invalide « $p »"
+  done
+}
+conf_write() {
+  install -d -m 0750 "$CLDIR"
+  local f="$CONF.new" k
+  { echo "# Écrit par ddibuntu-cluster — ne pas modifier à la main sans « ddibuntu-cluster render »"
+    for k in $CONF_KEYS; do printf '%s=%s\n' "$k" "${C[$k]:-}"; done; } > "$f"
+  chmod 0640 "$f"; [ -n "${DDI_TEST_NOUSERS:-}" ] || chgrp "$GROUP" "$f" 2>/dev/null || true; mv -f "$f" "$CONF"
+}
+peer_field() { local p="$1" f="$2"; case "$f" in name) echo "${p%%=*}" ;; ip) p="${p#*=}"; echo "${p%%:*}" ;; role) echo "${p##*:}" ;; esac; }
+
+# ---------------------------------------------------------------- autorité de certification interne
+ca_init() {
+  [ ! -f "$CADIR/ca.key" ] || die "une autorité existe déjà sur ce nœud ($CADIR)"
+  install -d -m 0700 "$CADIR"
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$CADIR/ca.key" 2>/dev/null
+  openssl req -x509 -new -key "$CADIR/ca.key" -sha256 -days 3650 -subj "/CN=DDI-Buntu cluster CA ${C[CLUSTER_NAME]}" \
+    -addext "basicConstraints=critical,CA:TRUE,pathlen:0" -addext "keyUsage=critical,keyCertSign,cRLSign" -out "$CADIR/ca.crt" 2>/dev/null
+  chmod 0600 "$CADIR/ca.key"; chmod 0644 "$CADIR/ca.crt"
+  log "autorité interne créée (EC P-256, 10 ans) ; la clé reste sur ce nœud uniquement"
+}
+# issue_cert NOM IP RÉPERTOIRE : certificat serveur+client (CN=node-NOM, SAN = IP du réseau dédié + boucle locale)
+issue_cert() {
+  local name="$1" ip="$2" out="$3" t; t="$(mktemp -d)"
+  [ -f "$CADIR/ca.key" ] || die "ce nœud n'est pas l'autorité du cluster"
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$out/node.key" 2>/dev/null
+  openssl req -new -key "$out/node.key" -subj "/CN=node-$name" -out "$t/n.csr" 2>/dev/null
+  printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=IP:%s,IP:127.0.0.1,DNS:%s,DNS:localhost\n' "$ip" "$name" > "$t/ext"
+  openssl x509 -req -in "$t/n.csr" -CA "$CADIR/ca.crt" -CAkey "$CADIR/ca.key" -CAcreateserial -CAserial "$CADIR/serial" -sha256 -days 825 -extfile "$t/ext" -out "$out/node.crt" 2>/dev/null
+  cp "$CADIR/ca.crt" "$out/ca.crt"; rm -rf "$t"
+}
+ensure_group() {
+  [ -n "${DDI_TEST_NOUSERS:-}" ] && return 0
+  getent group "$GROUP" >/dev/null || groupadd --system "$GROUP"
+  local u; for u in etcd postgres; do getent passwd "$u" >/dev/null && usermod -aG "$GROUP" "$u"; done; return 0
+}
+# install_pki RÉPERTOIRE_SOURCE : clés lisibles par etcd et PostgreSQL via le groupe ddicluster, jamais par les autres
+install_pki() {
+  local src="$1" own=(); ensure_group
+  [ -n "${DDI_TEST_NOUSERS:-}" ] || own=(-g "$GROUP")
+  install -d -m 0750 "${own[@]}" "$CLDIR" "$PKI"
+  install -m 0644 "$src/ca.crt" "$PKI/ca.crt"; install -m 0644 "$src/node.crt" "$PKI/node.crt"; install -m 0640 "${own[@]}" "$src/node.key" "$PKI/node.key"
+  openssl verify -CAfile "$PKI/ca.crt" "$PKI/node.crt" >/dev/null 2>&1 || die "le certificat du nœud n'est pas signé par l'autorité fournie"
+  [ "$(openssl x509 -in "$PKI/node.crt" -noout -pubkey)" = "$(openssl pkey -in "$PKI/node.key" -pubout)" ] || die "la clé privée ne correspond pas au certificat"
+}
+
+# ---------------------------------------------------------------- rendu : etcd
+members_url() { # peers → ETCD hosts ip:port
+  local p; for p in ${C[PEERS]}; do printf '%s:%s\n' "$(peer_field "$p" ip)" "${C[ETCD_CLIENT_PORT]}"; done
+}
+render_etcd() {
+  local ip="${C[NODE_IP]}" cp="${C[ETCD_CLIENT_PORT]}" pp="${C[ETCD_PEER_PORT]}"
+  local ic="${C[ETCD_INITIAL_CLUSTER]}"; [ -n "$ic" ] || ic="${C[NODE_NAME]}=https://$ip:$pp"
+  install -d -m 0750 "$CLDIR"
+  cat > "$ETCD_CFG.new" <<YML
+# Écrit par ddibuntu-cluster. Membre etcd du quorum du cluster ${C[CLUSTER_NAME]} : TLS mutuel obligatoire, aucun accès hors réseau dédié.
+name: ${C[NODE_NAME]}
+data-dir: $ROOT/var/lib/etcd/ddibuntu
+listen-peer-urls: https://$ip:$pp
+listen-client-urls: https://$ip:$cp
+advertise-client-urls: https://$ip:$cp
+initial-advertise-peer-urls: https://$ip:$pp
+initial-cluster: $ic
+initial-cluster-state: ${C[ETCD_STATE]}
+initial-cluster-token: ddibuntu-${C[CLUSTER_NAME]}
+enable-grpc-gateway: true
+auto-compaction-mode: periodic
+auto-compaction-retention: "1h"
+client-transport-security:
+  cert-file: $PKI/node.crt
+  key-file: $PKI/node.key
+  trusted-ca-file: $PKI/ca.crt
+  client-cert-auth: true
+peer-transport-security:
+  cert-file: $PKI/node.crt
+  key-file: $PKI/node.key
+  trusted-ca-file: $PKI/ca.crt
+  client-cert-auth: true
+YML
+  chmod 0640 "$ETCD_CFG.new"; [ -n "${DDI_TEST_NOUSERS:-}" ] || chgrp "$GROUP" "$ETCD_CFG.new" 2>/dev/null || true; mv -f "$ETCD_CFG.new" "$ETCD_CFG"
+  mkdir -p -- "$(dirname "$ETCD_DEFAULT")"
+  printf '# Écrit par ddibuntu-cluster\nDAEMON_ARGS="--config-file=%s"\n' "$ETCD_CFG" > "$ETCD_DEFAULT"
+  chmod 0644 "$ETCD_DEFAULT"
+  if getent passwd etcd >/dev/null 2>&1 && [ -z "${DDI_TEST_NOUSERS:-}" ]; then install -d -m 0700 -o etcd -g etcd "$ROOT/var/lib/etcd" "$ROOT/var/lib/etcd/ddibuntu" 2>/dev/null || true; fi
+}
+
+# ---------------------------------------------------------------- rendu : Patroni
+render_patroni() {
+  [ "${C[NODE_ROLE]}" = data ] || return 0
+  local ip="${C[NODE_IP]}" v="${C[PGVER]}" hosts="" h listen cfgdir=""
+  [ -z "${C[PG_CONFIG_DIR]}" ] || cfgdir="  config_dir: $ROOT${C[PG_CONFIG_DIR]}"
+  while IFS= read -r h; do [ -n "$h" ] && hosts="$hosts\"$h\", "; done < <(members_url)
+  hosts="[${hosts%, }]"
+  listen="$ip"; [ -z "${C[PG_LOCAL_LISTEN]}" ] || listen="${C[PG_LOCAL_LISTEN]},$ip"
+  install -d -m 0750 "$(dirname "$PATRONI_CFG")"
+  [ -n "${DDI_TEST_NOUSERS:-}" ] || chgrp postgres "$(dirname "$PATRONI_CFG")" 2>/dev/null || true
+  cat > "$PATRONI_CFG.new" <<YML
+# Écrit par ddibuntu-cluster. Patroni conduit PostgreSQL : un seul primaire, promotion automatique avec quorum etcd.
+scope: ${C[CLUSTER_NAME]}
+namespace: /ddibuntu/
+name: ${C[NODE_NAME]}
+restapi:
+  listen: $ip:${C[PATRONI_PORT]}
+  connect_address: $ip:${C[PATRONI_PORT]}
+  certfile: $PKI/node.crt
+  keyfile: $PKI/node.key
+  cafile: $PKI/ca.crt
+  verify_client: required
+ctl:
+  insecure: false
+  cacert: $PKI/ca.crt
+  certfile: $PKI/node.crt
+  keyfile: $PKI/node.key
+etcd3:
+  hosts: $hosts
+  protocol: https
+  cacert: $PKI/ca.crt
+  cert: $PKI/node.crt
+  key: $PKI/node.key
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    synchronous_mode: false
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        max_wal_senders: 10
+        max_replication_slots: 10
+        wal_log_hints: "on"
+        password_encryption: scram-sha-256
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+postgresql:
+  listen: $listen:${C[PG_PORT]}
+  connect_address: $ip:${C[PG_PORT]}
+  data_dir: $ROOT/var/lib/postgresql/$v/main
+${cfgdir}
+  bin_dir: $ROOT/usr/lib/postgresql/$v/bin
+  use_unix_socket: true
+  use_unix_socket_repl: false
+  pgpass: $ROOT/var/lib/postgresql/.pgpass-ddibuntu
+  authentication:
+    superuser:
+      username: postgres
+    replication:
+      username: replicator
+      sslmode: verify-full
+      sslrootcert: $PKI/ca.crt
+      sslcert: $PKI/node.crt
+      sslkey: $PKI/node.key
+    rewind:
+      username: rewind
+      sslmode: verify-full
+      sslrootcert: $PKI/ca.crt
+      sslcert: $PKI/node.crt
+      sslkey: $PKI/node.key
+  parameters:
+    unix_socket_directories: ${ROOT}${C[PG_SOCKET_DIR]}
+    ssl: "on"
+    ssl_cert_file: $PKI/node.crt
+    ssl_key_file: $PKI/node.key
+    ssl_ca_file: $PKI/ca.crt
+    ssl_min_protocol_version: TLSv1.2
+    password_encryption: scram-sha-256
+  pg_hba:
+    - local all postgres peer
+    - local all all peer
+    - host all all 127.0.0.1/32 scram-sha-256
+    - host all all ::1/128 scram-sha-256
+    - hostssl replication replicator ${C[REPL_NET]} cert map=ddicluster
+    - hostssl postgres rewind ${C[REPL_NET]} cert map=ddicluster
+  pg_ident:
+    - ddicluster "/^node-[a-z0-9-]+\$" replicator
+    - ddicluster "/^node-[a-z0-9-]+\$" rewind
+  create_replica_methods:
+    - basebackup
+  basebackup:
+    - checkpoint: fast
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false
+YML
+  chmod 0640 "$PATRONI_CFG.new"; [ -n "${DDI_TEST_NOUSERS:-}" ] || chgrp postgres "$PATRONI_CFG.new" 2>/dev/null || true
+  mv -f "$PATRONI_CFG.new" "$PATRONI_CFG"
+}
+# Pare-feu : les ports du cluster (2379/2380/5432/8008) ne s'ouvrent qu'aux AUTRES nœuds, par leur adresse du réseau dédié.
+fw_sync() {
+  [ -z "${DDI_TEST:-}" ] || return 0
+  local p ips=""
+  for p in ${C[PEERS]}; do [ "$(peer_field "$p" name)" = "${C[NODE_NAME]}" ] || ips="${ips:+$ips,}$(peer_field "$p" ip)"; done
+  if ! { /usr/local/sbin/ddibuntu-fw set CLUSTER_PEERS "$ips" && /usr/local/sbin/ddibuntu-fw apply; }; then
+    log "AVERTISSEMENT : pare-feu non mis à jour (CLUSTER_PEERS=$ips) ; les pairs ne pourront pas joindre ce nœud"
+  fi
+}
+render_all() { render_etcd; render_patroni; fw_sync; }
+
+# ---------------------------------------------------------------- rôles PostgreSQL de réplication (nœud qui porte déjà la base)
+psql_local() { runuser -u postgres -- psql -h "${ROOT}${C[PG_SOCKET_DIR]}" -p "${C[PG_PORT]}" -v ON_ERROR_STOP=1 -q "$@"; }
+db_roles() {
+  psql_local -d postgres <<'SQL'
+do $$ begin
+  if not exists (select from pg_roles where rolname = 'replicator') then create role replicator login replication; end if;
+  if not exists (select from pg_roles where rolname = 'rewind') then create role rewind login; end if;
+end $$;
+grant execute on function pg_catalog.pg_ls_dir(text, boolean, boolean) to rewind;
+grant execute on function pg_catalog.pg_stat_file(text, boolean) to rewind;
+grant execute on function pg_catalog.pg_read_binary_file(text) to rewind;
+grant execute on function pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean) to rewind;
+SQL
+}
+
+# Rend votant le membre etcd de ce nœud (rattaché en « learner »). Réessaie tant que son retard n'est pas comblé.
+promote_self() {
+  [ "${C[CA_NODE]}" = 0 ] || return 0
+  local id i eps="" p
+  for p in ${C[PEERS]}; do [ "$(peer_field "$p" name)" = "${C[NODE_NAME]}" ] || eps="$eps,https://$(peer_field "$p" ip):${C[ETCD_CLIENT_PORT]}"; done
+  eps="${eps#,}"
+  for i in $(seq 1 60); do
+    id="$(ETCDCTL_API=3 etcdctl --endpoints "$eps" --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" member list -w json 2>/dev/null \
+      | python3 -c 'import json,sys; n=sys.argv[1]; m=[x for x in json.load(sys.stdin)["members"] if x.get("name")==n]; print(("%x" % m[0]["ID"]) + (" learner" if m[0].get("isLearner") else " voter") if m else "")' "${C[NODE_NAME]}" 2>/dev/null || true)"
+    case "$id" in
+      *" voter") return 0 ;;
+      *" learner") ETCDCTL_API=3 etcdctl --endpoints "$eps" --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" member promote "${id%% *}" >/dev/null 2>&1 && return 0 ;;
+    esac
+    sleep 2
+  done
+  die "le membre etcd de ce nœud n'a pas pu devenir votant (retard non comblé ?)"
+}
+
+sysctl_do() { [ -n "${DDI_TEST:-}" ] || systemctl "$@"; }
+activate() {
+  ensure_group
+  if [ "${C[NODE_ROLE]}" = data ]; then
+    # PostgreSQL passe sous la conduite de Patroni : l'unité Debian ne doit plus jamais le démarrer elle-même
+    sysctl_do disable --now "postgresql@${C[PGVER]}-main.service" 2>/dev/null || true
+    sysctl_do mask "postgresql@${C[PGVER]}-main.service" 2>/dev/null || true
+  fi
+  sysctl_do daemon-reload
+  sysctl_do enable --now etcd.service
+  [ -n "${DDI_TEST_NO_PROMOTE:-}" ] || promote_self
+  register_node "${C[NODE_NAME]}" "${C[NODE_IP]}" "${C[NODE_ROLE]}"
+  sysctl_do enable --now ddibuntu-cluster-sync.timer
+  [ "${C[NODE_ROLE]}" != data ] || sysctl_do enable --now patroni.service
+  log "services démarrés (etcd${C[NODE_ROLE]:+, patroni si nœud de données})"
+}
+
+# ---------------------------------------------------------------- lots d'enrôlement
+ectl() { ETCDCTL_API=3 etcdctl --endpoints "https://${C[NODE_IP]}:${C[ETCD_CLIENT_PORT]}" --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "$@"; }
+gpg_sym() { # gpg_sym enc|dec ENTRÉE SORTIE ; phrase de passe sur le descripteur 3 ; chiffrement authentifié (MDC)
+  local mode="$1" in="$2" out="$3" gh; gh="$(mktemp -d)"; chmod 700 "$gh"
+  if [ "$mode" = enc ]; then
+    gpg --homedir "$gh" --batch --quiet --yes --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 \
+      --s2k-mode 3 --s2k-count 65011712 --s2k-digest-algo SHA512 -o "$out" "$in" 3<&3
+  else
+    gpg --homedir "$gh" --batch --quiet --yes --pinentry-mode loopback --passphrase-fd 3 --decrypt -o "$out" "$in" 3<&3
+  fi
+  local rc=$?; rm -rf "$gh"; return $rc
+}
+
+# ---------------------------------------------------------------- registre des nœuds (dans etcd) : chaque nœud finit par connaître tous les autres
+REG=/ddibuntu-cluster/nodes/
+register_node() { # register_node NOM IP RÔLE
+  ectl put "$REG$1" "$2:$3" >/dev/null
+}
+# sync : relit le registre, met à jour PEERS (ajouts/mises à jour seulement), la configuration Patroni et le pare-feu. Sans effet si rien ne change.
+cmd_sync() {
+  conf_load
+  local raw; raw="$(ectl get --prefix "$REG" -w json 2>/dev/null)" || die "registre illisible (quorum etcd indisponible ?)"
+  local line new="${C[PEERS]}" changed=0 name ip role
+  while IFS=' ' read -r name ip role; do
+    [ -n "$name" ] || continue
+    if ! { valid_name "$name" && valid_ip "$ip" && valid_role "$role"; }; then log "entrée ignorée dans le registre : ${name:0:20}"; continue; fi
+    case " $new " in *" $name=$ip:$role "*) continue ;; esac
+    # nom déjà connu avec une autre adresse : on ne remplace pas en silence (usurpation ou erreur) — signalé, rien d'écrit
+    case " $new " in *" $name="*) log "AVERTISSEMENT : « $name » figure déjà avec une autre adresse ; entrée du registre ignorée"; continue ;; esac
+    new="$new $name=$ip:$role"; changed=1
+  done < <(printf '%s' "$raw" | python3 -c '
+import base64, json, re, sys
+for kv in json.load(sys.stdin).get("kvs", []):
+    k = base64.b64decode(kv["key"]).decode("utf-8", "replace"); v = base64.b64decode(kv.get("value", "")).decode("utf-8", "replace")
+    m = re.fullmatch(r"([0-9.]+):(data|witness)", v)
+    if m: print(k.rsplit("/", 1)[-1], m.group(1), m.group(2))')
+  [ "$changed" -eq 1 ] || return 0
+  C[PEERS]="$new"; conf_check; conf_write; render_patroni; fw_sync
+  [ -n "${DDI_TEST:-}" ] || systemctl reload patroni.service 2>/dev/null || true
+  log "pairs mis à jour : ${C[PEERS]}"
+}
+
+cmd_init() {
+  local name="" ip="" net="" role=data act=1
+  while [ $# -gt 0 ]; do case "$1" in --name) name="${2:-}"; shift 2 ;; --ip) ip="${2:-}"; shift 2 ;; --net) net="${2:-}"; shift 2 ;; --role) role="${2:-}"; shift 2 ;; --no-activate) act=0; shift ;; *) die "option inconnue : $1" ;; esac; done
+  [ ! -f "$CONF" ] || die "ce nœud appartient déjà à un cluster ($CONF)"
+  preflight
+  conf_defaults
+  C[CLUSTER_NAME]="${DDI_CLUSTER_NAME:-ddibuntu}"; C[NODE_NAME]="$name"; C[NODE_ROLE]="$role"; C[NODE_IP]="$ip"; C[REPL_NET]="$net"; C[CA_NODE]=1
+  C[PEERS]="$name=$ip:$role"
+  [ -z "${DDI_PORT_ETCD_CLIENT:-}" ] || C[ETCD_CLIENT_PORT]="$DDI_PORT_ETCD_CLIENT"; [ -z "${DDI_PORT_ETCD_PEER:-}" ] || C[ETCD_PEER_PORT]="$DDI_PORT_ETCD_PEER"
+  [ -z "${DDI_PORT_PG:-}" ] || C[PG_PORT]="$DDI_PORT_PG"; [ -z "${DDI_PORT_PATRONI:-}" ] || C[PATRONI_PORT]="$DDI_PORT_PATRONI"
+  [ -z "${DDI_PG_LOCAL_LISTEN+x}" ] || C[PG_LOCAL_LISTEN]="$DDI_PG_LOCAL_LISTEN"; [ -z "${DDI_PG_CONFIG_DIR+x}" ] || C[PG_CONFIG_DIR]="$DDI_PG_CONFIG_DIR"; [ -z "${DDI_PG_SOCKET_DIR:-}" ] || C[PG_SOCKET_DIR]="$DDI_PG_SOCKET_DIR"
+  conf_check
+  # l'étape qui dépend d'un service externe passe en premier : un échec ne laisse ni autorité ni certificats à moitié créés
+  if [ "$role" = data ]; then log "rôles PostgreSQL de réplication"; db_roles; fi
+  ca_init
+  local t; t="$(mktemp -d)"; issue_cert "$name" "$ip" "$t"; install_pki "$t"; rm -rf "$t"
+  conf_write; render_all
+  [ "$act" -eq 0 ] || activate
+  log "nœud « $name » initialisé. Ajoutez les autres nœuds avec « ddibuntu-cluster bundle »."
+}
+
+cmd_bundle() {
+  local name="" ip="" role=data out=""
+  while [ $# -gt 0 ]; do case "$1" in --name) name="${2:-}"; shift 2 ;; --ip) ip="${2:-}"; shift 2 ;; --role) role="${2:-}"; shift 2 ;; --out) out="${2:-}"; shift 2 ;; *) die "option inconnue : $1" ;; esac; done
+  conf_load
+  [ "${C[CA_NODE]}" = 1 ] || die "le lot se crée sur le nœud qui porte l'autorité du cluster"
+  valid_name "$name" || die "--name invalide"; valid_ip "$ip" || die "--ip invalide"; valid_role "$role" || die "--role invalide"
+  local p; for p in ${C[PEERS]}; do [ "$(peer_field "$p" name)" != "$name" ] || die "le nom « $name » existe déjà dans le cluster"; [ "$(peer_field "$p" ip)" != "$ip" ] || die "l'adresse $ip est déjà utilisée dans le cluster"; done
+  out="${out:-$STATE/join-$name.bundle}"
+  local t; t="$(mktemp -d)"; chmod 700 "$t"; mkdir "$t/b"
+  issue_cert "$name" "$ip" "$t/b"
+  # nouveau membre etcd déclaré AVANT son démarrage, en « learner » (sans voix) : le quorum actuel n'est PAS dégradé pendant l'enrôlement.
+  # Il devient votant (promotion) seulement quand il a rattrapé son retard : voir promote_self.
+  local ic
+  if [ -n "${DDI_NO_MEMBER_ADD:-}" ]; then ic="${C[ETCD_INITIAL_CLUSTER]}"
+  else
+    ic="$(ectl member add "$name" --learner --peer-urls="https://$ip:${C[ETCD_PEER_PORT]}" | sed -n 's/^ETCD_INITIAL_CLUSTER="\(.*\)"$/\1/p')"
+    [ -n "$ic" ] || die "etcd n'a pas confirmé l'ajout du membre (quorum indisponible ?)"
+  fi
+  local peers="${C[PEERS]} $name=$ip:$role"
+  { echo "# lot d'enrôlement du nœud $name"
+    printf 'CLUSTER_NAME=%s\nNODE_NAME=%s\nNODE_ROLE=%s\nNODE_IP=%s\nREPL_NET=%s\nPEERS=%s\nCA_NODE=0\nETCD_STATE=existing\nETCD_INITIAL_CLUSTER=%s\n' \
+      "${C[CLUSTER_NAME]}" "$name" "$role" "$ip" "${C[REPL_NET]}" "$peers" "$ic"
+    for k in ETCD_CLIENT_PORT ETCD_PEER_PORT PG_PORT PG_LOCAL_LISTEN PG_SOCKET_DIR PG_CONFIG_DIR PATRONI_PORT PGVER; do printf '%s=%s\n' "$k" "${C[$k]}"; done; } > "$t/b/cluster.conf"
+  # secrets de la console : la clé secrète chiffre des données de la base — elle doit être IDENTIQUE sur tous les nœuds
+  local envf="$ETC/console.env"
+  if [ "$role" = data ] && [ -f "$envf" ]; then grep -E '^(DDI_DATABASE_URL|DDI_SECRET_KEY|DDI_KEA_DB_PASSWORD)=' "$envf" > "$t/b/console-secrets.env" || true; fi
+  ( cd "$t/b" && sha256sum -- * > MANIFEST )
+  tar -C "$t/b" -cf "$t/bundle.tar" .
+  local pass; pass="$(openssl rand -base64 24 | tr -d '/+=\n')"
+  mkdir -p -- "$(dirname "$out")"
+  gpg_sym enc "$t/bundle.tar" "$out" 3< <(printf '%s' "$pass") || die "chiffrement du lot impossible"
+  chmod 0600 "$out"; rm -rf "$t"
+  # le nouveau nœud est inscrit au registre AVANT son démarrage : les autres nœuds ouvrent leur pare-feu à son adresse (cluster-sync) pendant qu'il se prépare
+  [ -n "${DDI_NO_MEMBER_ADD:-}" ] || register_node "$name" "$ip" "$role" || log "AVERTISSEMENT : inscription de $name au registre impossible ; lancer « ddibuntu-cluster sync » sur les autres nœuds"
+  # le nœud autorité connaît désormais le nouveau pair
+  C[PEERS]="$peers"; conf_write; render_patroni; fw_sync
+  [ -n "${DDI_TEST:-}" ] || systemctl reload patroni.service 2>/dev/null || true
+  log "lot créé : $out"
+  log "Copiez-le sur le nouveau nœud puis lancez : ddibuntu-cluster join <fichier> (phrase de passe ci-dessous, affichée UNE seule fois)"
+  printf '%s\n' "$pass"
+}
+
+cmd_join() {
+  local file="" wipe=0 act=1
+  while [ $# -gt 0 ]; do case "$1" in --wipe-local-db) wipe=1; shift ;; --no-activate) act=0; shift ;; -*) die "option inconnue : $1" ;; *) file="$1"; shift ;; esac; done
+  [ -f "$file" ] || die "lot introuvable : $file"
+  [ ! -f "$CONF" ] || die "ce nœud appartient déjà à un cluster ($CONF)"
+  preflight
+  local pass="${DDI_BUNDLE_PASS:-}"; [ -n "$pass" ] || { read -r -s -p "Phrase de passe du lot : " pass; echo >&2; }
+  [ -n "$pass" ] || die "phrase de passe vide"
+  local t; t="$(mktemp -d)"; chmod 700 "$t"
+  gpg_sym dec "$file" "$t/bundle.tar" 3< <(printf '%s' "$pass") || { rm -rf "$t"; die "lot illisible : phrase de passe fausse ou fichier altéré"; }
+  mkdir "$t/b"; tar -C "$t/b" -xf "$t/bundle.tar" --no-same-owner --no-same-permissions || { rm -rf "$t"; die "archive du lot invalide"; }
+  ( cd "$t/b" && sha256sum --quiet -c MANIFEST ) || { rm -rf "$t"; die "le contenu du lot ne correspond pas à son empreinte"; }
+  # tout ce que le lot contient est revalidé comme une entrée non fiable
+  conf_load "$t/b/cluster.conf"
+  [ "${C[CA_NODE]}" = 0 ] || die "un lot ne peut pas faire de ce nœud une autorité"
+  install_pki "$t/b"
+  if [ "${C[NODE_ROLE]}" = data ]; then
+    [ "$wipe" -eq 1 ] || die "ce nœud de données va REPRENDRE la base du cluster : sa base locale sera effacée. Relancez avec --wipe-local-db pour confirmer."
+    local pgdata="$ROOT/var/lib/postgresql/${C[PGVER]}/main"
+    sysctl_do disable --now "postgresql@${C[PGVER]}-main.service" 2>/dev/null || true
+    log "effacement de la base locale ($pgdata) : Patroni la recréera depuis le primaire"
+    rm -rf -- "${pgdata:?}"; install -d -m 0700 -o postgres -g postgres "$pgdata" 2>/dev/null || install -d -m 0700 "$pgdata"
+    if [ -s "$t/b/console-secrets.env" ] && [ -f "$ETC/console.env" ]; then
+      local k
+      while IFS='=' read -r k _; do [[ "$k" =~ ^DDI_[A-Z_]+$ ]] && sed -i "/^$k=/d" "$ETC/console.env"; done < "$t/b/console-secrets.env"
+      cat "$t/b/console-secrets.env" >> "$ETC/console.env"
+      mkdir -p -- "$ROOT/var/lib/ddibuntu"; : > "$ROOT/var/lib/ddibuntu/console-initialized"   # la base du primaire est la référence : pas de nouvelle initialisation
+      log "secrets de la console alignés sur ceux du primaire"
+    fi
+  fi
+  conf_write; render_all; rm -rf "$t"
+  [ "$act" -eq 0 ] || activate
+  log "nœud « ${C[NODE_NAME]} » rattaché au cluster « ${C[CLUSTER_NAME]} »"
+}
+
+cmd_status() {
+  conf_load
+  local cp="${C[ETCD_CLIENT_PORT]}" ip="${C[NODE_IP]}" etcd_ok=false members=0 pat="null"
+  if ectl endpoint health >/dev/null 2>&1; then etcd_ok=true; fi
+  members="$(ectl member list 2>/dev/null | wc -l | tr -d ' ')" || members=0
+  if [ "${C[NODE_ROLE]}" = data ]; then
+    pat="$(curl -fsS --max-time 4 --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "https://$ip:${C[PATRONI_PORT]}/cluster" 2>/dev/null || echo null)"
+  fi
+  : "$cp"
+  ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
+    python3 -c '
+import json, os
+pat = json.loads(os.environ["PAT"])
+print(json.dumps({"cluster": os.environ["CLUSTER"], "node": os.environ["NODE"], "role": os.environ["ROLE"],
+  "etcd": {"healthy": os.environ["ETCD_OK"] == "true", "members": int(os.environ["MEMBERS"] or 0)},
+  "peers": [dict(zip(("name", "ip", "role"), (p.split("=")[0], p.split("=")[1].split(":")[0], p.split(":")[-1]))) for p in os.environ["PEERS"].split()],
+  "patroni": pat}, ensure_ascii=False))'
+}
+
+cmd_switchover() {
+  local cand=""
+  while [ $# -gt 0 ]; do case "$1" in --candidate) cand="${2:-}"; shift 2 ;; *) die "option inconnue : $1" ;; esac; done
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || die "la bascule se lance depuis un nœud de données"
+  [ -z "$cand" ] || valid_name "$cand" || die "--candidate invalide"
+  local args=(--force); [ -z "$cand" ] || args+=(--candidate "$cand")
+  local leader; leader="$(curl -fsS --max-time 4 --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "https://${C[NODE_IP]}:${C[PATRONI_PORT]}/cluster" | python3 -c 'import json,sys; print(next(m["name"] for m in json.load(sys.stdin)["members"] if m["role"] in ("leader","master")))')"
+  runuser -u postgres -- "${DDI_PY:-python3}" /usr/bin/patronictl -c "$PATRONI_CFG" switchover "${C[CLUSTER_NAME]}" --leader "$leader" "${args[@]}"
+}
+
+case "${1:-}" in
+  init) shift; cmd_init "$@" ;;
+  bundle) shift; cmd_bundle "$@" ;;
+  join) shift; cmd_join "$@" ;;
+  render) conf_load; render_all ;;
+  activate) conf_load; activate ;;
+  status) cmd_status ;;
+  switchover) shift; cmd_switchover "$@" ;;
+  sync) cmd_sync ;;
+  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

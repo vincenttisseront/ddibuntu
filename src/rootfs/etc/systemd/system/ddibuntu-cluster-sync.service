@@ -1,0 +1,14 @@
+[Unit]
+Description=DDI-Buntu : synchronisation des pairs du cluster (registre etcd, pare-feu)
+ConditionPathExists=/etc/ddibuntu-cluster/cluster.conf
+After=etcd.service
+Wants=etcd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-cluster sync
+TimeoutStartSec=60
+# sans quorum etcd, la commande échoue sans rien modifier ; la minuterie réessaie
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes

@@ -24,19 +24,19 @@ Usage : ddibuntu-fw <commande>
   apply [--confirm N]  applique ; avec --confirm, retour arrière après N s sans « confirm »
   confirm              valide une application en attente
   rollback             revient immédiatement aux règles précédentes
-  set CLE VALEUR       modifie ADMIN_NETS, OPEN_TCP, OPEN_UDP ou ADMIN_TCP
+  set CLE VALEUR       modifie ADMIN_NETS, OPEN_TCP, OPEN_UDP, ADMIN_TCP ou CLUSTER_PEERS
   status               affiche les règles actives
 USAGE
 }
 
 fw_load() {
-  ADMIN_NETS=""; OPEN_TCP=""; OPEN_UDP=""; ADMIN_TCP="22,443"
+  ADMIN_NETS=""; OPEN_TCP=""; OPEN_UDP=""; ADMIN_TCP="22,443"; CLUSTER_PEERS=""
   [ -f "$FW_CONF" ] || return 0
   local line k v
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
     k="${line%%=*}"; v="${line#*=}"; v="${v#\"}"; v="${v%\"}"
-    case "$k" in ADMIN_NETS|OPEN_TCP|OPEN_UDP|ADMIN_TCP) ;; *) ddi_die "clé inconnue dans firewall.conf : $k" ;; esac
+    case "$k" in ADMIN_NETS|OPEN_TCP|OPEN_UDP|ADMIN_TCP|CLUSTER_PEERS) ;; *) ddi_die "clé inconnue dans firewall.conf : $k" ;; esac
     if [[ "$v" =~ [[:cntrl:]\"\'] ]]; then ddi_die "valeur invalide pour $k"; fi
     printf -v "$k" '%s' "$v"
   done < "$FW_CONF"
@@ -63,12 +63,25 @@ fw_nets() {    # $1 = 4|6 ; réseaux d'administration de cette famille, normalis
   printf '%s' "$out"
 }
 
+# Pairs du cluster (réseau dédié) : adresses IPv4 seulement ; uniquement ces sources atteignent quorum (2379/2380), PostgreSQL (5432) et l'API Patroni (8008).
+fw_cluster() {
+  local n norm out=""
+  while IFS= read -r n || [ -n "$n" ]; do
+    norm="$(ddi_norm_net "$n")" || ddi_die "pair de cluster invalide : $n"
+    case "$norm" in *:*) ddi_die "pair de cluster : IPv4 uniquement ($n)" ;; esac
+    out="${out:+$out, }$norm"
+  done < <(ddi_split_list "$CLUSTER_PEERS")
+  printf '%s' "$out"
+}
+
 fw_render() {
   fw_load
-  local v4 v6 at ot ou e4="" e6="" r_admin4="" r_admin6="" r_tcp="" r_udp=""
+  local v4 v6 at ot ou e4="" e6="" r_admin4="" r_admin6="" r_tcp="" r_udp="" cp ec="" r_cluster=""
   # « || return 1 » : set -e est inopérant quand la fonction est appelée dans un « if »
   v4="$(fw_nets 4)" || return 1
   v6="$(fw_nets 6)" || return 1
+  cp="$(fw_cluster)" || return 1
+  if [ -n "$cp" ]; then ec="    elements = { $cp }"; r_cluster="    ip saddr @cluster4 tcp dport { 2379, 2380, 5432, 8008 } accept"; fi
   at="$(fw_ports "$ADMIN_TCP")" || return 1
   ot="$(fw_ports "$OPEN_TCP")" || return 1
   ou="$(fw_ports "$OPEN_UDP")" || return 1
@@ -97,6 +110,11 @@ ${e4}
     flags interval
 ${e6}
   }
+  set cluster4 {
+    type ipv4_addr
+    flags interval
+${ec}
+  }
 
   chain input {
     type filter hook input priority filter; policy drop;
@@ -111,6 +129,7 @@ ${e6}
     ip6 daddr fe80::/10 udp dport 546 accept
 ${r_admin4}
 ${r_admin6}
+${r_cluster}
 ${r_tcp}
 ${r_udp}
     limit rate 5/minute burst 10 packets log prefix "ddibuntu-drop: " level info
@@ -203,7 +222,7 @@ fw_rollback() {
 
 fw_set() {
   local k="${1:-}" v="${2-}" bak="" tmp
-  case "$k" in ADMIN_NETS|OPEN_TCP|OPEN_UDP|ADMIN_TCP) ;; *) ddi_die "clé inconnue : $k" ;; esac
+  case "$k" in ADMIN_NETS|OPEN_TCP|OPEN_UDP|ADMIN_TCP|CLUSTER_PEERS) ;; *) ddi_die "clé inconnue : $k" ;; esac
   if [[ "$v" =~ [[:cntrl:]\"\'] ]]; then ddi_die "valeur invalide"; fi
   fw_load
   printf -v "$k" '%s' "$v"
@@ -216,6 +235,7 @@ fw_set() {
     printf 'OPEN_TCP="%s"\n' "$OPEN_TCP"
     printf 'OPEN_UDP="%s"\n' "$OPEN_UDP"
     printf 'ADMIN_TCP="%s"\n' "$ADMIN_TCP"
+    printf 'CLUSTER_PEERS="%s"\n' "$CLUSTER_PEERS"
   } > "$tmp"
   mv -f "$tmp" "$FW_CONF"; chmod 0644 "$FW_CONF"
   # validation par le rendu : en cas d'échec, l'ancien fichier est restauré

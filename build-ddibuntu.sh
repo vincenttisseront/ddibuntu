@@ -23,7 +23,7 @@ KEYRING="${DDI_KEYRING:-/usr/share/keyrings/ubuntu-archive-keyring.gpg}"
 # Empreinte de la clé « Ubuntu CD Image Automatic Signing Key (2012) » : seule signature acceptée.
 CD_KEY_FPRS="${DDI_CD_KEY_FPRS:-843938DF228D22F7B3742BC0D94AA3F0EFE21092}"
 DOCKER_IMAGE="ubuntu:24.04"
-DDI_PACKAGES="nftables whiptail postgresql postgresql-client bind9 bind9-utils bind9-dnsutils kea-dhcp4-server kea-admin python3 open-vm-tools"
+DDI_PACKAGES="nftables whiptail postgresql postgresql-client bind9 bind9-utils bind9-dnsutils kea-dhcp4-server kea-admin python3 open-vm-tools patroni etcd-server etcd-client python3-psycopg2 gnupg openssl curl"
 # Node.js : dernière 22.x, vérifiée par la signature de l'équipe de publication (clés ACTIVES, épinglées par empreinte,
 # README de https://github.com/nodejs/release-keys). Une signature par une autre clé est refusée.
 NODE_BASE_URL="${DDI_NODE_URL:-https://nodejs.org/dist/latest-v22.x}"
