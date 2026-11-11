@@ -66,10 +66,11 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
     3. ~~**0.9.2**~~ ✅ fait — Remplacement d'adresse virtuelle / de réseau dédié, changement d'adresse d'un nœud, renouvellement des certificats (automatique, sans interruption), verrou de nœud.
     4. ~~**0.9.3**~~ ✅ fait — Test de bascule guidé avec rapport : pré-contrôles, vraie bascule mesurée (fenêtre sans primaire, promotion, réintégration, rattrapage, ligne de temps, continuité WAL), retour au primaire d'origine, rapports conservés dans etcd, refus des opérations de topologie pendant le test.
     4b. ~~**0.9.4**~~ ✅ fait — Correctif intercalaire : source NetBox (le test ne déconnecte plus, motif du refus affiché, jeton nettoyé).
-    5. **0.9.5** — Vues DNS.
-    6. **0.9.6** — Traçabilité bail / MAC / nom / utilisateur AD.
-    7. **0.9.7** — Découverte planifiée et alertes d'hygiène.
-    8. **0.9.8** — API : description OpenAPI et jetons d'API.
-    9. **0.9.9** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
-    10. **0.9.10** — DHCP multi-espaces.
+    4c. ~~**0.9.5**~~ ✅ fait — Correctif intercalaire : les assistants (NetBox, AD) affichent enfin leurs erreurs.
+    5. **0.9.6** — Vues DNS.
+    6. **0.9.7** — Traçabilité bail / MAC / nom / utilisateur AD.
+    7. **0.9.8** — Découverte planifiée et alertes d'hygiène.
+    8. **0.9.9** — API : description OpenAPI et jetons d'API.
+    9. **0.9.10** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
+    10. **0.9.11** — DHCP multi-espaces.
 5. **1.0** — Consolidation de la série 0.9.x et passage en revue avant usage en production.

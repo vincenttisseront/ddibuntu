@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.9.5 — « Correctif : messages d'erreur des assistants »
+- **Les assistants n'affichaient jamais leurs erreurs** : le cadre commun des assistants (`WizardShell`) ne rendait que les étapes ; l'alerte d'erreur de l'assistant NetBox (et celle de l'assistant Active Directory) était donc invisible — l'erreur n'apparaissait que dans la console du navigateur. Le cadre rend maintenant ce contenu commun : le test NetBox affiche « NetBox refuse le jeton… » avec le motif donné par NetBox.
+- Courbes (page Filtrage) : les heures de l'axe ne sont écrites qu'une fois la page montée dans le navigateur (écart d'hydratation entre serveur et navigateur).
+- Tests : `unit-session` (+1).
+- Numérotation : vues DNS en **0.9.6** (le reste décalé d'un cran, DHCP multi-espaces en 0.9.11).
+
 ## 0.9.4 — « Correctif intercalaire : source NetBox »
 - **Le test de connexion NetBox dit pourquoi** : quand NetBox refuse le jeton, la console relaie désormais le **motif donné par NetBox** (statut HTTP et message, par exemple « Invalid v1 token », « Token expired » ou « Invalid source IP »), nettoyé (texte brut, sans caractère de contrôle, 160 caractères au plus) et affiché sous le bouton. Le jeton est aussi **nettoyé** (espaces et retour à la ligne collés avec lui) côté interface et côté serveur.
 - Tests : `unit-iter4` (+1 : motif conservé, texte hostile), `e2e-iter4` (motif transmis à l'interface, jeton collé avec espaces).

@@ -15,6 +15,7 @@ const last = computed(() => step.value === props.steps.length - 1)
         <UIcon v-if="i < step" name="i-lucide-check" class="size-4" /><span v-else class="num font-semibold">{{ i + 1 }}</span><span>{{ s.label }}</span>
       </li>
     </ol>
+    <slot />   <!-- contenu commun à toutes les étapes (message d'erreur de l'assistant) -->
     <section :aria-label="steps[step]?.label"><slot :name="steps[step]!.id" /></section>
     <div v-if="!hideFooter" class="flex justify-between">
       <UButton color="neutral" variant="outline" icon="i-lucide-arrow-left" :label="t('wizard.back')" :disabled="step === 0 || busy" @click="step--" />

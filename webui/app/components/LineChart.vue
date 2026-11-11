@@ -11,7 +11,9 @@ const maxV = computed(() => Math.max(1, ...filled.value.flatMap((s) => s.pts.map
 const x = (i: number) => L + (i * (W - L - 8)) / Math.max(1, bins.value.length - 1)
 const y = (v: number) => H - B - (v * (H - B - 8)) / maxV.value
 const path = (pts: Array<{ v: number }>) => pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(p.v).toFixed(1)}`).join(' ')
-const fmt = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+// l'heure dépend de la langue et du fuseau du navigateur : rien n'est écrit côté serveur (évite un écart d'hydratation)
+const mounted = ref(false); onMounted(() => { mounted.value = true })
+const fmt = (ms: number) => (mounted.value ? new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')
 </script>
 
 <template>

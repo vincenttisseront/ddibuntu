@@ -21,4 +21,8 @@ describe('session expirée ou simple refus ?', () => {
     const src = readFileSync(new URL('../server/utils/netbox.ts', import.meta.url), 'utf8')
     expect(src).not.toMatch(/NetboxError\([^)]*,\s*401\)/)
   })
+  it('les assistants affichent leur message d\'erreur (le cadre commun rend le contenu par défaut)', () => {
+    const shell = readFileSync(new URL('../app/components/WizardShell.vue', import.meta.url), 'utf8')
+    expect(shell).toMatch(/<slot\s*\/>/)   // sans lui, l'alerte d'erreur de NetboxWizard / AdWizard n'était jamais affichée
+  })
 })
