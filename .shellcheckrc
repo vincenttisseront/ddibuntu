@@ -1,0 +1,2 @@
+# SC2015 (info) : « A && B || C » est utilisé volontairement partout (C = repli si A ou B échoue) ; les autres avertissements restent bloquants.
+disable=SC2015

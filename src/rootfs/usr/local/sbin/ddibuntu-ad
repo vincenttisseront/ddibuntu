@@ -112,7 +112,7 @@ cmd_configure() {
     esac
   done
   valid_realm "$realm" || die "domaine Kerberos invalide (majuscules, chiffres, points ; ex. CORP.LOCAL)"
-  kdcs="$(echo $kdcs)"
+  kdcs="$(tr -s '[:space:]' ' ' <<<"$kdcs" | sed 's/^ //; s/ $//')"
   local n; n="$(wc -w <<<"$kdcs")"; [ "$n" -le 8 ] || die "8 KDC au plus"
   # un changement de domaine invalide le keytab installé : ses principaux portent l'ancien domaine
   if [ -n "$(realm_now)" ] && [ "$(realm_now)" != "$realm" ] && [ -f "$KEYTAB" ]; then
