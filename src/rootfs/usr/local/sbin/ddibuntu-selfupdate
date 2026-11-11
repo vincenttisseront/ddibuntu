@@ -260,7 +260,8 @@ cmd_apply() {
   [ -f "$n/app/server/index.mjs" ] || die "console de l'archive incomplète"
   mv "$APP/console" "$APP/console.old"; OLD_CONSOLE="$APP/console.old"
   mv "$n" "$APP/console"
-  chown -R 0:0 "$APP/console"
+  # en production on est root ; l'essai automatisé (DDI_TEST=1) peut tourner sans root (runner CI) : pas de changement de propriétaire possible
+  if [ "$TEST" = 1 ] && [ "$(id -u)" != 0 ]; then :; else chown -R 0:0 "$APP/console"; fi
   tar -xpf "$WORKDIR/b/rootfs.tar" --numeric-owner "${ex[@]}" -C "$DDI_ROOT/"
   cp "$WORKDIR/b/VERSION" "$DDI_STATEDIR/installed-version"
   svc daemon-reload
