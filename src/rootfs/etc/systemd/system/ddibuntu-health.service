@@ -1,0 +1,12 @@
+[Unit]
+Description=DDI-Buntu : photographie de santé de ce nœud (services, disques, certificats, heure)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-health run
+TimeoutStartSec=60
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+ProtectHome=yes

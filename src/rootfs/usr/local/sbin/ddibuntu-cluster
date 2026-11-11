@@ -735,15 +735,28 @@ cmd_status() {
   local quorum; quorum="$(quorum_json 2>/dev/null)" || quorum="null"; [ -n "$quorum" ] || quorum="null"
   local caown; caown="$(ectl --command-timeout=3s get "$CAOWN" --print-value-only 2>/dev/null | head -c 40 | tr -cd 'a-z0-9-')" || caown=""
   local caesc=false; if [ -n "$(ectl --command-timeout=3s get "$CAESC" --keys-only 2>/dev/null)" ]; then caesc=true; fi
-  CAOWN_V="$caown" CAESC_V="$caesc" CANODE_V="${C[CA_NODE]}" QUORUM="$quorum" VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
+  local hraw; hraw="$(ectl --command-timeout=3s get --prefix "$HEALTHKEYS" -w json 2>/dev/null | head -c 200000)" || hraw=""; [ -n "$hraw" ] || hraw="{}"
+  HEALTH_RAW="$hraw" CAOWN_V="$caown" CAESC_V="$caesc" CANODE_V="${C[CA_NODE]}" QUORUM="$quorum" VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
     python3 -c '
-import json, os
+import base64, json, os, re
 pat = json.loads(os.environ["PAT"])
+health = {}
+try: kvs = json.loads(os.environ["HEALTH_RAW"]).get("kvs", [])[:64]
+except Exception: kvs = []
+for kv in kvs:   # chaque valeur est jugee seule : une valeur piegee ne fait jamais perdre les autres
+    try:
+        name = base64.b64decode(kv["key"]).decode().rsplit("/", 1)[-1]
+        raw = base64.b64decode(kv.get("value", ""))
+        if re.fullmatch(r"[a-z][a-z0-9-]{1,30}", name) and len(raw) <= 4096:
+            h = json.loads(raw)
+            if isinstance(h, dict) and h.get("node") == name and len(health) < 16: health[name] = h
+    except Exception:
+        continue
 print(json.dumps({"cluster": os.environ["CLUSTER"], "node": os.environ["NODE"], "role": os.environ["ROLE"],
   "etcd": {"healthy": os.environ["ETCD_OK"] == "true", "members": int(os.environ["MEMBERS"] or 0), "quorum": json.loads(os.environ["QUORUM"])},
   "peers": [dict(zip(("name", "ip", "role"), (p.split("=")[0], p.split("=")[1].split(":")[0], p.split(":")[-1]))) for p in os.environ["PEERS"].split()],
   "ca": {"node": os.environ["CANODE_V"] == "1", "owner": os.environ["CAOWN_V"] or None, "escrow": os.environ["CAESC_V"] == "true"},
-  "patroni": pat, "kea": json.loads(os.environ["KEA"]), "vip": json.loads(os.environ["VIP"])}, ensure_ascii=False))'
+  "patroni": pat, "kea": json.loads(os.environ["KEA"]), "vip": json.loads(os.environ["VIP"]), "health": health}, ensure_ascii=False))'
 }
 
 # ---------------------------------------------------------------- Kea HA
@@ -796,6 +809,16 @@ cmd_backup_conf() {
 VERSIONS=/ddibuntu-cluster/versions/
 my_version() { local v; v="$(tr -d '\n' < "$ROOT/usr/local/lib/ddibuntu/VERSION" 2>/dev/null || true)"; [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "$v" || true; }
 cmd_putver() { conf_load; [[ "${1:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1; ectl put "$VERSIONS${C[NODE_NAME]}" "$1" >/dev/null; }
+# Santé des nœuds : chaque nœud publie la sienne (ddibuntu-health, chaque minute) dans UNE clé ; tous les nœuds les relisent dans cluster-status.json.
+# Valeur = un objet JSON ≤ 4 Kio dont le champ « node » est le nom de ce nœud (le contenu reste de toute façon assaini à la lecture par la console).
+HEALTHKEYS=/ddibuntu-cluster/health/
+cmd_health_put() {
+  conf_load
+  local v; v="$(head -c 4200)"; [ -n "$v" ] && [ "${#v}" -le 4096 ] || die "santé vide ou trop longue"
+  printf '%s' "$v" | NODE="${C[NODE_NAME]}" python3 -c 'import json,os,sys
+d=json.load(sys.stdin); sys.exit(0 if isinstance(d,dict) and d.get("node")==os.environ["NODE"] else 1)' 2>/dev/null || die "santé refusée (JSON invalide ou nœud différent)"
+  printf '%s' "$v" | ectl --command-timeout=5s put "$HEALTHKEYS${C[NODE_NAME]}" >/dev/null || die "écriture dans etcd impossible (quorum ?)"
+}
 # rolling-check VERSION : appelé par la mise à jour en ligne AVANT d'installer VERSION. Code 0 = autorisé ; 3 = refusé (message sur la sortie d'erreur).
 # Règle : on met à jour les secondaires d'abord. Le leader ne l'est qu'une fois les autres nœuds de données en bonne santé déjà à la version visée
 # (le leader applique les migrations de schéma, qu'un secondaire resté sur l'ancienne version ne comprendrait plus).
@@ -1267,6 +1290,7 @@ case "${1:-}" in
   _putver) shift; cmd_putver "$@" ;;
   vip-check) cmd_vip_check ;;
   backup-conf) shift; cmd_backup_conf "$@" ;;
+  health-put) cmd_health_put ;;
   keepalived) conf_load; render_keepalived ;;
   *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

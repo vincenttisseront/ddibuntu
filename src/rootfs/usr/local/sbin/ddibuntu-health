@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# ddibuntu-health — photographie de santé de CE nœud : services, base, disques, certificats, heure, charge.
+#   run     (défaut)  collecte et publie /run/ddibuntu/health.json ; dans un cluster, la partage aussi par etcd (une clé par nœud),
+#                     ce qui permet à la console du leader de superviser les autres nœuds, l'arbitre compris
+#   show              affiche le JSON sans rien publier
+# Lecture seule, aucun secret collecté. Appelé chaque minute par ddibuntu-health.timer ; ne fait jamais échouer le minuteur.
+set -u
+ROOT="${DDI_ROOT:-}"
+RUNDIR="$ROOT/run/ddibuntu"
+SYSTEMCTL="${DDI_SYSTEMCTL:-systemctl}"
+DF="${DDI_DF:-df}"
+CLCMD="${DDI_CLUSTER_CMD:-/usr/local/sbin/ddibuntu-cluster}"
+CLCONF="$ROOT/etc/ddibuntu-cluster/cluster.conf"
+PKI="$ROOT/etc/ddibuntu-cluster/pki"
+TLS="${DDI_TLS_DIR:-$ROOT/etc/ddibuntu/tls}"
+PGBIN="${DDI_PGBIN:-/usr/lib/postgresql/16/bin}"
+PGPORT="${DDI_PG_PORT:-5432}"
+PGSOCK="${DDI_PG_SOCKET_DIR:-/var/run/postgresql}"
+CLNAME="" NODE="" NROLE=""
+
+die() { printf 'ddibuntu-health: ERREUR : %s\n' "$*" >&2; exit 1; }
+[ -n "${DDI_TEST:-}" ] || [ "$(id -u)" -eq 0 ] || die "à lancer en root"
+
+if [ -f "$CLCONF" ]; then
+  while IFS='=' read -r k v; do
+    case "$k" in
+      CLUSTER_NAME) [[ "$v" =~ ^[a-z][a-z0-9-]{1,30}$ ]] && CLNAME="$v" ;;
+      NODE_NAME) [[ "$v" =~ ^[a-z][a-z0-9-]{1,30}$ ]] && NODE="$v" ;;
+      NODE_ROLE) if [ "$v" = data ] || [ "$v" = witness ]; then NROLE="$v"; fi ;;
+      PG_PORT) [[ "$v" =~ ^[0-9]{2,5}$ ]] && PGPORT="$v" ;;
+      PG_SOCKET_DIR) [[ "$v" =~ ^/[A-Za-z0-9._/-]{1,100}$ ]] && PGSOCK="$ROOT$v" ;;
+    esac
+  done < "$CLCONF"
+fi
+[ -n "$NODE" ] || NODE="$(hostname -s 2>/dev/null | tr -cd 'a-z0-9-' | cut -c1-31)"
+[ -n "$NODE" ] || NODE=inconnu
+
+# ---------------------------------------------------------------- services
+# unit_line UNITÉ ATTENDU : « S nom état attendu » (état = active|inactive|failed|activating|absent…) ; « attendu » = 1 si ce nœud doit l'exécuter
+lines=""
+add() { lines+="$1"$'\n'; }
+unit_state() {
+  local ls st
+  ls="$("$SYSTEMCTL" show -p LoadState --value -- "$1" 2>/dev/null | head -n1)" || ls=""
+  if [ "$ls" = not-found ] || [ -z "$ls" ]; then echo absent; return; fi
+  st="$("$SYSTEMCTL" is-active -- "$1" 2>/dev/null | head -n1)" || st=""
+  [[ "$st" =~ ^[a-z-]{3,20}$ ]] || st=unknown
+  echo "$st"
+}
+unit_enabled() { [ "$("$SYSTEMCTL" is-enabled -- "$1" 2>/dev/null | head -n1)" = enabled ]; }
+service() {   # service UNITÉ NOM ATTENDU(0|1|auto)
+  local st exp="$3"
+  st="$(unit_state "$1")"
+  if [ "$exp" = auto ]; then if unit_enabled "$1"; then exp=1; else exp=0; fi; fi
+  if [ "$st" = absent ] && [ "$exp" = 0 ]; then return; fi
+  add "S	$2	$st	$exp"
+}
+service ddibuntu-console.service console 1
+service named.service dns auto
+service kea-dhcp4-server.service dhcp auto
+service nftables.service firewall auto
+service keepalived.service keepalived auto
+for u in chrony.service systemd-timesyncd.service; do if [ "$(unit_state "$u")" = active ] || unit_enabled "$u"; then service "$u" time 1; break; fi; done
+if [ -z "$NROLE" ]; then
+  service postgresql@16-main.service postgresql 1                      # hors cluster : PostgreSQL est lancé par systemd
+else
+  service etcd.service etcd 1                                           # dans le cluster : Patroni pilote PostgreSQL (nœud de données) ; l'arbitre n'a qu'etcd
+  if [ "$NROLE" = data ]; then service patroni.service patroni 1; fi
+fi
+
+# ---------------------------------------------------------------- base de données (nœuds qui en portent une)
+pg="null"
+if [ "$NROLE" != witness ] && [ -x "$PGBIN/pg_isready" ]; then
+  if "$PGBIN/pg_isready" -q -h "$PGSOCK" -p "$PGPORT" -t 3 >/dev/null 2>&1; then pg=true; else pg=false; fi
+fi
+
+# ---------------------------------------------------------------- disques (une ligne par système de fichiers distinct)
+seen=""
+for p in / /var/lib/postgresql /var/lib/ddibuntu /var/log; do
+  out="$("$DF" -P -B1 -- "$ROOT$p" 2>/dev/null | tail -n +2 | head -n1)" || out=""
+  [ -n "$out" ] || continue
+  read -r fs size _used avail _pct mount <<< "$out"
+  [[ "$size" =~ ^[0-9]+$ && "$avail" =~ ^[0-9]+$ && "$size" -gt 0 ]] || continue
+  case " $seen " in *" $fs|$mount "*) continue ;; esac
+  seen+=" $fs|$mount"
+  add "D	${mount:-$p}	$size	$avail"
+done
+
+# ---------------------------------------------------------------- certificats (échéance seulement)
+cert() {   # cert FICHIER NOM
+  [ -r "$1" ] || return 0
+  local e t; e="$(openssl x509 -noout -enddate -in "$1" 2>/dev/null | sed -n 's/^notAfter=//p')" || e=""
+  [ -n "$e" ] || return 0
+  t="$(date -u -d "$e" +%s 2>/dev/null)" || return 0
+  add "C	$2	$t"
+}
+cert "$TLS/console.crt" console
+if [ -n "$NROLE" ]; then cert "$PKI/ca.crt" cluster-ca; cert "$PKI/node.crt" cluster-node; fi
+
+# ---------------------------------------------------------------- heure, charge, mémoire
+tsync="null"
+case "$(timedatectl show -p NTPSynchronized --value 2>/dev/null | head -n1)" in yes) tsync=true ;; no) tsync=false ;; esac
+up="$(cut -d' ' -f1 /proc/uptime 2>/dev/null || echo 0)"; load="$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0)"
+mt="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"; ma="$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+
+json="$(LINES_IN="$lines" NODE="$NODE" CLUSTER="$CLNAME" ROLE="${NROLE:-standalone}" HOST="$(hostname -s 2>/dev/null || echo)" PG="$pg" TSYNC="$tsync" UP="$up" LOAD="$load" MT="$mt" MA="$ma" python3 -c '
+import json, os, re, time
+def num(v, d=0):
+    try: return float(v)
+    except Exception: return d
+svc, disks, certs = [], [], []
+for l in os.environ["LINES_IN"].splitlines():
+    f = l.split("\t")
+    if f[0] == "S" and len(f) == 4 and re.fullmatch(r"[a-z0-9-]{1,32}", f[1]) and re.fullmatch(r"[a-z-]{3,20}", f[2]):
+        svc.append({"name": f[1], "state": f[2], "expected": f[3] == "1"})
+    elif f[0] == "D" and len(f) == 4 and f[2].isdigit() and f[3].isdigit():
+        disks.append({"mount": f[1][:100], "sizeBytes": int(f[2]), "availBytes": int(f[3])})
+    elif f[0] == "C" and len(f) == 3 and re.fullmatch(r"[a-z0-9-]{1,32}", f[1]) and f[2].isdigit():
+        certs.append({"name": f[1], "notAfter": int(f[2])})
+d = {"at": int(time.time()), "node": os.environ["NODE"], "cluster": os.environ["CLUSTER"] or None, "role": os.environ["ROLE"], "hostname": os.environ["HOST"][:63],
+     "uptimeSeconds": int(num(os.environ["UP"])), "load1": round(num(os.environ["LOAD"]), 2),
+     "memory": {"totalKb": int(num(os.environ["MT"])), "availKb": int(num(os.environ["MA"]))},
+     "services": svc, "postgres": json.loads(os.environ["PG"]), "disks": disks, "certs": certs, "timeSynced": json.loads(os.environ["TSYNC"])}
+print(json.dumps(d, ensure_ascii=False, separators=(",", ":")))' 2>/dev/null)" || die "assemblage impossible (python3)"
+[ -n "$json" ] || die "assemblage vide"
+
+publish() {
+  install -d -m 0755 "$RUNDIR" 2>/dev/null || return 0
+  local t; t="$(mktemp "$RUNDIR/.health.XXXXXX" 2>/dev/null)" || return 0
+  printf '%s\n' "$json" > "$t"; chmod 0644 "$t"; mv -f "$t" "$RUNDIR/health.json"
+  # dans le cluster : une clé par nœud dans etcd (échec sans conséquence : le minuteur recommence dans la minute)
+  if [ -n "$NROLE" ] && [ -x "$CLCMD" ]; then printf '%s' "$json" | timeout 10 "$CLCMD" health-put >/dev/null 2>&1 || true; fi
+  return 0
+}
+case "${1:-run}" in
+  run) publish ;;
+  show) printf '%s\n' "$json" ;;
+  *) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac
