@@ -23,6 +23,8 @@ onMounted(() => {
 onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 
 const st = computed(() => data.value?.state ?? null)
+const wiz = ref<any>(null)
+const canAdd = computed(() => isAdmin.value && st.value?.nodeRole === 'data' && st.value?.ca?.node === true && !data.value?.replica)
 const isLeader = computed(() => st.value?.localRole === 'leader')
 const canSwitch = computed(() => isAdmin.value && isLeader.value && !data.value?.replica && !switching.value)
 const when = (s: number) => (s ? new Date(s * 1000).toLocaleString() : '—')
@@ -54,9 +56,18 @@ async function switchover(node: string) {
 
 <template>
   <div class="flex flex-col gap-4 max-w-5xl">
+    <ClusterWizards ref="wiz" :st="st" :setup="data?.setup" :result="data?.result" @reload="load(true)" />
     <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
     <div v-if="loading" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader" class="animate-spin" />{{ t('cluster.loading') }}</div>
-    <UAlert v-else-if="!data?.clustered" color="neutral" variant="subtle" icon="i-lucide-info" :title="t('cluster.none_title')" :description="t('cluster.none_desc')" />
+    <template v-else-if="!data?.clustered">
+      <UAlert color="neutral" variant="subtle" icon="i-lucide-info" :title="t('cluster.none_title')" :description="t('cluster.none_desc')" />
+      <div v-if="isAdmin" class="grid gap-4 lg:grid-cols-2">
+        <UCard><template #header><span class="font-medium">{{ t('cluster.w.create_card') }}</span></template>
+          <p class="text-sm text-muted mb-3">{{ t('cluster.w.create_card_desc') }}</p><UButton icon="i-lucide-server-cog" :label="t('cluster.w.create_btn')" @click="wiz?.begin('init')" /></UCard>
+        <UCard><template #header><span class="font-medium">{{ t('cluster.w.join_card') }}</span></template>
+          <p class="text-sm text-muted mb-3">{{ t('cluster.w.join_card_desc') }}</p><UButton color="neutral" variant="outline" icon="i-lucide-log-in" :label="t('cluster.w.join_btn')" @click="wiz?.begin('join')" /></UCard>
+      </div>
+    </template>
     <template v-else-if="st">
       <UAlert v-if="st.stale" color="warning" variant="subtle" icon="i-lucide-clock-alert" :title="t('cluster.stale')" :description="t('cluster.stale_desc', { d: when(st.at) })" />
       <UAlert v-if="data.replica" color="info" variant="subtle" icon="i-lucide-copy" :title="t('cluster.replica_title')" :description="t('cluster.replica_desc')" />
@@ -67,7 +78,7 @@ async function switchover(node: string) {
             <dt class="text-muted">{{ t('cluster.name') }}</dt><dd class="font-mono">{{ st.cluster }} / {{ st.node }}</dd>
             <dt class="text-muted">{{ t('cluster.pg_role') }}</dt><dd><UBadge :color="roleColor(st.localRole)" variant="subtle" :label="t(`cluster.pg.${st.localRole === 'unknown' ? 'unknown' : st.localRole}`)" /></dd>
             <dt class="text-muted">{{ t('cluster.dns_role') }}</dt><dd><UBadge :color="st.bind === 'primary' ? 'success' : 'neutral'" variant="subtle" :label="st.bind ? t(`cluster.bind.${st.bind}`) : '—'" /></dd>
-            <dt class="text-muted">{{ t('cluster.quorum') }}</dt><dd><UBadge :color="st.etcd.healthy ? 'success' : 'error'" variant="subtle" :label="st.etcd.healthy ? t('cluster.quorum_ok', { n: st.etcd.members }) : t('cluster.quorum_lost')" /></dd>
+            <dt class="text-muted">{{ t('cluster.quorum') }}</dt><dd><UBadge :color="(st.etcd.quorum ? st.etcd.quorum.hasQuorum && st.etcd.quorum.tolerance >= 1 : st.etcd.healthy) ? 'success' : st.etcd.quorum?.hasQuorum ? 'warning' : 'error'" variant="subtle" :label="st.etcd.quorum ? (st.etcd.quorum.hasQuorum ? t('cluster.quorum_live', { h: st.etcd.quorum.healthy, v: st.etcd.quorum.voters }) : t('cluster.quorum_lost')) : (st.etcd.healthy ? t('cluster.quorum_ok', { n: st.etcd.members }) : t('cluster.quorum_lost'))" /></dd>
             <dt class="text-muted">{{ t('cluster.vip') }}</dt>
             <dd v-if="st.vip"><span class="font-mono">{{ st.vip.address }}</span> <UBadge :color="st.vip.held ? 'success' : 'neutral'" variant="subtle" :label="st.vip.held ? t('cluster.vip_held') : t('cluster.vip_not_held')" /></dd>
             <dd v-else class="text-muted">{{ t('cluster.vip_none') }}</dd>
@@ -87,7 +98,7 @@ async function switchover(node: string) {
       </div>
       <ClusterOps :st="st" :result="data.result" @reload="load(true)" />
       <UCard>
-        <template #header><div class="flex items-center justify-between"><span class="font-medium">{{ t('cluster.nodes') }}</span><span v-if="switching" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader" class="animate-spin" />{{ t('cluster.switching', { n: switching }) }}</span></div></template>
+        <template #header><div class="flex items-center justify-between"><span class="font-medium">{{ t('cluster.nodes') }}</span><UButton v-if="canAdd" size="xs" icon="i-lucide-user-plus" :label="t('cluster.w.add_btn')" @click="wiz?.begin('add')" /><span v-if="switching" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader" class="animate-spin" />{{ t('cluster.switching', { n: switching }) }}</span></div></template>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead><tr class="text-left text-muted"><th class="py-1 pr-4">{{ t('cluster.name') }}</th><th class="pr-4">{{ t('cluster.address') }}</th><th class="pr-4">{{ t('cluster.kind') }}</th><th class="pr-4">{{ t('cluster.state') }}</th><th class="pr-4">{{ t('cluster.lag') }}</th><th /></tr></thead>
@@ -104,6 +115,7 @@ async function switchover(node: string) {
           </table>
         </div>
         <p class="text-xs text-muted mt-3">{{ t('cluster.vip_hint') }}</p>
+        <p v-if="isAdmin && st.ca && !st.ca.node && st.ca.owner" class="text-xs text-muted mt-1">{{ t('cluster.w.add_hint_other', { n: st.ca.owner }) }}</p>
       </UCard>
     </template>
   </div>

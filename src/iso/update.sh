@@ -190,7 +190,7 @@ deploy_files() {
   in_target groupadd -f ddiadmin || { fail "groupe ddiadmin impossible à créer"; return; }
   in_target bash -c 'id ddiconsole >/dev/null 2>&1 || useradd --system --gid ddiconsole --home-dir /var/lib/ddibuntu --shell /usr/sbin/nologin ddiconsole' || { fail "compte ddiconsole impossible"; return; }
   in_target systemctl enable ddibuntu-firstboot.service nftables.service postgresql.service named.service \
-    ddibuntu-db-init.service ddibuntu-console.service ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-selfupdate.path ddibuntu-update-check.timer >/dev/null 2>&1 || { fail "activation des services impossible"; return; }
+    ddibuntu-db-init.service ddibuntu-console.service ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-cluster-setup.path ddibuntu-selfupdate.path ddibuntu-update-check.timer >/dev/null 2>&1 || { fail "activation des services impossible"; return; }
   # règles du pare-feu : re-rendues depuis firewall.conf conservé (écrites, non appliquées avant le redémarrage)
   in_target /usr/local/sbin/ddibuntu-fw write >/dev/null 2>&1 || say "avertissement : règles du pare-feu non re-rendues (anciennes règles conservées)"
   cp "$SRC/VERSION" "$TARGET/$STATE_REL/installed-version"

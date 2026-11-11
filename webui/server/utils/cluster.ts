@@ -1,5 +1,6 @@
 // État du cluster publié par root (ddibuntu-cluster follow, chaque minute) : fichier JSON sans secret, lu ici en lecture seule.
 // La console ne pilote jamais le cluster : les demandes d'action passent par un fichier de demande traité par root (voir demandes de bascule).
+import { networkInterfaces, hostname } from 'node:os'
 import { promises as fs } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { cfg } from './config'
@@ -113,5 +114,32 @@ export function actionRefusal(st: ClusterState | null, a: ClusterAction): string
   }
   if (a.confirm !== st.cluster) return 'confirm_mismatch'
   if (!q || q.hasQuorum) return 'quorum_present'
+  return null
+}
+
+// ---- assistants : création, lot d'enrôlement, rattachement (la console ne fait que déposer des demandes validées de nouveau par root)
+export const NODE_NAME_RE = /^[a-z][a-z0-9-]{1,30}$/
+export interface LocalAddress { iface: string; address: string; prefix: number }
+// Adresses IPv4 des interfaces du serveur (la boucle locale n'est utile qu'aux tests).
+export function localAddresses(includeLoopback = false): LocalAddress[] {
+  const out: LocalAddress[] = []
+  for (const [iface, list] of Object.entries(networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (a.family !== 'IPv4' || (a.internal && !includeLoopback)) continue
+      const bits = a.netmask.split('.').reduce((n, o) => n + (Number(o) >>> 0).toString(2).replace(/0/g, '').length, 0)
+      out.push({ iface, address: a.address, prefix: bits })
+    }
+  }
+  return out
+}
+export function shortHostname(): string { return hostname().split('.')[0]!.toLowerCase() }
+// Refus du lot : seul le nœud qui porte l'autorité en crée, quorum etcd présent (ajout de membre), nom et adresse libres.
+export function bundleRefusal(st: ClusterState | null, name: string, ip: string): string | null {
+  if (!st) return 'not_clustered'
+  if (st.nodeRole !== 'data') return 'action_data_node_only'
+  if (!st.ca?.node) return 'not_ca_node'
+  if (st.stale || !st.etcd.quorum?.hasQuorum) return 'quorum_required'
+  if (st.nodes.some((n) => n.name === name)) return 'node_name_taken'
+  if (st.nodes.some((n) => n.ip === ip)) return 'node_ip_taken'
   return null
 }

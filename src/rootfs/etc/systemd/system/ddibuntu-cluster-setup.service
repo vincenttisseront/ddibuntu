@@ -1,0 +1,8 @@
+[Unit]
+Description=DDI-Buntu : création ou rattachement à un cluster demandé par la console (validé par root)
+ConditionPathExists=!/etc/ddibuntu-cluster/cluster.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-cluster setup-request
+TimeoutStartSec=1800

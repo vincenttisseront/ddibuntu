@@ -105,3 +105,8 @@ Statut : **validée** (itération 0). Aucune ligne de code de cluster n'existe e
 - **Reconstruction** : `recover` = sauvegarde du répertoire etcd, `force-new-cluster` à usage unique (variable `ETCD_FORCE_NEW`, jamais écrite durablement), marques de retrait pour tous les autres pairs.
 - **Autorité** : `ca-sync` (minuterie `follow`) publie `/ddibuntu-cluster/ca/escrow` chiffré (gpg AES256, phrase = HMAC-SHA256 du secret ddi-xfr) et `/ddibuntu-cluster/ca/owner` ; `take-ca` la déchiffre sur un nœud de données.
 - **Console** : fichier `.cluster-action` (JSON ≤ 600 octets) déposé dans le répertoire de demandes ; `ddibuntu-cluster request` (unité path) revalide tout puis publie `cluster-result.json`.
+
+## Itération 9 — assistants de la console : comment c'est réalisé
+- **Hors cluster** : l'unité `ddibuntu-cluster-setup.path` (condition : pas de `cluster.conf`) surveille `.cluster-setup` et lance `ddibuntu-cluster setup-request`. Actions : `init` (champs validés un à un, adresse du nœud vérifiée comme portée par une interface) et `join` (lot déposé à côté sous `cluster-join.bundle`, déplacé en 0600 dans l'état, détruit après usage ; `--wipe-local-db` implicite, d'où la confirmation par le nom de la machine).
+- **Dans le cluster** : `bundle` est une action de plus de `.cluster-action` ; le lot est écrit en `cluster-bundle-<nom>.bundle` (0640 root:ddiconsole) et purgé après une heure par `publish_state`.
+- **Phrase de passe** : tirée par la console, jamais relue ; `cmd_bundle` / `cmd_join` la prennent dans `DDI_BUNDLE_PASS` ; `last_line` la masque dans tout message publié.

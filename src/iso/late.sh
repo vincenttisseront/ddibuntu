@@ -60,7 +60,7 @@ chmod 0750 "$TARGET/var/lib/ddibuntu/generated"
 log "services et durcissement"
 in_target groupadd -f ddiadmin
 in_target systemctl enable ddibuntu-firstboot.service nftables.service postgresql.service named.service \
-  ddibuntu-db-init.service ddibuntu-console.service ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-selfupdate.path ddibuntu-update-check.timer
+  ddibuntu-db-init.service ddibuntu-console.service ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-cluster-setup.path ddibuntu-selfupdate.path ddibuntu-update-check.timer
 # Kea ne démarre qu'après un déploiement contenant au moins une étendue (ddibuntu-reload l'active alors)
 in_target systemctl disable kea-dhcp4-server.service
 # Cluster : etcd et Patroni ne démarrent QUE sur ordre de « ddibuntu-cluster » (le paquet etcd démarrerait sinon un magasin en clair sur 127.0.0.1)

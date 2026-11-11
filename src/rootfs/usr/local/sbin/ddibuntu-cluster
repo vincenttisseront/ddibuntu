@@ -602,7 +602,9 @@ cmd_bundle() {
   if [ "$role" = data ] && [ -f "$envf" ]; then grep -E '^(DDI_DATABASE_URL|DDI_SECRET_KEY|DDI_KEA_DB_PASSWORD)=' "$envf" > "$t/b/console-secrets.env" || true; fi
   ( cd "$t/b" && sha256sum -- * > MANIFEST )
   tar -C "$t/b" -cf "$t/bundle.tar" .
-  local pass; pass="$(openssl rand -base64 24 | tr -d '/+=\n')"
+  # phrase de passe : imposée par la console (elle l'affiche une seule fois à l'administrateur, jamais relue ici) ou générée
+  local pass shown=1; pass="${DDI_BUNDLE_PASS:-}"
+  if [ -z "$pass" ]; then pass="$(openssl rand -base64 24 | tr -d '/+=\n')"; else shown=0; fi
   mkdir -p -- "$(dirname "$out")"
   gpg_sym enc "$t/bundle.tar" "$out" 3< <(printf '%s' "$pass") || die "chiffrement du lot impossible"
   chmod 0600 "$out"; rm -rf "$t"
@@ -612,8 +614,10 @@ cmd_bundle() {
   C[PEERS]="$peers"; conf_write; render_patroni; fw_sync
   [ -n "${DDI_TEST:-}" ] || systemctl reload patroni.service 2>/dev/null || true
   log "lot créé : $out"
-  log "Copiez-le sur le nouveau nœud puis lancez : ddibuntu-cluster join <fichier> (phrase de passe ci-dessous, affichée UNE seule fois)"
-  printf '%s\n' "$pass"
+  if [ "$shown" -eq 1 ]; then
+    log "Copiez-le sur le nouveau nœud puis lancez : ddibuntu-cluster join <fichier> (phrase de passe ci-dessous, affichée UNE seule fois)"
+    printf '%s\n' "$pass"
+  else log "lot d'enrôlement créé pour $name"; fi
 }
 
 cmd_join() {
@@ -807,7 +811,30 @@ print(m[0].get("state","") if m else "")' 2>/dev/null || true)"
 }
 
 # État du cluster lisible par la console (sans secret), remplacé atomiquement. Ne fait jamais échouer « follow ».
+# write_result ACTION NOEUD OK MESSAGE : résultat de la dernière demande de la console (lu par la page Cluster)
+write_result() {
+  local d="$ROOT/run/ddibuntu" t; install -d -m 0755 "$d" 2>/dev/null || return 0
+  t="$(mktemp "$d/.result.XXXXXX")" || return 0
+  ACT="$1" NODE="$2" OK="$3" MSG="$4" python3 -c '
+import json, os, time
+print(json.dumps({"at": int(time.time()), "action": os.environ["ACT"], "candidate": os.environ["NODE"], "ok": os.environ["OK"] == "true", "message": os.environ["MSG"]}, ensure_ascii=False))' > "$t"
+  chmod 0644 "$t"; mv -f "$t" "$d/cluster-result.json"
+}
+# last_line : dernier message d'une sortie, assaini (caractères imprimables, 300 au plus) ; $1 = secret à masquer
+last_line() {
+  SECRET="${1:-}" python3 -c '
+import os, sys
+lines = [l for l in sys.stdin.buffer.read().decode("utf-8", "replace").splitlines() if l.strip()]
+m = "".join(c for c in (lines[-1] if lines else "") if c.isprintable())
+m = m[len("ddibuntu-cluster: "):] if m.startswith("ddibuntu-cluster: ") else m
+s = os.environ["SECRET"]
+if s: m = m.replace(s, "***")
+sys.stdout.write(m[:300])'
+}
+
 publish_state() {
+  # lots d'enrôlement oubliés : détruits au bout d'une heure (ils contiennent des secrets, même chiffrés)
+  find "${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" -maxdepth 1 -name 'cluster-bundle-*.bundle' -mmin +60 -delete 2>/dev/null || true
   local d="$ROOT/run/ddibuntu" t lrole="" bind=""
   install -d -m 0755 "$d" 2>/dev/null || return 0
   t="$(mktemp "$d/.cluster.XXXXXX" 2>/dev/null)" || return 0
@@ -1080,25 +1107,31 @@ cmd_take_ca() {
 # Le résultat (message issu de NOS messages d'erreur, jamais du contenu reçu) est publié pour la console.
 cmd_action() {
   conf_load; [ "${C[NODE_ROLE]}" = data ] || return 0
-  local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" f raw="" parsed act="" node="" msg="" ok=false
+  local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" f raw="" parsed act="" node="" msg="" ok=false bip="" brole="" bpass=""
   f="$gen/.cluster-action"
   [ -e "$f" ] || [ -L "$f" ] || return 0
-  if [ -f "$f" ] && [ ! -L "$f" ]; then raw="$(head -c 600 "$f")"; fi
+  if [ -f "$f" ] && [ ! -L "$f" ]; then raw="$(head -c 1024 "$f")"; fi
   rm -f "$f"
   parsed="$(printf '%s' "$raw" | CL="${C[CLUSTER_NAME]}" python3 -c '
 import json, os, re, sys
 try: d = json.loads(sys.stdin.read())
 except Exception: print("invalid"); sys.exit(0)
-if not isinstance(d, dict) or not set(d) <= {"action", "node", "confirm"}: print("invalid"); sys.exit(0)
+if not isinstance(d, dict) or not set(d) <= {"action", "node", "confirm", "ip", "role", "pass"}: print("invalid"); sys.exit(0)
 a, n, c = d.get("action"), d.get("node", ""), d.get("confirm", "")
 name = r"[a-z][a-z0-9-]{1,30}"
+def ipv4(v): return isinstance(v, str) and re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", v) is not None and all(int(x) <= 255 for x in v.split("."))
+extra = {"ip", "role", "pass"} & set(d)
+if a != "bundle" and extra: print("invalid"); sys.exit(0)
 if a == "refresh" and not n and not c: print("refresh -")
+elif a == "bundle" and isinstance(n, str) and re.fullmatch(name, n) and c == n and ipv4(d.get("ip")) and d.get("role") in ("data", "witness") and isinstance(d.get("pass"), str) and re.fullmatch(r"[A-Za-z0-9]{24,64}", d["pass"]):
+    print("bundle %s %s %s %s" % (n, d["ip"], d["role"], d["pass"]))
 elif a == "remove-node" and isinstance(n, str) and re.fullmatch(name, n) and c == n: print("remove-node " + n)
 elif a == "take-ca" and not n and isinstance(c, str) and re.fullmatch(name, c): print("take-ca " + c)
 elif a == "recover" and not n and c == os.environ["CL"]: print("recover -")
 else: print("invalid")' 2>/dev/null || echo invalid)"
   case "$parsed" in
     "refresh -") act=refresh; publish_state || true; ok=true; msg="état actualisé" ;;
+    "bundle "*) act=bundle; read -r _ node bip brole bpass <<<"$parsed" ;;
     "remove-node "*) act=remove-node; node="${parsed#* }" ;;
     "take-ca "*) act=take-ca; node="${parsed#* }"
       if [ "$node" != "${C[NODE_NAME]}" ]; then act=""; msg="confirmation incorrecte"; node=""; fi ;;
@@ -1111,19 +1144,88 @@ else: print("invalid")' 2>/dev/null || echo invalid)"
       remove-node) out="$( ( cmd_remove_node "$node" ) 2>&1 )" && ok=true ;;
       take-ca) out="$( ( cmd_take_ca --yes ) 2>&1 )" && ok=true ;;
       recover) out="$( ( cmd_recover --yes ) 2>&1 )" && ok=true ;;
+      bundle) local bf="$gen/cluster-bundle-$node.bundle"
+        out="$( ( DDI_BUNDLE_PASS="$bpass" cmd_bundle --name "$node" --ip "$bip" --role "$brole" --out "$bf" ) 2>&1 )" && ok=true
+        if [ "$ok" = true ]; then chown root:ddiconsole "$bf" 2>/dev/null || true; chmod 0640 "$bf"; fi ;;
     esac
-    # dernier message de nos propres commandes, assaini (caractères imprimables, 300 au plus)
-    msg="$(printf '%s' "$out" | tail -n 1 | tr -cd '[:print:]é-ÿ' | sed 's/^ddibuntu-cluster: //' | head -c 300)"
+    # dernier message de nos propres commandes, assaini ; la phrase de passe d'un lot n'apparaît jamais
+    msg="$(printf '%s' "$out" | last_line "$bpass")"
     [ -n "$msg" ] || { if [ "$ok" = true ]; then msg="opération effectuée"; else msg="opération refusée (voir le journal)"; fi; }
   fi
   [ -z "$act" ] || [ "$act" = refresh ] || publish_state || true
   log "demande de la console (${act:-refusée}) : $msg"
-  local d="$ROOT/run/ddibuntu" t; install -d -m 0755 "$d" 2>/dev/null || return 0
-  t="$(mktemp "$d/.result.XXXXXX")" || return 0
-  ACT="$act" NODE="$node" OK="$ok" MSG="$msg" python3 -c '
-import json, os, time
-print(json.dumps({"at": int(time.time()), "action": os.environ["ACT"], "candidate": os.environ["NODE"], "ok": os.environ["OK"] == "true", "message": os.environ["MSG"]}, ensure_ascii=False))' > "$t"
-  chmod 0644 "$t"; mv -f "$t" "$d/cluster-result.json"
+  write_result "$act" "$node" "$ok" "$msg"
+  [ "$ok" = true ]
+}
+
+# ---------------------------------------------------------------- assistants de la console sur un nœud encore HORS cluster : création et rattachement
+# Fichier .cluster-setup (JSON ≤ 1 Ko, relu strictement ici) :
+#   {"action":"init","cluster":…,"node":…,"ip":…,"net":…,"vip":…,"vipIface":…,"vrid":…,"confirm":<nom du nœud>}
+#   {"action":"join","pass":…,"confirm":<nom court de la machine>}   (le lot chiffré est déposé à côté : cluster-join.bundle)
+cmd_setup_request() {
+  local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" f raw="" msg="" ok=false act="" node="" bf pass=""
+  f="$gen/.cluster-setup"; bf="$gen/cluster-join.bundle"
+  [ -e "$f" ] || [ -L "$f" ] || return 0
+  if [ -f "$f" ] && [ ! -L "$f" ]; then raw="$(head -c 1024 "$f")"; fi
+  rm -f "$f"
+  local parsed
+  parsed="$(printf '%s' "$raw" | HOSTN="$(hostname -s 2>/dev/null || true)" python3 -c '
+import json, os, re, sys
+try: d = json.loads(sys.stdin.read())
+except Exception: print("invalid"); sys.exit(0)
+if not isinstance(d, dict): print("invalid"); sys.exit(0)
+name = r"[a-z][a-z0-9-]{1,30}"
+def ipv4(v): return isinstance(v, str) and re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", v) is not None and all(int(x) <= 255 for x in v.split("."))
+def opt(k): return d.get(k, "-") if k in d else "-"
+a = d.get("action")
+if a == "init" and set(d) <= {"action", "cluster", "node", "ip", "net", "vip", "vipIface", "vrid", "confirm"}:
+    cl, n, ip, net, vip, vif, vrid = d.get("cluster"), d.get("node"), d.get("ip"), opt("net"), opt("vip"), opt("vipIface"), opt("vrid")
+    ok = all(isinstance(x, str) and re.fullmatch(name, x) for x in (cl, n)) and d.get("confirm") == n and ipv4(ip)
+    ok = ok and (net == "-" or (isinstance(net, str) and re.fullmatch(r"[0-9.]+/\d{1,2}", net) and ipv4(net.split("/")[0]) and int(net.split("/")[1]) <= 32))
+    ok = ok and (vip == "-" or ipv4(vip)) and (vif == "-" or (isinstance(vif, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,15}", vif)))
+    ok = ok and ((vip == "-") == (vif == "-")) and (vrid == "-" or (isinstance(vrid, int) and not isinstance(vrid, bool) and 1 <= vrid <= 255))
+    print("init\t%s\t%s\t%s\t%s\t%s\t%s\t%s" % (cl, n, ip, net, vip, vif, vrid) if ok else "invalid")
+elif a == "join" and set(d) <= {"action", "pass", "confirm"}:
+    p = d.get("pass")
+    ok = isinstance(p, str) and re.fullmatch(r"[A-Za-z0-9]{24,64}", p) and os.environ["HOSTN"] and d.get("confirm") == os.environ["HOSTN"]
+    print("join\t" + p if ok else "invalid")
+else: print("invalid")' 2>/dev/null || echo invalid)"
+  local a cl n ip net vip vif vrid
+  IFS=$'\t' read -r a cl n ip net vip vif vrid <<<"$parsed"
+  local out="" opts=()
+  if [ -f "$CONF" ]; then
+    # la demande a été relue et supprimée, mais ce nœud est déjà dans un cluster : rien à créer ni à rejoindre
+    msg="ce nœud appartient déjà à un cluster"; a=refused
+  fi
+  case "$a" in
+    init)
+      act=init; node="$n"
+      if [ -z "${DDI_TEST:-}" ] && ! ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$ip"; then msg="l'adresse $ip n'est portée par aucune interface de ce serveur"
+      else
+        [ "$net" = - ] || opts+=(--net "$net"); [ "$vip" = - ] || opts+=(--vip "$vip" --vip-iface "$vif"); [ "$vrid" = - ] || opts+=(--vip-vrid "$vrid")
+        [ -z "${DDI_TEST:-}" ] || [ -z "${DDI_NO_ACTIVATE:-}" ] || opts+=(--no-activate)
+        out="$( ( DDI_CLUSTER_NAME="$cl" cmd_init --name "$n" --ip "$ip" "${opts[@]}" ) 2>&1 )" && ok=true
+        msg="$(printf '%s' "$out" | last_line)"; [ -n "$msg" ] || msg="opération effectuée"
+      fi ;;
+    join)
+      act="join"; pass="$cl"   # pour « join », le second champ est la phrase de passe
+      if [ -f "$bf" ] && [ ! -L "$bf" ] && [ "$(stat -c %s "$bf")" -le 2097152 ]; then
+        install -d -m 0700 "$STATE"; install -m 0600 "$bf" "$STATE/join.bundle"; rm -f "$bf"
+        [ -z "${DDI_TEST:-}" ] || [ -z "${DDI_NO_ACTIVATE:-}" ] || opts+=(--no-activate)
+        out="$( ( DDI_BUNDLE_PASS="$pass" cmd_join "$STATE/join.bundle" --wipe-local-db "${opts[@]}" ) 2>&1 )" && ok=true
+        rm -f "$STATE/join.bundle"
+        msg="$(printf '%s' "$out" | last_line "$pass")"; [ -n "$msg" ] || msg="opération effectuée"
+      else rm -f "$bf"; msg="lot d'enrôlement absent ou invalide"; fi ;;
+    refused) rm -f "$bf" ;;
+    *) msg="demande invalide"; rm -f "$bf" ;;
+  esac
+  log "demande de la console hors cluster (${act:-refusée}) : $msg"
+  if [ "$ok" = true ]; then
+    ( conf_load && publish_state ) || true
+    # après un rattachement, la base locale est celle du cluster et les secrets de la console ont changé : la console redémarre à son tour
+    if [ "$act" = join ] && [ -z "${DDI_TEST:-}" ]; then systemd-run --quiet --on-active=10s --unit=ddibuntu-console-restart systemctl restart ddibuntu-console.service || true; fi
+  fi
+  write_result "$act" "$node" "$ok" "$msg"
   [ "$ok" = true ]
 }
 
@@ -1138,6 +1240,7 @@ case "${1:-}" in
   sync) cmd_sync ;;
   follow) cmd_follow ;;
   ad-sync) cmd_ad_sync ;;
+  setup-request) cmd_setup_request ;;
   request) rc=0; cmd_request || rc=1; cmd_action || rc=1; exit "$rc" ;;
   remove-node) shift; cmd_remove_node "$@" ;;
   recover) shift; cmd_recover "$@" ;;

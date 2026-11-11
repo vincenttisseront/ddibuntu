@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for a cluster creation or join requested from the DDI-Buntu console (node not yet clustered)
+ConditionPathExists=!/etc/ddibuntu-cluster/cluster.conf
+
+[Path]
+PathChanged=/var/lib/ddibuntu/generated/.cluster-setup
+Unit=ddibuntu-cluster-setup.service
+
+[Install]
+WantedBy=multi-user.target
