@@ -4,6 +4,7 @@ ConditionPathExists=/etc/ddibuntu-cluster/cluster.conf
 
 [Path]
 PathChanged=/var/lib/ddibuntu/generated/.cluster-switchover
+PathChanged=/var/lib/ddibuntu/generated/.cluster-action
 Unit=ddibuntu-cluster-request.service
 
 [Install]

@@ -159,6 +159,7 @@ initial-advertise-peer-urls: https://$ip:$pp
 initial-cluster: $ic
 initial-cluster-state: ${C[ETCD_STATE]}
 initial-cluster-token: ddibuntu-${C[CLUSTER_NAME]}
+$([ -z "${ETCD_FORCE_NEW:-}" ] || echo 'force-new-cluster: true')
 enable-grpc-gateway: true
 auto-compaction-mode: periodic
 auto-compaction-retention: "1h"
@@ -495,10 +496,13 @@ print(h if isinstance(h,str) and re.fullmatch(r"none|[0-9a-f]{64}",h) and d.get(
 
 # ---------------------------------------------------------------- registre des nœuds (dans etcd) : chaque nœud finit par connaître tous les autres
 REG=/ddibuntu-cluster/nodes/
+REMOVED=/ddibuntu-cluster/removed/     # nœuds retirés : les autres nœuds les oublient (cmd_sync)
+CAESC=/ddibuntu-cluster/ca/escrow       # clé de l'autorité, chiffrée (lisible seulement par les nœuds de données)
+CAOWN=/ddibuntu-cluster/ca/owner        # nom du nœud qui porte l'autorité
 register_node() { # register_node NOM IP RÔLE [ESSAIS] : etcd met quelques secondes à répondre après son démarrage
   local i tries="${4:-1}"
   for ((i = 1; i <= tries; i++)); do
-    ectl put "$REG$1" "$2:$3" >/dev/null 2>&1 && return 0
+    if ectl put "$REG$1" "$2:$3" >/dev/null 2>&1; then ectl del "$REMOVED$1" >/dev/null 2>&1 || true; return 0; fi   # s'inscrire annule un ancien retrait du même nom
     [ "$i" -lt "$tries" ] && sleep 2
   done
   return 1
@@ -523,6 +527,14 @@ for kv in json.load(sys.stdin).get("kvs", []):
     k = base64.b64decode(kv["key"]).decode("utf-8", "replace"); v = base64.b64decode(kv.get("value", "")).decode("utf-8", "replace")
     m = re.fullmatch(r"([0-9.]+):(data|witness)", v)
     if m: print(k.rsplit("/", 1)[-1], m.group(1), m.group(2))')
+  # nœuds retirés du cluster (par remove-node ou recover) : on les oublie ; si c'est CE nœud, on le dit sans rien détruire
+  local rm_raw rn
+  rm_raw="$(ectl get --prefix "$REMOVED" --keys-only 2>/dev/null || true)"
+  while IFS= read -r rn; do
+    rn="${rn##*/}"; valid_name "$rn" || continue
+    if [ "$rn" = "${C[NODE_NAME]}" ]; then log "AVERTISSEMENT : ce nœud a été retiré du cluster (par un administrateur). Il n'en fait plus partie ; ne pas le remettre en ligne sans le réinstaller."; continue; fi
+    case " $new " in *" $rn="*) C[PEERS]="$new"; new="$(peers_without "$rn")"; changed=1; log "nœud « $rn » retiré du cluster : oublié" ;; esac
+  done <<< "$rm_raw"
   [ "$changed" -eq 1 ] || return 0
   C[PEERS]="$new"; conf_check; conf_write; render_patroni; render_keepalived; fw_sync
   [ -n "${DDI_TEST:-}" ] || systemctl reload patroni.service 2>/dev/null || true
@@ -640,6 +652,61 @@ cmd_join() {
   log "nœud « ${C[NODE_NAME]} » rattaché au cluster « ${C[CLUSTER_NAME]} »"
 }
 
+# quorum_json : sonde CHAQUE membre etcd (en parallèle, délai borné : un nœud mort ne ralentit pas l'état) et calcule le quorum.
+# Un nœud d'etcd compte pour une voix sauf s'il est « learner ». Sortie : JSON sans secret (ni clé, ni certificat).
+quorum_json() {
+  local d p n ip ep; d="$(mktemp -d)"
+  for p in ${C[PEERS]}; do
+    n="$(peer_field "$p" name)"; ip="$(peer_field "$p" ip)"; ep="https://$ip:${C[ETCD_CLIENT_PORT]}"
+    ( s0="$(date +%s%N)"
+      ETCDCTL_API=3 etcdctl --endpoints "$ep" --command-timeout=3s --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" endpoint status -w json > "$d/$n.status" 2>/dev/null || true
+      echo $(( ($(date +%s%N) - s0) / 1000000 )) > "$d/$n.ms" ) &
+    ( ETCDCTL_API=3 etcdctl --endpoints "$ep" --command-timeout=3s --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" endpoint health -w json > "$d/$n.health" 2>/dev/null || true ) &
+  done
+  ( ectl --command-timeout=3s member list -w json > "$d/members.json" 2>/dev/null || true ) &
+  wait
+  PEERS="${C[PEERS]}" python3 - "$d" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+def load(name):
+    try:
+        with open(os.path.join(d, name)) as f: return json.load(f)
+    except Exception: return None
+peers = []
+for p in os.environ["PEERS"].split():
+    name, rest = p.split("=", 1); ip, role = rest.rsplit(":", 1); peers.append((name, ip, role))
+ml = load("members.json"); mem = {}
+if isinstance(ml, dict):
+    for m in ml.get("members", []):
+        if isinstance(m, dict) and m.get("name"): mem[m["name"]] = m
+rows = []; leader_id = None
+for name, ip, role in peers:
+    st = (load(name + ".status") or [{}])[0].get("Status") or {}
+    h = (load(name + ".health") or [{}])[0]
+    ms = None
+    try: ms = int(open(os.path.join(d, name + ".ms")).read().strip())
+    except Exception: pass
+    reach = bool(st)
+    if reach and st.get("leader"): leader_id = st["leader"]
+    mid = (st.get("header") or {}).get("member_id") or (mem.get(name) or {}).get("ID")
+    rows.append({"name": name, "ip": ip, "role": role, "reachable": reach, "healthy": h.get("health") is True,
+                 "learner": bool(st.get("isLearner")) if reach else bool((mem.get(name) or {}).get("isLearner")),
+                 "memberId": ("%x" % mid) if isinstance(mid, int) else None, "version": st.get("version") if reach else None,
+                 "raftIndex": st.get("raftIndex") if reach else None, "raftTerm": st.get("raftTerm") if reach else None,
+                 "dbSize": st.get("dbSize") if reach else None, "latencyMs": ms if reach else None,
+                 "inEtcd": (name in mem) if mem else None, "errors": [str(e)[:120] for e in (st.get("errors") or [])][:3]})
+for r in rows:
+    r["isLeader"] = bool(leader_id) and r["memberId"] is not None and int(r["memberId"], 16) == leader_id
+voters = [r for r in rows if not r["learner"]]
+need = len(voters) // 2 + 1
+healthy = sum(1 for r in voters if r["healthy"])
+print(json.dumps({"voters": len(voters), "needed": need, "healthy": healthy, "hasQuorum": healthy >= need, "tolerance": healthy - need,
+                  "leader": next((r["name"] for r in rows if r["isLeader"]), None), "members": rows,
+                  "unknownToEtcd": sorted(n for n in mem if n not in {r["name"] for r in rows})}, ensure_ascii=False))
+PY
+  rm -rf "$d"
+}
+
 cmd_status() {
   conf_load
   local cp="${C[ETCD_CLIENT_PORT]}" ip="${C[NODE_IP]}" etcd_ok=false members=0 pat="null"
@@ -655,13 +722,17 @@ cmd_status() {
     local held=false; if ip -o -4 addr show dev "${C[VIP_IFACE]}" 2>/dev/null | awk '{print $4}' | grep -qxF "${C[VIP]}"; then held=true; fi
     vip="{\"address\": \"${C[VIP]}\", \"iface\": \"${C[VIP_IFACE]}\", \"held\": $held}"
   fi
-  VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
+  local quorum; quorum="$(quorum_json 2>/dev/null)" || quorum="null"; [ -n "$quorum" ] || quorum="null"
+  local caown; caown="$(ectl --command-timeout=3s get "$CAOWN" --print-value-only 2>/dev/null | head -c 40 | tr -cd 'a-z0-9-')" || caown=""
+  local caesc=false; if [ -n "$(ectl --command-timeout=3s get "$CAESC" --keys-only 2>/dev/null)" ]; then caesc=true; fi
+  CAOWN_V="$caown" CAESC_V="$caesc" CANODE_V="${C[CA_NODE]}" QUORUM="$quorum" VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
     python3 -c '
 import json, os
 pat = json.loads(os.environ["PAT"])
 print(json.dumps({"cluster": os.environ["CLUSTER"], "node": os.environ["NODE"], "role": os.environ["ROLE"],
-  "etcd": {"healthy": os.environ["ETCD_OK"] == "true", "members": int(os.environ["MEMBERS"] or 0)},
+  "etcd": {"healthy": os.environ["ETCD_OK"] == "true", "members": int(os.environ["MEMBERS"] or 0), "quorum": json.loads(os.environ["QUORUM"])},
   "peers": [dict(zip(("name", "ip", "role"), (p.split("=")[0], p.split("=")[1].split(":")[0], p.split(":")[-1]))) for p in os.environ["PEERS"].split()],
+  "ca": {"node": os.environ["CANODE_V"] == "1", "owner": os.environ["CAOWN_V"] or None, "escrow": os.environ["CAESC_V"] == "true"},
   "patroni": pat, "kea": json.loads(os.environ["KEA"]), "vip": json.loads(os.environ["VIP"])}, ensure_ascii=False))'
 }
 
@@ -762,6 +833,7 @@ cmd_follow() {
   install -d -m 0700 "$STATE"
   if [ "${C[CA_NODE]}" = 1 ]; then ensure_xfr_key; fi
   ( cmd_ad_sync ) || log "follow : synchronisation Kerberos non terminée (réessai à la prochaine échéance)"
+  ( cmd_ca_sync ) || log "follow : publication de la clé d'autorité non terminée (réessai à la prochaine échéance)"
   local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" reload="${DDI_RELOAD_CMD:-/usr/local/sbin/ddibuntu-reload}" db="${DDI_DB_NAME:-ddibuntu}"
   local marker="$STATE/kea-applied" role margs="" content=""
   role="$(patroni_role)"; [ -n "$role" ] || { log "follow : rôle Patroni inconnu (réessai à la prochaine échéance)"; return 0; }
@@ -857,6 +929,204 @@ print(json.dumps({"at": int(time.time()), "candidate": c, "ok": os.environ["OK"]
   [ "$ok" = true ] || return 1
 }
 
+# ---------------------------------------------------------------- perte de nœuds : retrait, reprise après perte du quorum, autorité de certification
+# etcd_member_id NOM : identifiant (hexadécimal) du membre etcd de ce nom, vide si absent
+etcd_member_id() {
+  ectl --command-timeout=5s member list -w json 2>/dev/null | python3 -c '
+import json, sys
+n = sys.argv[1]
+try: ms = json.load(sys.stdin).get("members", [])
+except Exception: sys.exit(0)
+for m in ms:
+    if m.get("name") == n: print("%x" % m["ID"]); break' "$1"
+}
+peers_without() { local p out=""; for p in ${C[PEERS]}; do [ "$(peer_field "$p" name)" = "$1" ] || out="$out $p"; done; echo "${out# }"; }
+# forget_node NOM IP : efface toute trace du nœud dans etcd et le marque « retiré » (les autres nœuds l'oublient à leur prochaine synchronisation)
+forget_node() {
+  ectl put "$REMOVED$1" "$2" >/dev/null 2>&1 || return 1
+  ectl del "$REG$1" >/dev/null 2>&1 || true; ectl del "$VERSIONS$1" >/dev/null 2>&1 || true
+  ectl del "/ddibuntu/${C[CLUSTER_NAME]}/members/$1" >/dev/null 2>&1 || true   # clé de membre Patroni périmée (elle expirerait seule)
+}
+reapply_peers() {   # après un changement de PEERS : Patroni (hôtes etcd), Keepalived, pare-feu
+  conf_check; conf_write; render_patroni; render_keepalived; fw_sync
+  [ -n "${DDI_TEST:-}" ] || systemctl reload patroni.service 2>/dev/null || true
+  [ -n "${DDI_TEST:-}" ] || [ -z "${C[VIP]}" ] || systemctl reload keepalived.service 2>/dev/null || true
+}
+
+# remove-node NOM : retire du cluster un nœud perdu (ou à décommissionner). Exige le quorum etcd. Refus : soi-même, le leader PostgreSQL en place
+# (basculer d'abord), tout retrait qui ferait perdre le quorum aux nœuds restants.
+cmd_remove_node() {
+  local name="${1:-}"
+  conf_load; valid_name "$name" || die "nom de nœud invalide"
+  [ "$name" != "${C[NODE_NAME]}" ] || die "un nœud ne se retire pas lui-même : lancez la commande depuis un autre nœud du cluster"
+  ( cmd_sync ) >/dev/null 2>&1 || true; conf_load   # pairs à jour avant de juger du quorum
+  local p found=0 nip=""; for p in ${C[PEERS]}; do if [ "$(peer_field "$p" name)" = "$name" ]; then found=1; nip="$(peer_field "$p" ip)"; fi; done
+  [ "$found" -eq 1 ] || die "nœud inconnu : $name"
+  ectl --command-timeout=5s endpoint health >/dev/null 2>&1 || die "le quorum etcd est indisponible : aucun membre ne peut être retiré. Voir « ddibuntu-cluster recover »."
+  # leader PostgreSQL : on ne retire pas le primaire en place (la bascule se fait d'abord ; un leader mort est remplacé seul par Patroni après expiration de son bail)
+  if [ "${C[NODE_ROLE]}" = data ]; then
+    local lead; lead="$(curl -fsS --max-time 4 --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "https://${C[NODE_IP]}:${C[PATRONI_PORT]}/cluster" 2>/dev/null \
+      | python3 -c 'import json,sys; print(next((m["name"] for m in json.load(sys.stdin)["members"] if m["role"] in ("leader","master","primary")), ""))' 2>/dev/null || true)"
+    [ "$lead" != "$name" ] || die "« $name » est le primaire PostgreSQL actuel : faites d'abord une bascule, ou attendez que Patroni élise un nouveau primaire (bail de 30 s) s'il est en panne"
+  fi
+  # le quorum des nœuds RESTANTS doit tenir
+  local verdict; verdict="$(quorum_json | NAME="$name" python3 -c '
+import json, os, sys
+q = json.load(sys.stdin); n = os.environ["NAME"]
+rest = [m for m in q["members"] if m["name"] != n and not m["learner"]]
+need = len(rest) // 2 + 1; healthy = sum(1 for m in rest if m["healthy"])
+print("ok" if healthy >= need else "non : %d voix saines sur %d nécessaires après retrait" % (healthy, need))')"
+  [ "$verdict" = ok ] || die "retirer « $name » ferait perdre le quorum ($verdict)"
+  forget_node "$name" "$nip" || die "écriture dans etcd impossible"
+  local id; id="$(etcd_member_id "$name")"
+  if [ -n "$id" ]; then ectl --command-timeout=10s member remove "$id" >/dev/null 2>&1 || die "etcd a refusé de retirer le membre $name (réessayez ; l'opération est répétable)"; fi
+  C[PEERS]="$(peers_without "$name")"; reapply_peers
+  local own; own="$(ectl get "$CAOWN" --print-value-only 2>/dev/null || true)"
+  log "nœud « $name » retiré (membre etcd, registre, clés Patroni, pare-feu)"
+  [ "$own" != "$name" ] || log "ATTENTION : « $name » portait l'autorité de certification du cluster. Pour enrôler un remplaçant : « ddibuntu-cluster take-ca --yes » sur un nœud de données."
+}
+
+# recover [--yes] : perte du quorum etcd (la majorité des nœuds est perdue et ne reviendra pas). Reconstruit un cluster etcd à UN membre
+# (« force-new-cluster ») depuis les données de CE nœud, qui devient le seul survivant. Destructif : pas de retour arrière hors de la copie du
+# répertoire etcd conservée à côté. Refus tant qu'etcd a son quorum ou qu'un autre nœud répond encore (risque de deux cerveaux).
+cmd_recover() {
+  local yes=0; [ "${1:-}" != --yes ] || yes=1
+  conf_load
+  if ectl --command-timeout=5s endpoint health >/dev/null 2>&1; then die "etcd a encore son quorum : rien à reconstruire (utilisez « remove-node » pour retirer un nœud perdu)"; fi
+  local q others; q="$(quorum_json)"
+  others="$(printf '%s' "$q" | NODE="${C[NODE_NAME]}" python3 -c 'import json,os,sys; print(" ".join(m["name"] for m in json.load(sys.stdin)["members"] if m["name"]!=os.environ["NODE"] and m["reachable"]))')"
+  [ -z "$others" ] || die "d'autres nœuds répondent encore ($others) : ils peuvent encore reconstituer le quorum. Rétablissez le réseau ; ne reconstruisez pas à côté d'eux (deux clusters indépendants)."
+  [ "$yes" -eq 1 ] || die "opération destructive : ce nœud devient le SEUL membre du cluster ; les autres nœuds ne pourront plus y revenir sans réinstallation. Relancez avec --yes."
+  local dd="$ROOT/var/lib/etcd/ddibuntu" bak
+  [ -d "$dd" ] || die "répertoire etcd introuvable : $dd"
+  bak="$dd.pre-recover.$(date +%s)"; cp -a -- "$dd" "$bak" || die "copie de sauvegarde impossible"
+  log "sauvegarde du répertoire etcd : $bak"
+  local lost="" p; for p in ${C[PEERS]}; do [ "$(peer_field "$p" name)" = "${C[NODE_NAME]}" ] || lost="$lost $(peer_field "$p" name)=$(peer_field "$p" ip)"; done
+  sysctl_do stop patroni.service 2>/dev/null || true
+  etcd_ctl stop
+  C[ETCD_INITIAL_CLUSTER]="${C[NODE_NAME]}=https://${C[NODE_IP]}:${C[ETCD_PEER_PORT]}"; C[ETCD_STATE]=existing
+  ETCD_FORCE_NEW=1 render_etcd
+  etcd_ctl start
+  local i ok=0; for i in $(seq 1 60); do if ectl --command-timeout=3s endpoint health >/dev/null 2>&1; then ok=1; break; fi; sleep 1; done
+  if [ "$ok" -ne 1 ]; then ETCD_FORCE_NEW="" render_etcd; die "etcd n'a pas redémarré en cluster à un membre (la sauvegarde est dans $bak)"; fi
+  ETCD_FORCE_NEW="" render_etcd       # le drapeau ne doit jamais rester : un redémarrage ultérieur ne doit pas refaire la manœuvre
+  local l n ip; for l in $lost; do n="${l%%=*}"; ip="${l#*=}"; forget_node "$n" "$ip" || log "AVERTISSEMENT : marque de retrait de $n non écrite"; done
+  ectl put "$REG${C[NODE_NAME]}" "${C[NODE_IP]}:${C[NODE_ROLE]}" >/dev/null 2>&1 || true
+  C[PEERS]="${C[NODE_NAME]}=${C[NODE_IP]}:${C[NODE_ROLE]}"; reapply_peers
+  sysctl_do start patroni.service 2>/dev/null || true
+  log "cluster reconstruit : « ${C[NODE_NAME]} » est le seul membre. Nœuds perdus oubliés :${lost:- aucun}. Ajoutez-en d'autres avec « bundle » / « join »."
+}
+etcd_ctl() {   # etcd_ctl start|stop|restart : systemd en production ; en essai, commandes fournies par la batterie (DDI_ETCD_CMD)
+  if [ -n "${DDI_ETCD_CMD:-}" ]; then "$DDI_ETCD_CMD" "$1"; else sysctl_do "$1" etcd.service; fi
+}
+
+# L'autorité de certification (clé privée) n'existe que sur le premier nœud : sans elle on ne peut plus enrôler de remplaçant s'il est perdu.
+# Elle est donc publiée dans etcd, CHIFFRÉE avec une clé dérivée de la clé de cluster ddi-xfr (que seuls les nœuds de données possèdent : l'arbitre,
+# qui héberge etcd, ne voit que du chiffré). « take-ca » la reprend sur un autre nœud de données.
+ca_pass() { local secret; secret="$(sed -n 's/^ *secret "\([A-Za-z0-9+\/=]*\)";$/\1/p' "$XFRKEY" | head -n1)"; [ -n "$secret" ] || return 1
+  SECRET="$secret" python3 -c 'import hashlib, hmac, os; print(hmac.new(os.environ["SECRET"].encode(), b"ddibuntu-ca-key-v1", hashlib.sha256).hexdigest(), end="")'; }
+cmd_ca_sync() {
+  conf_load; [ "${C[CA_NODE]}" = 1 ] && [ "${C[NODE_ROLE]}" = data ] && [ -f "$CADIR/ca.key" ] && [ -f "$XFRKEY" ] || return 0
+  install -d -m 0700 "$STATE"
+  local d; d="$(mktemp -d "$STATE/.ca.XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "find '$d' -type f -exec shred -u {} + 2>/dev/null; rm -rf '$d'" RETURN
+  local -a cf=(ca.key ca.crt); [ ! -f "$CADIR/serial" ] || cf+=(serial)
+  tar -C "$CADIR" -cf "$d/ca.tar" "${cf[@]}" 2>/dev/null || return 1
+  local sha; sha="$(sha256sum < "$d/ca.tar" | cut -d' ' -f1)"
+  if [ "$(cat "$STATE/ca-published" 2>/dev/null || true)" = "$sha" ] && [ "$(ectl get "$CAOWN" --print-value-only 2>/dev/null || true)" = "${C[NODE_NAME]}" ]; then return 0; fi
+  local pass; pass="$(ca_pass)" || return 1
+  gpg_sym enc "$d/ca.tar" "$d/ca.enc" 3< <(printf '%s' "$pass") || { log "ca-sync : chiffrement impossible"; return 1; }
+  SHA="$sha" python3 -c 'import base64, json, os, sys; print(json.dumps({"v": 1, "sha": os.environ["SHA"], "blob": base64.b64encode(open(sys.argv[1], "rb").read()).decode()}, separators=(",", ":")))' "$d/ca.enc" > "$d/value"
+  if ectl put "$CAESC" < "$d/value" >/dev/null 2>&1 && ectl put "$CAOWN" "${C[NODE_NAME]}" >/dev/null 2>&1; then printf '%s\n' "$sha" > "$STATE/ca-published"; log "ca-sync : clé de l'autorité publiée (chiffrée) pour reprise éventuelle"
+  else log "ca-sync : publication impossible (réessai à la prochaine échéance)"; return 1; fi
+}
+# take-ca [--yes] : ce nœud de données reprend l'autorité (le nœud d'origine est perdu). Refus si l'autorité d'origine est toujours en ligne.
+cmd_take_ca() {
+  local yes=0; [ "${1:-}" != --yes ] || yes=1
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || die "seul un nœud de données peut reprendre l'autorité"
+  [ "${C[CA_NODE]}" = 0 ] || die "ce nœud porte déjà l'autorité"
+  [ -f "$XFRKEY" ] || die "pas de clé de cluster (ddi-xfr) sur ce nœud : la clé de l'autorité ne peut pas être déchiffrée"
+  local own; own="$(ectl --command-timeout=5s get "$CAOWN" --print-value-only 2>/dev/null)" || die "etcd injoignable (quorum ?)"
+  [ -n "$own" ] || die "aucune clé d'autorité publiée dans le cluster (le nœud d'origine ne l'a jamais publiée)"
+  local p
+  for p in ${C[PEERS]}; do
+    if [ "$(peer_field "$p" name)" = "$own" ] && ectl --command-timeout=3s --endpoints "https://$(peer_field "$p" ip):${C[ETCD_CLIENT_PORT]}" endpoint status >/dev/null 2>&1; then die "le nœud « $own » porte l'autorité et répond encore : retirez-le d'abord (remove-node) ou rétablissez-le"; fi
+  done
+  [ "$yes" -eq 1 ] || die "ce nœud va porter la clé privée de l'autorité du cluster. Relancez avec --yes."
+  install -d -m 0700 "$STATE"
+  local d; d="$(mktemp -d "$STATE/.ca.XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "find '$d' -type f -exec shred -u {} + 2>/dev/null; rm -rf '$d'" RETURN
+  ectl get "$CAESC" --print-value-only > "$d/value" 2>/dev/null || die "clé de l'autorité absente d'etcd"
+  python3 -c 'import base64, json, sys; open(sys.argv[2], "wb").write(base64.b64decode(json.load(open(sys.argv[1]))["blob"], validate=True))' "$d/value" "$d/ca.enc" 2>/dev/null || die "valeur d'etcd illisible"
+  local pass; pass="$(ca_pass)" || die "clé d'enveloppe illisible"
+  gpg_sym dec "$d/ca.enc" "$d/ca.tar" 3< <(printf '%s' "$pass") 2>/dev/null || die "déchiffrement impossible (clé de cluster différente ?)"
+  [ "$(sha256sum < "$d/ca.tar" | cut -d' ' -f1)" = "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha"])' "$d/value")" ] || die "empreinte inattendue : clé d'autorité refusée"
+  mkdir "$d/x"; tar -C "$d/x" -xf "$d/ca.tar" --no-same-owner --no-same-permissions ca.key ca.crt 2>/dev/null || die "archive de l'autorité invalide"
+  tar -C "$d/x" -xf "$d/ca.tar" --no-same-owner --no-same-permissions serial 2>/dev/null || true
+  openssl pkey -in "$d/x/ca.key" -noout 2>/dev/null || die "clé d'autorité invalide"
+  [ "$(openssl x509 -in "$d/x/ca.crt" -noout -pubkey | sha256sum)" = "$(openssl pkey -in "$d/x/ca.key" -pubout | sha256sum)" ] || die "la clé ne correspond pas au certificat de l'autorité"
+  cmp -s "$d/x/ca.crt" "$PKI/ca.crt" || die "le certificat de l'autorité du cluster ne correspond pas à celui de ce nœud : reprise refusée"
+  install -d -m 0700 "$CADIR"; install -m 0600 "$d/x/ca.key" "$CADIR/ca.key"; install -m 0644 "$d/x/ca.crt" "$CADIR/ca.crt"
+  [ ! -f "$d/x/serial" ] || install -m 0644 "$d/x/serial" "$CADIR/serial"
+  C[CA_NODE]=1; conf_write
+  ectl put "$CAOWN" "${C[NODE_NAME]}" >/dev/null 2>&1 || true
+  log "ce nœud porte désormais l'autorité du cluster (ancien porteur : $own). Les lots d'enrôlement peuvent être créés ici."
+}
+
+# action : demandes JSON de la console (fichier « .cluster-action », 600 octets au plus). Le fichier vient d'un processus sans privilège : il est
+# relu STRICTEMENT (action connue, nom valide, confirmation saisie à l'identique) et chaque opération revalide tout de son côté.
+# Le résultat (message issu de NOS messages d'erreur, jamais du contenu reçu) est publié pour la console.
+cmd_action() {
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || return 0
+  local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" f raw="" parsed act="" node="" msg="" ok=false
+  f="$gen/.cluster-action"
+  [ -e "$f" ] || [ -L "$f" ] || return 0
+  if [ -f "$f" ] && [ ! -L "$f" ]; then raw="$(head -c 600 "$f")"; fi
+  rm -f "$f"
+  parsed="$(printf '%s' "$raw" | CL="${C[CLUSTER_NAME]}" python3 -c '
+import json, os, re, sys
+try: d = json.loads(sys.stdin.read())
+except Exception: print("invalid"); sys.exit(0)
+if not isinstance(d, dict) or not set(d) <= {"action", "node", "confirm"}: print("invalid"); sys.exit(0)
+a, n, c = d.get("action"), d.get("node", ""), d.get("confirm", "")
+name = r"[a-z][a-z0-9-]{1,30}"
+if a == "refresh" and not n and not c: print("refresh -")
+elif a == "remove-node" and isinstance(n, str) and re.fullmatch(name, n) and c == n: print("remove-node " + n)
+elif a == "take-ca" and not n and isinstance(c, str) and re.fullmatch(name, c): print("take-ca " + c)
+elif a == "recover" and not n and c == os.environ["CL"]: print("recover -")
+else: print("invalid")' 2>/dev/null || echo invalid)"
+  case "$parsed" in
+    "refresh -") act=refresh; publish_state || true; ok=true; msg="état actualisé" ;;
+    "remove-node "*) act=remove-node; node="${parsed#* }" ;;
+    "take-ca "*) act=take-ca; node="${parsed#* }"
+      if [ "$node" != "${C[NODE_NAME]}" ]; then act=""; msg="confirmation incorrecte"; node=""; fi ;;
+    "recover -") act=recover ;;
+    *) msg="demande invalide" ;;
+  esac
+  local out=""
+  if [ -n "$act" ] && [ "$act" != refresh ]; then
+    case "$act" in
+      remove-node) out="$( ( cmd_remove_node "$node" ) 2>&1 )" && ok=true ;;
+      take-ca) out="$( ( cmd_take_ca --yes ) 2>&1 )" && ok=true ;;
+      recover) out="$( ( cmd_recover --yes ) 2>&1 )" && ok=true ;;
+    esac
+    # dernier message de nos propres commandes, assaini (caractères imprimables, 300 au plus)
+    msg="$(printf '%s' "$out" | tail -n 1 | tr -cd '[:print:]é-ÿ' | sed 's/^ddibuntu-cluster: //' | head -c 300)"
+    [ -n "$msg" ] || { if [ "$ok" = true ]; then msg="opération effectuée"; else msg="opération refusée (voir le journal)"; fi; }
+  fi
+  [ -z "$act" ] || [ "$act" = refresh ] || publish_state || true
+  log "demande de la console (${act:-refusée}) : $msg"
+  local d="$ROOT/run/ddibuntu" t; install -d -m 0755 "$d" 2>/dev/null || return 0
+  t="$(mktemp "$d/.result.XXXXXX")" || return 0
+  ACT="$act" NODE="$node" OK="$ok" MSG="$msg" python3 -c '
+import json, os, time
+print(json.dumps({"at": int(time.time()), "action": os.environ["ACT"], "candidate": os.environ["NODE"], "ok": os.environ["OK"] == "true", "message": os.environ["MSG"]}, ensure_ascii=False))' > "$t"
+  chmod 0644 "$t"; mv -f "$t" "$d/cluster-result.json"
+  [ "$ok" = true ]
+}
+
 case "${1:-}" in
   init) shift; cmd_init "$@" ;;
   bundle) shift; cmd_bundle "$@" ;;
@@ -868,7 +1138,11 @@ case "${1:-}" in
   sync) cmd_sync ;;
   follow) cmd_follow ;;
   ad-sync) cmd_ad_sync ;;
-  request) cmd_request ;;
+  request) rc=0; cmd_request || rc=1; cmd_action || rc=1; exit "$rc" ;;
+  remove-node) shift; cmd_remove_node "$@" ;;
+  recover) shift; cmd_recover "$@" ;;
+  ca-sync) cmd_ca_sync ;;
+  take-ca) shift; cmd_take_ca "$@" ;;
   rolling-check) shift; cmd_rolling_check "$@" ;;
   _putver) shift; cmd_putver "$@" ;;
   vip-check) cmd_vip_check ;;

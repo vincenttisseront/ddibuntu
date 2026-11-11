@@ -6,6 +6,6 @@ After=patroni.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/ddibuntu-cluster request
-TimeoutStartSec=180
+TimeoutStartSec=900
 PrivateTmp=yes
 ProtectHome=yes
