@@ -67,7 +67,8 @@ export function getJson(u: URL, o: GetOpts): Promise<any> {
   return new Promise((resolve, reject) => {
     let settled = false
     const ok = (v: any) => { if (!settled) { settled = true; resolve(v) } }, ko = (e: NetboxError) => { if (!settled) { settled = true; reject(e) } }
-    const auth = o.token.startsWith('nbt_') ? `Bearer ${o.token}` : `Token ${o.token}`
+    // jeton v2 : « <clé>.<jeton> » (souvent préfixé « nbt_ ») envoyé en Bearer ; jeton v1 : 40 caractères sans point, envoyé en Token
+    const auth = o.token.startsWith('nbt_') || o.token.includes('.') ? `Bearer ${o.token}` : `Token ${o.token}`
     const req = lib.request(u, { method: 'GET', lookup, timeout: o.timeoutMs ?? 30000, ...(u.protocol === 'https:' ? { rejectUnauthorized: o.verify, ...(o.ca ? { ca: o.ca } : {}) } : {}),
       headers: { authorization: auth, accept: 'application/json', 'user-agent': 'ddibuntu-console' } }, (res) => {
       const st = res.statusCode ?? 0
