@@ -62,6 +62,7 @@ describe('NetBox : client HTTPS', () => {
     hits = []; await expect(getJson(U('/api/status/'), { token: 'cle.secret', verify: true, ca: CA })).rejects.toMatchObject({ code: 'netbox_auth' })
     expect(hits.map((h) => h.auth)).toContain('Bearer cle.secret')   // jeton v2 sans préfixe « nbt_ » : aussi en Bearer (NetBox : « Must be in the form Bearer <key>.<token> »)
     hits = []; await getJson(U('/api/status/'), { token: 'bon-jeton', verify: true, ca: CA }); expect(hits.map((h) => h.auth)).toContain('Token bon-jeton')
+    hits = []; await getJson(U('/api/status/'), { token: 'Token bon-jeton', verify: true, ca: CA }); expect(hits.map((h) => h.auth)).toEqual(['Token bon-jeton'])   // « Token » collé avec le jeton
   })
   it('motif du refus : texte brut, nettoyé et borné', () => {
     expect(upstreamDetail('{"detail":"Invalid v1 token"}')).toBe('Invalid v1 token')

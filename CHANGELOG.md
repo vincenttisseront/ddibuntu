@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.7 — « Correctif : jeton NetBox collé avec « Token » »
+- NetBox affiche le jeton sous la forme « Token xxxxxxxx » : quand ce texte était collé tel quel, la console envoyait « Token Token xxxxxxxx » et NetBox répondait « Invalid authorization header ». Le mot « Token » (ou « Bearer ») collé devant le jeton est maintenant retiré, aussi pour un jeton déjà enregistré.
+- Tests : `unit-iter4` (+1 assertion).
+- Numérotation : vues DNS en **0.9.8** (le reste décalé d'un cran, DHCP multi-espaces en 0.9.13).
+
 ## 0.9.6 — « Correctif : jetons NetBox v2 »
 - **Jetons d'API NetBox 4 (v2)** : un jeton de la forme `<clé>.<jeton>` (avec ou sans préfixe `nbt_`) était envoyé avec l'en-tête `Token`, que NetBox refuse (« Invalid authorization header: Must be in the form "Bearer <key>.<token>" or "Token <token>" »). La console envoie désormais `Bearer` pour ces jetons et `Token` pour les jetons v1 (40 caractères).
 - Tests : `unit-iter4` (en-tête selon le format du jeton).

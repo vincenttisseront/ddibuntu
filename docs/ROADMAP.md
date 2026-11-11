@@ -68,10 +68,11 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
     4b. ~~**0.9.4**~~ ✅ fait — Correctif intercalaire : source NetBox (le test ne déconnecte plus, motif du refus affiché, jeton nettoyé).
     4c. ~~**0.9.5**~~ ✅ fait — Correctif intercalaire : les assistants (NetBox, AD) affichent enfin leurs erreurs.
     4d. ~~**0.9.6**~~ ✅ fait — Correctif intercalaire : jeton NetBox v2 (`<clé>.<jeton>`) envoyé en `Bearer`.
-    5. **0.9.7** — Vues DNS.
-    6. **0.9.8** — Traçabilité bail / MAC / nom / utilisateur AD.
-    7. **0.9.9** — Découverte planifiée et alertes d'hygiène.
-    8. **0.9.10** — API : description OpenAPI et jetons d'API.
-    9. **0.9.11** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
-    10. **0.9.12** — DHCP multi-espaces.
+    4e. ~~**0.9.7**~~ ✅ fait — Correctif intercalaire : jeton NetBox collé avec le mot « Token ».
+    5. **0.9.8** — Vues DNS.
+    6. **0.9.9** — Traçabilité bail / MAC / nom / utilisateur AD.
+    7. **0.9.10** — Découverte planifiée et alertes d'hygiène.
+    8. **0.9.11** — API : description OpenAPI et jetons d'API.
+    9. **0.9.12** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
+    10. **0.9.13** — DHCP multi-espaces.
 5. **1.0** — Consolidation de la série 0.9.x et passage en revue avant usage en production.
