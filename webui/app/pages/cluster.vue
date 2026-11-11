@@ -9,7 +9,17 @@ async function load(silent = false) {
   catch (e: any) { if (!silent) error.value = e.info?.message ?? t('err.internal') }
   finally { loading.value = false }
 }
-onMounted(() => { load(); timer = setInterval(() => load(true), 5000) })
+// Actualisation « en direct » : l'état est relu toutes les 5 s ; un opérateur demande en plus à root de republier (sondes etcd fraîches) toutes les 15 s.
+let ticks = 0
+const { canWrite } = useRole()
+onMounted(() => {
+  load()
+  timer = setInterval(() => {
+    if (document.hidden) return
+    if (canWrite.value && ticks++ % 3 === 0) api.call('POST', '/cluster/refresh', undefined, { silent: true }).catch(() => {})
+    load(true)
+  }, 5000)
+})
 onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 
 const st = computed(() => data.value?.state ?? null)
@@ -75,6 +85,7 @@ async function switchover(node: string) {
           </dl>
         </UCard>
       </div>
+      <ClusterOps :st="st" :result="data.result" @reload="load(true)" />
       <UCard>
         <template #header><div class="flex items-center justify-between"><span class="font-medium">{{ t('cluster.nodes') }}</span><span v-if="switching" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader" class="animate-spin" />{{ t('cluster.switching', { n: switching }) }}</span></div></template>
         <div class="overflow-x-auto">

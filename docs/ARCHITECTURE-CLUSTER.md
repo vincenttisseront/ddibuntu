@@ -98,3 +98,10 @@ Statut : **validée** (itération 0). Aucune ligne de code de cluster n'existe e
 - **Bascule.** `ad-sync` s'exécute avant l'alignement de rôle de `follow` : à la promotion, le nouveau primaire a déjà le keytab (si le cluster en avait un depuis plus d'une minute).
 - **État pour la console.** `/run/ddibuntu/ad-sync.json` (`synced`, `published`, `applied`, `failed` + motif, sans secret), affiché sur la page « Active Directory ».
 - **À vérifier au premier laboratoire** : coupure réseau réelle pendant une publication, deux administrateurs modifiant l'AD pendant une partition, principal `DNS/…` identique sur les deux nœuds avec un vrai AD.
+
+## Itération 8 — perte de nœuds et reprise : comment c'est réalisé
+- **Quorum en direct** : `quorum_json` sonde chaque pair en parallèle (`endpoint status/health`, `member list`) ; voix = membres non « learner », majorité = ⌊voix/2⌋+1, tolérance = sains − majorité. Publié dans `cluster-status.json` (`etcd.quorum`, `ca`).
+- **Retrait** : `remove-node` écrit `/ddibuntu-cluster/removed/<nom>`, efface registre / version / clé Patroni, puis `member remove`. Les autres nœuds appliquent la marque dans `sync`; un nœud qui se réinscrit l'efface.
+- **Reconstruction** : `recover` = sauvegarde du répertoire etcd, `force-new-cluster` à usage unique (variable `ETCD_FORCE_NEW`, jamais écrite durablement), marques de retrait pour tous les autres pairs.
+- **Autorité** : `ca-sync` (minuterie `follow`) publie `/ddibuntu-cluster/ca/escrow` chiffré (gpg AES256, phrase = HMAC-SHA256 du secret ddi-xfr) et `/ddibuntu-cluster/ca/owner` ; `take-ca` la déchiffre sur un nœud de données.
+- **Console** : fichier `.cluster-action` (JSON ≤ 600 octets) déposé dans le répertoire de demandes ; `ddibuntu-cluster request` (unité path) revalide tout puis publie `cluster-result.json`.

@@ -5,9 +5,12 @@ import { dirname, join } from 'node:path'
 import { cfg } from './config'
 
 export interface ClusterNode { name: string; ip: string; role: string; host?: string; state?: string; patroniRole?: string; lagBytes?: number | null; timeline?: number | null }
+export interface QuorumMember { name: string; ip: string; role: string; reachable: boolean; healthy: boolean; learner: boolean; isLeader: boolean; version: string; raftIndex: number | null; raftTerm: number | null; dbSize: number | null; latencyMs: number | null }
+export interface Quorum { voters: number; needed: number; healthy: number; hasQuorum: boolean; tolerance: number; leader: string | null; members: QuorumMember[]; unknownToEtcd: string[] }
 export interface ClusterState {
   cluster: string; node: string; nodeRole: string; localRole: 'leader' | 'replica' | 'unknown'; at: number; ageSeconds: number; stale: boolean
-  etcd: { healthy: boolean; members: number }
+  etcd: { healthy: boolean; members: number; quorum: Quorum | null }
+  ca: { node: boolean; owner: string | null; escrow: boolean } | null
   nodes: ClusterNode[]
   leader: string | null
   bind: 'primary' | 'secondary' | null
@@ -17,6 +20,21 @@ export interface ClusterState {
 
 const MAX_AGE_SECONDS = 180   // la minuterie publie chaque minute : au-delà de 3 minutes, l'information est périmée
 const str = (v: unknown, max = 128) => (typeof v === 'string' ? v.slice(0, max) : '')
+const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+
+// Quorum etcd mesuré en direct par root (sonde de chaque membre) : champs connus et bornés uniquement.
+export function parseQuorum(q: any): Quorum | null {
+  if (!q || typeof q !== 'object' || !Array.isArray(q.members)) return null
+  return {
+    voters: Number(q.voters) || 0, needed: Number(q.needed) || 0, healthy: Number(q.healthy) || 0, hasQuorum: q.hasQuorum === true,
+    tolerance: Number.isFinite(q.tolerance) ? Number(q.tolerance) : 0, leader: typeof q.leader === 'string' && q.leader ? str(q.leader, 63) : null,
+    members: q.members.slice(0, 16).map((m: any) => ({
+      name: str(m?.name, 63), ip: str(m?.ip, 45), role: str(m?.role, 16), reachable: m?.reachable === true, healthy: m?.healthy === true, learner: m?.learner === true,
+      isLeader: m?.isLeader === true, version: str(m?.version, 32), raftIndex: num(m?.raftIndex), raftTerm: num(m?.raftTerm), dbSize: num(m?.dbSize), latencyMs: num(m?.latencyMs),
+    })),
+    unknownToEtcd: Array.isArray(q.unknownToEtcd) ? q.unknownToEtcd.slice(0, 16).map((x: unknown) => str(x, 63)) : [],
+  }
+}
 
 // Assainit le fichier : uniquement les champs connus, bornés ; un fichier mal formé est ignoré (jamais d'erreur côté appelant).
 export function parseClusterState(raw: string, nowSec = Date.now() / 1000): ClusterState | null {
@@ -40,7 +58,8 @@ export function parseClusterState(raw: string, nowSec = Date.now() / 1000): Clus
     cluster: str(j.cluster, 63), node: str(j.node, 63), nodeRole: str(j.role, 16),
     localRole: lr === 'leader' || lr === 'replica' ? lr : 'unknown',
     at, ageSeconds: age, stale: age > MAX_AGE_SECONDS,
-    etcd: { healthy: j.etcd?.healthy === true, members: Number(j.etcd?.members) || 0 },
+    etcd: { healthy: j.etcd?.healthy === true, members: Number(j.etcd?.members) || 0, quorum: parseQuorum(j.etcd?.quorum) },
+    ca: j.ca && typeof j.ca === 'object' ? { node: j.ca.node === true, owner: typeof j.ca.owner === 'string' && j.ca.owner ? str(j.ca.owner, 63) : null, escrow: j.ca.escrow === true } : null,
     nodes, leader: typeof leader === 'string' ? str(leader, 63) : null,
     bind: j.bind === 'primary' || j.bind === 'secondary' ? j.bind : null,
     kea: j.kea ?? null,
@@ -56,13 +75,13 @@ export async function readClusterState(): Promise<ClusterState | null> {
   } catch { return null }
 }
 
-export interface SwitchoverResult { at: number; candidate: string; ok: boolean; message: string }
+export interface SwitchoverResult { at: number; candidate: string; ok: boolean; message: string; action?: string }
 export async function readSwitchoverResult(): Promise<SwitchoverResult | null> {
   try {
     const f = join(dirname(cfg().clusterStatusFile), 'cluster-result.json')
     const j = JSON.parse(await fs.readFile(f, 'utf8'))
     if (typeof j?.at !== 'number') return null
-    return { at: j.at, candidate: str(j.candidate, 31), ok: j.ok === true, message: str(j.message, 200) }
+    return { at: j.at, candidate: str(j.candidate, 31), ok: j.ok === true, message: str(j.message, 300), ...(typeof j.action === 'string' && j.action ? { action: str(j.action, 24) } : {}) }
   } catch { return null }
 }
 
@@ -70,4 +89,29 @@ export async function readSwitchoverResult(): Promise<SwitchoverResult | null> {
 export function switchoverCandidates(st: ClusterState | null): string[] {
   if (!st || st.stale || !st.etcd.healthy) return []
   return st.nodes.filter((n) => n.role === 'data' && n.name !== st.leader && n.patroniRole !== undefined && ['running', 'streaming'].includes(n.state ?? '')).map((n) => n.name)
+}
+
+// Actions d'exploitation demandées par la console (jamais exécutées ici) : vérifications préalables contre l'état publié par root.
+export type ClusterAction = { action: 'remove-node'; node: string; confirm: string } | { action: 'take-ca'; confirm: string } | { action: 'recover'; confirm: string }
+// Retourne le code d'erreur API (409) si la demande est incohérente avec l'état courant, sinon null. root revalide tout de son côté.
+export function actionRefusal(st: ClusterState | null, a: ClusterAction): string | null {
+  if (!st) return 'not_clustered'
+  if (st.nodeRole !== 'data') return 'action_data_node_only'
+  const q = st.etcd.quorum
+  if (a.action === 'remove-node') {
+    if (a.confirm !== a.node) return 'confirm_mismatch'
+    if (a.node === st.node) return 'cannot_remove_self'
+    if (!st.nodes.some((n) => n.name === a.node)) return 'unknown_node'
+    if (st.stale || !q || !q.hasQuorum) return 'quorum_required'
+    return null
+  }
+  if (a.action === 'take-ca') {
+    if (a.confirm !== st.node) return 'confirm_mismatch'
+    if (!st.ca || st.ca.node) return 'already_ca'
+    if (!st.ca.escrow || !st.ca.owner) return 'no_escrow'
+    return null
+  }
+  if (a.confirm !== st.cluster) return 'confirm_mismatch'
+  if (!q || q.hasQuorum) return 'quorum_present'
+  return null
 }
