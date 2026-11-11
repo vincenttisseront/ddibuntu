@@ -198,7 +198,7 @@ export async function validateFiles(files: OutFile[]): Promise<CheckResult[]> {
       const key = join(dir, 'ddi-ddns.key')
       await fs.writeFile(key, 'key "ddi-ddns" { algorithm hmac-sha256; secret "c2VjcmV0LWRlLXRlc3Qtc2VjcmV0LWRlLXRlc3Q="; };\n')
       const wrapper = join(dir, 'named.conf')
-      const body = named.map((f) => sub(f.content, zdir).replace(/include "[^"]*\.key";/, `include "${key}";`)).join('\n')
+      const body = named.map((f) => sub(f.content, zdir).replace(/include "[^"]*\.key";/, `include "${key}";`).replace(/^(\s*directory )"[^"]*";/m, `$1"${dir}";`)).join('\n')
       await fs.writeFile(wrapper, body)
       const r = await run(c.namedCheckconf, [wrapper])
       results.push({ name: 'named-checkconf', ok: r.missing ? null : r.code === 0, output: r.out })

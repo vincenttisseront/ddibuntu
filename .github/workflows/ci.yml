@@ -16,6 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: webui/package-lock.json }
+      - run: sudo apt-get update && sudo apt-get install -y bind9-utils kea-dhcp4-server   # les tests de rendu valident avec les outils officiels
       - run: tools/build-console.sh
       - run: tools/run-console-tests.sh unit
   repo-mode:
