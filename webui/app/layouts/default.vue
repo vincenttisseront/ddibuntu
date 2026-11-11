@@ -23,7 +23,8 @@ const navGroups = computed(() => {
     { label: t('nav.grp_ops'), items: [
       { label: t('nav.import'), icon: 'i-lucide-file-input', to: '/import' },
       ...(['admin', 'operator'].includes(role.value) ? [{ label: t('nav.ad'), icon: 'i-lucide-building-2', to: '/ad' }] : []),
-      ...(clusterOn.value ? [{ label: t('nav.cluster'), icon: 'i-lucide-server-cog', to: '/cluster' }] : []),
+      // un administrateur voit toujours l'entrée : c'est par elle qu'on crée un cluster ou qu'on en rejoint un depuis un serveur encore seul
+      ...(clusterOn.value || role.value === 'admin' ? [{ label: t('nav.cluster'), icon: 'i-lucide-server-cog', to: '/cluster' }] : []),
       ...(role.value === 'admin' ? [{ label: t('nav.system'), icon: 'i-lucide-settings', to: '/system', ...(updateAvailable.value ? { badge: t('update.badge'), to: '/system#updates' } : {}) }] : []),
     ] },
   ]
