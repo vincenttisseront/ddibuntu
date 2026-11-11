@@ -211,7 +211,10 @@ export async function validateFiles(files: OutFile[]): Promise<CheckResult[]> {
       testConf.Dhcp4['control-socket']['socket-name'] = join(dir, 'kea.sock')
       await fs.writeFile(p, JSON.stringify(testConf))
       const r = await run(c.keaDhcp4, ['-t', p])
-      results.push({ name: 'kea-dhcp4 -t', ok: r.missing ? null : r.code === 0, output: r.out })
+      // Le profil AppArmor d'Ubuntu n'autorise Kea à lire que /etc/kea : hors de là, « -t » échoue sans juger la configuration.
+      // Verdict inconnu (null) plutôt que faux : ddibuntu-reload (root) refait la vérification, depuis /etc/kea.
+      const blocked = r.code !== 0 && /Unable to open file/.test(r.out)
+      results.push({ name: 'kea-dhcp4 -t', ok: r.missing || blocked ? null : r.code === 0, output: blocked ? `${r.out} (profil AppArmor de Kea : vérification reportée à ddibuntu-reload)` : r.out })
     }
   } finally {
     await fs.rm(dir, { recursive: true, force: true })
