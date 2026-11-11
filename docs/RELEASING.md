@@ -1,9 +1,10 @@
 # Publier une version
 
 ## Publication automatique (recommandée) — ce que les appliances interrogent
-1. Mettre à jour `src/VERSION` et `CHANGELOG.md` (la section `## X.Y.Z` devient les notes de version affichées dans la console).
-2. `git tag vX.Y.Z && git push origin vX.Y.Z` : le workflow `release.yml` vérifie que le tag = `src/VERSION`, construit la console, lance lint et tests, produit `ddibuntu-update-X.Y.Z.tar.gz` (`build-ddibuntu.sh --bundle`) et le fichier unique, **signe `SHA256SUMS` (Ed25519)** avec le secret `UPDATE_SIGNING_KEY`, contrôle la signature avec la clé publique du dépôt, puis crée la release.
-3. Les appliances voient la nouvelle version à leur prochaine recherche (quotidienne ou bouton) ; l'administrateur l'installe depuis la console.
+1. Mettre à jour `src/VERSION`, `src/rootfs/usr/local/lib/ddibuntu/VERSION` et `CHANGELOG.md` (la section `## X.Y.Z` devient les notes de version affichées dans la console).
+2. Pousser sur `main`. Le workflow `release.yml` se déclenche quand `src/VERSION` change : si la release `vX.Y.Z` n'existe pas encore, il construit la console, lance lint et tests, produit `ddibuntu-update-X.Y.Z.tar.gz` (`build-ddibuntu.sh --bundle`) et le fichier unique, **signe `SHA256SUMS` (Ed25519)** avec le secret `UPDATE_SIGNING_KEY`, contrôle la signature avec la clé publique du dépôt, puis **crée la release et le tag `vX.Y.Z`** sur le commit testé. Aucun `git tag` à pousser. (Pousser un tag `vX.Y.Z` à la main fonctionne toujours ; le tag doit alors égaler `src/VERSION`.)
+3. Si la release existe déjà, le workflow s'arrête sans rien faire. Pour republier une version, supprimer d'abord sa release et son tag.
+4. Les appliances voient la nouvelle version à leur prochaine recherche (quotidienne ou bouton) ; l'administrateur l'installe depuis la console.
 
 **Clé de signature** : la clé publique `src/rootfs/etc/ddibuntu/update-pubkey.pem` est embarquée dans chaque appliance ; la clé privée n'existe que dans le secret GitHub `UPDATE_SIGNING_KEY`. Pour la renouveler : `openssl genpkey -algorithm ed25519 -out k.pem`, `openssl pkey -in k.pem -pubout -out src/rootfs/etc/ddibuntu/update-pubkey.pem`, `gh secret set UPDATE_SIGNING_KEY < k.pem`, puis publier une version signée avec **l'ancienne** clé qui embarque la nouvelle clé publique (les appliances n'acceptent que ce qui est signé par la clé qu'elles ont déjà). Une clé perdue ou compromise impose de réinstaller par ISO ou de poser le nouveau fichier à la main sur chaque appliance.
 

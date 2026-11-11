@@ -1,24 +1,43 @@
-# Publication : un tag vX.Y.Z construit l'archive de mise à jour en ligne et le fichier unique, signe SHA256SUMS
+# Publication : un push sur main qui change src/VERSION (ou un tag vX.Y.Z poussé à la main) construit l'archive de mise à jour en ligne et le fichier unique, signe SHA256SUMS
 # (Ed25519, clé privée dans le secret UPDATE_SIGNING_KEY ; la clé publique épinglée est src/rootfs/etc/ddibuntu/update-pubkey.pem)
 # puis crée la release GitHub que les appliances interrogent. Voir docs/RELEASING.md.
 name: release
+# La release crée elle-même le tag vX.Y.Z (sur le commit testé) : il suffit de pousser la nouvelle src/VERSION sur main.
+# Si la release existe déjà, le travail s'arrête sans rien faire (modifier ce fichier ou src/VERSION sans changer de version est sans effet).
 on:
   push:
     tags: ['v*']
+    branches: [main]
+    paths: ['src/VERSION', '.github/workflows/release.yml']
+concurrency: { group: release, cancel-in-progress: false }
 permissions:
   contents: write
 jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      skip: ${{ steps.g.outputs.skip }}
+      tag: ${{ steps.g.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: g
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          v="$(tr -d '\n' < src/VERSION)"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "src/VERSION invalide : $v"; exit 1; }
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v$v" ]; then echo "tag ${GITHUB_REF_NAME} différent de v$v (src/VERSION)"; exit 1; fi
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" >/dev/null 2>&1; then echo "release v$v déjà publiée : rien à faire"; echo skip=true >> "$GITHUB_OUTPUT"; else echo skip=false >> "$GITHUB_OUTPUT"; fi
   release:
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: webui/package-lock.json }
-      - name: Le tag doit correspondre à src/VERSION
-        run: |
-          v="$(tr -d '\n' < src/VERSION)"
-          [ "${GITHUB_REF_NAME}" = "v$v" ] || { echo "tag ${GITHUB_REF_NAME} différent de v$v (src/VERSION)"; exit 1; }
-          echo "VERSION=$v" >> "$GITHUB_ENV"
+      - name: Version publiée
+        run: echo "VERSION=$(tr -d '\n' < src/VERSION)" >> "$GITHUB_ENV"
       - run: sudo apt-get update && sudo apt-get install -y shellcheck bind9-utils kea-dhcp4-server
       - run: make lint
       - run: tools/build-console.sh
@@ -46,5 +65,5 @@ jobs:
       - name: Création de la release
         env: { GH_TOKEN: '${{ github.token }}' }
         run: |
-          gh release create "${GITHUB_REF_NAME}" --title "DDI-Buntu $VERSION" --notes-file notes.md \
+          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "DDI-Buntu $VERSION" --notes-file notes.md \
             "dist/ddibuntu-update-$VERSION.tar.gz" dist/build-ddibuntu.sh dist/SHA256SUMS dist/SHA256SUMS.sig
