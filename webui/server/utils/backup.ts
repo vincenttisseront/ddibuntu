@@ -76,7 +76,7 @@ export async function readRestoreState(nowSec = Date.now() / 1000): Promise<Rest
 export type BackupAction =
   | { action: 'run' | 'verify' | 'prune' | 'enable' | 'disable' } | { action: 'verify'; id: string } | { action: 'delete'; id: string }
 // Refus d'une action contre l'état publié par root (code d'erreur API 409), sinon null. root revalide tout de son côté.
-export function actionRefusal(st: BackupStatus | null, a: BackupAction): string | null {
+export function backupActionRefusal(st: BackupStatus | null, a: BackupAction): string | null {
   if (!st) return 'backup_unavailable'
   if (st.role === 'witness') return 'backup_witness'
   if (a.action === 'enable') return null

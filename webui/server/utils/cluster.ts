@@ -4,6 +4,8 @@ import { networkInterfaces, hostname } from 'node:os'
 import { promises as fs } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { cfg } from './config'
+import { parseNodeHealth } from './health'
+import type { NodeHealth } from './health'
 
 export interface ClusterNode { name: string; ip: string; role: string; host?: string; state?: string; patroniRole?: string; lagBytes?: number | null; timeline?: number | null }
 export interface QuorumMember { name: string; ip: string; role: string; reachable: boolean; healthy: boolean; learner: boolean; isLeader: boolean; version: string; raftIndex: number | null; raftTerm: number | null; dbSize: number | null; latencyMs: number | null }
@@ -17,6 +19,7 @@ export interface ClusterState {
   bind: 'primary' | 'secondary' | null
   kea: unknown
   vip: { address: string; iface: string; held: boolean } | null
+  health: Record<string, NodeHealth>   // santé de chaque nœud (arbitre compris), partagée par etcd et relayée par root
 }
 
 const MAX_AGE_SECONDS = 180   // la minuterie publie chaque minute : au-delà de 3 minutes, l'information est périmée
@@ -35,6 +38,16 @@ export function parseQuorum(q: any): Quorum | null {
     })),
     unknownToEtcd: Array.isArray(q.unknownToEtcd) ? q.unknownToEtcd.slice(0, 16).map((x: unknown) => str(x, 63)) : [],
   }
+}
+
+function parseHealthMap(raw: any, nowSec: number): Record<string, NodeHealth> {
+  const out: Record<string, NodeHealth> = {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  for (const [name, v] of Object.entries(raw).slice(0, 16)) {
+    const h = parseNodeHealth(v, nowSec)
+    if (h && h.node === name) out[name] = h    // la clé doit être le nom du nœud qui publie (une valeur piégée ne se fait pas passer pour un autre)
+  }
+  return out
 }
 
 // Assainit le fichier : uniquement les champs connus, bornés ; un fichier mal formé est ignoré (jamais d'erreur côté appelant).
@@ -65,6 +78,7 @@ export function parseClusterState(raw: string, nowSec = Date.now() / 1000): Clus
     bind: j.bind === 'primary' || j.bind === 'secondary' ? j.bind : null,
     kea: j.kea ?? null,
     vip: j.vip && typeof j.vip.address === 'string' ? { address: str(j.vip.address, 64), iface: str(j.vip.iface, 32), held: j.vip.held === true } : null,
+    health: parseHealthMap(j.health, nowSec),
   }
 }
 
@@ -121,9 +135,12 @@ export function actionRefusal(st: ClusterState | null, a: ClusterAction): string
 export const NODE_NAME_RE = /^[a-z][a-z0-9-]{1,30}$/
 export interface LocalAddress { iface: string; address: string; prefix: number }
 // Adresses IPv4 des interfaces du serveur (la boucle locale n'est utile qu'aux tests).
+// Ne lève jamais : sous un service durci (sans AF_NETLINK) la lecture échoue ; la liste est alors vide et les assistants acceptent la saisie libre (root revalide).
 export function localAddresses(includeLoopback = false): LocalAddress[] {
   const out: LocalAddress[] = []
-  for (const [iface, list] of Object.entries(networkInterfaces())) {
+  let ifaces: ReturnType<typeof networkInterfaces>
+  try { ifaces = networkInterfaces() } catch { return out }
+  for (const [iface, list] of Object.entries(ifaces)) {
     for (const a of list ?? []) {
       if (a.family !== 'IPv4' || (a.internal && !includeLoopback)) continue
       const bits = a.netmask.split('.').reduce((n, o) => n + (Number(o) >>> 0).toString(2).replace(/0/g, '').length, 0)

@@ -25,6 +25,8 @@ B="$(mktemp -d /srv/ddilive.XXXXXX)"; chmod 755 "$B"
 cleanup() {
   pkill -f "patroni $B/" 2>/dev/null; pkill -u etcd -f "$B/" 2>/dev/null; sleep 1
   for n in 1 2 3; do pkill -9 -u postgres -f "$B/n$n/" 2>/dev/null; done
+  for _ in $(seq 1 40); do pgrep -u etcd -f "$B/" >/dev/null 2>&1 || break; sleep 0.5; done   # l'arrêt d'etcd n'est pas instantané : la batterie suivante réutilise ses ports
+  pkill -9 -u etcd -f "$B/" 2>/dev/null
   sleep 1; if [ -n "${KEEP:-}" ]; then echo "conservé : $B"; else rm -rf "$B"; fi; rm -rf "$T_TMP"
 }
 trap cleanup EXIT

@@ -114,6 +114,9 @@ expect_grep "console : exécutée sous un compte sans privilège" '^User=ddicons
 expect_grep "console : écriture limitée au dossier de dépôt" '^ReadWritePaths=/var/lib/ddibuntu/generated$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 expect_grep "console : port 443 par capacité, pas par root" '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 expect_grep "console : élévation de privilèges interdite" '^NoNewPrivileges=yes$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
+# AF_NETLINK : sans lui, os.networkInterfaces() échoue (errno 97) et la page Cluster répond « Erreur interne » tant qu'aucun cluster n'existe (0.9.0)
+expect_grep "console : familles d'adresses limitées, AF_NETLINK inclus (énumération des interfaces en lecture seule)" '^RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
+expect_nogrep "console : aucune capacité réseau d'administration (CAP_NET_ADMIN) accordée" '^(Ambient|Bounding)?CapabilityBoundingSet=.*CAP_NET_ADMIN|^AmbientCapabilities=.*CAP_NET_ADMIN' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 expect_grep "pare-feu livré : DNS (UDP 53 et 67 DHCP) ouvert" 'udp dport \{ 53, 67 \} accept' "$P/rootfs/etc/ddibuntu/nftables.nft"
 expect_grep "pare-feu livré : DNS TCP 53 ouvert" 'tcp dport \{ 53 \} accept' "$P/rootfs/etc/ddibuntu/nftables.nft"
 expect_grep "pare-feu livré : la console (443) reste réservée aux réseaux d'administration" 'ip saddr @admin4 tcp dport \{ 22, 443 \} accept' "$P/rootfs/etc/ddibuntu/nftables.nft"

@@ -16,10 +16,11 @@ import * as search from '../handlers/search'
 import * as hygiene from '../handlers/hygiene'
 import * as tunnel from '../handlers/tunnel'
 import * as backup from '../handlers/backup'
+import * as alerts from '../handlers/alerts'
 import { dispatch, routeCount } from '../utils/router'
 
 // Chaque module enregistre ses routes à l'évaluation ; on vérifie ici qu'ils ont tous été inclus.
-const modules = [auth, ipam, dns, dhcp, filtering, importer, system, snapshots, adimport, netbox, discovery, cockpit, cluster, adkrb, search, hygiene, tunnel, backup]
+const modules = [auth, ipam, dns, dhcp, filtering, importer, system, snapshots, adimport, netbox, discovery, cockpit, cluster, adkrb, search, hygiene, tunnel, backup, alerts]
 if (!modules.every((m) => m.registered) || routeCount() < 50) throw new Error(`[api] routes non enregistrées (${routeCount()})`)
 
 export default defineEventHandler((event) => dispatch(event))

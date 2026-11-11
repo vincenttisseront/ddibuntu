@@ -9,10 +9,11 @@ Appliance **DDI** (DNS, DHCP, IPAM) sur Ubuntu Server 24.04 LTS, installable par
 - **Cockpit de filtrage DNS** à la Pi-hole : journal des requêtes, tops, liste blanche/noire en un clic, pause du blocage.
 - **Imports et découverte** : NetBox, Active Directory en direct (LDAP, transfert de zone), exports Windows DHCP/DNS, découverte réseau.
 - **Sauvegarde et restauration à un instant donné** de la base (PITR) : sauvegardes planifiées, journaux archivés en continu, copie externe, restauration depuis la console, cluster compris.
+- **Alertes et supervision** : 23 règles (cluster, quorum, réplication, chaque nœud arbitre compris, sauvegardes, sous-réseaux), mise en silence, notifications par webhook (signé) et e-mail, exportateur Prometheus `/api/metrics`, tableau de bord qui se rafraîchit seul.
 - **Retour arrière partout** : un point de restauration est créé avant chaque configuration, déploiement ou import ; les changements réseau s'annulent seuls sans confirmation.
 - **Sécurité** : chaîne d'approvisionnement vérifiée (signatures et empreintes), console sans privilège, application privilégiée séparée et contrôlée, pare-feu nftables, durcissement.
 
-> État : version de développement **0.9.0**. Voir « Limites connues » ci-dessous avant tout usage en production.
+> État : version de développement **0.9.1**. Voir « Limites connues » ci-dessous avant tout usage en production.
 
 ## Démarrage rapide
 
@@ -34,7 +35,7 @@ src/ps1/                 modèle du lanceur Windows
 src/VERSION              numéro de version unique
 webui/                   console web (Nuxt 4 + Nuxt UI 4, serveur Nitro, PostgreSQL)
 tools/                   construction de la console, fichier unique, bases de test, traductions
-tests/                   batteries shell b01..b19 (système, ISO, QEMU, cluster, sauvegardes) ; webui/tests : vitest
+tests/                   batteries shell b01..b20 (système, ISO, QEMU, cluster, sauvegardes) ; webui/tests : vitest
 docs/                    architecture, installation, tests, publication
 ```
 

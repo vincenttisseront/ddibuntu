@@ -11,7 +11,8 @@ async function load(silent = false) {
 onMounted(() => load())
 const st = computed(() => info.value?.state ?? null)
 const kt = computed(() => st.value?.keytab ?? null)
-const when = (s?: number | null) => (s ? new Date(s * 1000).toLocaleString() : '—')
+const fmt = useFmt()
+const when = (s?: number | null) => (s ? fmt.dateTime(s * 1000) : '—')
 
 // ---- Demandes à root : on attend son résultat (traitement asynchrone, quelques secondes) ----
 const working = ref('')

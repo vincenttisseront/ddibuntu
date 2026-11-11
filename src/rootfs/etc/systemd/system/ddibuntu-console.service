@@ -25,7 +25,8 @@ RestrictNamespaces=yes
 LockPersonality=yes
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_BIND_SERVICE
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK : lecture seule de la liste des adresses du serveur (assistants du cluster) ; aucune capacité réseau n'est accordée, rien ne peut être modifié
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

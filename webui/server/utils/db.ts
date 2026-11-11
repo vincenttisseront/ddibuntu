@@ -352,7 +352,38 @@ create trigger cfg_gen_zones after insert or delete or update of name, type, mas
   soa_refresh, soa_retry, soa_expire, soa_minimum, default_ttl, ad_integrated, disabled on dns_zones for each statement execute function bump_config_generation();
 `
 
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }]
+// Itération 2 (alertes) : événements d'alerte (ouverts / résolus), silences, journal des notifications envoyées.
+const SCHEMA_9 = String.raw`
+create table alert_events (
+  id bigserial primary key,
+  key text not null,
+  rule text not null,
+  severity text not null check (severity in ('critical','warning','info')),
+  node text not null default '', subject text not null default '',
+  params jsonb not null default '{}',
+  state text not null default 'firing' check (state in ('firing','resolved')),
+  started_at timestamptz not null default now(), last_seen timestamptz not null default now(), resolved_at timestamptz,
+  misses int not null default 0,
+  notified_at timestamptz, notify_attempts int not null default 0, resolve_notified boolean not null default false
+);
+create unique index alert_events_firing_key on alert_events (key) where state = 'firing';
+create index alert_events_started on alert_events (started_at desc);
+create table alert_silences (
+  id serial primary key,
+  rule text, node text, subject text,
+  until timestamptz not null, comment text not null default '', created_by text,
+  created_at timestamptz not null default now()
+);
+create table alert_deliveries (
+  id bigserial primary key, at timestamptz not null default now(),
+  channel text not null check (channel in ('webhook','email')),
+  kind text not null check (kind in ('firing','resolved','repeat','test')),
+  event_id bigint, ok boolean not null, detail text not null default ''
+);
+create index alert_deliveries_at on alert_deliveries (at desc);
+`
+
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

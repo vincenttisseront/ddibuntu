@@ -129,6 +129,8 @@ runuser -u postgres -- "$PGBIN/initdb" -D "$R/var/lib/postgresql/16/main" -E UTF
 runuser -u postgres -- "$PGBIN/pg_ctl" -D "$R/var/lib/postgresql/16/main" -o "-c listen_addresses='' -c unix_socket_directories=$R/run/pg -c port=5432" -l "$R/run/pg/init.log" -w start >/dev/null 2>&1
 check "init n1" cl init --name n1 --ip 127.0.1.1 --net 127.0.0.0/8 --no-activate
 runuser -u postgres -- "$PGBIN/pg_ctl" -D "$R/var/lib/postgresql/16/main" -m fast -w stop >/dev/null 2>&1
+# la batterie précédente (b19) peut encore être en train d'arrêter ses etcd : on attend que 127.0.1.1:2379 et :2380 soient libres
+for _ in $(seq 1 60); do ss -ltn 2>/dev/null | grep -qE '127\.0\.1\.1:(2379|2380) ' || break; sleep 0.5; done
 "$B/etcdcmd.sh" start; wait_for 20 "etcd n1 sain" ectl endpoint health
 check "activate n1" cl activate
 

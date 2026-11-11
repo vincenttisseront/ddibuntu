@@ -10,10 +10,10 @@ const rowH = 26
     <svg role="img" :aria-label="label" :viewBox="`0 0 400 ${Math.max(items.length, 1) * rowH}`" class="w-full" preserveAspectRatio="xMinYMin meet">
       <g v-for="(it, i) in items" :key="it.label" :transform="`translate(0 ${i * rowH})`">
         <title>{{ it.label }} : {{ it.display ?? it.value }}</title>
-        <text x="0" y="16" class="fill-current text-xs font-mono" style="font-size: 11px">{{ it.label.length > 22 ? it.label.slice(0, 21) + '…' : it.label }}</text>
-        <rect x="150" y="4" width="200" height="14" rx="3" class="fill-current text-neutral-200 dark:text-neutral-700" />
-        <rect x="150" y="4" :width="Math.max(2, (200 * it.value) / top)" height="14" rx="3" :class="it.warn ? 'fill-current text-amber-500' : 'fill-current text-brand-500'" />
-        <text x="358" y="16" class="fill-current num" style="font-size: 11px">{{ it.display ?? it.value }}</text>
+        <text x="0" y="16" class="fill-current text-xs font-mono" style="font-size: 11px">{{ it.label.length > 17 ? it.label.slice(0, 16) + '…' : it.label }}</text>
+        <rect x="116" y="4" width="110" height="14" rx="3" class="fill-current text-neutral-200 dark:text-neutral-700" />
+        <rect x="116" y="4" :width="Math.max(2, (110 * it.value) / top)" height="14" rx="3" :class="it.warn ? 'fill-current text-amber-500' : 'fill-current text-brand-500'" />
+        <text x="234" y="16" class="fill-current num" style="font-size: 11px">{{ it.display ?? it.value }}</text>
       </g>
     </svg>
     <table class="sr-only">

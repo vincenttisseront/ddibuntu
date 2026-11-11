@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Panneau CRUD générique : tableau + formulaire de création/modification + suppression confirmée.
 import { h, resolveComponent } from 'vue'
+const { dateTime } = useFmt()
 
 export interface Col { key: string; label: string; kind?: 'text' | 'mono' | 'badge' | 'bool' | 'list' | 'date' | 'progress' | 'num'; trans?: string; fmt?: (v: any, row: any) => string }
 export interface Field {
@@ -93,7 +94,7 @@ const cols = computed(() => {
         case 'mono': return h('span', { class: 'font-mono text-xs break-all' }, v == null ? '' : String(v))
         case 'num': return h('span', { class: 'num' }, v == null ? '' : String(v))
         case 'list': return h('span', { class: 'font-mono text-xs' }, Array.isArray(v) ? v.join(', ') : '')
-        case 'date': return v ? new Date(v).toLocaleString() : ''
+        case 'date': return v ? dateTime(v) : ''
         case 'progress': return v == null ? '—' : h('div', { class: 'flex items-center gap-2 min-w-28' }, [h(UProgress, { modelValue: v, max: 100, size: 'sm', color: v >= 80 ? 'warning' : 'primary', 'aria-label': c.label }), h('span', { class: 'num text-xs w-10 text-right' }, `${v}%`)])
         default: return c.fmt ? c.fmt(v, row.original) : v == null ? '' : String(v)
       }

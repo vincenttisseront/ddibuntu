@@ -557,8 +557,11 @@ cmd_init() {
   conf_defaults
   C[CLUSTER_NAME]="${DDI_CLUSTER_NAME:-ddibuntu}"; C[NODE_NAME]="$name"; C[NODE_ROLE]="$role"; C[NODE_IP]="$ip"; C[REPL_NET]="$net"; C[CA_NODE]=1
   C[PEERS]="$name=$ip:$role"
+  # l'adresse du nœud doit être portée par CE serveur (la console ne peut pas toujours lister les adresses : la vérification de référence est ici)
+  if [ -z "${DDI_TEST:-}" ] && ! ip -o -4 addr show 2>/dev/null | awk -v ip="$ip" '{ split($4, a, "/"); if (a[1] == ip) f = 1 } END { exit !f }'; then die "l'adresse $ip n'est portée par aucune interface de ce serveur"; fi
   if [ -n "$vip" ] || [ -n "$vif" ]; then
     if [ -z "$vip" ] || [ -z "$vif" ]; then die "--vip et --vip-iface vont ensemble"; fi
+    if [ -z "${DDI_TEST:-}" ] && ! ip -o link show "$vif" >/dev/null 2>&1; then die "l'interface $vif n'existe pas sur ce serveur"; fi
     C[VIP]="$vip"; C[VIP_IFACE]="$vif"; [ -z "$vrid" ] || C[VIP_VRID]="$vrid"
   fi
   [ -z "${DDI_PORT_ETCD_CLIENT:-}" ] || C[ETCD_CLIENT_PORT]="$DDI_PORT_ETCD_CLIENT"; [ -z "${DDI_PORT_ETCD_PEER:-}" ] || C[ETCD_PEER_PORT]="$DDI_PORT_ETCD_PEER"

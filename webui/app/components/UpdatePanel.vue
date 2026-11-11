@@ -25,7 +25,8 @@ onBeforeUnmount(stopPolling)
 
 const st = computed(() => data.value?.status ?? null)
 const busy = computed(() => !!data.value?.busy || waitingRestart.value)
-const when = (s: number) => (s ? new Date(s * 1000).toLocaleString() : t('update.never'))
+const fmt = useFmt()
+const when = (s: number) => (s ? fmt.dateTime(s * 1000) : t('update.never'))
 async function check() {
   error.value = ''
   try { await api.call('POST', '/system/update/check'); wasBusy = true; await new Promise((r) => setTimeout(r, 1500)); await load(true); startPolling() }

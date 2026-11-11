@@ -62,7 +62,7 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
 3b. ~~**0.8.1**~~ ✅ fait — Assistants « Créer le cluster », « Ajouter un nœud » (lot d'enrôlement) et « Rejoindre un cluster » dans la console.
 3c. **Série 0.9.x** — dix évolutions, une version chacune, chacune testée en conditions réelles avant publication :
     1. ~~**0.9.0**~~ ✅ fait — Sauvegarde et restauration à un instant donné (PITR), cluster compris.
-    2. **0.9.1** — Alertes et supervision : exportateur Prometheus `/metrics`, e-mail, webhook (quorum, réplication, archivage, fantômes, tunnels).
+    2. ~~**0.9.1**~~ ✅ fait — Alertes et supervision : exportateur Prometheus `/api/metrics`, e-mail, webhook, mise en silence, santé de chaque nœud partagée par etcd, tableau de bord évolué (les alertes « fantômes » et « tunnels » rejoignent l'itération 7).
     3. **0.9.2** — Remplacement d'adresse virtuelle / de réseau dédié, paramètres du cluster, renouvellement des certificats.
     4. **0.9.3** — Test de bascule guidé avec rapport.
     5. **0.9.4** — Vues DNS.

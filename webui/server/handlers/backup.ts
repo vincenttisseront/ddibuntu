@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { audit, fail, route } from '../utils/router'
 import { cfg } from '../utils/config'
-import { actionRefusal, BACKUP_ID_RE, MIRROR_RE, readBackupResult, readBackupStatus, readRestoreState, restoreRefusal } from '../utils/backup'
+import { backupActionRefusal, BACKUP_ID_RE, MIRROR_RE, readBackupResult, readBackupStatus, readRestoreState, restoreRefusal } from '../utils/backup'
 
 // État de la base et des sauvegardes (lecture seule) : catalogue, fenêtre restaurable, archivage des journaux, dernière demande, restauration en cours.
 route('GET', '/backup/status', 'operator', async () => ({ status: await readBackupStatus(), result: await readBackupResult(), restore: await readRestoreState() }))
@@ -23,7 +23,7 @@ const Action = z.union([
 ])
 route('POST', '/backup/action', 'admin', async (c) => {
   const a = await c.body(Action)
-  const refusal = actionRefusal(await readBackupStatus(), a)
+  const refusal = backupActionRefusal(await readBackupStatus(), a)
   if (refusal) fail(409, refusal)
   await drop(a)
   await audit(c, `backup.${a.action}`, 'backup', 'id' in a ? a.id : '')

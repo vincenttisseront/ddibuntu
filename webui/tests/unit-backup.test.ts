@@ -1,6 +1,6 @@
 // Unitaires des sauvegardes (sans base) : lecture défensive de l'état publié par root, refus d'actions et de restaurations.
 import { describe, expect, it } from 'vitest'
-import { actionRefusal, parseBackupStatus, restoreRefusal, type BackupStatus } from '../server/utils/backup'
+import { backupActionRefusal, parseBackupStatus, restoreRefusal, type BackupStatus } from '../server/utils/backup'
 
 const NOW = 1_800_000_000
 const bk = (id: string, finishedAt: number) => ({ id, node: 'n1', type: 'full', startedAt: finishedAt - 10, finishedAt, sizeBytes: 1000, timeline: 1, walArchived: true })
@@ -29,20 +29,20 @@ describe('parseBackupStatus', () => {
   })
 })
 
-describe('actionRefusal', () => {
+describe('backupActionRefusal', () => {
   it('sans état : indisponible ; arbitre : refusé même pour activer', () => {
-    expect(actionRefusal(null, { action: 'run' })).toBe('backup_unavailable'); expect(actionRefusal(st({ role: 'witness' }), { action: 'enable' })).toBe('backup_witness')
+    expect(backupActionRefusal(null, { action: 'run' })).toBe('backup_unavailable'); expect(backupActionRefusal(st({ role: 'witness' }), { action: 'enable' })).toBe('backup_witness')
   })
   it('activer toujours possible, désactiver seulement si activé', () => {
-    expect(actionRefusal(st({ enabled: false }), { action: 'enable' })).toBeNull(); expect(actionRefusal(st({ enabled: false }), { action: 'disable' })).toBe('backup_disabled'); expect(actionRefusal(st(), { action: 'disable' })).toBeNull()
+    expect(backupActionRefusal(st({ enabled: false }), { action: 'enable' })).toBeNull(); expect(backupActionRefusal(st({ enabled: false }), { action: 'disable' })).toBe('backup_disabled'); expect(backupActionRefusal(st(), { action: 'disable' })).toBeNull()
   })
   it('sauvegarde : primaire seulement ; secondaire peut vérifier/purger', () => {
-    expect(actionRefusal(st({ role: 'standby' }), { action: 'run' })).toBe('backup_primary_only'); expect(actionRefusal(st({ role: 'standby' }), { action: 'prune' })).toBeNull(); expect(actionRefusal(st(), { action: 'run' })).toBeNull()
-    expect(actionRefusal(st({ enabled: false }), { action: 'run' })).toBe('backup_disabled')
+    expect(backupActionRefusal(st({ role: 'standby' }), { action: 'run' })).toBe('backup_primary_only'); expect(backupActionRefusal(st({ role: 'standby' }), { action: 'prune' })).toBeNull(); expect(backupActionRefusal(st(), { action: 'run' })).toBeNull()
+    expect(backupActionRefusal(st({ enabled: false }), { action: 'run' })).toBe('backup_disabled')
   })
   it('suppression/vérification : identifiant connu, jamais la dernière sauvegarde', () => {
-    expect(actionRefusal(st(), { action: 'delete', id: '20250101T000000Z' })).toBe('backup_unknown'); expect(actionRefusal(st(), { action: 'verify', id: '20250101T000000Z' })).toBe('backup_unknown')
-    expect(actionRefusal(st(), { action: 'delete', id: '20260101T000000Z' })).toBeNull(); expect(actionRefusal(st({ backups: [bk('20260101T000000Z', 1)] }), { action: 'delete', id: '20260101T000000Z' })).toBe('backup_last')
+    expect(backupActionRefusal(st(), { action: 'delete', id: '20250101T000000Z' })).toBe('backup_unknown'); expect(backupActionRefusal(st(), { action: 'verify', id: '20250101T000000Z' })).toBe('backup_unknown')
+    expect(backupActionRefusal(st(), { action: 'delete', id: '20260101T000000Z' })).toBeNull(); expect(backupActionRefusal(st({ backups: [bk('20260101T000000Z', 1)] }), { action: 'delete', id: '20260101T000000Z' })).toBe('backup_last')
   })
 })
 

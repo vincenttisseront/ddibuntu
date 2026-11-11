@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Génération, validation (outils officiels) et déploiement atomique de la configuration DNS/DHCP.
-const { t } = useT(); const api = useApi(); const { isAdmin } = useRole(); const toast = useToast(); const { ask } = useConfirm()
+const { t } = useT(); const fmt = useFmt(); const api = useApi(); const { isAdmin } = useRole(); const toast = useToast(); const { ask } = useConfirm()
 const result = ref<any>(null), files = ref<any>(null), busy = ref(false), sel = ref('')
 async function loadFiles() { try { files.value = await api.call('GET', '/system/render'); sel.value = files.value.files[0]?.path ?? '' } catch { /* droits insuffisants */ } }
 async function run(deploy: boolean) {
@@ -29,7 +29,7 @@ const current = computed(() => files.value?.files?.find((f: any) => f.path === s
         <UButton icon="i-lucide-rocket" :label="t('apply.deploy')" :loading="busy" :disabled="!isAdmin" @click="run(true)" />
       </div>
       <UAlert v-if="!isAdmin" color="neutral" variant="subtle" :title="t('apply.admin_only')" class="mb-3" />
-      <UAlert v-if="reload" :color="reload.ok ? 'success' : 'error'" variant="subtle" :icon="reload.ok ? 'i-lucide-circle-check' : 'i-lucide-circle-x'" :title="reload.ok ? t('restore.reload_ok') : t('restore.reload_ko')" :description="`${new Date(reload.at * 1000).toLocaleString()} — ${reload.message}`" class="mb-3"><template v-if="!reload.ok && isAdmin" #actions><UButton to="/system#restore" size="xs" color="error" variant="outline" :label="t('restore.tab')" /></template></UAlert>
+      <UAlert v-if="reload" :color="reload.ok ? 'success' : 'error'" variant="subtle" :icon="reload.ok ? 'i-lucide-circle-check' : 'i-lucide-circle-x'" :title="reload.ok ? t('restore.reload_ok') : t('restore.reload_ko')" :description="`${fmt.dateTime(reload.at * 1000)} — ${reload.message}`" class="mb-3"><template v-if="!reload.ok && isAdmin" #actions><UButton to="/system#restore" size="xs" color="error" variant="outline" :label="t('restore.tab')" /></template></UAlert>
       <ul v-if="result" class="flex flex-col gap-2 text-sm" aria-live="polite">
         <li v-for="r in result.results" :key="r.name" class="flex gap-2 items-start">
           <UIcon :name="r.ok === true ? 'i-lucide-circle-check' : r.ok === false ? 'i-lucide-circle-x' : 'i-lucide-circle-help'" :class="r.ok === true ? 'text-success' : r.ok === false ? 'text-error' : 'text-warning'" class="mt-0.5 shrink-0" />

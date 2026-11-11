@@ -82,7 +82,7 @@ defineExpose({ begin })
           </UFormField>
           <UFormField :label="t('cluster.w.net')" :hint="t('cluster.w.optional')"><UInput v-model="ini.net" class="w-full" placeholder="10.10.0.0/24" :disabled="busy" /></UFormField>
           <UFormField :label="t('cluster.w.vip')" :hint="t('cluster.w.optional')"><UInput v-model="ini.vip" class="w-full" placeholder="192.0.2.10" :disabled="busy" /></UFormField>
-          <UFormField :label="t('cluster.w.vip_iface')"><USelectMenu v-model="ini.vipIface" class="w-full" :items="[...new Set(addrs.map((a: any) => a.iface))]" :disabled="busy || !ini.vip" /></UFormField>
+          <UFormField :label="t('cluster.w.vip_iface')"><USelectMenu v-if="addrs.length" v-model="ini.vipIface" class="w-full" :items="[...new Set(addrs.map((a: any) => a.iface))]" :disabled="busy || !ini.vip" /><UInput v-else v-model="ini.vipIface" class="w-full" placeholder="ens18" :disabled="busy || !ini.vip" /></UFormField>
         </div>
         <UAlert color="info" variant="subtle" icon="i-lucide-info" :title="t('cluster.w.init.note')" />
         <label class="text-sm">{{ t('cluster.op.type', { v: ini.node || '…' }) }}<UInput v-model="ini.confirm" class="w-full mt-1" autocomplete="off" :disabled="busy" /></label>

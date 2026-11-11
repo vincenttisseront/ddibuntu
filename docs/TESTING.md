@@ -13,7 +13,8 @@
 | `tests/b10-*.sh` … `tests/b17-cluster-wizards-live.sh` | cluster : PKI, Patroni + etcd, Kea HA, BIND, Keepalived, Active Directory, quorum, assistants | root, démons réels (etcd, Patroni, PostgreSQL, Kea, BIND) |
 | `tests/b18-backup-live.sh` | sauvegardes et restauration à un instant donné sur une vraie base PostgreSQL 16 (156 contrôles) | root, PostgreSQL 16 |
 | `tests/b19-backup-cluster-live.sh` | sauvegardes et restauration dans un vrai cluster Patroni + etcd (76 contrôles) | root, PostgreSQL 16, Patroni, etcd |
-| `webui/tests/unit-*.test.ts` | analyseurs, rendu, NetBox, découverte, AD (sans base) | Node 22 |
+| `tests/b20-health-live.sh` | santé de nœud : collecte réelle, partage par un vrai etcd, écritures et valeurs piégées refusées (50 contrôles) | root, etcd |
+| `webui/tests/unit-*.test.ts` | analyseurs, rendu, NetBox, découverte, AD, moteur d'alertes, client SMTP (sans base) | Node 22 |
 | `webui/tests/e2e*.test.ts` | serveur construit + PostgreSQL + BIND/Kea réels | `tools/setup-test-db.sh`, `tools/build-console.sh` |
 
 `tests/run-all.sh` rejoue toutes les batteries shell (et reconstruit le fichier unique avant, pour tester ce qui sera livré). Les fichiers e2e partagent une base : `tools/run-console-tests.sh e2e` les lance l'un après l'autre. Ne jamais lancer deux exécutions en parallèle.

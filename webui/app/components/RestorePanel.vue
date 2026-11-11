@@ -20,14 +20,15 @@ async function restore() {
 }
 async function pin(s: any) { try { await api.call('PUT', `/snapshots/${s.id}`, { pinned: !s.pinned }); await rs() } catch (e: any) { fail(e) } }
 async function remove(s: any) { if (!(await ask(t('common.delete'), t('restore.delete_confirm', { id: s.id }), true))) return; try { await api.call('DELETE', `/snapshots/${s.id}`); await rs() } catch (e: any) { fail(e) } }
-const when = (s: string) => new Date(s).toLocaleString()
+const fmt = useFmt()
+const when = (s: string) => fmt.dateTime(s)
 const total = (c: any) => Object.values(c ?? {}).reduce((n: number, v: any) => n + Number(v), 0)
 const empty = computed(() => !diff.value || !Object.keys(diff.value).length)
 </script>
 
 <template>
   <div class="flex flex-col gap-4">
-    <UAlert v-if="status?.status" :color="status.status.ok ? 'success' : 'error'" variant="subtle" :icon="status.status.ok ? 'i-lucide-circle-check' : 'i-lucide-circle-x'" :title="status.status.ok ? t('restore.reload_ok') : t('restore.reload_ko')" :description="`${new Date(status.status.at * 1000).toLocaleString()} — ${status.status.message}`" />
+    <UAlert v-if="status?.status" :color="status.status.ok ? 'success' : 'error'" variant="subtle" :icon="status.status.ok ? 'i-lucide-circle-check' : 'i-lucide-circle-x'" :title="status.status.ok ? t('restore.reload_ok') : t('restore.reload_ko')" :description="`${fmt.dateTime(status.status.at * 1000)} — ${status.status.message}`" />
     <UCard><template #header><span class="font-medium">{{ t('restore.title') }}</span></template>
       <p class="text-sm text-muted mb-3">{{ t('restore.desc') }}</p>
       <form class="flex gap-2 mb-3" @submit.prevent="create"><UInput v-model="label" :placeholder="t('restore.label_ph')" :aria-label="t('restore.label_ph')" class="flex-1" /><UButton type="submit" icon="i-lucide-camera" :loading="busy" :label="t('restore.create')" /></form>

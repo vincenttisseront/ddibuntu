@@ -16,7 +16,8 @@ onMounted(() => { load().catch(() => {}); poll = setInterval(() => { if (restore
 onBeforeUnmount(() => { if (poll) clearInterval(poll) })
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-const when = (s: number | null | undefined) => (s ? new Date(s * 1000).toLocaleString() : '—')
+const fmt = useFmt()
+const when = (s: number | null | undefined) => (s ? fmt.dateTime(s * 1000) : '—')
 const bytes = (n: number | null | undefined) => (n == null ? '—' : n < 1048576 ? `${Math.round(n / 1024)} Kio` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} Mio` : `${(n / 1073741824).toFixed(2)} Gio`)
 const ageText = computed(() => { const s = st.value?.ageSeconds ?? 0; return s < 120 ? `${s} s` : s < 7200 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h` })
 const isPrimary = computed(() => st.value?.role === 'primary')
@@ -77,7 +78,7 @@ const atValid = computed(() => { if (!atLocal.value) return false; const d = new
 const dlgOpen = computed({ get: () => target.value !== null, set: (v: boolean) => { if (!v && !restoring.value) target.value = null } })
 function beginRestore(tg: Target) { target.value = tg; typed.value = ''; restoreErr.value = ''; consoleDown.value = false }
 function beginAt() { if (atValid.value) beginRestore({ mode: 'at', at: new Date(atLocal.value).toISOString().slice(0, 19) + 'Z' }) }
-const targetText = computed(() => { const tg = target.value; if (!tg) return ''; return tg.mode === 'at' ? t('backup.restore.target.at', { at: new Date(tg.at).toLocaleString() }) : tg.mode === 'id' ? t('backup.restore.target.id', { id: tg.id }) : t('backup.restore.target.latest') })
+const targetText = computed(() => { const tg = target.value; if (!tg) return ''; return tg.mode === 'at' ? t('backup.restore.target.at', { at: fmt.dateTime(tg.at) }) : tg.mode === 'id' ? t('backup.restore.target.id', { id: tg.id }) : t('backup.restore.target.latest') })
 const phaseText = computed(() => { const p = restoreState.value?.phase; return p && restoreActive.value ? t(`backup.phase.${p}`) : '' })
 async function goRestore() {
   const tg = target.value; if (!tg || typed.value !== st.value?.confirmWord) return

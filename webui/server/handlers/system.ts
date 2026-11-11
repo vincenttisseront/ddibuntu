@@ -8,6 +8,12 @@ import { z } from 'zod'
 import { reconcileDeployments, readReloadStatus } from '../utils/reload-status'
 import { hostInfo } from '../utils/hostinfo'
 import { ROLE_RANK } from '../utils/auth'
+import { readClusterState } from '../utils/cluster'
+import { readLocalHealth } from '../utils/health'
+import { readBackupStatus } from '../utils/backup'
+import { mergedHealth } from '../utils/alert-rules'
+import { alertSummary, SILENCED_SQL } from '../utils/alert-engine'
+import { loadConfig } from '../utils/alert-config'
 import { fileUpdateRequest, installedVersion, isBusy, readUpdateStatus } from '../utils/selfupdate'
 
 route('GET', '/system/config-generation', 'viewer', async () => configState())
@@ -27,7 +33,7 @@ route('GET', '/dashboard', 'viewer', async (c) => {
   const isAdmin = (ROLE_RANK[c.user?.role as keyof typeof ROLE_RANK] ?? 0) >= ROLE_RANK.admin
   const upd = isAdmin ? await readUpdateStatus() : null
   const system = { version: installedVersion(), host: await hostInfo(), lastApply: await readReloadStatus(), update: upd ? { available: upd.available, latest: upd.latest, busy: isBusy(upd), state: upd.state } : null }
-  return { counts, top, byType, lastDeployment: last, day, system, config: await configState() }
+  return { counts, top, byType, lastDeployment: last, day, system, config: await configState(), ...(await supervision()) }
 })
 
 // Version et mise à jour disponible, pour la barre latérale (la mise à jour n'est révélée qu'aux administrateurs)
@@ -81,3 +87,36 @@ void fail; void qstr
 
 // Valeur exportée et lue par le point d'entrée : empêche l'élimination du module par l'optimiseur
 export const registered = true
+
+// Supervision pour le tableau de bord (lecture seule) : services de CE nœud, cluster et quorum, sauvegardes, alertes ouvertes.
+async function supervision() {
+  const nowSec = Math.floor(Date.now() / 1000)
+  const [st, local, bk] = await Promise.all([readClusterState(), readLocalHealth(), readBackupStatus()])
+  const merged = mergedHealth({ now: nowSec, cluster: st, localHealth: local, backup: null, backupResult: null, subnets: [] })
+  const me = local ?? (st ? merged[st.node] : undefined) ?? null
+  const node = me ? {
+    name: me.node, ageSeconds: Math.max(0, nowSec - me.at), stale: nowSec - me.at > 180, postgres: me.postgres, timeSynced: me.timeSynced,
+    services: me.services.map((x) => ({ name: x.name, state: x.state, expected: x.expected })),
+    disks: me.disks.map((d) => ({ mount: d.mount, percent: Math.round(((d.sizeBytes - d.availBytes) / d.sizeBytes) * 1000) / 10, freeGb: Math.round((d.availBytes / 1024 ** 3) * 10) / 10 })),
+    certs: me.certs.map((c) => ({ name: c.name, days: Math.floor((c.notAfter - nowSec) / 86400) })),
+  } : null
+  const cluster = st ? {
+    name: st.cluster, node: st.node, nodeRole: st.nodeRole, localRole: st.localRole, leader: st.leader, stale: st.stale, ageSeconds: st.ageSeconds, bind: st.bind,
+    vip: st.vip, quorum: st.etcd.quorum ? { hasQuorum: st.etcd.quorum.hasQuorum, healthy: st.etcd.quorum.healthy, voters: st.etcd.quorum.voters, needed: st.etcd.quorum.needed, tolerance: st.etcd.quorum.tolerance } : null,
+    nodes: st.nodes.map((n) => {
+      const h = merged[n.name]
+      return { name: n.name, role: n.role, state: n.state ?? null, patroniRole: n.patroniRole ?? null, lagBytes: n.lagBytes ?? null, isLeader: n.name === st.leader,
+        health: h ? { ageSeconds: Math.max(0, nowSec - h.at), stale: nowSec - h.at > 180, servicesDown: h.services.filter((x) => x.expected && x.state !== 'active').length, services: h.services.length } : null }
+    }),
+  } : null
+  const backup = bk && bk.enabled && bk.role !== 'witness' ? {
+    node: bk.node, stale: bk.stale, count: bk.backups.length, lastAt: bk.backups.reduce((m, x) => Math.max(m, x.finishedAt), 0) || null, pitrFrom: bk.pitrFrom,
+    archiverFailing: !!bk.archiver && bk.archiver.failedCount > 0 && bk.archiver.lastFailedAt !== null && (bk.archiver.lastArchivedAt === null || bk.archiver.lastFailedAt > bk.archiver.lastArchivedAt),
+  } : null
+  const alerts = {
+    summary: await alertSummary(), thresholds: { subnetWarn: (await loadConfig()).thresholds.subnetWarn },
+    top: await query<any>(`select e.id, e.rule, e.severity, e.node, e.subject, e.params, e.started_at from alert_events e where e.state = 'firing' and not ${SILENCED_SQL}
+      order by case e.severity when 'critical' then 0 when 'warning' then 1 else 2 end, e.started_at limit 6`),
+  }
+  return { node, cluster, backup, alerts }
+}

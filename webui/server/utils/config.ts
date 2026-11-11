@@ -27,6 +27,11 @@ export function cfg() {
     backupStatusFile: e.DDI_BACKUP_STATUS ?? '/run/ddibuntu/backup-status.json',
     backupResultFile: e.DDI_BACKUP_RESULT ?? '/run/ddibuntu/backup-result.json',
     backupRestoreFile: e.DDI_BACKUP_RESTORE ?? '/run/ddibuntu/backup-restore.json',
+    // photographie de santé de CE nœud (ddibuntu-health, root, chaque minute) ; alertes : intervalle d'évaluation
+    healthStatusFile: e.DDI_HEALTH_STATUS ?? '/run/ddibuntu/health.json',
+    alertIntervalMs: num(e.DDI_ALERT_INTERVAL_MS, 60_000),
+    // une alerte n'est résolue qu'après N évaluations consécutives sans constat (évite les rebonds) ; 1 en test
+    alertResolveMisses: Math.max(1, num(e.DDI_ALERT_RESOLVE_MISSES, 2)),
     reloadStatusFile: e.DDI_RELOAD_STATUS ?? '/var/lib/ddibuntu/reload-status',
     allowPrivateFetch: test && e.DDI_ALLOW_PRIVATE_FETCH === '1',
     dig: e.DDI_DIG ?? 'dig',

@@ -27,7 +27,8 @@ const wiz = ref<any>(null)
 const canAdd = computed(() => isAdmin.value && st.value?.nodeRole === 'data' && st.value?.ca?.node === true && !data.value?.replica)
 const isLeader = computed(() => st.value?.localRole === 'leader')
 const canSwitch = computed(() => isAdmin.value && isLeader.value && !data.value?.replica && !switching.value)
-const when = (s: number) => (s ? new Date(s * 1000).toLocaleString() : '—')
+const fmt = useFmt()
+const when = (s: number) => (s ? fmt.dateTime(s * 1000) : '—')
 const roleColor = (r: string) => (r === 'leader' ? 'success' : r === 'replica' ? 'info' : 'neutral') as any
 const stateColor = (s?: string) => (['running', 'streaming'].includes(s ?? '') ? 'success' : s ? 'warning' : 'neutral') as any
 const nodeKind = (n: any) => (n.role === 'witness' ? t('cluster.witness') : t(`cluster.pg.${n.patroniRole || 'unknown'}`))

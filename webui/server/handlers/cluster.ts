@@ -77,8 +77,8 @@ route('POST', '/cluster/init', 'admin', async (c) => {
   await standalone()
   if (b.confirm !== b.node) fail(409, 'confirm_mismatch')
   const addrs = localAddresses(cfg().testMode)
-  if (!addrs.some((a) => a.address === b.ip)) fail(409, 'ip_not_local')
-  if (b.vipIface && !new Set(addrs.map((a) => a.iface)).has(b.vipIface)) fail(409, 'iface_unknown')
+  if (addrs.length && !addrs.some((a) => a.address === b.ip)) fail(409, 'ip_not_local')   // liste vide = lecture impossible ici : root vérifie l'adresse
+  if (addrs.length && b.vipIface && !new Set(addrs.map((a) => a.iface)).has(b.vipIface)) fail(409, 'iface_unknown')
   await drop('.cluster-setup', JSON.stringify({ action: 'init', ...b }))
   await audit(c, 'cluster.init', 'cluster', b.cluster)
   return { accepted: true }
