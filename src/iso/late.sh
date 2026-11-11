@@ -56,11 +56,14 @@ in_target bash -c 'id ddiconsole >/dev/null 2>&1 || useradd --system --gid ddico
 mkdir -p "$TARGET/var/lib/ddibuntu/generated"
 in_target chown ddiconsole:ddiconsole /var/lib/ddibuntu/generated
 chmod 0750 "$TARGET/var/lib/ddibuntu/generated"
+mkdir -p "$TARGET/var/lib/ddibuntu/backup/base" "$TARGET/var/lib/ddibuntu/backup/wal"
+in_target chown -R postgres:postgres /var/lib/ddibuntu/backup
+chmod 0750 "$TARGET/var/lib/ddibuntu/backup" "$TARGET/var/lib/ddibuntu/backup/base" "$TARGET/var/lib/ddibuntu/backup/wal"
 
 log "services et durcissement"
 in_target groupadd -f ddiadmin
 in_target systemctl enable ddibuntu-firstboot.service nftables.service postgresql.service named.service \
-  ddibuntu-db-init.service ddibuntu-console.service ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-cluster-setup.path ddibuntu-selfupdate.path ddibuntu-update-check.timer
+  ddibuntu-db-init.service ddibuntu-console.service ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-cluster-setup.path ddibuntu-backup-request.path ddibuntu-backup.timer ddibuntu-selfupdate.path ddibuntu-update-check.timer
 # Kea ne démarre qu'après un déploiement contenant au moins une étendue (ddibuntu-reload l'active alors)
 in_target systemctl disable kea-dhcp4-server.service
 # Cluster : etcd et Patroni ne démarrent QUE sur ordre de « ddibuntu-cluster » (le paquet etcd démarrerait sinon un magasin en clair sur 127.0.0.1)
@@ -73,7 +76,7 @@ for f in usr/local/sbin/ddibuntu-apply usr/local/sbin/ddibuntu-setup usr/local/s
          usr/local/bin/ddibuntu-menu usr/local/lib/ddibuntu/common.sh etc/ddibuntu/nftables.nft \
          etc/ssh/sshd_config.d/10-ddibuntu.conf etc/sysctl.d/90-ddibuntu.conf \
          usr/local/sbin/ddibuntu-db-init usr/local/sbin/ddibuntu-reload usr/local/lib/ddibuntu/console-start \
-         usr/local/sbin/ddibuntu-selfupdate usr/local/sbin/ddibuntu-cluster usr/local/sbin/ddibuntu-ad etc/ddibuntu/update.conf etc/ddibuntu/update-pubkey.pem \
+         usr/local/sbin/ddibuntu-selfupdate usr/local/sbin/ddibuntu-cluster usr/local/sbin/ddibuntu-ad usr/local/sbin/ddibuntu-backup usr/local/lib/ddibuntu/wal-archive.sh etc/ddibuntu/backup.conf etc/postgresql/16/main/conf.d/ddibuntu-archive.conf etc/ddibuntu/update.conf etc/ddibuntu/update-pubkey.pem \
          opt/ddibuntu/console/app/server/index.mjs; do
   [ -f "$TARGET/$f" ] || fail "fichier attendu absent après déploiement : /$f"
 done

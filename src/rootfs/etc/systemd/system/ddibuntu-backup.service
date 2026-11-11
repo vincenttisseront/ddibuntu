@@ -1,0 +1,12 @@
+[Unit]
+Description=DDI-Buntu : sauvegarde planifiée de la base PostgreSQL (si nécessaire)
+After=postgresql.service patroni.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-backup auto
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+ProtectHome=yes

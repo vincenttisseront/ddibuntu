@@ -1,0 +1,612 @@
+#!/usr/bin/env bash
+# ddibuntu-backup — sauvegarde et restauration à un instant donné (PITR) de la base PostgreSQL.
+#   enable | disable            active / désactive l'archivage des journaux WAL et des sauvegardes
+#   run                         sauvegarde complète immédiate (sur le primaire)
+#   auto                        appelé par le minuteur : sauvegarde si nécessaire, rétention, copie externe, état
+#   list | status               catalogue / état en JSON (status publie aussi /run/ddibuntu/backup-status.json)
+#   verify [ID]                 contrôle d'intégrité (empreintes, archives gzip, journaux WAL)
+#   prune                       rétention : ne garde que KEEP_FULL sauvegardes et les journaux utiles
+#   configure K=V...            KEEP_FULL, INTERVAL_HOURS, START_HOUR, MIRROR_DIR
+#   restore --latest|--at T|--id ID --yes     restaure (T = « 2026-11-11 10:00:00+00 »)
+#   request                     demande JSON déposée par la console (.backup-request), revalidée ici
+# Outils standards uniquement : pg_basebackup, archive_command (wal-archive.sh), restore_command (gunzip). Dépôt : DIR, propriété de postgres.
+set -u
+ROOT="${DDI_ROOT:-}"
+CONF="${DDI_BACKUP_CONF:-$ROOT/etc/ddibuntu/backup.conf}"
+RUNDIR="$ROOT/run/ddibuntu"
+LIBDIR="${DDI_LIBDIR:-/usr/local/lib/ddibuntu}"
+PGVER=16
+PGBIN="${DDI_PGBIN:-/usr/lib/postgresql/$PGVER/bin}"
+PGDATA="${DDI_PGDATA:-$ROOT/var/lib/postgresql/$PGVER/main}"
+PGPORT="${DDI_PG_PORT:-5432}"
+PGSOCK="${DDI_PG_SOCKET_DIR:-/var/run/postgresql}"
+CLCONF="$ROOT/etc/ddibuntu-cluster/cluster.conf"
+CLCMD="${DDI_CLUSTER_CMD:-/usr/local/sbin/ddibuntu-cluster}"
+PATRONI_CFG="$ROOT/etc/patroni/config.yml"
+CLUSTER="" NODE="" NROLE="" CLNAME=""
+
+log() { printf 'ddibuntu-backup: %s\n' "$*" >&2; }
+die() { printf 'ddibuntu-backup: ERREUR : %s\n' "$*" >&2; exit 1; }
+[ -n "${DDI_TEST:-}" ] || [ "$(id -u)" -eq 0 ] || die "à lancer en root"
+
+# ---------------------------------------------------------------- configuration (lecture stricte, valeurs bornées)
+declare -A B=([ENABLED]=0 [DIR]=/var/lib/ddibuntu/backup [KEEP_FULL]=3 [INTERVAL_HOURS]=24 [START_HOUR]=2 [MIRROR_DIR]="")
+valid_dir() { [[ "$1" = /* && "$1" != *..* && "$1" =~ ^/[A-Za-z0-9._/@:+-]{1,200}$ ]]; }
+valid_int() { [[ "$2" =~ ^[0-9]{1,3}$ ]] && [ "$2" -ge "$3" ] && [ "$2" -le "$4" ]; }
+check_conf() {
+  [ "${B[ENABLED]}" = 0 ] || [ "${B[ENABLED]}" = 1 ] || die "ENABLED invalide"
+  valid_dir "${B[DIR]}" || die "DIR invalide"
+  [ -z "${B[MIRROR_DIR]}" ] || valid_dir "${B[MIRROR_DIR]}" || die "MIRROR_DIR invalide"
+  valid_int KEEP_FULL "${B[KEEP_FULL]}" 1 30 || die "KEEP_FULL doit être entre 1 et 30"
+  valid_int INTERVAL_HOURS "${B[INTERVAL_HOURS]}" 1 168 || die "INTERVAL_HOURS doit être entre 1 et 168"
+  valid_int START_HOUR "${B[START_HOUR]}" 0 23 || die "START_HOUR doit être entre 0 et 23"
+}
+load_conf() {
+  local line
+  if [ -f "$CONF" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in ''|'#'*) continue ;; esac
+      [[ "$line" =~ ^(ENABLED|DIR|KEEP_FULL|INTERVAL_HOURS|START_HOUR|MIRROR_DIR)=([A-Za-z0-9._/@:+-]*)$ ]] || die "ligne illisible dans $CONF : ${line:0:40}"
+      B[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]}"
+    done < "$CONF"
+  fi
+  check_conf
+  REPO="$ROOT${B[DIR]}"
+  if [ -f "$CLCONF" ]; then
+    local k v
+    while IFS='=' read -r k v; do
+      case "$k" in
+        CLUSTER_NAME) [[ "$v" =~ ^[a-z][a-z0-9-]{1,30}$ ]] && CLNAME="$v" ;;
+        NODE_NAME) [[ "$v" =~ ^[a-z][a-z0-9-]{1,30}$ ]] && NODE="$v" ;;
+        NODE_ROLE) [ "$v" = data ] || [ "$v" = witness ] && NROLE="$v" ;;
+        PG_PORT) [[ "$v" =~ ^[0-9]{2,5}$ ]] && PGPORT="$v" ;;
+        PG_SOCKET_DIR) [[ "$v" =~ ^/[A-Za-z0-9._/-]{1,100}$ ]] && PGSOCK="$ROOT$v" ;;
+      esac
+    done < "$CLCONF"
+    CLUSTER=1
+  fi
+}
+write_conf() {
+  check_conf
+  mkdir -p -- "$(dirname "$CONF")"
+  local t; t="$(mktemp "$CONF.XXXXXX")" || die "écriture impossible"
+  { echo "# Sauvegarde et restauration à un instant donné (PITR) — géré par « ddibuntu-backup » (jamais édité par la console)."
+    printf '%s=%s\n' ENABLED "${B[ENABLED]}" DIR "${B[DIR]}" KEEP_FULL "${B[KEEP_FULL]}" INTERVAL_HOURS "${B[INTERVAL_HOURS]}" START_HOUR "${B[START_HOUR]}" MIRROR_DIR "${B[MIRROR_DIR]}"; } > "$t"
+  chmod 0644 "$t"; mv -f "$t" "$CONF"
+}
+
+# En cluster, les réglages vivent dans etcd (partagés par les nœuds de données) ; le fichier local en est la copie lue par le minuteur et l'archiveur.
+conf_push() {
+  [ -n "$CLUSTER" ] || return 0
+  "$CLCMD" backup-conf put < "$CONF" >/dev/null 2>&1 || log "AVERTISSEMENT : réglages enregistrés ici mais non partagés avec les autres nœuds (etcd injoignable ?)"
+}
+# shellcheck disable=SC2030,SC2031
+conf_pull() {   # applique les réglages d'etcd s'ils sont valides et différents ; sinon ne touche à rien
+  [ -n "$CLUSTER" ] || return 0
+  local t; t="$(mktemp "$CONF.pull.XXXXXX")" || return 0
+  if "$CLCMD" backup-conf get > "$t" 2>/dev/null && [ -s "$t" ] && ( CONF="$t"; load_conf ) >/dev/null 2>&1; then
+    if ! cmp -s "$t" "$CONF"; then chmod 0644 "$t"; mv -f "$t" "$CONF"; log "réglages des sauvegardes mis à jour depuis le cluster"; load_conf; return 0; fi
+  fi
+  rm -f "$t"
+}
+cluster_render() { [ -z "$CLUSTER" ] || "$CLCMD" render >/dev/null 2>&1 || log "AVERTISSEMENT : configuration Patroni non re-générée"; }
+
+as_pg() { runuser -u postgres -- "$@"; }
+psql_pg() { as_pg "$PGBIN/psql" -h "$PGSOCK" -p "$PGPORT" -d postgres -Atq -X -v ON_ERROR_STOP=1 "$@"; }
+is_primary() { [ "$(psql_pg -c 'select pg_is_in_recovery()' 2>/dev/null)" = f ]; }
+pg_up() { psql_pg -c 'select 1' >/dev/null 2>&1; }
+need_db() { [ "$NROLE" != witness ] || die "ce nœud est l'arbitre du cluster : il n'a pas de base à sauvegarder"; }
+repo_init() { install -d -m 0750 -o postgres -g postgres "$REPO" "$REPO/base" "$REPO/wal" 2>/dev/null || { mkdir -p "$REPO/base" "$REPO/wal"; chown postgres:postgres "$REPO" "$REPO/base" "$REPO/wal" 2>/dev/null || true; }; }
+lock() { install -d -m 0755 "$RUNDIR" 2>/dev/null || true; exec 9>"$RUNDIR/backup.lock"; flock -n 9 || die "une sauvegarde ou une restauration est déjà en cours"; }
+now() { if [ -n "${DDI_TEST:-}" ] && [ -n "${DDI_NOW:-}" ]; then echo "$DDI_NOW"; else date +%s; fi; }
+
+# segment WAL (16 Mio) contenant un LSN « X/Y » pour une timeline donnée
+seg_of() { python3 -c 'import sys; t=int(sys.argv[1]); h,l=sys.argv[2].split("/"); a=int(h,16); b=int(l,16); print("%08X%08X%08X" % (t, a, b >> 24))' "$1" "$2"; }
+
+# ---------------------------------------------------------------- activation de l'archivage
+# shellcheck disable=SC2031
+archive_cmd() {
+  if [ -n "$ROOT" ]; then printf "env DDI_ROOT=%s DDI_BACKUP_CONF=%s %s/wal-archive.sh %%p %%f" "$ROOT" "$CONF" "$LIBDIR"
+  else printf '%s/wal-archive.sh %%p %%f' "$LIBDIR"; fi
+}
+pg_conf_dropin() {   # PostgreSQL seul (hors cluster) : réglage dans conf.d
+  local d="${DDI_PG_CONFD:-$ROOT/etc/postgresql/$PGVER/main/conf.d}"
+  [ -d "$(dirname "$d")" ] || return 0
+  install -d -m 0755 "$d"
+  printf "# géré par ddibuntu-backup\narchive_mode = on\narchive_command = '%s'\n" "$(archive_cmd)" > "$d/ddibuntu-archive.conf"
+}
+cmd_enable() {
+  load_conf; need_db; lock
+  repo_init
+  B[ENABLED]=1; write_conf; conf_push
+  if [ -z "$CLUSTER" ]; then pg_conf_dropin; fi
+  local mode; mode="$(psql_pg -c 'show archive_mode' 2>/dev/null || true)"
+  if [ "$mode" != on ] && [ "$mode" != always ]; then
+    log "archive_mode est « ${mode:-inconnu} » : redémarrage de PostgreSQL pour l'activer"
+    if [ -n "$CLUSTER" ]; then cluster_render; pg_restart_cluster || die "redémarrage de PostgreSQL (Patroni) impossible : voir « patronictl list »"
+    else pg_do restart || die "redémarrage de PostgreSQL impossible"; fi
+    local i; for i in $(seq 90); do pg_up && break; sleep 1; done
+    pg_up || die "PostgreSQL ne répond pas après le redémarrage"
+    mode="$(psql_pg -c 'show archive_mode' 2>/dev/null || true)"
+    [ "$mode" = on ] || [ "$mode" = always ] || die "archive_mode n'est toujours pas actif après le redémarrage (configuration PostgreSQL ?)"
+  fi
+  if is_primary; then
+    log "archivage activé ; première sauvegarde complète en cours"
+    flock -u 9; cmd_run
+  else
+    log "archivage activé sur ce secondaire ; les sauvegardes sont prises par le primaire du cluster"
+  fi
+}
+cmd_disable() { load_conf; B[ENABLED]=0; write_conf; conf_push; log "sauvegardes désactivées (les sauvegardes existantes sont conservées ; l'archivage des WAL est suspendu)"; publish_status >/dev/null 2>&1 || true; }
+
+pg_do() {   # PostgreSQL seul : start | stop | restart (DDI_PG_CMD en test)
+  if [ -n "${DDI_PG_CMD:-}" ]; then "$DDI_PG_CMD" "$1" 9>&-; else systemctl "$1" "postgresql@$PGVER-main.service" 9>&-; fi
+}
+pg_restart_cluster() {   # recharge la configuration Patroni de CE nœud, puis redémarre PostgreSQL si un paramètre l'exige (drapeau « pending restart »)
+  [ -f "$PATRONI_CFG" ] || return 1
+  local pc=(patronictl -c "$PATRONI_CFG"); [ -z "${DDI_PY:-}" ] || pc=("$DDI_PY" "${DDI_PATRONICTL:-/usr/bin/patronictl}" -c "$PATRONI_CFG")
+  "${pc[@]}" reload "$CLNAME" "$NODE" --force >/dev/null 2>&1 9>&- || return 1
+  local i pend=""
+  for i in $(seq 25); do   # Patroni lève le drapeau à son prochain tour de boucle (loop_wait, 10 s par défaut)
+    pend="$("${pc[@]}" list -f json 2>/dev/null 9>&- | NODE="$NODE" python3 -c 'import json,os,sys; d=json.load(sys.stdin); print(any(m.get("Member")==os.environ["NODE"] and bool(m.get("Pending restart")) for m in d))' 2>/dev/null)"
+    [ "$pend" = True ] && break; sleep 2
+  done
+  [ "$pend" = True ] || return 0
+  "${pc[@]}" restart "$CLNAME" "$NODE" --pending --force >/dev/null 2>&1 9>&-
+}
+
+# ---------------------------------------------------------------- sauvegarde complète
+meta_list() { find "$REPO/base" -maxdepth 2 -name meta.json 2>/dev/null | sort; }
+cmd_run() {
+  load_conf; need_db
+  [ "${B[ENABLED]}" = 1 ] || die "les sauvegardes sont désactivées"
+  [ -n "${LOCKED:-}" ] || { lock; LOCKED=1; }   # le verrou (fd 9) est hérité par les sous-shells qui suivent
+  pg_up || die "PostgreSQL ne répond pas"
+  is_primary || die "ce nœud est un secondaire : la sauvegarde se fait sur le primaire"
+  repo_init
+  local id tmp t0 log_; id="$(date -u +%Y%m%dT%H%M%SZ)"; tmp="$REPO/base/.tmp-$id"; log_="$REPO/base/.tmp-$id.log"
+  [ ! -e "$REPO/base/$id" ] || die "une sauvegarde porte déjà l'identifiant $id (réessayez dans une seconde)"
+  as_pg mkdir -p "$tmp" || die "dépôt non inscriptible : $REPO"
+  t0="$(now)"
+  log "sauvegarde complète $id"
+  if ! as_pg "$PGBIN/pg_basebackup" -h "$PGSOCK" -p "$PGPORT" -U postgres -D "$tmp" -Ft -z -X stream --checkpoint=fast --label "ddibuntu-$id" -w >"$log_" 2>&1; then
+    local why; why="$(tail -n 1 "$log_" 2>/dev/null | tr -cd '[:print:]' | head -c 200)"; rm -rf -- "$tmp" "$log_"; die "pg_basebackup a échoué : $why"
+  fi
+  rm -f -- "$log_"
+  [ -s "$tmp/base.tar.gz" ] && [ -s "$tmp/backup_manifest" ] || { rm -rf -- "$tmp"; die "sauvegarde incomplète (fichiers manquants)"; }
+  local extra; extra="$(find "$tmp" -maxdepth 1 -name '*.tar.gz' ! -name base.tar.gz ! -name pg_wal.tar.gz | head -n1)"
+  [ -z "$extra" ] || { rm -rf -- "$tmp"; die "la base utilise des espaces de stockage (tablespaces) : non pris en charge par ces sauvegardes"; }
+  local tli lsn_start lsn_end
+  read -r tli lsn_start lsn_end < <(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1])); r = m["WAL-Ranges"][0]
+print(r["Timeline"], r["Start-LSN"], r["End-LSN"])' "$tmp/backup_manifest") || { rm -rf -- "$tmp"; die "manifeste illisible"; }
+  local sseg eseg; sseg="$(seg_of "$tli" "$lsn_start")"; eseg="$(seg_of "$tli" "$lsn_end")"
+  # le dernier segment de la sauvegarde doit être archivé pour qu'elle serve de base à une restauration jusqu'à « maintenant »
+  psql_pg -c 'select pg_switch_wal()' >/dev/null 2>&1 || true
+  local archived=false i; for i in $(seq 90); do [ -f "$REPO/wal/$eseg.gz" ] && { archived=true; break; }; sleep 1; done
+  local size; size="$(du -sb "$tmp" | cut -f1)"
+  ID="$id" NODE="${NODE:-$(hostname -s)}" TLI="$tli" SLSN="$lsn_start" ELSN="$lsn_end" SSEG="$sseg" ESEG="$eseg" SIZE="$size" ARCH="$archived" T0="$t0" T1="$(now)" python3 -c '
+import json, os
+e = os.environ
+print(json.dumps({"id": e["ID"], "node": e["NODE"], "type": "full", "startedAt": int(e["T0"]), "finishedAt": int(e["T1"]), "sizeBytes": int(e["SIZE"]), "timeline": int(e["TLI"]),
+  "startLsn": e["SLSN"], "endLsn": e["ELSN"], "startSegment": e["SSEG"], "endSegment": e["ESEG"], "walArchived": e["ARCH"] == "true", "pgMajor": 16}))' > "$tmp/meta.json"
+  ( cd "$tmp" && sha256sum base.tar.gz pg_wal.tar.gz backup_manifest meta.json > SHA256SUMS ) 2>/dev/null || ( cd "$tmp" && sha256sum base.tar.gz backup_manifest meta.json > SHA256SUMS )
+  chown -R postgres:postgres "$tmp" 2>/dev/null || true
+  mv -- "$tmp" "$REPO/base/$id"
+  sync -- "$REPO/base" 2>/dev/null || true
+  log "sauvegarde $id terminée (timeline $tli, $((size / 1048576)) Mio)"
+  echo "$id"
+}
+
+# ---------------------------------------------------------------- vérification
+cmd_verify() {
+  load_conf; need_db
+  local want="${1:-}" bad=0 n=0 d id m
+  [ -z "$want" ] || [[ "$want" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "identifiant invalide"
+  for m in $(meta_list); do
+    d="$(dirname "$m")"; id="$(basename "$d")"; [ -z "$want" ] || [ "$want" = "$id" ] || continue
+    n=$((n + 1))
+    if ( cd "$d" && sha256sum --quiet -c SHA256SUMS >/dev/null 2>&1 ) && gzip -t "$d"/*.tar.gz 2>/dev/null; then log "sauvegarde $id : intègre"
+    else log "sauvegarde $id : CORROMPUE (empreinte ou archive invalide)"; bad=$((bad + 1)); fi
+  done
+  [ "$n" -gt 0 ] || die "aucune sauvegarde${want:+ $want}"
+  # journaux WAL archivés : lisibles
+  local w wbad=0; for w in "$REPO"/wal/*.gz; do [ -e "$w" ] || continue; gzip -t "$w" 2>/dev/null || { log "journal $(basename "$w") : CORROMPU"; wbad=$((wbad + 1)); }; done
+  [ "$bad" -eq 0 ] && [ "$wbad" -eq 0 ] || die "$bad sauvegarde(s) et $wbad journal(aux) corrompu(s)"
+  log "contrôle terminé : $n sauvegarde(s) et journaux WAL intègres"
+}
+
+# ---------------------------------------------------------------- rétention
+cmd_prune() {
+  load_conf; need_db
+  local keep="${B[KEEP_FULL]}" ids=() m i
+  for m in $(meta_list); do ids+=("$(basename "$(dirname "$m")")"); done
+  local total="${#ids[@]}"
+  if [ "$total" -gt "$keep" ]; then
+    for ((i = 0; i < total - keep; i++)); do log "suppression de la sauvegarde ${ids[$i]} (au-delà de $keep)"; rm -rf -- "${REPO:?}/base/${ids[$i]}"; done
+    ids=("${ids[@]:$((total - keep))}")
+  fi
+  find "$REPO/base" -maxdepth 1 -name '.tmp-*' -mmin +120 -exec rm -rf {} + 2>/dev/null || true
+  # journaux antérieurs au premier segment de la plus ancienne sauvegarde conservée : inutiles
+  if [ "${#ids[@]}" -gt 0 ]; then
+    local first; first="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["startSegment"])' "$REPO/base/${ids[0]}/meta.json" 2>/dev/null || true)"
+    if [[ "$first" =~ ^[0-9A-F]{24}$ ]]; then
+      local w b; for w in "$REPO"/wal/*.gz; do [ -e "$w" ] || continue; b="$(basename "$w" .gz)"; [ "${b:0:24}" \< "$first" ] && [[ "$b" =~ ^[0-9A-F]{24} ]] && rm -f -- "$w"; done
+    fi
+  fi
+  # anciennes bases laissées de côté par une restauration : 14 jours
+  local old; for old in "$PGDATA".pre-restore.*; do [ -d "$old" ] && [ -n "$(find "$old" -maxdepth 0 -mtime +14 2>/dev/null)" ] && { log "suppression de $old (plus de 14 jours)"; rm -rf -- "$old"; }; done
+  return 0
+}
+
+cmd_delete() {
+  load_conf; need_db; local id="${1:-}"
+  [[ "$id" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "identifiant invalide"
+  [ -d "$REPO/base/$id" ] || die "sauvegarde inconnue : $id"
+  [ "$(meta_list | wc -l)" -gt 1 ] || die "c'est la dernière sauvegarde : elle est conservée"
+  rm -rf -- "${REPO:?}/base/$id"; log "sauvegarde $id supprimée"
+}
+
+# ---------------------------------------------------------------- copie externe (volume monté : NFS, SMB, disque USB…)
+mirror_sync() {
+  [ -n "${B[MIRROR_DIR]}" ] || return 0
+  local dst="$ROOT${B[MIRROR_DIR]}"
+  [ -d "$dst" ] || { log "AVERTISSEMENT : destination externe absente : $dst"; return 1; }
+  if command -v rsync >/dev/null 2>&1; then rsync -a --delete "$REPO/base" "$REPO/wal" "$dst/" || { log "AVERTISSEMENT : copie externe incomplète"; return 1; }
+  else mkdir -p "$dst/base" "$dst/wal"; cp -au "$REPO/base/." "$dst/base/" && cp -au "$REPO/wal/." "$dst/wal/" || { log "AVERTISSEMENT : copie externe incomplète"; return 1; }; fi
+  date +%s > "$dst/.ddibuntu-last-sync" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------- minuteur
+cmd_auto() {
+  load_conf
+  [ "$NROLE" != witness ] || return 0
+  conf_pull
+  [ "${B[ENABLED]}" != 1 ] || repo_init   # tous les nœuds de données : le dépôt doit exister AVANT une éventuelle promotion (sinon l'archivage échoue)
+  # secondaire d'un cluster dont les sauvegardes sont actives mais dont PostgreSQL n'archive pas encore (mise à jour récente) : régénération et redémarrage de CE nœud
+  if [ -n "$CLUSTER" ] && [ "${B[ENABLED]}" = 1 ] && pg_up && ! is_primary; then
+    local am; am="$(psql_pg -c 'show archive_mode' 2>/dev/null || true)"
+    if [ "$am" = off ]; then log "archivage inactif sur ce secondaire : activation"; lock; LOCKED=1; cluster_render; pg_restart_cluster || log "AVERTISSEMENT : redémarrage de ce secondaire impossible"; fi
+  fi
+  [ "${B[ENABLED]}" = 1 ] || { publish_status >/dev/null 2>&1 || true; return 0; }
+  lock; LOCKED=1
+  if pg_up && is_primary; then
+    local last=0 lasttli=0 cur m due=0
+    for m in $(meta_list); do last="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["finishedAt"])' "$m")"; lasttli="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["timeline"])' "$m")"; done
+    cur="$(psql_pg -c 'select timeline_id from pg_control_checkpoint()' 2>/dev/null || echo 0)"
+    local age=$(( $(now) - last )) hour; hour="$((10#$(date +%H)))"
+    if [ "$last" -eq 0 ]; then due=1; log "aucune sauvegarde : première sauvegarde complète"
+    elif [ "$cur" != "$lasttli" ] && [ "$cur" != 0 ]; then due=1; log "nouvelle timeline ($lasttli → $cur) : sauvegarde complète"
+    elif [ "$age" -ge $(( B[INTERVAL_HOURS] * 3600 )) ] && { [ "$hour" -ge "${B[START_HOUR]}" ] || [ "$age" -ge $(( B[INTERVAL_HOURS] * 3600 * 3 / 2 )) ]; }; then due=1; log "sauvegarde planifiée (dernière il y a $((age / 3600)) h)"; fi
+    if [ "$due" -eq 1 ]; then ( cmd_run ) >/dev/null || log "AVERTISSEMENT : la sauvegarde planifiée a échoué"; fi
+    cmd_prune || true
+    mirror_sync || true
+  fi
+  publish_status >/dev/null 2>&1 || true
+}
+
+# ---------------------------------------------------------------- état (JSON sans secret)
+status_json() {
+  load_conf
+  local role=unknown arch="null" mode="" free=0 pre=0 d
+  if [ "$NROLE" = witness ]; then role=witness
+  elif pg_up; then
+    is_primary && role=primary || role=standby
+    mode="$(psql_pg -c 'show archive_mode' 2>/dev/null || true)"
+    arch="$(psql_pg -c "select coalesce(row_to_json(a), 'null'::json) from (select archived_count, last_archived_wal, extract(epoch from last_archived_time)::bigint as last_archived_at, failed_count, last_failed_wal, extract(epoch from last_failed_time)::bigint as last_failed_at from pg_stat_archiver) a" 2>/dev/null || echo null)"
+    [ -n "$arch" ] || arch=null
+  fi
+  [ -d "$REPO" ] && free="$(df -B1 --output=avail "$REPO" 2>/dev/null | tail -n1 | tr -d ' ')"
+  for d in "$PGDATA".pre-restore.*; do [ -d "$d" ] && pre=$((pre + 1)); done
+  local wal_n=0 wal_b=0; if [ -d "$REPO/wal" ]; then wal_n="$(find "$REPO/wal" -maxdepth 1 -name '*.gz' | wc -l)"; wal_b="$(du -sb "$REPO/wal" 2>/dev/null | cut -f1)"; fi
+  local files=() m; for m in $(meta_list); do files+=("$m"); done
+  local lastwal=0; if [ "$wal_n" -gt 0 ]; then lastwal="$(find "$REPO/wal" -maxdepth 1 -name '*.gz' -printf '%T@\n' | sort -n | tail -n1 | cut -d. -f1)"; fi
+  ENABLED="${B[ENABLED]}" REPOP="${B[DIR]}" KEEP="${B[KEEP_FULL]}" INTERVAL="${B[INTERVAL_HOURS]}" STARTH="${B[START_HOUR]}" MIRROR="${B[MIRROR_DIR]}" ROLE="$role" MODE="$mode" ARCH="$arch" FREE="${free:-0}" PRE="$pre" \
+    WALN="$wal_n" WALB="${wal_b:-0}" LASTWAL="$lastwal" CL="$CLNAME" NODEN="${NODE:-$(hostname -s)}" HOSTN="$(hostname -s)" python3 -c '
+import json, os, sys, time
+e = os.environ
+b = []
+for p in sys.argv[1:]:
+    try: b.append(json.load(open(p)))
+    except Exception: pass
+b.sort(key=lambda x: x.get("id", ""))
+try: arch = json.loads(e["ARCH"])
+except Exception: arch = None
+print(json.dumps({"at": int(time.time()), "enabled": e["ENABLED"] == "1", "role": e["ROLE"], "node": e["NODEN"], "hostname": e["HOSTN"], "cluster": e["CL"] or None,
+  "repo": e["REPOP"], "keepFull": int(e["KEEP"]), "intervalHours": int(e["INTERVAL"]), "startHour": int(e["STARTH"]), "mirrorDir": e["MIRROR"] or None,
+  "archiveMode": e["MODE"] or None, "archiver": arch, "diskFreeBytes": int(e["FREE"]), "preRestoreDirs": int(e["PRE"]),
+  "walFiles": int(e["WALN"]), "walBytes": int(e["WALB"] or 0), "lastWalAt": int(e["LASTWAL"]) or None, "backups": b,
+  "pitrFrom": b[0]["finishedAt"] if b else None}, ensure_ascii=False))' "${files[@]}"
+}
+publish_status() {
+  install -d -m 0755 "$RUNDIR" 2>/dev/null || return 0
+  local t; t="$(mktemp "$RUNDIR/.backup.XXXXXX")" || return 0
+  if status_json > "$t" 2>/dev/null; then chmod 0644 "$t"; mv -f "$t" "$RUNDIR/backup-status.json"; else rm -f "$t"; return 1; fi
+}
+cmd_status() { status_json; publish_status >/dev/null 2>&1 || true; }
+cmd_list() { status_json | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["backups"], ensure_ascii=False))'; }
+
+cmd_configure() {
+  load_conf; local kv k v
+  for kv in "$@"; do
+    k="${kv%%=*}"; v="${kv#*=}"
+    case "$k" in KEEP_FULL|INTERVAL_HOURS|START_HOUR|MIRROR_DIR) B[$k]="$v" ;; *) die "paramètre inconnu : $k" ;; esac
+  done
+  write_conf; conf_push; log "paramètres enregistrés"
+}
+
+# ---------------------------------------------------------------- restauration
+RESTORE_STATE="$RUNDIR/backup-restore.json"
+phase() { install -d -m 0755 "$RUNDIR" 2>/dev/null || return 0; printf '{"at":%s,"phase":"%s","message":"%s"}\n' "$(now)" "$1" "${2:-}" > "$RESTORE_STATE.tmp" && mv -f "$RESTORE_STATE.tmp" "$RESTORE_STATE"; chmod 0644 "$RESTORE_STATE" 2>/dev/null || true; }
+restore_conf() {   # restore_conf FICHIER CIBLE_HEURE_OU_VIDE MODE(latest|time|immediate) TIMELINE(nombre|latest)
+  local f="$1" tt="$2" mode="$3" tl="$4"
+  { printf "restore_command = 'test -f %s/wal/%%f.gz && gzip -dc %s/wal/%%f.gz > \"%%p\"'\n" "$REPO" "$REPO"
+    printf "recovery_target_timeline = '%s'\n" "$tl"
+    case "$mode" in
+      time) printf "recovery_target_time = '%s'\nrecovery_target_action = 'promote'\n" "$tt" ;;
+      immediate) printf "recovery_target = 'immediate'\nrecovery_target_action = 'promote'\n" ;;
+    esac; } >> "$f"
+}
+backup_tli() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["timeline"])' "$REPO/base/$1/meta.json"; }
+write_recovery() {   # write_recovery ID MODE TT : écrit les réglages de récupération dans postgresql.auto.conf
+  local id="$1" mode="$2" tt="$3" tl; tl="$(backup_tli "$id")"
+  if [ "$mode" = id ]; then restore_conf "$PGDATA/postgresql.auto.conf" "" immediate "$tl"
+  elif [ "$mode" = time ]; then restore_conf "$PGDATA/postgresql.auto.conf" "$tt" time "$tl"
+  else restore_conf "$PGDATA/postgresql.auto.conf" "" latest latest; fi
+}
+pick_backup() {   # pick_backup MODE ARG → id sur la sortie standard
+  local mode="$1" arg="$2" best="" m d fin id
+  case "$mode" in
+    id) [ -f "$REPO/base/$arg/meta.json" ] || return 1; echo "$arg"; return 0 ;;
+    latest) for m in $(meta_list); do best="$(basename "$(dirname "$m")")"; done ;;
+    time) local ts; ts="$(date -d "$arg" +%s 2>/dev/null)" || return 1
+      for m in $(meta_list); do d="$(dirname "$m")"; id="$(basename "$d")"; fin="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["finishedAt"])' "$m")"; [ "$fin" -le "$ts" ] && best="$id"; done ;;
+  esac
+  [ -n "$best" ] && echo "$best"
+}
+PGLOGF=""   # journal du PostgreSQL démarré par la restauration d'un cluster (sinon : journal du service)
+recovery_hint() {   # indice lisible quand la cible n'est pas atteinte (journal de PostgreSQL, si lisible)
+  local lf="${PGLOGF:-${DDI_PG_LOG:-$ROOT/var/log/postgresql/postgresql-$PGVER-main.log}}" last
+  [ -r "$lf" ] || return 0
+  last="$(tail -n 300 "$lf" 2>/dev/null | sed -n 's/.*last completed transaction was at log time \(.*\)$/\1/p' | tail -n1 | tr -cd '[:print:]' | head -c 60)"
+  [ -z "$last" ] || printf ' [dernière transaction archivée : %s ; pour revenir au plus récent, utiliser --latest]' "$last"
+}
+wait_recovered() {
+  local i pid; for i in $(seq "${1:-300}"); do
+    if pg_up; then [ "$(psql_pg -c 'select pg_is_in_recovery()' 2>/dev/null)" = f ] && return 0
+    elif [ "$i" -gt 5 ]; then   # le serveur s'est arrêté (journal manquant avant la cible, par exemple) : inutile d'attendre
+      pid="$(head -n1 "$PGDATA/postmaster.pid" 2>/dev/null)"; { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; } || return 1
+    fi
+    sleep 1
+  done; return 1
+}
+cmd_restore() {
+  local mode="" arg="" yes=0
+  while [ $# -gt 0 ]; do case "$1" in
+    --latest) mode=latest; shift ;; --at) mode="time"; arg="${2:-}"; shift 2 ;; --id) mode=id; arg="${2:-}"; shift 2 ;; --yes) yes=1; shift ;; *) die "option inconnue : $1" ;; esac; done
+  [ -n "$mode" ] || die "préciser --latest, --at <date avec fuseau> ou --id <sauvegarde>"
+  [ "$mode" != time ] || [[ "$arg" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}(:?[0-9]{2})?)$ ]] || die "date invalide : écrire « AAAA-MM-JJ HH:MM:SS+00 » (fuseau obligatoire)"
+  [ "$mode" != id ] || [[ "$arg" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "identifiant invalide"
+  [ "$yes" -eq 1 ] || die "la restauration REMPLACE la base actuelle (conservée à côté) : relancer avec --yes pour confirmer"
+  load_conf; need_db; lock; LOCKED=1
+  local tt=""
+  if [ "$mode" = time ]; then
+    tt="$(date -u -d "$arg" '+%Y-%m-%d %H:%M:%S+00' 2>/dev/null)" || die "date illisible"
+    [ "$(date -d "$arg" +%s)" -le "$(now)" ] || die "la date demandée est dans le futur"
+  fi
+  local id; id="$(pick_backup "$mode" "$arg")" || die "aucune sauvegarde ne convient${tt:+ (aucune ne précède $tt)}"
+  local bdir="$REPO/base/$id"
+  ( cd "$bdir" && sha256sum --quiet -c SHA256SUMS >/dev/null 2>&1 ) || die "la sauvegarde $id est corrompue : restauration refusée"
+  if [ -n "$tt" ]; then log "restauration depuis la sauvegarde $id, jusqu’à $tt"; else log "restauration depuis la sauvegarde $id"; fi
+  if [ -n "$CLUSTER" ]; then restore_cluster "$id" "$mode" "$tt"; else restore_standalone "$id" "$mode" "$tt"; fi
+}
+extract_base() {   # extract_base DIR_SAUVEGARDE
+  local b="$1"
+  as_pg mkdir -m 0700 -p "$PGDATA" || return 1
+  as_pg tar -xzf "$b/base.tar.gz" -C "$PGDATA" || return 1
+  if [ -f "$b/pg_wal.tar.gz" ]; then as_pg mkdir -p "$PGDATA/pg_wal"; as_pg tar -xzf "$b/pg_wal.tar.gz" -C "$PGDATA/pg_wal" || return 1; fi
+}
+reset_recovery_settings() {
+  local p; for p in restore_command recovery_target_timeline recovery_target_time recovery_target recovery_target_action; do psql_pg -c "alter system reset $p" >/dev/null 2>&1 || true; done
+  psql_pg -c 'select pg_reload_conf()' >/dev/null 2>&1 || true
+}
+post_restore_backup() {   # la restauration ouvre une nouvelle timeline : nouvelle sauvegarde de référence tout de suite
+  [ "${B[ENABLED]}" = 1 ] || return 0
+  local i; for i in $(seq 60); do pg_up && is_primary && break; sleep 1; done
+  ( cmd_run ) >/dev/null 2>&1 && log "nouvelle sauvegarde complète prise après la restauration" || log "AVERTISSEMENT : la sauvegarde qui suit la restauration a échoué (elle sera reprise par le minuteur)"
+}
+restore_standalone() {
+  local id="$1" mode="$2" tt="$3" ts aside; ts="$(date -u +%Y%m%dT%H%M%SZ)"; aside="$PGDATA.pre-restore.$ts"
+  local console_was=0; if [ -z "${DDI_TEST:-}" ] && systemctl is-active --quiet ddibuntu-console.service 2>/dev/null; then console_was=1; fi
+  phase stopping "arrêt de PostgreSQL"
+  [ "$console_was" -eq 0 ] || systemctl stop ddibuntu-console.service
+  pg_do stop || { [ "$console_was" -eq 0 ] || systemctl start ddibuntu-console.service; phase failed "arrêt de PostgreSQL impossible"; die "arrêt de PostgreSQL impossible"; }
+  mv -- "$PGDATA" "$aside" || { pg_do start; phase failed "déplacement de la base actuelle impossible"; die "déplacement de la base actuelle impossible"; }
+  phase extracting "extraction de la sauvegarde $id"
+  local fail=""
+  extract_base "$REPO/base/$id" || fail="extraction impossible"
+  if [ -z "$fail" ]; then
+    write_recovery "$id" "$mode" "$tt"
+    as_pg touch "$PGDATA/recovery.signal"
+    phase recovering "relecture des journaux WAL"
+    pg_do start || fail="démarrage impossible (la date visée dépasse les journaux archivés, ou des journaux manquent)$(recovery_hint)"
+  fi
+  if [ -z "$fail" ] && ! wait_recovered "${DDI_RESTORE_WAIT:-600}"; then fail="la récupération n'a pas abouti (la date visée dépasse les journaux archivés, ou des journaux manquent)$(recovery_hint)"; fi
+  if [ -n "$fail" ]; then
+    log "ÉCHEC : $fail — retour à la base précédente"
+    phase rollback "$fail"
+    pg_do stop >/dev/null 2>&1 || true; sleep 1; rm -rf -- "$PGDATA"; mv -- "$aside" "$PGDATA"; pg_do start >/dev/null 2>&1 || true
+    [ "$console_was" -eq 0 ] || systemctl start ddibuntu-console.service
+    phase failed "$fail"; die "$fail ; la base précédente est remise en service"
+  fi
+  reset_recovery_settings
+  [ "$console_was" -eq 0 ] || systemctl start ddibuntu-console.service
+  phase "done" "base restaurée ; ancienne base conservée : $aside"
+  log "restauration terminée ; l'ancienne base est conservée dans $aside (supprimée automatiquement après 14 jours)"
+  post_restore_backup
+}
+cluster_pg_opts() {   # options -o pour démarrer PostgreSQL comme le fait Patroni (adresse, port, paramètres figés dans pg_control)
+  local listen port addr k v out="" cf="" cd cfgdir
+  listen="$(awk '/^postgresql:/{f=1;next} /^[A-Za-z]/{f=0} f && $1=="listen:"{print $2; exit}' "$PATRONI_CFG")"
+  port="${listen##*:}"; addr="${listen%:*}"
+  [[ "$port" =~ ^[0-9]{2,5}$ && "$addr" =~ ^[0-9a-fA-F:.,]+$ ]] || return 1
+  out="-c listen_addresses=$addr -c port=$port"
+  cd="$(as_pg "$PGBIN/pg_controldata" -D "$PGDATA" 2>/dev/null)" || return 1
+  while IFS=: read -r k v; do
+    v="${v//[[:space:]]/}"; [[ "$v" =~ ^[A-Za-z0-9_]{1,20}$ ]] || continue
+    case "$k" in
+      "wal_level setting") out="$out -c wal_level=$v" ;;
+      "wal_log_hints setting") out="$out -c wal_log_hints=$v" ;;
+      "max_connections setting") out="$out -c max_connections=$v" ;;
+      "max_worker_processes setting") out="$out -c max_worker_processes=$v" ;;
+      "max_wal_senders setting") out="$out -c max_wal_senders=$v" ;;
+      "max_prepared_xacts setting") out="$out -c max_prepared_transactions=$v" ;;
+      "max_locks_per_xact setting") out="$out -c max_locks_per_transaction=$v" ;;
+      "track_commit_timestamp setting") out="$out -c track_commit_timestamp=$v" ;;
+    esac
+  done <<<"$cd"
+  cfgdir="$(sed -n 's/^  config_dir: *//p' "$PATRONI_CFG" | head -n1)"
+  if [ -n "${DDI_PG_CONFIG_FILE:-}" ]; then cf="$DDI_PG_CONFIG_FILE"; elif [ -n "$cfgdir" ]; then cf="$cfgdir/postgresql.conf"; fi
+  [ -z "$cf" ] || { [[ "$cf" =~ ^/[A-Za-z0-9._/-]{1,200}$ ]] && out="$out -c config_file=$cf"; }
+  printf '%s' "$out"
+}
+restore_cluster() {
+  local id="$1" mode="$2" tt="$3" ts aside; ts="$(date -u +%Y%m%dT%H%M%SZ)"; aside="$PGDATA.pre-restore.$ts"
+  [ "$NROLE" = data ] || die "restauration impossible sur l'arbitre"
+  pg_up && is_primary || die "la restauration d'un cluster se lance depuis le nœud PRIMAIRE (leader Patroni)"
+  [ -f "$PATRONI_CFG" ] || die "configuration Patroni absente"
+  local pc=(patronictl -c "$PATRONI_CFG") py="${DDI_PY:-}"
+  [ -z "$py" ] || pc=("$py" "${DDI_PATRONICTL:-/usr/bin/patronictl}" -c "$PATRONI_CFG")
+  phase pausing "Patroni en pause (aucune bascule automatique pendant la restauration)"
+  "${pc[@]}" pause --wait >/dev/null 2>&1 || die "mise en pause de Patroni impossible"
+  local console_was=0; if [ -z "${DDI_TEST:-}" ] && systemctl is-active --quiet ddibuntu-console.service 2>/dev/null; then console_was=1; fi
+  [ "$console_was" -eq 0 ] || systemctl stop ddibuntu-console.service
+  phase stopping "arrêt de PostgreSQL"
+  as_pg "$PGBIN/pg_ctl" -D "$PGDATA" -m fast -w stop >/dev/null 2>&1 || { "${pc[@]}" resume --wait >/dev/null 2>&1; die "arrêt de PostgreSQL impossible"; }
+  mv -- "$PGDATA" "$aside" || { "${pc[@]}" resume --wait >/dev/null 2>&1; die "déplacement de la base actuelle impossible"; }
+  phase extracting "extraction de la sauvegarde $id"
+  local fail=""
+  extract_base "$REPO/base/$id" || fail="extraction impossible"
+  if [ -z "$fail" ]; then
+    # la configuration de Patroni (hors PGDATA quand config_dir est défini) reste en place ; sinon elle vient de la sauvegarde
+    write_recovery "$id" "$mode" "$tt"
+    as_pg touch "$PGDATA/recovery.signal"
+    phase recovering "relecture des journaux WAL"
+    local pgo; pgo="$(cluster_pg_opts)" || fail="options de démarrage de PostgreSQL illisibles (configuration Patroni)"
+    PGLOGF="$ROOT/var/lib/ddibuntu/backup-restore-pg.log"; : > "$PGLOGF"; chown postgres "$PGLOGF" 2>/dev/null || true; chmod 0640 "$PGLOGF"
+    [ -n "$fail" ] || as_pg "$PGBIN/pg_ctl" -D "$PGDATA" -o "$pgo" -l "$PGLOGF" -w -t 120 start >/dev/null 2>&1 9>&- || fail="démarrage impossible (la date visée dépasse les journaux archivés, ou des journaux manquent)$(recovery_hint)"
+  fi
+  if [ -z "$fail" ] && ! wait_recovered "${DDI_RESTORE_WAIT:-600}"; then fail="la récupération n'a pas abouti (la date visée dépasse les journaux archivés, ou des journaux manquent)$(recovery_hint)"; fi
+  if [ -n "$fail" ]; then
+    log "ÉCHEC : $fail — retour à la base précédente"
+    phase rollback "$fail"
+    as_pg "$PGBIN/pg_ctl" -D "$PGDATA" -m immediate -w stop >/dev/null 2>&1 || true; rm -rf -- "$PGDATA"; mv -- "$aside" "$PGDATA"
+    "${pc[@]}" resume --wait >/dev/null 2>&1 || true
+    [ "$console_was" -eq 0 ] || systemctl start ddibuntu-console.service
+    phase failed "$fail"; die "$fail ; la base précédente est conservée et Patroni reprend la main"
+  fi
+  reset_recovery_settings
+  phase resuming "reprise de Patroni et réinitialisation des secondaires"
+  as_pg "$PGBIN/pg_ctl" -D "$PGDATA" -m fast -w stop >/dev/null 2>&1 || true
+  "${pc[@]}" resume --wait >/dev/null 2>&1 || log "AVERTISSEMENT : reprise de Patroni à vérifier (patronictl list)"
+  # les secondaires ont une histoire différente de celle de la base restaurée : ils sont recréés depuis le nouveau primaire
+  local m
+  for m in $("${pc[@]}" list -f json 2>/dev/null | python3 -c 'import json,sys; print(" ".join(x["Member"] for x in json.load(sys.stdin) if x.get("Role") not in ("Leader","leader")))' 2>/dev/null); do
+    [[ "$m" =~ ^[a-z][a-z0-9-]{1,30}$ ]] || continue
+    log "réinitialisation du secondaire $m"
+    "${pc[@]}" reinit "$CLNAME" "$m" --force --wait >/dev/null 2>&1 || log "AVERTISSEMENT : réinitialisation de $m à relancer (patronictl reinit $CLNAME $m)"
+  done
+  [ "$console_was" -eq 0 ] || systemctl start ddibuntu-console.service
+  phase "done" "base restaurée ; ancienne base conservée : $aside"
+  log "restauration du cluster terminée ; ancienne base conservée dans $aside (supprimée après 14 jours)"
+  post_restore_backup
+}
+
+# ---------------------------------------------------------------- demandes de la console
+write_result() {
+  install -d -m 0755 "$RUNDIR" 2>/dev/null || return 0
+  local t; t="$(mktemp "$RUNDIR/.result.XXXXXX")" || return 0
+  ACT="$1" OK="$2" MSG="$3" ID="${4:-}" python3 -c '
+import json, os, time
+print(json.dumps({"at": int(time.time()), "action": os.environ["ACT"], "ok": os.environ["OK"] == "true", "message": os.environ["MSG"], "id": os.environ["ID"] or None}, ensure_ascii=False))' > "$t"
+  chmod 0644 "$t"; mv -f "$t" "$RUNDIR/backup-result.json"
+}
+cmd_request() {
+  load_conf
+  local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" raw=""
+  local f="$gen/.backup-request"
+  [ -e "$f" ] || [ -L "$f" ] || return 0
+  if [ -f "$f" ] && [ ! -L "$f" ]; then raw="$(head -c 600 "$f")"; fi
+  rm -f "$f"
+  local parsed
+  parsed="$(printf '%s' "$raw" | HOSTN="$(hostname -s)" CL="$CLNAME" python3 -c '
+import json, os, re, sys
+try: d = json.loads(sys.stdin.read())
+except Exception: print("invalid"); sys.exit(0)
+if not isinstance(d, dict): print("invalid"); sys.exit(0)
+a = d.get("action"); ks = set(d)
+rid = r"[0-9]{8}T[0-9]{6}Z"
+def i(k, lo, hi): v = d.get(k); return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+if a in ("refresh", "enable", "disable", "run", "prune") and ks == {"action"}: print(a)
+elif a == "verify" and ks <= {"action", "id"} and ("id" not in d or (isinstance(d["id"], str) and re.fullmatch(rid, d["id"]))): print("verify\t" + d.get("id", "-"))
+elif a == "delete" and ks == {"action", "id"} and isinstance(d["id"], str) and re.fullmatch(rid, d["id"]): print("delete\t" + d["id"])
+elif a == "configure" and ks == {"action", "keepFull", "intervalHours", "startHour", "mirrorDir"} and i("keepFull", 1, 30) and i("intervalHours", 1, 168) and i("startHour", 0, 23) \
+     and isinstance(d["mirrorDir"], str) and (d["mirrorDir"] == "" or (re.fullmatch(r"/[A-Za-z0-9._/@:+-]{1,200}", d["mirrorDir"]) and ".." not in d["mirrorDir"])):
+    print("configure\t%d\t%d\t%d\t%s" % (d["keepFull"], d["intervalHours"], d["startHour"], d["mirrorDir"] or "-"))
+elif a == "restore" and ks <= {"action", "mode", "at", "id", "confirm"} and d.get("confirm") == (os.environ["CL"] or os.environ["HOSTN"]):
+    m = d.get("mode")
+    if m == "latest" and ks == {"action", "mode", "confirm"}: print("restore\tlatest\t-")
+    elif m == "id" and ks == {"action", "mode", "id", "confirm"} and isinstance(d["id"], str) and re.fullmatch(rid, d["id"]): print("restore\tid\t" + d["id"])
+    elif m == "at" and ks == {"action", "mode", "at", "confirm"} and isinstance(d["at"], str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", d["at"]): print("restore\tat\t" + d["at"])
+    else: print("invalid")
+else: print("invalid")' 2>/dev/null || echo invalid)"
+  local a x1 x2 x3 x4 out="" ok=false msg="" rid=""
+  IFS=$'\t' read -r a x1 x2 x3 x4 <<<"$parsed"
+  case "$a" in
+    refresh) cmd_status >/dev/null 2>&1; ok=true; msg="état actualisé" ;;
+    enable) out="$( ( cmd_enable ) 2>&1 )" && ok=true ;;
+    disable) out="$( ( cmd_disable ) 2>&1 )" && ok=true ;;
+    run) out="$( ( cmd_run ) 2>&1 )" && ok=true; rid="$(printf '%s' "$out" | grep -Eo '^[0-9]{8}T[0-9]{6}Z$' | tail -n1)" ;;
+    prune) out="$( ( cmd_prune ) 2>&1 )" && ok=true ;;
+    verify) out="$( ( cmd_verify "$([ "$x1" = - ] && echo '' || echo "$x1")" ) 2>&1 )" && ok=true ;;
+    delete) out="$( ( cmd_delete "$x1" ) 2>&1 )" && ok=true ;;
+    configure) out="$( ( cmd_configure "KEEP_FULL=$x1" "INTERVAL_HOURS=$x2" "START_HOUR=$x3" "MIRROR_DIR=$([ "$x4" = - ] && echo '' || echo "$x4")" ) 2>&1 )" && ok=true ;;
+    restore)
+      case "$x1" in
+        latest) out="$( ( cmd_restore --latest --yes ) 2>&1 )" && ok=true ;;
+        id) out="$( ( cmd_restore --id "$x2" --yes ) 2>&1 )" && ok=true ;;
+        at) out="$( ( cmd_restore --at "${x2/T/ }" --yes ) 2>&1 )" && ok=true ;;
+      esac ;;
+    *) a=""; msg="demande invalide" ;;
+  esac
+  if [ -n "$a" ] && [ "$a" != refresh ]; then
+    msg="$(printf '%s' "$out" | python3 -c '
+import sys
+lines = [l for l in sys.stdin.buffer.read().decode("utf-8", "replace").splitlines() if l.strip() and not l.strip().startswith("2")]
+m = "".join(c for c in (lines[-1] if lines else "") if c.isprintable()) if lines else ""
+m = m[len("ddibuntu-backup: "):] if m.startswith("ddibuntu-backup: ") else m
+sys.stdout.write(m[:300])')"
+    [ -n "$msg" ] || { [ "$ok" = true ] && msg="opération effectuée" || msg="opération refusée (voir le journal)"; }
+  fi
+  log "demande de la console (${a:-refusée}) : $msg"
+  publish_status >/dev/null 2>&1 || true
+  write_result "$a" "$ok" "$msg" "$rid"
+  [ "$ok" = true ]
+}
+
+case "${1:-}" in
+  enable) cmd_enable ;;
+  disable) cmd_disable ;;
+  run) cmd_run ;;
+  auto) cmd_auto ;;
+  status) cmd_status ;;
+  list) load_conf; cmd_list ;;
+  verify) shift; cmd_verify "$@" ;;
+  prune) cmd_prune ;;
+  delete) shift; cmd_delete "$@" ;;
+  configure) shift; cmd_configure "$@" ;;
+  restore) shift; cmd_restore "$@" ;;
+  request) cmd_request ;;
+  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

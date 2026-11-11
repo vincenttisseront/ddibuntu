@@ -23,6 +23,10 @@ export function cfg() {
     versionFile: e.DDI_VERSION_FILE ?? '/usr/local/lib/ddibuntu/VERSION',
     clusterStatusFile: e.DDI_CLUSTER_STATUS ?? '/run/ddibuntu/cluster-status.json',
     adStatusFile: e.DDI_AD_STATUS ?? '/run/ddibuntu/ad-status.json',
+    // sauvegardes de la base (ddibuntu-backup, root) : état, résultat de la dernière demande, phase d'une restauration en cours
+    backupStatusFile: e.DDI_BACKUP_STATUS ?? '/run/ddibuntu/backup-status.json',
+    backupResultFile: e.DDI_BACKUP_RESULT ?? '/run/ddibuntu/backup-result.json',
+    backupRestoreFile: e.DDI_BACKUP_RESTORE ?? '/run/ddibuntu/backup-restore.json',
     reloadStatusFile: e.DDI_RELOAD_STATUS ?? '/var/lib/ddibuntu/reload-status',
     allowPrivateFetch: test && e.DDI_ALLOW_PRIVATE_FETCH === '1',
     dig: e.DDI_DIG ?? 'dig',

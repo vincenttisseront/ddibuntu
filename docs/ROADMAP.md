@@ -60,6 +60,15 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
 2. ~~**0.7.0**~~ ✅ fait — Hygiène IPAM (adresses fantômes), RRL, détection de tunnel DNS (les gabarits de réseau et la réservation DHCP automatique étaient déjà livrés en 0.5.1).
 3. ~~**0.8.0**~~ ✅ fait — Exploitation du cluster : quorum en direct, retrait de nœud perdu, reprise après perte du quorum, séquestre de l'autorité.
 3b. ~~**0.8.1**~~ ✅ fait — Assistants « Créer le cluster », « Ajouter un nœud » (lot d'enrôlement) et « Rejoindre un cluster » dans la console.
-3c. **0.9.x** — Remplacement d'adresse virtuelle / de réseau dédié, édition des paramètres du cluster ; puis découverte planifiée et alertes (fantômes, tunnels, quorum).
-4. **0.9.0** — API : description OpenAPI et jetons d'API.
-5. **1.0** — Vues DNS, HA DHCP (nécessite deux appliances).
+3c. **Série 0.9.x** — dix évolutions, une version chacune, chacune testée en conditions réelles avant publication :
+    1. ~~**0.9.0**~~ ✅ fait — Sauvegarde et restauration à un instant donné (PITR), cluster compris.
+    2. **0.9.1** — Alertes et supervision : exportateur Prometheus `/metrics`, e-mail, webhook (quorum, réplication, archivage, fantômes, tunnels).
+    3. **0.9.2** — Remplacement d'adresse virtuelle / de réseau dédié, paramètres du cluster, renouvellement des certificats.
+    4. **0.9.3** — Test de bascule guidé avec rapport.
+    5. **0.9.4** — Vues DNS.
+    6. **0.9.5** — Traçabilité bail / MAC / nom / utilisateur AD.
+    7. **0.9.6** — Découverte planifiée et alertes d'hygiène.
+    8. **0.9.7** — API : description OpenAPI et jetons d'API.
+    9. **0.9.8** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
+    10. **0.9.9** — DHCP multi-espaces.
+5. **1.0** — Consolidation de la série 0.9.x et passage en revue avant usage en production.

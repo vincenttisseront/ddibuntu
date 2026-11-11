@@ -1,0 +1,10 @@
+[Unit]
+Description=DDI-Buntu : sauvegarde / restauration demandée par la console (validée par root)
+After=postgresql.service patroni.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-backup request
+TimeoutStartSec=6h
+PrivateTmp=yes
+ProtectHome=yes

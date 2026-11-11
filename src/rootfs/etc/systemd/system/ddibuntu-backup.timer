@@ -1,0 +1,10 @@
+[Unit]
+Description=DDI-Buntu : sauvegardes de la base (planification, rétention, copie externe, état)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

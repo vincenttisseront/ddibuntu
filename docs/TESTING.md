@@ -10,6 +10,9 @@
 | `tests/b06-systeme-cible.sh` | chroot Ubuntu réel : PostgreSQL, console HTTPS, BIND, Kea, cockpit | root, chroot Ubuntu (`tools/make-chroot.sh`) |
 | `tests/b07-demarrage.sh` | démarrage de l'ISO sous QEMU, BIOS et UEFI | qemu |
 | `tests/b08-assistant.sh` | assistant dans un terminal (faux whiptail), clavier, logo, retour arrière | root, `script` |
+| `tests/b10-*.sh` … `tests/b17-cluster-wizards-live.sh` | cluster : PKI, Patroni + etcd, Kea HA, BIND, Keepalived, Active Directory, quorum, assistants | root, démons réels (etcd, Patroni, PostgreSQL, Kea, BIND) |
+| `tests/b18-backup-live.sh` | sauvegardes et restauration à un instant donné sur une vraie base PostgreSQL 16 (156 contrôles) | root, PostgreSQL 16 |
+| `tests/b19-backup-cluster-live.sh` | sauvegardes et restauration dans un vrai cluster Patroni + etcd (76 contrôles) | root, PostgreSQL 16, Patroni, etcd |
 | `webui/tests/unit-*.test.ts` | analyseurs, rendu, NetBox, découverte, AD (sans base) | Node 22 |
 | `webui/tests/e2e*.test.ts` | serveur construit + PostgreSQL + BIND/Kea réels | `tools/setup-test-db.sh`, `tools/build-console.sh` |
 

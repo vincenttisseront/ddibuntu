@@ -166,6 +166,7 @@ deploy_files() {
   [ ! -e "$TARGET/etc/ddibuntu/firewall.conf" ] || ex+=(--exclude=./etc/ddibuntu/firewall.conf)
   [ ! -e "$TARGET/etc/ddibuntu/nftables.nft" ] || ex+=(--exclude=./etc/ddibuntu/nftables.nft)
   [ ! -e "$TARGET/etc/ddibuntu/update.conf" ] || ex+=(--exclude=./etc/ddibuntu/update.conf)
+  [ ! -e "$TARGET/etc/ddibuntu/backup.conf" ] || ex+=(--exclude=./etc/ddibuntu/backup.conf)
   tar -xpf "$SRC/rootfs.tar" --numeric-owner "${ex[@]}" -C "$TARGET" || { fail "déploiement des fichiers de l'appliance impossible"; return; }
 
   local app="$TARGET/opt/ddibuntu"
@@ -190,7 +191,11 @@ deploy_files() {
   in_target groupadd -f ddiadmin || { fail "groupe ddiadmin impossible à créer"; return; }
   in_target bash -c 'id ddiconsole >/dev/null 2>&1 || useradd --system --gid ddiconsole --home-dir /var/lib/ddibuntu --shell /usr/sbin/nologin ddiconsole' || { fail "compte ddiconsole impossible"; return; }
   in_target systemctl enable ddibuntu-firstboot.service nftables.service postgresql.service named.service \
-    ddibuntu-db-init.service ddibuntu-console.service ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-cluster-setup.path ddibuntu-selfupdate.path ddibuntu-update-check.timer >/dev/null 2>&1 || { fail "activation des services impossible"; return; }
+    ddibuntu-db-init.service ddibuntu-console.service ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-cluster-setup.path ddibuntu-backup-request.path ddibuntu-backup.timer ddibuntu-selfupdate.path ddibuntu-update-check.timer >/dev/null 2>&1 || { fail "activation des services impossible"; return; }
+  # dépôt des sauvegardes : propriété de postgres (l'archivage des journaux WAL s'y écrit sous ce compte)
+  mkdir -p "$TARGET/var/lib/ddibuntu/backup/base" "$TARGET/var/lib/ddibuntu/backup/wal"
+  in_target chown -R postgres:postgres /var/lib/ddibuntu/backup 2>/dev/null || say "avertissement : dépôt de sauvegarde non attribué à postgres (sera corrigé par le minuteur)"
+  chmod 0750 "$TARGET/var/lib/ddibuntu/backup" "$TARGET/var/lib/ddibuntu/backup/base" "$TARGET/var/lib/ddibuntu/backup/wal"
   # règles du pare-feu : re-rendues depuis firewall.conf conservé (écrites, non appliquées avant le redémarrage)
   in_target /usr/local/sbin/ddibuntu-fw write >/dev/null 2>&1 || say "avertissement : règles du pare-feu non re-rendues (anciennes règles conservées)"
   cp "$SRC/VERSION" "$TARGET/$STATE_REL/installed-version"
