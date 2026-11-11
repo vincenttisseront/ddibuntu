@@ -6,10 +6,16 @@ import { dirname, join } from 'node:path'
 import { cfg } from './config'
 import { parseNodeHealth } from './health'
 import type { NodeHealth } from './health'
+import { cidrContainsIp, parseCidr, parseIp } from './net'
 
 export interface ClusterNode { name: string; ip: string; role: string; host?: string; state?: string; patroniRole?: string; lagBytes?: number | null; timeline?: number | null }
 export interface QuorumMember { name: string; ip: string; role: string; reachable: boolean; healthy: boolean; learner: boolean; isLeader: boolean; version: string; raftIndex: number | null; raftTerm: number | null; dbSize: number | null; latencyMs: number | null }
 export interface Quorum { voters: number; needed: number; healthy: number; hasQuorum: boolean; tolerance: number; leader: string | null; members: QuorumMember[]; unknownToEtcd: string[] }
+// Réglages communs (adresse virtuelle, réseau dédié) tels que publiés dans etcd et tels qu'appliqués sur ce nœud (révisions comparables).
+export interface SettingsValue { rev: number; vip: string | null; vrid: number; iface: string | null; net: string | null }
+export interface ClusterSettings { published: SettingsValue | null; applied: SettingsValue }
+// Certificat de ce nœud et de l'autorité (jours restants), demande de renouvellement en cours ?
+export interface ClusterPki { node: { notAfter: number; daysLeft: number; serial: string }; ca: { notAfter: number; daysLeft: number }; renewDays: number; pending: boolean }
 export interface ClusterState {
   cluster: string; node: string; nodeRole: string; localRole: 'leader' | 'replica' | 'unknown'; at: number; ageSeconds: number; stale: boolean
   etcd: { healthy: boolean; members: number; quorum: Quorum | null }
@@ -20,6 +26,8 @@ export interface ClusterState {
   kea: unknown
   vip: { address: string; iface: string; held: boolean } | null
   health: Record<string, NodeHealth>   // santé de chaque nœud (arbitre compris), partagée par etcd et relayée par root
+  settings: ClusterSettings | null
+  pki: ClusterPki | null
 }
 
 const MAX_AGE_SECONDS = 180   // la minuterie publie chaque minute : au-delà de 3 minutes, l'information est périmée
@@ -48,6 +56,24 @@ function parseHealthMap(raw: any, nowSec: number): Record<string, NodeHealth> {
     if (h && h.node === name) out[name] = h    // la clé doit être le nom du nœud qui publie (une valeur piégée ne se fait pas passer pour un autre)
   }
   return out
+}
+
+const int = (v: unknown, lo: number, hi: number, dflt: number) => (typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi ? v : dflt)
+function parseSettingsValue(v: any): SettingsValue | null {
+  if (!v || typeof v !== 'object') return null
+  return { rev: int(v.rev, 0, 999_999_999, 0), vip: typeof v.vip === 'string' && v.vip ? str(v.vip, 18) : null, vrid: int(v.vrid, 1, 255, 51), iface: typeof v.iface === 'string' && v.iface ? str(v.iface, 15) : null, net: typeof v.net === 'string' && v.net ? str(v.net, 18) : null }
+}
+export function parseSettings(j: any): ClusterSettings | null {
+  const applied = parseSettingsValue(j?.applied)
+  return applied ? { published: parseSettingsValue(j?.published), applied } : null
+}
+export function parsePki(j: any): ClusterPki | null {
+  if (!j || typeof j !== 'object' || !j.node || !j.ca) return null
+  const days = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(-36500, Math.min(36500, Math.trunc(v))) : 0)
+  return {
+    node: { notAfter: num(j.node.notAfter) ?? 0, daysLeft: days(j.node.daysLeft), serial: str(j.node.serial, 64) },
+    ca: { notAfter: num(j.ca.notAfter) ?? 0, daysLeft: days(j.ca.daysLeft) }, renewDays: int(j.renewDays, 1, 3650, 60), pending: j.pending === true,
+  }
 }
 
 // Assainit le fichier : uniquement les champs connus, bornés ; un fichier mal formé est ignoré (jamais d'erreur côté appelant).
@@ -79,6 +105,7 @@ export function parseClusterState(raw: string, nowSec = Date.now() / 1000): Clus
     kea: j.kea ?? null,
     vip: j.vip && typeof j.vip.address === 'string' ? { address: str(j.vip.address, 64), iface: str(j.vip.iface, 32), held: j.vip.held === true } : null,
     health: parseHealthMap(j.health, nowSec),
+    settings: parseSettings(j.settings), pki: parsePki(j.pki),
   }
 }
 
@@ -107,23 +134,58 @@ export function switchoverCandidates(st: ClusterState | null): string[] {
 }
 
 // Actions d'exploitation demandées par la console (jamais exécutées ici) : vérifications préalables contre l'état publié par root.
-export type ClusterAction = { action: 'remove-node'; node: string; confirm: string } | { action: 'take-ca'; confirm: string } | { action: 'recover'; confirm: string }
+export type ClusterAction =
+  | { action: 'remove-node'; node: string; confirm: string } | { action: 'take-ca'; confirm: string } | { action: 'recover'; confirm: string }
+  | { action: 'set-vip'; vip: string; iface: string; vrid?: number; confirm: string } | { action: 'clear-vip'; confirm: string } | { action: 'vip-iface'; iface: string }
+  | { action: 'set-net'; net: string; confirm: string } | { action: 'renew-cert' } | { action: 'change-ip'; ip: string; confirm: string }
+const hostPart = (cidr: string) => cidr.split('/')[0]!
 // Retourne le code d'erreur API (409) si la demande est incohérente avec l'état courant, sinon null. root revalide tout de son côté.
 export function actionRefusal(st: ClusterState | null, a: ClusterAction): string | null {
   if (!st) return 'not_clustered'
   if (st.nodeRole !== 'data') return 'action_data_node_only'
   const q = st.etcd.quorum
+  const needQuorum = () => (st.stale || !q || !q.hasQuorum ? 'quorum_required' : null)
   if (a.action === 'remove-node') {
     if (a.confirm !== a.node) return 'confirm_mismatch'
     if (a.node === st.node) return 'cannot_remove_self'
     if (!st.nodes.some((n) => n.name === a.node)) return 'unknown_node'
-    if (st.stale || !q || !q.hasQuorum) return 'quorum_required'
-    return null
+    return needQuorum()
   }
   if (a.action === 'take-ca') {
     if (a.confirm !== st.node) return 'confirm_mismatch'
     if (!st.ca || st.ca.node) return 'already_ca'
     if (!st.ca.escrow || !st.ca.owner) return 'no_escrow'
+    return null
+  }
+  if (a.action === 'set-vip') {
+    if (a.confirm !== st.cluster) return 'confirm_mismatch'
+    if (st.nodes.some((n) => n.ip === hostPart(a.vip))) return 'vip_is_node'
+    return needQuorum()
+  }
+  if (a.action === 'clear-vip') {
+    if (a.confirm !== st.cluster) return 'confirm_mismatch'
+    if (!st.vip) return 'no_vip'
+    return needQuorum()
+  }
+  if (a.action === 'vip-iface') return st.vip ? null : 'no_vip'
+  if (a.action === 'set-net') {
+    if (a.confirm !== st.cluster) return 'confirm_mismatch'
+    const net = parseCidr(a.net)
+    if (!net || st.nodes.some((n) => { const ip = parseIp(n.ip); return !ip || !cidrContainsIp(net, ip) })) return 'nodes_outside_net'
+    return needQuorum()
+  }
+  if (a.action === 'renew-cert') return st.pki?.pending ? 'renew_pending' : null
+  if (a.action === 'change-ip') {
+    if (a.confirm !== st.node) return 'confirm_mismatch'
+    if (st.localRole === 'leader') return 'is_leader'
+    if (a.ip === st.nodes.find((n) => n.name === st.node)?.ip) return 'same_ip'
+    if (st.nodes.some((n) => n.ip === a.ip)) return 'node_ip_taken'
+    const net = st.settings?.applied.net ? parseCidr(st.settings.applied.net) : null
+    const ip = parseIp(a.ip)
+    if (net && ip && !cidrContainsIp(net, ip)) return 'ip_outside_net'
+    const nq = needQuorum(); if (nq) return nq
+    const me = q?.members.find((m) => m.name === st.node)
+    if (q && me && !me.learner && q.healthy - 1 < q.needed) return 'quorum_margin_required'   // l'arrêt d'etcd pendant le changement ferait tomber le quorum
     return null
   }
   if (a.confirm !== st.cluster) return 'confirm_mismatch'

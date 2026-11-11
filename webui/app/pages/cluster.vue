@@ -98,6 +98,7 @@ async function switchover(node: string) {
         </UCard>
       </div>
       <ClusterOps :st="st" :result="data.result" @reload="load(true)" />
+      <ClusterSettings :st="st" :result="data.result" :local="data.local" @reload="load(true)" />
       <UCard>
         <template #header><div class="flex items-center justify-between"><span class="font-medium">{{ t('cluster.nodes') }}</span><UButton v-if="canAdd" size="xs" icon="i-lucide-user-plus" :label="t('cluster.w.add_btn')" @click="wiz?.begin('add')" /><span v-if="switching" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader" class="animate-spin" />{{ t('cluster.switching', { n: switching }) }}</span></div></template>
         <div class="overflow-x-auto">

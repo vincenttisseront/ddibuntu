@@ -14,6 +14,7 @@
 | `tests/b18-backup-live.sh` | sauvegardes et restauration à un instant donné sur une vraie base PostgreSQL 16 (156 contrôles) | root, PostgreSQL 16 |
 | `tests/b19-backup-cluster-live.sh` | sauvegardes et restauration dans un vrai cluster Patroni + etcd (76 contrôles) | root, PostgreSQL 16, Patroni, etcd |
 | `tests/b20-health-live.sh` | santé de nœud : collecte réelle, partage par un vrai etcd, écritures et valeurs piégées refusées (50 contrôles) | root, etcd |
+| `tests/b21-cluster-settings-live.sh` | réglages communs (adresse virtuelle, réseau), renouvellement des certificats, changement d'adresse des trois types de nœuds, retour arrière, verrou, demandes de la console, pare-feu et accusés lors d'un changement d'adresse (309 contrôles) | root, etcd, Patroni, PostgreSQL 16 |
 | `webui/tests/unit-*.test.ts` | analyseurs, rendu, NetBox, découverte, AD, moteur d'alertes, client SMTP (sans base) | Node 22 |
 | `webui/tests/e2e*.test.ts` | serveur construit + PostgreSQL + BIND/Kea réels | `tools/setup-test-db.sh`, `tools/build-console.sh` |
 

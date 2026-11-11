@@ -63,7 +63,7 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
 3c. **Série 0.9.x** — dix évolutions, une version chacune, chacune testée en conditions réelles avant publication :
     1. ~~**0.9.0**~~ ✅ fait — Sauvegarde et restauration à un instant donné (PITR), cluster compris.
     2. ~~**0.9.1**~~ ✅ fait — Alertes et supervision : exportateur Prometheus `/api/metrics`, e-mail, webhook, mise en silence, santé de chaque nœud partagée par etcd, tableau de bord évolué (les alertes « fantômes » et « tunnels » rejoignent l'itération 7).
-    3. **0.9.2** — Remplacement d'adresse virtuelle / de réseau dédié, paramètres du cluster, renouvellement des certificats.
+    3. ~~**0.9.2**~~ ✅ fait — Remplacement d'adresse virtuelle / de réseau dédié, changement d'adresse d'un nœud, renouvellement des certificats (automatique, sans interruption), verrou de nœud.
     4. **0.9.3** — Test de bascule guidé avec rapport.
     5. **0.9.4** — Vues DNS.
     6. **0.9.5** — Traçabilité bail / MAC / nom / utilisateur AD.

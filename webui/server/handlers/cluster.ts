@@ -18,6 +18,8 @@ route('GET', '/cluster/status', 'viewer', async () => {
     clustered: state !== null, replica: await inRecovery(), state, candidates: switchoverCandidates(state), result: await readSwitchoverResult(),
     // hors cluster : de quoi remplir l'assistant de création (adresses réelles du serveur, nom de la machine)
     ...(state === null ? { setup: { hostname: shortHostname(), addresses: localAddresses(cfg().testMode) } } : {}),
+    // dans un cluster : interfaces et adresses de CE serveur (formulaires de réglages) — liste vide si le service durci ne peut pas les lire
+    ...(state !== null ? { local: { addresses: localAddresses(cfg().testMode) } } : {}),
   }
 })
 
@@ -48,23 +50,37 @@ route('POST', '/cluster/refresh', 'operator', async () => {
 // Opérations de reprise : retrait d'un nœud perdu, reprise de l'autorité de certification, reconstruction après perte du quorum.
 // La confirmation saisie (nom du nœud / du nœud courant / du cluster) est revérifiée ici ET par root.
 const NAME = z.string().regex(NODE_NAME_RE)
+const IPV4 = z.string().regex(/^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/)
+const CIDR = z.string().regex(/^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}\/(3[0-2]|[12]?\d)$/)
+const IFACE = z.string().regex(/^[a-z][a-z0-9._-]{0,14}$/)
+const CONFIRM = z.string().max(64)
 const Action = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('remove-node'), node: NAME, confirm: z.string().max(64) }).strict(),
-  z.object({ action: z.literal('take-ca'), confirm: z.string().max(64) }).strict(),
-  z.object({ action: z.literal('recover'), confirm: z.string().max(64) }).strict(),
+  z.object({ action: z.literal('remove-node'), node: NAME, confirm: CONFIRM }).strict(),
+  z.object({ action: z.literal('take-ca'), confirm: CONFIRM }).strict(),
+  z.object({ action: z.literal('recover'), confirm: CONFIRM }).strict(),
+  // réglages communs et opérations propres à ce nœud (0.9.2) : adresse virtuelle, réseau dédié, certificat, adresse du nœud
+  z.object({ action: z.literal('set-vip'), vip: CIDR, iface: IFACE, vrid: z.number().int().min(1).max(255).optional(), confirm: CONFIRM }).strict(),
+  z.object({ action: z.literal('clear-vip'), confirm: CONFIRM }).strict(),
+  z.object({ action: z.literal('vip-iface'), iface: IFACE }).strict(),
+  z.object({ action: z.literal('set-net'), net: CIDR, confirm: CONFIRM }).strict(),
+  z.object({ action: z.literal('renew-cert') }).strict(),
+  z.object({ action: z.literal('change-ip'), ip: IPV4, confirm: CONFIRM }).strict(),
 ])
 route('POST', '/cluster/action', 'admin', async (c) => {
   const a = await c.body(Action)
   const st = await readClusterState()
   const refusal = actionRefusal(st, a)
   if (refusal) fail(409, refusal)
+  // l'interface doit exister sur CE serveur ; adresse du nœud : portée par ce serveur. Liste vide = lecture impossible ici (service durci) : root vérifie.
+  const addrs = localAddresses(cfg().testMode)
+  if ((a.action === 'set-vip' || a.action === 'vip-iface') && addrs.length && !new Set(addrs.map((x) => x.iface)).has(a.iface)) fail(409, 'iface_unknown')
+  if (a.action === 'change-ip' && addrs.length && !addrs.some((x) => x.address === a.ip)) fail(409, 'ip_not_local')
   await drop('.cluster-action', JSON.stringify(a))
   await audit(c, `cluster.${a.action}`, 'node', a.action === 'remove-node' ? a.node : (st?.node ?? ''))
   return { accepted: true }
 })
 
 // ---- Assistants (nœud hors cluster) : créer un cluster / rejoindre un cluster. root revalide chaque champ.
-const IPV4 = z.string().regex(/^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/)
 const Init = z.object({
   cluster: NAME, node: NAME, ip: IPV4, net: z.string().regex(/^[0-9.]+\/\d{1,2}$/).optional(), vip: IPV4.optional(), vipIface: z.string().regex(/^[A-Za-z0-9._-]{1,15}$/).optional(), vrid: z.number().int().min(1).max(255).optional(), confirm: z.string().max(64),
 }).strict().refine((v) => (v.vip === undefined) === (v.vipIface === undefined), { message: 'vip_iface_together' }).refine((v) => v.net === undefined || Number(v.net.split('/')[1]) <= 32 && IPV4.safeParse(v.net.split('/')[0]).success, { message: 'net_invalid' })

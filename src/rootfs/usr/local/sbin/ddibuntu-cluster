@@ -18,6 +18,13 @@
 #   request                                                                     traite la demande de bascule déposée par la console (« .cluster-switchover » : un nom de nœud, validé)
 #   follow                                                                      (nœud de données) aligne Kea (HA) et BIND (primaire/secondaire) : primaire = fichiers de la console, secondaire = copie répliquée en base
 #   ad-sync                                                                     (nœud de données) le keytab et le domaine Kerberos suivent le cluster (chiffrés dans etcd ; l'arbitre ne les lit pas)
+#   set-vip --vip CIDR --iface IF [--vrid N] | clear-vip                        (nœud de données) adresse virtuelle de TOUT le cluster, publiée par etcd ; chaque nœud l'applique seul
+#   vip-iface IF                                                                interface qui porte l'adresse virtuelle sur CE nœud
+#   set-net CIDR                                                                réseau dédié (pg_hba) de tout le cluster ; refusé si un nœud en sort
+#   settings | cert-status                                                      réglages communs (publiés / appliqués) ; échéances des certificats
+#   renew-cert [--force] [--wait S]                                             renouvelle le certificat de CE nœud (signé par l'autorité ; la clé ne quitte pas le nœud)
+#   sign-requests                                                               (nœud autorité) signe les demandes de certificat en attente (aussi à chaque « sync »)
+#   change-ip --ip NOUVELLE --yes                                               change l'adresse de CE nœud sur le réseau dédié, sans interruption du quorum
 #   vip-check                                                                   (Keepalived) code 0 si ce nœud est le leader Patroni ; « init --vip CIDR --vip-iface IFACE [--vip-vrid N] » active la VIP de service
 #
 # Variables de test : DDI_GENERATED_DIR, DDI_RELOAD_CMD, DDI_KEA_SOCKET, DDI_DB_NAME ; DDI_ROOT (préfixe de tous les chemins), DDI_TEST=1 (ni systemctl ni exigence root), DDI_PY (interpréteur de Patroni)
@@ -57,11 +64,11 @@ valid_port() { [[ "$1" =~ ^[0-9]{2,5}$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 
 
 # cluster.conf : lecture STRICTE clé=valeur (jamais « source » d'un fichier modifiable) ; clés connues, valeurs à jeu de caractères restreint
 declare -A C=()
-CONF_KEYS="CLUSTER_NAME NODE_NAME NODE_ROLE NODE_IP REPL_NET PEERS CA_NODE ETCD_STATE ETCD_INITIAL_CLUSTER ETCD_CLIENT_PORT ETCD_PEER_PORT PG_PORT PG_LOCAL_LISTEN PG_SOCKET_DIR PG_CONFIG_DIR PATRONI_PORT PGVER VIP VIP_IFACE VIP_VRID"
+CONF_KEYS="CLUSTER_NAME NODE_NAME NODE_ROLE NODE_IP REPL_NET PEERS CA_NODE ETCD_STATE ETCD_INITIAL_CLUSTER ETCD_CLIENT_PORT ETCD_PEER_PORT PG_PORT PG_LOCAL_LISTEN PG_SOCKET_DIR PG_CONFIG_DIR PATRONI_PORT PGVER VIP VIP_IFACE VIP_VRID SETTINGS_REV"
 conf_defaults() {
   C[ETCD_CLIENT_PORT]=2379; C[ETCD_PEER_PORT]=2380; C[PG_PORT]=5432; C[PG_LOCAL_LISTEN]=127.0.0.1; C[PG_SOCKET_DIR]=/var/run/postgresql; C[PG_CONFIG_DIR]=/etc/postgresql/16/main
   C[PATRONI_PORT]=8008; C[PGVER]=16; C[ETCD_STATE]=new; C[CA_NODE]=0; C[ETCD_INITIAL_CLUSTER]=""; C[PEERS]=""
-  C[VIP]=""; C[VIP_IFACE]=""; C[VIP_VRID]=51
+  C[VIP]=""; C[VIP_IFACE]=""; C[VIP_VRID]=51; C[SETTINGS_REV]=0
 }
 conf_load() {
   local f="${1:-$CONF}" line k v
@@ -91,6 +98,7 @@ conf_check() {
     [[ "${C[VIP_IFACE]}" =~ ^[a-z][a-z0-9._-]{0,14}$ ]] || die "VIP_IFACE invalide"
     if ! [[ "${C[VIP_VRID]}" =~ ^[0-9]{1,3}$ ]] || [ "${C[VIP_VRID]}" -lt 1 ] || [ "${C[VIP_VRID]}" -gt 255 ]; then die "VIP_VRID invalide (1 à 255)"; fi
   fi
+  [[ "${C[SETTINGS_REV]}" =~ ^[0-9]{1,9}$ ]] || die "SETTINGS_REV invalide"
   local p; for p in ${C[PEERS]}; do
     [[ "$p" =~ ^([a-z][a-z0-9-]{1,30})=([0-9.]+):(data|witness)$ ]] || die "PEERS : entrée invalide « $p »"
     valid_ip "${BASH_REMATCH[2]}" || die "PEERS : adresse invalide « $p »"
@@ -121,8 +129,9 @@ issue_cert() {
   [ -f "$CADIR/ca.key" ] || die "ce nœud n'est pas l'autorité du cluster"
   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$out/node.key" 2>/dev/null
   openssl req -new -key "$out/node.key" -subj "/CN=node-$name" -out "$t/n.csr" 2>/dev/null
-  printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=IP:%s,IP:127.0.0.1,DNS:%s,DNS:localhost\n' "$ip" "$name" > "$t/ext"
-  openssl x509 -req -in "$t/n.csr" -CA "$CADIR/ca.crt" -CAkey "$CADIR/ca.key" -CAcreateserial -CAserial "$CADIR/serial" -sha256 -days 825 -extfile "$t/ext" -out "$out/node.crt" 2>/dev/null
+  local san="IP:$ip,IP:127.0.0.1,DNS:$name,DNS:localhost"; [ -z "${DDI_EXTRA_SAN:-}" ] || san="IP:$ip,IP:$DDI_EXTRA_SAN,IP:127.0.0.1,DNS:$name,DNS:localhost"   # DDI_EXTRA_SAN : ancienne adresse pendant un changement d'adresse
+  printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=%s\n' "$san" > "$t/ext"
+  openssl x509 -req -in "$t/n.csr" -CA "$CADIR/ca.crt" -CAkey "$CADIR/ca.key" -CAcreateserial -CAserial "$CADIR/serial" -sha256 -days "${DDI_CERT_DAYS:-825}" -extfile "$t/ext" -out "$out/node.crt" 2>/dev/null
   cp "$CADIR/ca.crt" "$out/ca.crt"; rm -rf "$t"
 }
 ensure_group() {
@@ -296,12 +305,22 @@ YML
   mv -f "$PATRONI_CFG.new" "$PATRONI_CFG"
 }
 # Pare-feu : les ports du cluster (2379/2380/5432/8008) ne s'ouvrent qu'aux AUTRES nœuds, par leur adresse du réseau dédié.
+# S'y ajoutent, le temps d'un déplacement annoncé (moved_apply), les nouvelles adresses des nœuds en train de changer d'adresse.
+FWX="$STATE/fw-extra"; FW_OK=1
 fw_sync() {
-  [ -z "${DDI_TEST:-}" ] || return 0
-  local p ips=""
+  local p ips="" x; FW_OK=1
   for p in ${C[PEERS]}; do [ "$(peer_field "$p" name)" = "${C[NODE_NAME]}" ] || ips="${ips:+$ips,}$(peer_field "$p" ip)"; done
+  if [ -s "$FWX" ]; then
+    while read -r x; do
+      valid_ip "$x" || continue
+      case ",$ips," in *",$x,"*) ;; *) ips="${ips:+$ips,}$x" ;; esac
+    done < "$FWX"
+  fi
+  if [ -n "${DDI_FW_LOG:-}" ]; then printf 'CLUSTER_PEERS=%s\n' "$ips" >> "$DDI_FW_LOG"; return 0; fi   # banc d'essai : on journalise au lieu d'appliquer
+  [ -z "${DDI_TEST:-}" ] || return 0
   if ! { /usr/local/sbin/ddibuntu-fw set CLUSTER_PEERS "$ips" && /usr/local/sbin/ddibuntu-fw apply; }; then
     log "AVERTISSEMENT : pare-feu non mis à jour (CLUSTER_PEERS=$ips) ; les pairs ne pourront pas joindre ce nœud"
+    FW_OK=0
   fi
 }
 # ---------------------------------------------------------------- clé de transfert de zone BIND (TSIG « ddi-xfr »)
@@ -336,7 +355,8 @@ vrrp_iface() {   # interface qui porte NODE_IP (réseau dédié)
   ip -o -4 addr show 2>/dev/null | awk -v ip="${C[NODE_IP]}" '{ split($4, a, "/"); if (a[1] == ip) { print $2; exit } }'
 }
 render_keepalived() {
-  [ "${C[NODE_ROLE]}" = data ] && [ -n "${C[VIP]}" ] || return 0
+  [ "${C[NODE_ROLE]}" = data ] || return 0
+  if [ -z "${C[VIP]}" ]; then rm -f "$KA_CONF"; return 0; fi   # adresse virtuelle retirée du cluster : plus de configuration VRRP
   local p peer="" vi
   for p in ${C[PEERS]}; do if [ "$(peer_field "$p" role)" = data ] && [ "$(peer_field "$p" name)" != "${C[NODE_NAME]}" ]; then peer="$(peer_field "$p" ip)"; fi; done
   vi="$(vrrp_iface)"; [ -n "$vi" ] || die "aucune interface ne porte ${C[NODE_IP]} (réseau dédié) : VRRP impossible"
@@ -518,6 +538,12 @@ cmd_sync() {
   conf_load
   # auto-guérison : ce nœud (re)s'inscrit au registre ; échec silencieux si le quorum manque (la lecture ci-dessous le signalera)
   register_node "${C[NODE_NAME]}" "${C[NODE_IP]}" "${C[NODE_ROLE]}" 1 || true
+  # déplacements annoncés, réglages communs, certificats : chacun est indépendant (un échec n'empêche pas le reste)
+  moved_apply || log "sync : déplacements annoncés non traités (réessai)"
+  moved_cleanup || true
+  apply_settings || true
+  sign_requests || true
+  cert_auto || true
   local raw; raw="$(ectl get --prefix "$REG" -w json 2>/dev/null)" || die "registre illisible (quorum etcd indisponible ?)"
   local line new="${C[PEERS]}" changed=0 name ip role
   while IFS=' ' read -r name ip role; do
@@ -546,6 +572,507 @@ for kv in json.load(sys.stdin).get("kvs", []):
   [ -n "${DDI_TEST:-}" ] || systemctl reload patroni.service 2>/dev/null || true
   [ -n "${DDI_TEST:-}" ] || [ -z "${C[VIP]}" ] || systemctl reload keepalived.service 2>/dev/null || true
   log "pairs mis à jour : ${C[PEERS]}"
+}
+
+# ---------------------------------------------------------------- réglages communs du cluster (etcd) : adresse virtuelle, réseau dédié
+# Une clé etcd « réglages » (JSON ≤ 1 Ko, révision croissante) porte ce qui doit être IDENTIQUE sur tous les nœuds. Chaque nœud l'applique seul
+# (cmd_sync, chaque minute) quand sa révision est plus récente. L'interface de l'adresse virtuelle reste propre à chaque nœud.
+SETTINGS=/ddibuntu-cluster/settings
+iface_exists() {   # DDI_IFACES (essais) : liste d'interfaces simulées
+  if [ -n "${DDI_IFACES:-}" ]; then case " $DDI_IFACES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; fi
+  [ -n "${DDI_TEST:-}" ] || ip -o link show "$1" >/dev/null 2>&1
+}
+# settings_read → « rev<TAB>vip<TAB>vrid<TAB>iface<TAB>net » (champ vide = « - ») ; échec si la clé est absente ou invalide
+settings_read() {
+  local raw; raw="$(ectl --command-timeout=5s get "$SETTINGS" --print-value-only 2>/dev/null | head -c 1100)" || return 1
+  [ -n "$raw" ] || return 1
+  printf '%s' "$raw" | python3 -c '
+import json, re, sys
+def cidr(v):
+    m = re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})", v) if isinstance(v, str) else None
+    return bool(m) and all(int(x) <= 255 for x in m.groups()[:4]) and int(m.group(5)) <= 32
+try: d = json.loads(sys.stdin.read())
+except Exception: sys.exit(1)
+if not isinstance(d, dict) or not set(d) <= {"rev", "vip", "vrid", "iface", "net", "at", "by"}: sys.exit(1)
+rev, vip, vrid, iface, net = d.get("rev"), d.get("vip", ""), d.get("vrid", 51), d.get("iface", ""), d.get("net", "")
+if isinstance(rev, bool) or not isinstance(rev, int) or not 0 <= rev <= 999999999: sys.exit(1)
+if vip != "" and not cidr(vip): sys.exit(1)
+if isinstance(vrid, bool) or not isinstance(vrid, int) or not 1 <= vrid <= 255: sys.exit(1)
+if iface != "" and not (isinstance(iface, str) and re.fullmatch(r"[a-z][a-z0-9._-]{0,14}", iface)): sys.exit(1)
+if net != "" and not cidr(net): sys.exit(1)
+print("\t".join([str(rev), vip or "-", str(vrid), iface or "-", net or "-"]))' 2>/dev/null
+}
+# settings_write VIP VRID IFACE NET : écrit la révision suivante (VIP/IFACE/NET vides = « aucun ») ; imprime la nouvelle révision
+settings_write() {
+  local rev=0 cur v
+  if cur="$(settings_read)"; then IFS=$'\t' read -r rev _ <<<"$cur"; fi
+  v="$(REV=$((rev + 1)) VIP="$1" VRID="$2" IFACE="$3" NET="$4" BY="${C[NODE_NAME]}" python3 -c '
+import json, os, time
+e = os.environ
+print(json.dumps({"rev": int(e["REV"]), "vip": e["VIP"], "vrid": int(e["VRID"]), "iface": e["IFACE"], "net": e["NET"], "at": int(time.time()), "by": e["BY"]}, separators=(",", ":")))')" || return 1
+  printf '%s' "$v" | ectl --command-timeout=5s put "$SETTINGS" >/dev/null 2>&1 || return 1
+  echo $((rev + 1))
+}
+# apply_settings [FORCE_IFACE] : aligne la configuration locale sur les réglages communs (révision plus récente seulement). Retour 1 : non appliqué (réessai)
+apply_settings() {
+  local cur rev vip vrid iface net
+  cur="$(settings_read)" || return 0
+  IFS=$'\t' read -r rev vip vrid iface net <<<"$cur"
+  [ "$rev" -gt "${C[SETTINGS_REV]}" ] || return 0
+  [ "$vip" != - ] || vip=""; [ "$iface" != - ] || iface=""; [ "$net" != - ] || net=""
+  local use="${C[VIP_IFACE]}" was_vip="${C[VIP]}" was_net="${C[REPL_NET]}"
+  if [ "${C[NODE_ROLE]}" = data ] && [ -n "$vip" ]; then
+    if [ -n "${1:-}" ]; then use="$1"
+    elif [ -z "$use" ] || ! iface_exists "$use"; then use="$iface"; fi
+    if [ -z "$use" ] || ! iface_exists "$use"; then
+      log "AVERTISSEMENT : réglages (révision $rev) non appliqués : l'interface de l'adresse virtuelle (« ${use:-?} ») n'existe pas sur ce nœud ; « ddibuntu-cluster vip-iface INTERFACE » la désigne, puis « sync »"
+      return 1
+    fi
+  elif [ -n "$vip" ]; then use="${iface:-${use:-eth0}}"; fi
+  C[VIP]="$vip"; C[VIP_VRID]="$vrid"; [ -z "$vip" ] || C[VIP_IFACE]="$use"; [ -z "$net" ] || C[REPL_NET]="$net"; C[SETTINGS_REV]="$rev"
+  conf_check; conf_write
+  render_patroni; render_keepalived; fw_sync
+  if [ "${C[NODE_ROLE]}" = data ]; then
+    if [ -n "$vip" ]; then
+      sysctl_do enable --now keepalived.service 2>/dev/null || true; sysctl_do reload keepalived.service 2>/dev/null || true
+    elif [ -n "$was_vip" ]; then sysctl_do disable --now keepalived.service 2>/dev/null || true; fi
+    [ "$was_net" = "${C[REPL_NET]}" ] || sysctl_do reload patroni.service 2>/dev/null || true
+  fi
+  log "réglages du cluster appliqués (révision $rev) : adresse virtuelle ${vip:-aucune}, réseau dédié ${C[REPL_NET]}"
+}
+# set-vip --vip CIDR --iface IF [--vrid N] | clear-vip | vip-iface IF | set-net CIDR | settings
+cmd_set_vip() {
+  local vip="" vif="" vrid="" p
+  while [ $# -gt 0 ]; do case "$1" in --vip) vip="${2:-}"; shift 2 ;; --iface) vif="${2:-}"; shift 2 ;; --vrid) vrid="${2:-}"; shift 2 ;; *) die "option inconnue : $1" ;; esac; done
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || die "l'adresse virtuelle se règle depuis un nœud de données"
+  valid_cidr "$vip" || die "--vip invalide (attendu : adresse/préfixe, par exemple 192.0.2.10/24)"
+  [[ "$vif" =~ ^[a-z][a-z0-9._-]{0,14}$ ]] || die "--iface invalide"
+  [ -n "$vrid" ] || vrid="${C[VIP_VRID]}"
+  if ! [[ "$vrid" =~ ^[0-9]{1,3}$ ]] || [ "$vrid" -lt 1 ] || [ "$vrid" -gt 255 ]; then die "--vrid invalide (1 à 255)"; fi
+  iface_exists "$vif" || die "l'interface $vif n'existe pas sur ce serveur"
+  for p in ${C[PEERS]}; do [ "$(peer_field "$p" ip)" != "${vip%/*}" ] || die "l'adresse virtuelle ne peut pas être celle du nœud $(peer_field "$p" name)"; done
+  if [ -z "${DDI_TEST:-}" ] && ! ip -o -4 addr show dev "$vif" 2>/dev/null | python3 -c '
+import ipaddress, sys
+v = ipaddress.ip_interface(sys.argv[1]).ip
+for l in sys.stdin:
+    f = l.split()
+    if len(f) > 3 and v in ipaddress.ip_interface(f[3]).network: sys.exit(0)
+sys.exit(1)' "$vip"; then die "$vip n'appartient à aucun réseau configuré sur l'interface $vif : l'adresse virtuelle serait injoignable"; fi
+  local net="${C[REPL_NET]}" cur rev
+  if cur="$(settings_read)"; then IFS=$'\t' read -r _ _ _ _ net <<<"$cur"; [ "$net" != - ] || net=""; fi
+  rev="$(settings_write "$vip" "$vrid" "$vif" "$net")" || die "écriture des réglages impossible (quorum etcd indisponible ?)"
+  apply_settings "$vif" || die "réglages publiés (révision $rev) mais non appliqués sur ce nœud"
+  log "adresse virtuelle $vip (interface $vif, VRID $vrid) publiée pour tout le cluster (révision $rev)"
+}
+cmd_clear_vip() {
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || die "l'adresse virtuelle se règle depuis un nœud de données"
+  [ -n "${C[VIP]}" ] || die "aucune adresse virtuelle n'est configurée"
+  local net="${C[REPL_NET]}" cur rev vrid="${C[VIP_VRID]}"
+  if cur="$(settings_read)"; then IFS=$'\t' read -r _ _ vrid _ net <<<"$cur"; [ "$net" != - ] || net=""; fi
+  rev="$(settings_write "" "$vrid" "" "$net")" || die "écriture des réglages impossible (quorum etcd indisponible ?)"
+  apply_settings || die "réglages publiés (révision $rev) mais non appliqués sur ce nœud"
+  log "adresse virtuelle retirée pour tout le cluster (révision $rev)"
+}
+cmd_vip_iface() {   # propre à CE nœud : l'interface qui porte l'adresse virtuelle
+  local vif="${1:-}"; conf_load; [ "${C[NODE_ROLE]}" = data ] || die "réservé aux nœuds de données"
+  [[ "$vif" =~ ^[a-z][a-z0-9._-]{0,14}$ ]] || die "nom d'interface invalide"
+  iface_exists "$vif" || die "l'interface $vif n'existe pas sur ce serveur"
+  C[VIP_IFACE]="$vif"; conf_check; conf_write; render_keepalived
+  if [ -n "${C[VIP]}" ]; then sysctl_do enable --now keepalived.service 2>/dev/null || true; sysctl_do reload keepalived.service 2>/dev/null || true; fi
+  log "interface de l'adresse virtuelle de ce nœud : $vif"
+}
+cmd_set_net() {
+  local net="${1:-}"; conf_load
+  valid_cidr "$net" || die "réseau invalide (attendu : adresse/préfixe, par exemple 10.9.0.0/24)"
+  local bad; bad="$(PEERS="${C[PEERS]}" python3 -c '
+import ipaddress, os, sys
+n = ipaddress.ip_network(sys.argv[1], strict=False)
+for p in os.environ["PEERS"].split():
+    name, rest = p.split("=", 1); ip = rest.rsplit(":", 1)[0]
+    if ipaddress.ip_address(ip) not in n: print(name + "=" + ip)' "$net")" || die "réseau illisible"
+  [ -z "$bad" ] || die "des nœuds sont hors de ce réseau : ${bad//$'\n'/ } (changer d'abord leur adresse avec change-ip)"
+  local vip="${C[VIP]}" vrid="${C[VIP_VRID]}" vif="${C[VIP_IFACE]}" cur rev
+  if cur="$(settings_read)"; then IFS=$'\t' read -r _ vip vrid vif _ <<<"$cur"; [ "$vip" != - ] || vip=""; [ "$vif" != - ] || vif=""; fi
+  rev="$(settings_write "$vip" "$vrid" "$vif" "$net")" || die "écriture des réglages impossible (quorum etcd indisponible ?)"
+  apply_settings || die "réglages publiés (révision $rev) mais non appliqués sur ce nœud"
+  log "réseau dédié $net publié pour tout le cluster (révision $rev)"
+}
+cmd_settings() { conf_load; settings_json; }
+settings_json() {   # JSON : réglages publiés (etcd) et valeurs appliquées sur ce nœud
+  local cur="" ; cur="$(settings_read)" || cur=""
+  CUR="$cur" VIP="${C[VIP]}" VRID="${C[VIP_VRID]}" IFACE="${C[VIP_IFACE]}" NET="${C[REPL_NET]}" REV="${C[SETTINGS_REV]}" python3 -c '
+import json, os
+e = os.environ
+p = None
+if e["CUR"]:
+    r, v, i, f, n = e["CUR"].split("\t"); p = {"rev": int(r), "vip": None if v == "-" else v, "vrid": int(i), "iface": None if f == "-" else f, "net": None if n == "-" else n}
+print(json.dumps({"published": p, "applied": {"rev": int(e["REV"]), "vip": e["VIP"] or None, "vrid": int(e["VRID"]), "iface": e["IFACE"] or None, "net": e["NET"]}}, ensure_ascii=False))'
+}
+
+# ---------------------------------------------------------------- renouvellement des certificats des nœuds
+# La clé privée d'un nœud ne quitte JAMAIS ce nœud : il produit une demande de signature (CSR), l'autorité (nœud CA_NODE=1) la signe et dépose le
+# certificat dans etcd, le nœud l'installe quand il correspond à SA clé. L'autorité ne signe qu'une demande dont le nom est inscrit au registre, dont
+# l'adresse est celle du registre (ou d'un déplacement annoncé : change-ip), et dont les champs sont exactement ceux attendus ; les adresses (SAN)
+# viennent du registre, jamais de la demande.
+CSRS=/ddibuntu-cluster/csr/; CERTS=/ddibuntu-cluster/certs/; MOVED=/ddibuntu-cluster/moved/
+RENEW_DAYS="${DDI_RENEW_DAYS:-60}"
+cert_notafter() { local e; e="$(openssl x509 -noout -enddate -in "$1" 2>/dev/null | sed -n 's/^notAfter=//p')" || return 1; [ -n "$e" ] || return 1; date -u -d "$e" +%s; }
+cert_days_left() { local t; t="$(cert_notafter "$1")" || { echo -1; return 0; }; echo $(( (t - $(date +%s)) / 86400 )); }
+# cert_request IP [ANCIENNE_IP] : nouvelle clé + demande, publiée dans etcd ; la clé reste dans $PKI/renew
+cert_request() {
+  local ip="$1" d="$PKI/renew" csr v
+  rm -rf "$d"; install -d -m 0700 "$d"
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$d/node.key" 2>/dev/null || return 1
+  openssl req -new -key "$d/node.key" -subj "/CN=node-${C[NODE_NAME]}" -out "$d/node.csr" 2>/dev/null || return 1
+  csr="$(cat "$d/node.csr")"
+  v="$(CSR="$csr" IP="$ip" python3 -c '
+import json, os, time
+e = os.environ
+print(json.dumps({"csr": e["CSR"], "ip": e["IP"], "at": int(time.time())}, separators=(",", ":")))')" || return 1
+  [ "${#v}" -le 2048 ] || return 1
+  printf '%s' "$v" | ectl --command-timeout=5s put "$CSRS${C[NODE_NAME]}" >/dev/null 2>&1 || { rm -rf "$d"; return 1; }
+  printf '%s\n' "$(sha256sum "$d/node.csr" | cut -d' ' -f1)" > "$d/csr.sha"; printf '%s\n' "$ip" > "$d/ip"; date +%s > "$d/at"
+}
+# sign_one NOM IP ANCIENNE_IP CSR_PEM : signature (SAN = adresses validées + boucle locale) ; imprime le certificat PEM
+sign_one() {
+  local name="$1" ip="$2" also="$3" csr="$4" t rc=0; t="$(mktemp -d)"
+  printf '%s\n' "$csr" > "$t/n.csr"
+  local txt; txt="$(openssl req -in "$t/n.csr" -noout -text 2>/dev/null)" || { rm -rf "$t"; return 1; }
+  openssl req -in "$t/n.csr" -noout -verify >/dev/null 2>&1 || { rm -rf "$t"; return 1; }                                   # signature de la demande valide
+  [ "$(openssl req -in "$t/n.csr" -noout -subject -nameopt RFC2253 2>/dev/null | sed 's/^subject=//; s/^ *//')" = "CN=node-$name" ] || { rm -rf "$t"; return 1; }   # sujet exact
+  printf '%s' "$txt" | grep -q 'ASN1 OID: prime256v1' || { rm -rf "$t"; return 1; }                                          # clé EC P-256
+  # aucun attribut ni extension demandés (OpenSSL 3 imprime toujours « Requested Extensions: » : seul ce qui suit compte)
+  if printf '%s' "$txt" | awk '/^ *Attributes:/ { f = 1; next } /^ *Signature Algorithm:/ { f = 0 } f && NF && $0 !~ /^ *\(none\) *$/ && $0 !~ /^ *Requested Extensions: *$/ { bad = 1 } END { exit !bad }'; then rm -rf "$t"; return 1; fi
+  local san="IP:$ip,IP:127.0.0.1,DNS:$name,DNS:localhost"; [ -z "$also" ] || san="IP:$ip,IP:$also,IP:127.0.0.1,DNS:$name,DNS:localhost"
+  printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=%s\n' "$san" > "$t/ext"
+  openssl x509 -req -in "$t/n.csr" -CA "$CADIR/ca.crt" -CAkey "$CADIR/ca.key" -CAcreateserial -CAserial "$CADIR/serial" -sha256 -days "${DDI_CERT_DAYS:-825}" -extfile "$t/ext" -out "$t/n.crt" >/dev/null 2>&1 || rc=1
+  [ "$rc" -eq 0 ] && cat "$t/n.crt"
+  rm -rf "$t"; return "$rc"
+}
+# sign-requests (nœud autorité) : traite les demandes en attente
+sign_requests() {
+  [ "${C[CA_NODE]}" = 1 ] || return 0
+  [ -f "$CADIR/ca.key" ] || return 0
+  local raw; raw="$(ectl --command-timeout=5s get --prefix "$CSRS" -w json 2>/dev/null | head -c 100000)" || return 0
+  [ -n "$raw" ] || return 0
+  local name b64
+  while IFS=$'\t' read -r name b64; do
+    [ -n "$name" ] || continue
+    valid_name "$name" || continue
+    local rec parsed ip also csr reg_ip="" moved p
+    rec="$(printf '%s' "$b64" | base64 -d 2>/dev/null | head -c 2100)" || rec=""
+    parsed="$(printf '%s' "$rec" | python3 -c '
+import json, re, sys
+def ipv4(v): return isinstance(v, str) and re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", v) is not None and all(int(x) <= 255 for x in v.split("."))
+try: d = json.loads(sys.stdin.read())
+except Exception: print("invalid"); sys.exit(0)
+if not isinstance(d, dict) or not set(d) <= {"csr", "ip", "at"} or not isinstance(d.get("csr"), str) or not 100 < len(d["csr"]) < 1500 or not d["csr"].startswith("-----BEGIN CERTIFICATE REQUEST-----") or not ipv4(d.get("ip")):
+    print("invalid"); sys.exit(0)
+print(d["ip"] + "\t" + d["csr"].replace("\n", "|"))' 2>/dev/null)" || parsed=invalid
+    if [ "$parsed" = invalid ] || [ -z "$parsed" ]; then log "demande de certificat de « $name » ignorée et supprimée : contenu invalide"; ectl del "$CSRS$name" >/dev/null 2>&1 || true; continue; fi
+    IFS=$'\t' read -r ip csr <<<"$parsed"; csr="${csr//|/$'\n'}"; also=""
+    for p in ${C[PEERS]}; do if [ "$(peer_field "$p" name)" = "$name" ]; then reg_ip="$(peer_field "$p" ip)"; fi; done
+    if [ -z "$reg_ip" ]; then log "demande de certificat de « $name » refusée : nœud inconnu"; ectl del "$CSRS$name" >/dev/null 2>&1 || true; continue; fi
+    # adresse : celle du registre, ou celle d'un déplacement annoncé par ce nœud (ancienne adresse = celle du registre) ; l'ancienne adresse reste dans le certificat
+    if [ "$ip" != "$reg_ip" ]; then
+      moved="$(ectl --command-timeout=5s get "$MOVED$name" --print-value-only 2>/dev/null | head -c 300)" || moved=""
+      if ! printf '%s' "$moved" | FROM="$reg_ip" TO="$ip" python3 -c 'import json,os,sys
+d=json.load(sys.stdin); sys.exit(0 if d.get("from")==os.environ["FROM"] and d.get("to")==os.environ["TO"] else 1)' 2>/dev/null; then
+        log "demande de certificat de « $name » refusée : l'adresse $ip n'est ni celle du registre ni celle d'un déplacement annoncé"; ectl del "$CSRS$name" >/dev/null 2>&1 || true; continue
+      fi
+      also="$reg_ip"
+    fi
+    local clash=0
+    for p in ${C[PEERS]}; do
+      [ "$(peer_field "$p" name)" != "$name" ] || continue
+      if [ "$(peer_field "$p" ip)" = "$ip" ] || { [ -n "$also" ] && [ "$(peer_field "$p" ip)" = "$also" ]; }; then clash=1; fi
+    done
+    if [ "$clash" -eq 1 ]; then log "demande de certificat de « $name » refusée : l'adresse appartient à un autre nœud"; ectl del "$CSRS$name" >/dev/null 2>&1 || true; continue; fi
+    local crt; if ! crt="$(sign_one "$name" "$ip" "$also" "$csr")"; then log "demande de certificat de « $name » refusée : demande non conforme (nom, clé, extensions)"; ectl del "$CSRS$name" >/dev/null 2>&1 || true; continue; fi
+    local val; val="$(CRT="$crt" SHA="$(printf '%s\n' "$csr" | sha256sum | cut -d' ' -f1)" python3 -c '
+import json, os, time
+print(json.dumps({"cert": os.environ["CRT"], "for": os.environ["SHA"], "at": int(time.time())}, separators=(",", ":")))')"
+    if printf '%s' "$val" | ectl --command-timeout=5s put "$CERTS$name" >/dev/null 2>&1; then ectl del "$CSRS$name" >/dev/null 2>&1 || true; log "certificat de « $name » signé (adresse $ip${also:+, ancienne $also})"; fi
+  done < <(printf '%s' "$raw" | python3 -c '
+import base64, json, sys
+try: kvs = json.load(sys.stdin).get("kvs", [])[:16]
+except Exception: kvs = []
+for kv in kvs:
+    k = base64.b64decode(kv["key"]).decode("utf-8", "replace").rsplit("/", 1)[-1]
+    print(k + "\t" + kv.get("value", ""))')
+}
+# cert_install RÉPERTOIRE : remplace node.key/node.crt (clé et certificat changent ensemble, au plus près l'un de l'autre) ; les lecteurs rechargent seuls
+cert_install() {
+  local src="$1" own=(); [ -n "${DDI_TEST_NOUSERS:-}" ] || own=(-g "$GROUP")
+  openssl verify -CAfile "$PKI/ca.crt" "$src/node.crt" >/dev/null 2>&1 || return 1
+  [ "$(openssl x509 -in "$src/node.crt" -noout -pubkey)" = "$(openssl pkey -in "$src/node.key" -pubout)" ] || return 1
+  install -d -m 0750 "${own[@]}" "$PKI/old"
+  cp -p "$PKI/node.crt" "$PKI/old/node.crt.$(date +%s)" 2>/dev/null || true
+  install -m 0644 "$src/node.crt" "$PKI/.node.crt.new"; install -m 0640 "${own[@]}" "$src/node.key" "$PKI/.node.key.new"
+  mv -f "$PKI/.node.key.new" "$PKI/node.key"; mv -f "$PKI/.node.crt.new" "$PKI/node.crt"
+  # on ne garde que les 3 plus récents exemplaires d'anciens certificats (sans clé : le certificat seul ne sert à rien)
+  # shellcheck disable=SC2012  # noms produits par ce script (node.crt.<secondes>)
+  ls -1t "$PKI/old"/node.crt.* 2>/dev/null | tail -n +4 | xargs -r rm -f
+  [ -n "${DDI_TEST:-}" ] || systemctl reload patroni.service 2>/dev/null || true
+}
+# cert_pickup : (nœud) installe le certificat signé pour la demande en cours, s'il est arrivé et correspond à notre clé. 0 = installé, 2 = pas encore, 1 = refusé
+cert_pickup() {
+  local d="$PKI/renew"; [ -f "$d/node.csr" ] && [ -f "$d/node.key" ] || return 2
+  local raw; raw="$(ectl --command-timeout=5s get "$CERTS${C[NODE_NAME]}" --print-value-only 2>/dev/null | head -c 6000)" || return 2
+  [ -n "$raw" ] || return 2
+  local crt; crt="$(printf '%s' "$raw" | SHA="$(cat "$d/csr.sha")" python3 -c '
+import json, os, sys
+try: v = json.loads(sys.stdin.read())
+except Exception: sys.exit(1)
+if not isinstance(v, dict) or v.get("for") != os.environ["SHA"] or not isinstance(v.get("cert"), str) or len(v["cert"]) > 3000: sys.exit(1)
+print(v["cert"])' 2>/dev/null)" || return 2   # destiné à une autre demande (ancienne) : on attend la nôtre
+  printf '%s\n' "$crt" > "$d/node.crt"
+  local want; want="$(cat "$d/ip")"
+  if ! openssl x509 -in "$d/node.crt" -noout -subject -nameopt RFC2253 2>/dev/null | grep -qx "subject=CN=node-${C[NODE_NAME]}" \
+     || ! openssl x509 -in "$d/node.crt" -noout -ext subjectAltName 2>/dev/null | grep -q "IP Address:$want"; then
+    log "certificat reçu refusé : sujet ou adresse inattendus"; rm -rf "$d"; return 1
+  fi
+  if ! cert_install "$d"; then log "certificat reçu refusé : signature ou clé incohérente"; rm -rf "$d"; return 1; fi
+  ectl del "$CERTS${C[NODE_NAME]}" >/dev/null 2>&1 || true
+  rm -rf "$d"
+  log "certificat du nœud renouvelé (échéance : $(date -u -d "@$(cert_notafter "$PKI/node.crt")" +%F))"
+}
+# renew_local : nœud autorité, son propre certificat (adresse = NODE_IP)
+renew_local() {
+  local t; t="$(mktemp -d)"; chmod 700 "$t"
+  issue_cert "${C[NODE_NAME]}" "${C[NODE_IP]}" "$t" || { rm -rf "$t"; return 1; }
+  cert_install "$t" || { rm -rf "$t"; return 1; }
+  rm -rf "$t"; log "certificat du nœud (autorité) renouvelé (échéance : $(date -u -d "@$(cert_notafter "$PKI/node.crt")" +%F))"
+}
+# cert_auto : appelée par la synchronisation : renouvelle seule dans les RENEW_DAYS jours avant l'échéance (une demande à la fois, une nouvelle par heure au plus)
+cert_auto() {
+  local d="$PKI/renew" left; left="$(cert_days_left "$PKI/node.crt")"
+  if [ -f "$d/node.csr" ]; then
+    local rc=0; cert_pickup || rc=$?
+    [ "$rc" -ne 0 ] || return 0
+    local at; at="$(cat "$d/at" 2>/dev/null || echo 0)"
+    if [ $(( $(date +%s) - at )) -gt 3600 ]; then rm -rf "$d"; else return 0; fi   # demande restée sans réponse : on la refera
+  fi
+  [ "$left" -le "$RENEW_DAYS" ] || return 0
+  log "certificat du nœud : $left jour(s) restant(s) (seuil $RENEW_DAYS) : renouvellement automatique"
+  if [ "${C[CA_NODE]}" = 1 ]; then renew_local; else cert_request "${C[NODE_IP]}" || { log "demande de renouvellement impossible pour l'instant (quorum etcd ?)"; return 1; }; fi
+}
+# renew-cert [--force] [--wait SECONDES]
+cmd_renew_cert() {
+  local force=0 wait=0
+  while [ $# -gt 0 ]; do case "$1" in --force) force=1; shift ;; --wait) wait="${2:-0}"; shift 2 ;; *) die "option inconnue : $1" ;; esac; done
+  [[ "$wait" =~ ^[0-9]{1,4}$ ]] || die "--wait invalide"
+  conf_load
+  local left; left="$(cert_days_left "$PKI/node.crt")"
+  if [ "$force" -eq 0 ] && [ "$left" -gt "$RENEW_DAYS" ]; then log "certificat valable encore $left jour(s) (seuil de renouvellement : $RENEW_DAYS) : rien à faire (--force pour renouveler quand même)"; return 0; fi
+  if [ "${C[CA_NODE]}" = 1 ]; then renew_local; return $?; fi
+  cert_request "${C[NODE_IP]}" || die "demande impossible (quorum etcd indisponible ?)"
+  log "demande de certificat publiée ; l'autorité la signe à sa prochaine synchronisation (une minute au plus)"
+  local i=0 rc
+  while [ "$i" -lt "$wait" ]; do
+    rc=0; cert_pickup || rc=$?
+    case "$rc" in 0) return 0 ;; 1) die "certificat refusé" ;; esac
+    sleep 2; i=$((i + 2))
+  done
+  [ "$wait" -eq 0 ] || die "certificat non reçu après ${wait}s (il sera installé automatiquement dès qu'il arrive)"
+}
+# cert-status : JSON, sans secret
+cmd_cert_status() { conf_load; cert_json; }
+cert_json() {
+  local nt ct; nt="$(cert_notafter "$PKI/node.crt" 2>/dev/null || echo 0)"; ct="$(cert_notafter "$PKI/ca.crt" 2>/dev/null || echo 0)"
+  local pend=false; [ -f "$PKI/renew/node.csr" ] && pend=true
+  local serial; serial="$(openssl x509 -in "$PKI/node.crt" -noout -serial 2>/dev/null | sed 's/^serial=//')" || serial=""
+  NT="$nt" CT="$ct" PEND="$pend" SERIAL="$serial" RD="$RENEW_DAYS" python3 -c '
+import json, os, time
+e = os.environ; now = int(time.time())
+print(json.dumps({"node": {"notAfter": int(e["NT"]), "daysLeft": (int(e["NT"]) - now) // 86400, "serial": e["SERIAL"]}, "ca": {"notAfter": int(e["CT"]), "daysLeft": (int(e["CT"]) - now) // 86400},
+                  "renewDays": int(e["RD"]), "pending": e["PEND"] == "true"}))'
+}
+
+cmd_sign_requests() { conf_load; sign_requests; }
+# ---------------------------------------------------------------- changement d'adresse d'un nœud (réseau dédié)
+ectl_all() {   # tous les membres (celui de ce nœud d'abord) : fonctionne même quand le point d'accès local est arrêté
+  local eps="https://${C[NODE_IP]}:${C[ETCD_CLIENT_PORT]}" p
+  for p in ${C[PEERS]}; do [ "$(peer_field "$p" name)" = "${C[NODE_NAME]}" ] || eps="$eps,https://$(peer_field "$p" ip):${C[ETCD_CLIENT_PORT]}"; done
+  ETCDCTL_API=3 etcdctl --endpoints "$eps" --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "$@"
+}
+# change-ip --ip NOUVELLE --yes  (à lancer SUR le nœud ; la nouvelle adresse doit déjà être portée par ce serveur, l'ancienne aussi pendant l'opération)
+#   1. annonce le déplacement (clé « moved » : seule une adresse annoncée est acceptée par les autres nœuds)
+#   2. obtient un certificat valable pour l'ancienne ET la nouvelle adresse (signé par l'autorité), l'installe
+#   3. attend que CHAQUE autre nœud sain ait ouvert son pare-feu à la nouvelle adresse et l'ait dit (accusé dans « moved-ack ») : sans cela etcd
+#      serait coupé de ce nœud dès son redémarrage ; au moindre doute (délai DDI_FW_WAIT) tout est annulé, rien n'a été modifié
+#   4. met à jour l'adresse du membre dans etcd, réécrit la configuration locale, redémarre etcd sur la nouvelle adresse
+#   5. met à jour le registre ; les autres nœuds s'alignent seuls (cmd_sync)
+# Refus : quorum sans marge, leader PostgreSQL en place (basculer d'abord), adresse déjà utilisée ou hors du réseau dédié.
+cmd_change_ip() {
+  local new="" yes=0
+  while [ $# -gt 0 ]; do case "$1" in --ip) new="${2:-}"; shift 2 ;; --yes) yes=1; shift ;; *) die "option inconnue : $1" ;; esac; done
+  conf_load
+  valid_ip "$new" || die "--ip invalide"
+  [ "$yes" -eq 1 ] || die "opération sensible : relancer avec --yes pour confirmer"
+  local old="${C[NODE_IP]}" name="${C[NODE_NAME]}" p
+  [ "$new" != "$old" ] || die "cette adresse est déjà celle du nœud"
+  for p in ${C[PEERS]}; do [ "$(peer_field "$p" ip)" != "$new" ] || die "l'adresse $new est déjà utilisée par le nœud $(peer_field "$p" name)"; done
+  python3 -c 'import ipaddress,sys; sys.exit(0 if ipaddress.ip_address(sys.argv[1]) in ipaddress.ip_network(sys.argv[2], strict=False) else 1)' "$new" "${C[REPL_NET]}" || die "$new est hors du réseau dédié ${C[REPL_NET]} (le changer d'abord : set-net)"
+  if [ -z "${DDI_TEST:-}" ] && ! ip -o -4 addr show 2>/dev/null | awk -v ip="$new" '{ split($4, a, "/"); if (a[1] == ip) f = 1 } END { exit !f }'; then die "l'adresse $new n'est portée par aucune interface de ce serveur (la configurer d'abord, en gardant l'ancienne le temps de l'opération)"; fi
+  # le quorum doit survivre à l'arrêt de CE nœud pendant le redémarrage d'etcd
+  local q; q="$(quorum_json 2>/dev/null)" || die "état du quorum illisible"
+  printf '%s' "$q" | NAME="$name" python3 -c '
+import json, os, sys
+q = json.load(sys.stdin); me = next((m for m in q["members"] if m["name"] == os.environ["NAME"]), None)
+voter = me is not None and not me["learner"]
+if not q["hasQuorum"]: sys.exit(2)
+if voter and q["healthy"] - 1 < q["needed"]: sys.exit(3)' || die "le quorum etcd n'a pas de marge : changer l'adresse de ce nœud le ferait tomber (rétablir d'abord les nœuds en panne)"
+  if [ "${C[NODE_ROLE]}" = data ] && [ "$(patroni_role)" = leader ]; then die "ce nœud est le primaire PostgreSQL : basculer d'abord (switchover), puis changer son adresse"; fi
+  local mid; mid="$(etcd_member_id "$name")"; [ -n "$mid" ] || die "membre etcd introuvable pour $name"
+  # nœuds dont l'accusé est attendu : tous les autres membres sains (un nœud en panne s'alignera à son retour, voir moved_apply)
+  local need; need="$(printf '%s' "$q" | NAME="$name" python3 -c '
+import json, os, sys
+q = json.load(sys.stdin)
+print(" ".join(m["name"] for m in q["members"] if m["name"] != os.environ["NAME"] and m["healthy"]))')" || die "liste des nœuds illisible"
+  ectl --command-timeout=5s del --prefix "$ACKS$name/" >/dev/null 2>&1 || true      # aucun ancien accusé ne doit compter
+  local nowts; nowts="$(date +%s)"
+  printf '{"from":"%s","to":"%s","at":%s}' "$old" "$new" "$nowts" | ectl --command-timeout=5s put "$MOVED$name" >/dev/null 2>&1 || die "annonce du déplacement impossible (quorum etcd ?)"
+  # certificat valable pour les deux adresses
+  if [ "${C[CA_NODE]}" = 1 ]; then
+    local t; t="$(mktemp -d)"; chmod 700 "$t"
+    DDI_EXTRA_SAN="$old" issue_cert "$name" "$new" "$t" || { rm -rf "$t"; moved_abort "$name"; die "émission du certificat impossible"; }
+    cert_install "$t" || { rm -rf "$t"; moved_abort "$name"; die "installation du certificat impossible"; }; rm -rf "$t"
+  else
+    cert_request "$new" || { moved_abort "$name"; die "demande de certificat impossible"; }
+    local i=0 rc
+    while [ "$i" -lt "${DDI_CHANGEIP_WAIT:-150}" ]; do rc=0; cert_pickup || rc=$?; case "$rc" in 0) break ;; 1) moved_abort "$name"; die "certificat refusé par l'autorité" ;; esac; sleep 2; i=$((i + 2)); done
+    [ "$rc" -eq 0 ] || { moved_abort "$name"; die "l'autorité n'a pas signé le certificat à temps : rien n'a été modifié"; }
+  fi
+  # 0) les autres nœuds ouvrent leur pare-feu à la nouvelle adresse (annonce vue à leur synchronisation) et accusent réception
+  local n missing="" fwend=$((SECONDS + ${DDI_FW_WAIT:-180}))
+  while :; do
+    missing=""
+    for n in $need; do
+      [ "$(ectl --command-timeout=3s get "$ACKS$name/$n" --print-value-only 2>/dev/null | head -c 20)" = "$new" ] || missing="$missing $n"
+    done
+    [ -n "$missing" ] || break
+    [ "$SECONDS" -lt "$fwend" ] || break
+    sleep 2
+  done
+  if [ -n "$missing" ]; then
+    moved_abort "$name"
+    die "les nœuds${missing} n'ont pas ouvert leur pare-feu à $new à temps : rien n'a été modifié (ces nœuds synchronisent-ils bien ? réessayer ensuite)"
+  fi
+  # 1) adresse du membre dans le quorum (par l'ancien point d'accès, encore valable)
+  ectl_all --command-timeout=10s member update "$mid" --peer-urls="https://$new:${C[ETCD_PEER_PORT]}" >/dev/null 2>&1 || die "mise à jour du membre etcd refusée : l'adresse n'a pas été changée (l'annonce est conservée jusqu'à un jour)"
+  # 2) configuration locale
+  local oldpeers="${C[PEERS]}" newpeers="" ic="${C[ETCD_INITIAL_CLUSTER]}" ic_old="${C[ETCD_INITIAL_CLUSTER]}"
+  for p in ${C[PEERS]}; do if [ "$(peer_field "$p" name)" = "$name" ]; then newpeers="$newpeers $name=$new:${C[NODE_ROLE]}"; else newpeers="$newpeers $p"; fi; done
+  C[PEERS]="${newpeers# }"; C[NODE_IP]="$new"; ic="${ic//https:\/\/$old:/https://$new:}"; C[ETCD_INITIAL_CLUSTER]="$ic"
+  conf_check; conf_write; render_etcd; render_patroni; render_keepalived; fw_sync
+  # 3) etcd écoute désormais la nouvelle adresse
+  etcd_ctl restart
+  local end=$((SECONDS + ${DDI_ETCD_RESTART_WAIT:-60}))
+  while [ "$SECONDS" -lt "$end" ]; do if ectl --command-timeout=3s endpoint health >/dev/null 2>&1; then break; fi; sleep 1; done
+  if ! ectl --command-timeout=3s endpoint health >/dev/null 2>&1; then
+    log "ERREUR : etcd ne répond pas sur $new ; retour à l'ancienne adresse"
+    C[PEERS]="$oldpeers"; C[NODE_IP]="$old"; C[ETCD_INITIAL_CLUSTER]="$ic_old"; conf_write; render_etcd; render_patroni; render_keepalived; fw_sync
+    ectl_all --command-timeout=10s member update "$mid" --peer-urls="https://$old:${C[ETCD_PEER_PORT]}" >/dev/null 2>&1 || log "AVERTISSEMENT : adresse du membre etcd non rétablie (à corriger : etcdctl member update)"
+    etcd_ctl restart
+    ectl_all --command-timeout=10s del "$MOVED$name" >/dev/null 2>&1 || true
+    ectl_all --command-timeout=10s del --prefix "$ACKS$name/" >/dev/null 2>&1 || true
+    die "changement d'adresse annulé : etcd n'a pas redémarré sur $new"
+  fi
+  register_node "$name" "$new" "${C[NODE_ROLE]}" 15 || log "AVERTISSEMENT : registre non mis à jour ; la synchronisation réessaiera"
+  if [ -z "${DDI_TEST:-}" ]; then
+    systemctl reload keepalived.service 2>/dev/null || true
+    [ "${C[NODE_ROLE]}" != data ] || systemctl restart patroni.service 2>/dev/null || true
+  fi
+  publish_state || true
+  log "adresse du nœud « $name » : $old → $new. Les autres nœuds s'alignent à leur prochaine synchronisation ; l'ancienne adresse peut être retirée du serveur."
+}
+ACKS=/ddibuntu-cluster/moved-ack/       # accusés de réception : « $ACKS<nœud déplacé>/<nœud observateur> » = nouvelle adresse (pare-feu ouvert)
+# moved_abort NOM : annule une annonce de déplacement (marqueur, demande de certificat, accusés) ; les autres nœuds referment alors leur pare-feu
+moved_abort() {
+  rm -rf "$PKI/renew"
+  ectl --command-timeout=5s del "$MOVED$1" >/dev/null 2>&1 || true
+  ectl --command-timeout=5s del "$CSRS$1" >/dev/null 2>&1 || true
+  ectl --command-timeout=5s del --prefix "$ACKS$1/" >/dev/null 2>&1 || true
+}
+# moved_cleanup : l'annonce de déplacement de CE nœud (et les accusés) est retirée après un jour (elle n'est plus utile quand tous les nœuds sont alignés)
+moved_cleanup() {
+  local raw at; raw="$(ectl --command-timeout=5s get "$MOVED${C[NODE_NAME]}" --print-value-only 2>/dev/null | head -c 300)" || return 0
+  [ -n "$raw" ] || return 0
+  at="$(printf '%s' "$raw" | python3 -c 'import json,sys; print(int(json.load(sys.stdin)["at"]))' 2>/dev/null)" || at=0
+  [ $(( $(date +%s) - at )) -gt 86400 ] || return 0
+  ectl del "$MOVED${C[NODE_NAME]}" >/dev/null 2>&1 || true
+  ectl del --prefix "$ACKS${C[NODE_NAME]}/" >/dev/null 2>&1 || true
+}
+# moved_apply : (cmd_sync) un autre nœud a annoncé son déplacement.
+#   - tant qu'il n'a pas fini : on OUVRE le pare-feu à sa nouvelle adresse (en plus de l'ancienne ; adresse du réseau dédié seulement) puis on ACCUSE
+#     réception (« moved-ack ») : le nœud n'avance qu'après les accusés. L'ouverture disparaît dès que l'annonce disparaît ou que l'on s'est aligné.
+#   - quand il a fini (registre = nouvelle adresse) : on s'aligne SI l'annonce correspond (ancienne adresse connue, nouvelle = registre).
+moved_apply() {
+  local raw; raw="$(ectl --command-timeout=5s get --prefix "$MOVED" -w json 2>/dev/null | head -c 20000)" || return 0
+  [ -n "$raw" ] || return 0
+  local name from to at changed=0 newpeers="${C[PEERS]}" p now acks="" xnew=""; now="$(date +%s)"
+  while IFS=' ' read -r name from to at; do
+    [ -n "$name" ] || continue
+    valid_name "$name" && valid_ip "$from" && valid_ip "$to" && [[ "$at" =~ ^[0-9]{1,12}$ ]] || continue
+    [ "$name" != "${C[NODE_NAME]}" ] || continue
+    [ $(( now - at )) -lt 86400 ] && [ $(( now - at )) -ge -300 ] || continue   # une annonce n'est valable qu'un jour (et pas datée du futur)
+    case " $newpeers " in *" $name=$from:"*) ;; *) continue ;; esac            # nous connaissons ce nœud à l'ancienne adresse annoncée
+    python3 -c 'import ipaddress,sys; sys.exit(0 if ipaddress.ip_address(sys.argv[1]) in ipaddress.ip_network(sys.argv[2], strict=False) else 1)' "$to" "${C[REPL_NET]}" || continue   # jamais hors du réseau dédié
+    local reg; reg="$(ectl --command-timeout=5s get "$REG$name" --print-value-only 2>/dev/null | head -c 60)" || reg=""   # lecture ratée = « pas fini » (jamais de fermeture sur un incident passager)
+    case "$reg" in
+      "$to:data"|"$to:witness") ;;                                            # le nœud a bien fini : il s'est réinscrit à la nouvelle adresse
+      *) xnew="$xnew $to"; acks="$acks $name=$to"; continue ;;                # pas encore : pare-feu ouvert + accusé
+    esac
+    local role="${reg##*:}" out=""
+    for p in $newpeers; do if [ "$(peer_field "$p" name)" = "$name" ]; then out="$out $name=$to:$role"; else out="$out $p"; fi; done
+    newpeers="${out# }"; changed=1; C[ETCD_INITIAL_CLUSTER]="${C[ETCD_INITIAL_CLUSTER]//https:\/\/$from:/https://$to:}"; log "nœud « $name » : adresse $from → $to (déplacement annoncé)"
+  done < <(printf '%s' "$raw" | python3 -c '
+import base64, json, sys
+try: kvs = json.load(sys.stdin).get("kvs", [])[:16]
+except Exception: kvs = []
+for kv in kvs:
+    try:
+        n = base64.b64decode(kv["key"]).decode().rsplit("/", 1)[-1]; v = json.loads(base64.b64decode(kv.get("value", "")))
+        print(n, v["from"], v["to"], int(v["at"]))
+    except Exception: pass')
+  # adresses à ouvrir en plus : fichier réécrit seulement s'il change (retirées dès l'alignement ou quand l'annonce disparaît)
+  local xold="" fwdone=0
+  xnew="$(printf '%s\n' "$xnew" | tr ' ' '\n' | sed '/^$/d' | sort -u)"
+  [ ! -f "$FWX" ] || xold="$(cat "$FWX")"
+  if [ "$xnew" != "$xold" ]; then
+    if [ -n "$xnew" ]; then printf '%s\n' "$xnew" > "$FWX"; else rm -f "$FWX"; fi
+    fwdone=1
+  fi
+  if [ "$changed" -eq 1 ]; then
+    C[PEERS]="$newpeers"; reapply_peers; fwdone=1      # (réécrit aussi le pare-feu)
+    render_etcd
+    log "pairs mis à jour : ${C[PEERS]}"
+  elif [ "$fwdone" -eq 1 ]; then
+    fw_sync
+  fi
+  # accusés : seulement une fois le pare-feu réellement ouvert, et une seule écriture par annonce
+  local a an at_to cur
+  for a in $acks; do
+    an="${a%%=*}"; at_to="${a#*=}"
+    cur="$(ectl --command-timeout=5s get "$ACKS$an/${C[NODE_NAME]}" --print-value-only 2>/dev/null | head -c 20)" || cur=""
+    [ "$cur" != "$at_to" ] || continue
+    [ "$fwdone" -eq 1 ] || { fw_sync; fwdone=1; }
+    if [ "$FW_OK" = 1 ]; then
+      ectl --command-timeout=5s put "$ACKS$an/${C[NODE_NAME]}" "$at_to" >/dev/null 2>&1 || log "accusé de réception de « $an » non enregistré (réessai à la prochaine synchronisation)"
+    else
+      log "AVERTISSEMENT : pare-feu non ouvert à $at_to (« $an » se déplace) ; pas d'accusé de réception"
+    fi
+  done
+  # un accusé signifie « mon pare-feu est ouvert pour ce déplacement, maintenant » : il disparaît avec l'ouverture (annonce retirée, annulée ou terminée)
+  local pend=" " k kn
+  for a in $acks; do pend="$pend${a%%=*} "; done
+  while IFS= read -r k; do
+    kn="${k%/*}"; kn="${kn##*/}"
+    valid_name "$kn" || continue
+    case "$pend" in *" $kn "*) ;; *) ectl --command-timeout=5s del "$k" >/dev/null 2>&1 || true ;; esac
+  done < <(ectl --command-timeout=5s get --prefix "$ACKS" --keys-only 2>/dev/null | awk -v s="/${C[NODE_NAME]}" 'length($0) > length(s) && substr($0, length($0) - length(s) + 1) == s')
+  return 0
 }
 
 cmd_init() {
@@ -739,7 +1266,9 @@ cmd_status() {
   local caown; caown="$(ectl --command-timeout=3s get "$CAOWN" --print-value-only 2>/dev/null | head -c 40 | tr -cd 'a-z0-9-')" || caown=""
   local caesc=false; if [ -n "$(ectl --command-timeout=3s get "$CAESC" --keys-only 2>/dev/null)" ]; then caesc=true; fi
   local hraw; hraw="$(ectl --command-timeout=3s get --prefix "$HEALTHKEYS" -w json 2>/dev/null | head -c 200000)" || hraw=""; [ -n "$hraw" ] || hraw="{}"
-  HEALTH_RAW="$hraw" CAOWN_V="$caown" CAESC_V="$caesc" CANODE_V="${C[CA_NODE]}" QUORUM="$quorum" VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
+  local setj certj; setj="$(settings_json 2>/dev/null)" || setj=""; [ -n "$setj" ] || setj="null"
+  certj="$(cert_json 2>/dev/null)" || certj=""; [ -n "$certj" ] || certj="null"
+  SETTINGS_J="$setj" PKI_J="$certj" HEALTH_RAW="$hraw" CAOWN_V="$caown" CAESC_V="$caesc" CANODE_V="${C[CA_NODE]}" QUORUM="$quorum" VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
     python3 -c '
 import base64, json, os, re
 pat = json.loads(os.environ["PAT"])
@@ -759,7 +1288,8 @@ print(json.dumps({"cluster": os.environ["CLUSTER"], "node": os.environ["NODE"], 
   "etcd": {"healthy": os.environ["ETCD_OK"] == "true", "members": int(os.environ["MEMBERS"] or 0), "quorum": json.loads(os.environ["QUORUM"])},
   "peers": [dict(zip(("name", "ip", "role"), (p.split("=")[0], p.split("=")[1].split(":")[0], p.split(":")[-1]))) for p in os.environ["PEERS"].split()],
   "ca": {"node": os.environ["CANODE_V"] == "1", "owner": os.environ["CAOWN_V"] or None, "escrow": os.environ["CAESC_V"] == "true"},
-  "patroni": pat, "kea": json.loads(os.environ["KEA"]), "vip": json.loads(os.environ["VIP"]), "health": health}, ensure_ascii=False))'
+  "patroni": pat, "kea": json.loads(os.environ["KEA"]), "vip": json.loads(os.environ["VIP"]), "health": health,
+  "settings": json.loads(os.environ["SETTINGS_J"]), "pki": json.loads(os.environ["PKI_J"])}, ensure_ascii=False))'
 }
 
 # ---------------------------------------------------------------- Kea HA
@@ -1087,7 +1617,7 @@ cmd_recover() {
   log "cluster reconstruit : « ${C[NODE_NAME]} » est le seul membre. Nœuds perdus oubliés :${lost:- aucun}. Ajoutez-en d'autres avec « bundle » / « join »."
 }
 etcd_ctl() {   # etcd_ctl start|stop|restart : systemd en production ; en essai, commandes fournies par la batterie (DDI_ETCD_CMD)
-  if [ -n "${DDI_ETCD_CMD:-}" ]; then "$DDI_ETCD_CMD" "$1"; else sysctl_do "$1" etcd.service; fi
+  if [ -n "${DDI_ETCD_CMD:-}" ]; then "$DDI_ETCD_CMD" "$1" 8>&-; else sysctl_do "$1" etcd.service; fi
 }
 
 # L'autorité de certification (clé privée) n'existe que sur le premier nœud : sans elle on ne peut plus enrôler de remplaçant s'il est perdu.
@@ -1151,19 +1681,34 @@ cmd_take_ca() {
 cmd_action() {
   conf_load; [ "${C[NODE_ROLE]}" = data ] || return 0
   local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" f raw="" parsed act="" node="" msg="" ok=false bip="" brole="" bpass=""
+  local svip="" sif="" svrid="" snet="" sip=""
   f="$gen/.cluster-action"
   [ -e "$f" ] || [ -L "$f" ] || return 0
   if [ -f "$f" ] && [ ! -L "$f" ]; then raw="$(head -c 1024 "$f")"; fi
   rm -f "$f"
-  parsed="$(printf '%s' "$raw" | CL="${C[CLUSTER_NAME]}" python3 -c '
+  parsed="$(printf '%s' "$raw" | CL="${C[CLUSTER_NAME]}" ME="${C[NODE_NAME]}" python3 -c '
 import json, os, re, sys
 try: d = json.loads(sys.stdin.read())
 except Exception: print("invalid"); sys.exit(0)
-if not isinstance(d, dict) or not set(d) <= {"action", "node", "confirm", "ip", "role", "pass"}: print("invalid"); sys.exit(0)
+if not isinstance(d, dict) or not set(d) <= {"action", "node", "confirm", "ip", "role", "pass", "vip", "iface", "vrid", "net"}: print("invalid"); sys.exit(0)
 a, n, c = d.get("action"), d.get("node", ""), d.get("confirm", "")
 name = r"[a-z][a-z0-9-]{1,30}"
 def ipv4(v): return isinstance(v, str) and re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", v) is not None and all(int(x) <= 255 for x in v.split("."))
-extra = {"ip", "role", "pass"} & set(d)
+def cidr(v): return isinstance(v, str) and re.fullmatch(r"[0-9.]{7,15}/\d{1,2}", v) is not None and ipv4(v.split("/")[0]) and int(v.split("/")[1]) <= 32
+def iface(v): return isinstance(v, str) and re.fullmatch(r"[a-z][a-z0-9._-]{0,14}", v) is not None
+keys = set(d)
+# réglages communs et opérations propres à ce nœud (0.9.2) : jeu de clés exact pour chaque action, aucune autre clé tolérée
+if a == "set-vip":
+    vr = d.get("vrid")
+    ok = keys in ({"action", "vip", "iface", "confirm"}, {"action", "vip", "iface", "vrid", "confirm"}) and cidr(d["vip"]) and iface(d["iface"]) and c == os.environ["CL"] \
+        and (vr is None or (isinstance(vr, int) and not isinstance(vr, bool) and 1 <= vr <= 255))
+    print("set-vip %s %s %s" % (d["vip"], d["iface"], "-" if vr is None else vr) if ok else "invalid"); sys.exit(0)
+if a == "clear-vip": print("clear-vip -" if keys == {"action", "confirm"} and c == os.environ["CL"] else "invalid"); sys.exit(0)
+if a == "vip-iface": print("vip-iface " + d["iface"] if keys == {"action", "iface"} and iface(d["iface"]) else "invalid"); sys.exit(0)
+if a == "set-net": print("set-net " + d["net"] if keys == {"action", "net", "confirm"} and cidr(d["net"]) and c == os.environ["CL"] else "invalid"); sys.exit(0)
+if a == "renew-cert": print("renew-cert -" if keys == {"action"} else "invalid"); sys.exit(0)
+if a == "change-ip": print("change-ip " + d["ip"] if keys == {"action", "ip", "confirm"} and ipv4(d["ip"]) and c == os.environ["ME"] else "invalid"); sys.exit(0)
+extra = {"ip", "role", "pass", "vip", "iface", "vrid", "net"} & keys
 if a != "bundle" and extra: print("invalid"); sys.exit(0)
 if a == "refresh" and not n and not c: print("refresh -")
 elif a == "bundle" and isinstance(n, str) and re.fullmatch(name, n) and c == n and ipv4(d.get("ip")) and d.get("role") in ("data", "witness") and isinstance(d.get("pass"), str) and re.fullmatch(r"[A-Za-z0-9]{24,64}", d["pass"]):
@@ -1179,6 +1724,12 @@ else: print("invalid")' 2>/dev/null || echo invalid)"
     "take-ca "*) act=take-ca; node="${parsed#* }"
       if [ "$node" != "${C[NODE_NAME]}" ]; then act=""; msg="confirmation incorrecte"; node=""; fi ;;
     "recover -") act=recover ;;
+    "set-vip "*) act=set-vip; read -r _ svip sif svrid <<<"$parsed" ;;
+    "clear-vip -") act=clear-vip ;;
+    "vip-iface "*) act="vip-iface"; sif="${parsed#* }" ;;
+    "set-net "*) act=set-net; snet="${parsed#* }" ;;
+    "renew-cert -") act=renew-cert ;;
+    "change-ip "*) act=change-ip; sip="${parsed#* }"; node="${C[NODE_NAME]}" ;;
     *) msg="demande invalide" ;;
   esac
   local out=""
@@ -1187,6 +1738,13 @@ else: print("invalid")' 2>/dev/null || echo invalid)"
       remove-node) out="$( ( cmd_remove_node "$node" ) 2>&1 )" && ok=true ;;
       take-ca) out="$( ( cmd_take_ca --yes ) 2>&1 )" && ok=true ;;
       recover) out="$( ( cmd_recover --yes ) 2>&1 )" && ok=true ;;
+      set-vip) local va=(--vip "$svip" --iface "$sif"); [ "$svrid" = - ] || va+=(--vrid "$svrid")
+        out="$( ( cmd_set_vip "${va[@]}" ) 2>&1 )" && ok=true ;;
+      clear-vip) out="$( ( cmd_clear_vip ) 2>&1 )" && ok=true ;;
+      vip-iface) out="$( ( cmd_vip_iface "$sif" ) 2>&1 )" && ok=true ;;
+      set-net) out="$( ( cmd_set_net "$snet" ) 2>&1 )" && ok=true ;;
+      renew-cert) out="$( ( cmd_renew_cert --force ) 2>&1 )" && ok=true ;;
+      change-ip) out="$( ( cmd_change_ip --ip "$sip" --yes ) 2>&1 )" && ok=true ;;
       bundle) local bf="$gen/cluster-bundle-$node.bundle"
         out="$( ( DDI_BUNDLE_PASS="$bpass" cmd_bundle --name "$node" --ip "$bip" --role "$brole" --out "$bf" ) 2>&1 )" && ok=true
         if [ "$ok" = true ]; then chown root:ddiconsole "$bf" 2>/dev/null || true; chmod 0640 "$bf"; fi ;;
@@ -1272,6 +1830,20 @@ else: print("invalid")' 2>/dev/null || echo invalid)"
   [ "$ok" = true ]
 }
 
+# Verrou du nœud : une seule opération qui modifie la configuration à la fois. Sans lui, la synchronisation automatique (chaque minute)
+# pourrait réécrire l'ancienne adresse pendant un « change-ip » qui dure plusieurs minutes. Les minuteries n'attendent pas (elles reviennent
+# à la minute suivante) ; les demandes d'un administrateur attendent leur tour. Le verrou est tenu par ce processus et ses sous-shells.
+take_lock() {   # take_lock SECONDES (0 = ne pas attendre)
+  [ -d "$STATE" ] || (umask 077; mkdir -p "$STATE") 2>/dev/null || return 0
+  { exec 8>>"$STATE/cluster.lock"; } 2>/dev/null || return 0   # les redirections d'un « exec » sont définitives : les protéger de stderr dans un groupe
+  if [ "$1" -eq 0 ]; then flock -n 8 2>/dev/null; else flock -w "$1" 8 2>/dev/null; fi
+}
+case "${1:-}" in
+  sync|follow|ca-sync) take_lock 0 || { log "une autre opération du cluster est en cours : « ${1} » reprendra à la prochaine échéance"; exit 0; } ;;
+  request) take_lock 600 || die "une autre opération du cluster est en cours depuis plus de 10 minutes" ;;
+  activate|switchover|remove-node|recover|take-ca|keepalived|set-vip|clear-vip|vip-iface|set-net|renew-cert|sign-requests|change-ip)
+    take_lock 120 || die "une autre opération du cluster est en cours ; réessayer dans un instant" ;;
+esac
 case "${1:-}" in
   init) shift; cmd_init "$@" ;;
   bundle) shift; cmd_bundle "$@" ;;
@@ -1295,5 +1867,14 @@ case "${1:-}" in
   backup-conf) shift; cmd_backup_conf "$@" ;;
   health-put) cmd_health_put ;;
   keepalived) conf_load; render_keepalived ;;
-  *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  set-vip) shift; cmd_set_vip "$@" ;;
+  clear-vip) cmd_clear_vip ;;
+  vip-iface) shift; cmd_vip_iface "$@" ;;
+  set-net) shift; cmd_set_net "$@" ;;
+  settings) cmd_settings ;;
+  renew-cert) shift; cmd_renew_cert "$@" ;;
+  sign-requests) cmd_sign_requests ;;
+  cert-status) cmd_cert_status ;;
+  change-ip) shift; cmd_change_ip "$@" ;;
+  *) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

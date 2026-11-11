@@ -10,10 +10,11 @@ Appliance **DDI** (DNS, DHCP, IPAM) sur Ubuntu Server 24.04 LTS, installable par
 - **Imports et découverte** : NetBox, Active Directory en direct (LDAP, transfert de zone), exports Windows DHCP/DNS, découverte réseau.
 - **Sauvegarde et restauration à un instant donné** de la base (PITR) : sauvegardes planifiées, journaux archivés en continu, copie externe, restauration depuis la console, cluster compris.
 - **Alertes et supervision** : 23 règles (cluster, quorum, réplication, chaque nœud arbitre compris, sauvegardes, sous-réseaux), mise en silence, notifications par webhook (signé) et e-mail, exportateur Prometheus `/api/metrics`, tableau de bord qui se rafraîchit seul.
+- **Réglages du cluster à chaud** : adresse virtuelle et réseau dédié publiés une fois pour tous les nœuds, **certificats renouvelés automatiquement sans interruption** (la clé ne quitte jamais le nœud, seule l'autorité signe), **changement d'adresse d'un nœud** sans perdre le quorum, avec retour arrière automatique si etcd ne redémarre pas.
 - **Retour arrière partout** : un point de restauration est créé avant chaque configuration, déploiement ou import ; les changements réseau s'annulent seuls sans confirmation.
 - **Sécurité** : chaîne d'approvisionnement vérifiée (signatures et empreintes), console sans privilège, application privilégiée séparée et contrôlée, pare-feu nftables, durcissement.
 
-> État : version de développement **0.9.1**. Voir « Limites connues » ci-dessous avant tout usage en production.
+> État : version de développement **0.9.2**. Voir « Limites connues » ci-dessous avant tout usage en production.
 
 ## Démarrage rapide
 
