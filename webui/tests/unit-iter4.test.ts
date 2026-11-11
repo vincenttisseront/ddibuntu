@@ -6,7 +6,7 @@ import https from 'node:https'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { fetchAll, getJson, isForbiddenTarget, normalizeNetbox, parseBaseUrl, planNetbox, NetboxError } from '../server/utils/netbox'
+import { fetchAll, getJson, isForbiddenTarget, normalizeNetbox, parseBaseUrl, planNetbox, NetboxError, upstreamDetail } from '../server/utils/netbox'
 import type { Existing, PlanOpts } from '../server/utils/netbox'
 import { classify, discoverHosts, enumerateTargets, DiscoveryError } from '../server/utils/discovery'
 import type { ProbeDeps } from '../server/utils/discovery'
@@ -56,9 +56,15 @@ describe('NetBox : client HTTPS', () => {
   })
   it('« ne pas vérifier » est un choix explicite et fonctionne', async () => { expect((await getJson(U('/api/status/'), { token: 'bon-jeton', verify: false })['netbox-version' as any]) ?? true).toBeTruthy() })
   it('jeton refusé -> netbox_auth ; jeton v2 « nbt_ » envoyé en Bearer', async () => {
-    await expect(getJson(U('/api/status/'), { token: 'mauvais', verify: true, ca: CA })).rejects.toMatchObject({ code: 'netbox_auth' })
+    await expect(getJson(U('/api/status/'), { token: 'mauvais', verify: true, ca: CA })).rejects.toMatchObject({ code: 'netbox_auth', status: 502, upstream: { status: 403, detail: 'no' } })   // le motif de NetBox est conservé
     hits = []; await getJson(U('/api/status/'), { token: 'nbt_cle.secret', verify: true, ca: CA })
     expect(hits[0]!.auth).toBe('Bearer nbt_cle.secret')
+  })
+  it('motif du refus : texte brut, nettoyé et borné', () => {
+    expect(upstreamDetail('{"detail":"Invalid v1 token"}')).toBe('Invalid v1 token')
+    expect(upstreamDetail('{"detail":"a\\u0000b\\u001b[31mc\\u007f"}')).toBe('ab[31mc')
+    expect(upstreamDetail('{"detail":"' + 'x'.repeat(500) + '"}')).toHaveLength(160)
+    for (const raw of ['', 'pas du json', '<html>403</html>', '{"detail":42}', '{"detail":null}', '[]', '{"autre":"x"}']) expect(upstreamDetail(raw)).toBe('')
   })
   it('redirection : jamais suivie (le jeton ne change pas de destinataire)', async () => {
     await expect(getJson(U('/redir'), { token: 'bon-jeton', verify: true, ca: CA })).rejects.toMatchObject({ code: 'netbox_redirect' })

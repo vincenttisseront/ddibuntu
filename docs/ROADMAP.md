@@ -65,10 +65,11 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
     2. ~~**0.9.1**~~ ✅ fait — Alertes et supervision : exportateur Prometheus `/api/metrics`, e-mail, webhook, mise en silence, santé de chaque nœud partagée par etcd, tableau de bord évolué (les alertes « fantômes » et « tunnels » rejoignent l'itération 7).
     3. ~~**0.9.2**~~ ✅ fait — Remplacement d'adresse virtuelle / de réseau dédié, changement d'adresse d'un nœud, renouvellement des certificats (automatique, sans interruption), verrou de nœud.
     4. ~~**0.9.3**~~ ✅ fait — Test de bascule guidé avec rapport : pré-contrôles, vraie bascule mesurée (fenêtre sans primaire, promotion, réintégration, rattrapage, ligne de temps, continuité WAL), retour au primaire d'origine, rapports conservés dans etcd, refus des opérations de topologie pendant le test.
-    5. **0.9.4** — Vues DNS.
-    6. **0.9.5** — Traçabilité bail / MAC / nom / utilisateur AD.
-    7. **0.9.6** — Découverte planifiée et alertes d'hygiène.
-    8. **0.9.7** — API : description OpenAPI et jetons d'API.
-    9. **0.9.8** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
-    10. **0.9.9** — DHCP multi-espaces.
+    4b. ~~**0.9.4**~~ ✅ fait — Correctif intercalaire : source NetBox (le test ne déconnecte plus, motif du refus affiché, jeton nettoyé).
+    5. **0.9.5** — Vues DNS.
+    6. **0.9.6** — Traçabilité bail / MAC / nom / utilisateur AD.
+    7. **0.9.7** — Découverte planifiée et alertes d'hygiène.
+    8. **0.9.8** — API : description OpenAPI et jetons d'API.
+    9. **0.9.9** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
+    10. **0.9.10** — DHCP multi-espaces.
 5. **1.0** — Consolidation de la série 0.9.x et passage en revue avant usage en production.

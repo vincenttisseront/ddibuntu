@@ -6,7 +6,16 @@ import { isIP } from 'node:net'
 import { cfg } from './config'
 import { cidrContainsIp, cidrToString, isValidDnsName, normIp, parseCidr, parseIp } from './net'
 
-export class NetboxError extends Error { constructor(public code: string, public status = 502) { super(code) } }
+export class NetboxError extends Error {
+  /** `upstream` : ce que NetBox a répondu (statut HTTP et message « detail »), pour que l'administrateur comprenne POURQUOI le jeton est refusé. */
+  constructor(public code: string, public status = 502, public upstream?: { status: number; detail: string }) { super(code) }
+}
+/** Message de NetBox, nettoyé : texte brut, sans caractère de contrôle, borné (la réponse vient d'un serveur distant). */
+export function upstreamDetail(raw: string): string {
+  let d = ''
+  try { const j = JSON.parse(raw); d = typeof j?.detail === 'string' ? j.detail : '' } catch { /* pas du JSON : on n'affiche rien */ }
+  return [...d].filter((c) => c >= ' ' && c !== '\x7f').join('').trim().slice(0, 160)
+}
 export type AddrStatus = 'used' | 'reserved' | 'dhcp' | 'gateway' | 'infra'
 export type Mode = 'add' | 'sync' | 'sync_overwrite'
 export interface NetboxSettings {
@@ -64,7 +73,14 @@ export function getJson(u: URL, o: GetOpts): Promise<any> {
       const st = res.statusCode ?? 0
       res.on('error', () => ko(new NetboxError('netbox_unreachable')))
       if (st >= 300 && st < 400) { res.resume(); return ko(new NetboxError('netbox_redirect')) }   // jamais suivi : le jeton ne doit pas changer de destinataire
-      if (st === 401 || st === 403) { res.resume(); return ko(new NetboxError('netbox_auth', 502)) }   // 502 et non 401 : c'est NetBox qui refuse, pas la session de la console (un 401 déconnecterait l'utilisateur)
+      if (st === 401 || st === 403) {
+        // 502 et non 401 : c'est NetBox qui refuse, pas la session de la console (un 401 déconnecterait l'utilisateur)
+        // on lit (au plus 4 Kio) le motif donné par NetBox : « Invalid v1 token », « Token expired », « Invalid source IP »…
+        const bits: Buffer[] = []; let n = 0
+        res.on('data', (d: Buffer) => { if (n < 4096) { bits.push(d); n += d.length } })
+        res.on('end', () => ko(new NetboxError('netbox_auth', 502, { status: st, detail: upstreamDetail(Buffer.concat(bits).subarray(0, 4096).toString('utf8')) })))
+        return
+      }
       if (st === 404) { res.resume(); return ko(new NetboxError('netbox_not_found', 404)) }
       if (st !== 200) { res.resume(); return ko(new NetboxError('netbox_http')) }
       const chunks: Buffer[] = []; let size = 0

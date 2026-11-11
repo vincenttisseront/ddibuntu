@@ -1,6 +1,6 @@
 // Appels d'API : jeton CSRF, redirection si la session a expiré, erreurs traduites.
 import { isSessionExpired } from '../utils/session'
-export interface ApiErrorInfo { status: number; code: string; message: string; issues: Array<{ path: string; message: string }> }
+export interface ApiErrorInfo { status: number; code: string; message: string; issues: Array<{ path: string; message: string }>; upstream?: { status: number; detail: string } }
 
 export function useApi() {
   const csrf = useState<string>('csrf', () => '')
@@ -12,7 +12,8 @@ export function useApi() {
     const code: string = body?.data?.code ?? body?.statusMessage ?? (status ? 'internal' : 'network')
     const key = `err.${code}`
     const msg = t(key)
-    return { status, code, message: msg === key ? t('err.internal') : msg, issues: body?.data?.issues ?? [] }
+    const up = body?.data?.upstream
+    return { status, code, message: msg === key ? t('err.internal') : msg, issues: body?.data?.issues ?? [], ...(up && typeof up.status === 'number' ? { upstream: { status: up.status, detail: String(up.detail ?? '') } } : {}) }
   }
 
   async function call<T = any>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, body?: unknown, opts: { silent?: boolean; busy?: boolean } = {}): Promise<T> {

@@ -8,7 +8,7 @@ import { NB_DEFAULTS, NetboxError, applyNetbox, fetchAll, loadExisting, netboxVe
 import type { NbData, NetboxSettings, PlanOpts } from '../utils/netbox'
 import { preImportSnapshot, record } from './importer'
 
-const nbErr = (e: unknown): never => { if (e instanceof NetboxError) fail(e.status, e.code); throw e }
+const nbErr = (e: unknown): never => { if (e instanceof NetboxError) fail(e.status, e.code, undefined, e.upstream ? { upstream: e.upstream } : undefined); throw e }
 const CA = z.string().max(20000).regex(/^(|-----BEGIN CERTIFICATE-----[\s\S]*-----END CERTIFICATE-----\s*)$/)
 const include = z.object({ vlans: z.boolean(), prefixes: z.boolean(), addresses: z.boolean() })
 const common = { url: z.string().min(8).max(500), tlsVerify: z.boolean(), caPem: CA.optional(), include, mode: z.enum(['add', 'sync', 'sync_overwrite']), prune: z.boolean(), includeContainers: z.boolean() }
@@ -18,7 +18,7 @@ const tokenFor = (s: NetboxSettings, given?: string) => { const t = given || (s.
 
 route('GET', '/netbox/settings', 'admin', async () => { const { tokenEnc, ...s } = { ...NB_DEFAULTS, ...(await load()) }; return { ...s, tokenSet: !!tokenEnc } })
 route('PUT', '/netbox/settings', 'admin', async (c) => {
-  const b = await c.body(z.object({ ...common, token: z.string().max(300).optional(), rememberToken: z.boolean().default(false) }))
+  const b = await c.body(z.object({ ...common, token: z.string().trim().max(300).optional(), rememberToken: z.boolean().default(false) }))
   try { parseBaseUrl(b.url) } catch (e) { nbErr(e) }
   const cur = await load()
   const { token, rememberToken, ...rest } = b
@@ -30,7 +30,7 @@ route('PUT', '/netbox/settings', 'admin', async (c) => {
 })
 
 route('POST', '/netbox/test', 'admin', async (c) => {
-  const b = await c.body(z.object({ url: common.url, tlsVerify: common.tlsVerify, caPem: common.caPem, token: z.string().max(300).optional() }))
+  const b = await c.body(z.object({ url: common.url, tlsVerify: common.tlsVerify, caPem: common.caPem, token: z.string().trim().max(300).optional() }))
   const s = await load()
   try { return { ok: true, version: await netboxVersion(parseBaseUrl(b.url), { token: tokenFor(s, b.token), verify: b.tlsVerify, ca: b.caPem || undefined, timeoutMs: 15000 }) } } catch (e) { return nbErr(e) }
 })
@@ -41,7 +41,7 @@ const plans = new Map<string, Stored>()
 const sweep = () => { const lim = Date.now() - 30 * 60_000; for (const [k, v] of plans) if (v.at < lim) plans.delete(k); while (plans.size > 5) plans.delete(plans.keys().next().value as string) }
 
 route('POST', '/netbox/preview', 'admin', async (c) => {
-  const b = await c.body(z.object({ ...common, token: z.string().max(300).optional() }))
+  const b = await c.body(z.object({ ...common, token: z.string().trim().max(300).optional() }))
   const s = await load()
   let data: NbData
   try {

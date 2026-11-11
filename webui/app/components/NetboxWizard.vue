@@ -3,13 +3,13 @@
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm()
 const step = ref(0), busy = ref(false), error = ref(''), done = ref(false)
 const steps = computed(() => [{ id: 'conn', label: t('nbw.s_conn') }, { id: 'scope', label: t('nbw.s_scope') }, { id: 'preview', label: t('nbw.s_preview') }, { id: 'apply', label: t('nbw.s_apply') }])
-const fail = (e: any) => { error.value = e.info?.message ?? t('err.internal') }
+const fail = (e: any) => { const u = e.info?.upstream; error.value = (e.info?.message ?? t('err.internal')) + (u ? ' ' + t('nbw.upstream', { s: u.status, d: u.detail || '—' }) : '') }
 const f = reactive<any>({ url: '', token: '', tlsVerify: true, caPem: '', rememberToken: false, include: { vlans: true, prefixes: true, addresses: true }, mode: 'add', prune: false, includeContainers: false })
 const { data: saved } = useFetch<any>('/api/netbox/settings', { server: false })
 watch(saved, (s) => { if (s?.url) { for (const k of ['url', 'tlsVerify', 'caPem', 'include', 'mode', 'prune', 'includeContainers']) if (s[k] !== undefined) f[k] = s[k]; f.rememberToken = s.tokenSet } }, { immediate: true })
 const test = ref<any>(null), plan = ref<any>(null), result = ref<any>(null)
-const body = () => ({ url: f.url.trim(), tlsVerify: f.tlsVerify, caPem: f.caPem || undefined, include: f.include, mode: f.mode, prune: f.prune, includeContainers: f.includeContainers, token: f.token || undefined })
-async function runTest() { busy.value = true; error.value = ''; test.value = null; try { test.value = await api.call('POST', '/netbox/test', { url: f.url.trim(), tlsVerify: f.tlsVerify, caPem: f.caPem || undefined, token: f.token || undefined }) } catch (e: any) { fail(e) } finally { busy.value = false } }
+const body = () => ({ url: f.url.trim(), tlsVerify: f.tlsVerify, caPem: f.caPem || undefined, include: f.include, mode: f.mode, prune: f.prune, includeContainers: f.includeContainers, token: f.token.trim() || undefined })
+async function runTest() { busy.value = true; error.value = ''; test.value = null; try { test.value = await api.call('POST', '/netbox/test', { url: f.url.trim(), tlsVerify: f.tlsVerify, caPem: f.caPem || undefined, token: f.token.trim() || undefined }) } catch (e: any) { fail(e) } finally { busy.value = false } }
 async function saveSettings() { try { await api.call('PUT', '/netbox/settings', { ...body(), token: undefined, ...(f.rememberToken && f.token ? { token: f.token } : {}), rememberToken: f.rememberToken }); toast.add({ title: t('common.saved'), color: 'success', icon: 'i-lucide-check' }) } catch (e: any) { fail(e) } }
 async function preview() { busy.value = true; error.value = ''; plan.value = null; try { plan.value = await api.call('POST', '/netbox/preview', body()) } catch (e: any) { fail(e) } finally { busy.value = false } }
 async function apply() {

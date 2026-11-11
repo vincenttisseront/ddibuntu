@@ -510,6 +510,7 @@ const messages: Record<string, string> = {
   "err.netbox_https_required": "HTTPS est obligatoire : le jeton d’accès ne doit jamais circuler en clair.",
   "err.netbox_token_missing": "Jeton d’accès NetBox manquant.",
   "err.netbox_auth": "NetBox refuse le jeton (invalide, expiré ou droits insuffisants). Si un jeton est enregistré, saisissez-le de nouveau.",
+  "nbw.upstream": "NetBox répond : HTTP {s} — « {d} ».",
   "err.netbox_tls": "Certificat de NetBox non vérifiable. Fournissez l’autorité de certification de votre entreprise, ou désactivez la vérification (déconseillé).",
   "err.netbox_unreachable": "NetBox est injoignable (adresse, port, pare-feu ?).",
   "err.netbox_timeout": "NetBox ne répond pas assez vite.",

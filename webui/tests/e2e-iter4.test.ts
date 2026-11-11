@@ -274,6 +274,10 @@ describe('import NetBox', () => {
   })
   it('test de connexion : mauvais jeton refusé, serveur injoignable signalé', async () => {
     code(await admin.post('/api/netbox/test', { url: nbBase(), tlsVerify: true, token: 'mauvais' }), 502, 'netbox_auth')
+    // le motif donné par NetBox est transmis à l'interface (diagnostic : jeton invalide, expiré, adresse non autorisée…), sans jamais déconnecter
+    expect((await admin.post('/api/netbox/test', { url: nbBase(), tlsVerify: true, token: 'mauvais' })).json.data.upstream).toEqual({ status: 403, detail: 'refusé' })
+    // un jeton collé avec des espaces ou un retour à la ligne est nettoyé avant l'envoi
+    expect((await admin.post('/api/netbox/test', { url: nbBase(), tlsVerify: true, token: `  ${NB_TOKEN}\n` })).json).toMatchObject({ ok: true })
     expect((await admin.post('/api/netbox/test', { url: nbBase(), tlsVerify: true, token: NB_TOKEN })).json).toMatchObject({ ok: true })
     code(await admin.post('/api/netbox/test', { url: 'http://127.0.0.1:1/', tlsVerify: true, token: NB_TOKEN }), 502, 'netbox_unreachable')
   })

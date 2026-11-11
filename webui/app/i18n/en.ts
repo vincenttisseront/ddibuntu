@@ -510,6 +510,7 @@ const messages: Record<string, string> = {
   "err.netbox_https_required": "HTTPS is required: the access token must never travel in clear text.",
   "err.netbox_token_missing": "NetBox access token missing.",
   "err.netbox_auth": "NetBox rejected the token (invalid, expired or insufficient rights). If a token is saved, enter it again.",
+  "nbw.upstream": "NetBox answered: HTTP {s} — “{d}”.",
   "err.netbox_tls": "NetBox certificate cannot be verified. Provide your company certificate authority, or turn verification off (not recommended).",
   "err.netbox_unreachable": "NetBox is unreachable (address, port, firewall?).",
   "err.netbox_timeout": "NetBox is not answering fast enough.",
