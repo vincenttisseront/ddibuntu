@@ -103,3 +103,41 @@ describe('refus préalables des nouvelles actions (root revérifie tout)', () =>
     expect(R(a, { etcd: { healthy: false, members: 3, quorum: quorum({ hasQuorum: false, healthy: 1 }) } })).toBe('quorum_required')
   })
 })
+
+// ---- 0.9.3 : test de bascule guidé — refus préalables (root revérifie tout)
+describe('refus préalables du test de bascule', () => {
+  const R = (a: any, over: Record<string, unknown> = {}, ctx: Record<string, unknown> = {}) => actionRefusal(mk(over), a, ctx)
+  const d = { action: 'drill', confirm: 'lab' }
+  it('pré-contrôles : toujours permis sur un nœud de données à l’état frais, même pendant un test', () => {
+    expect(R({ action: 'drill-check' })).toBeNull()
+    expect(R({ action: 'drill-check', node: 'n2' })).toBeNull()
+    expect(R({ action: 'drill-check' }, { at: NOW - 900 })).toBe('cluster_state_stale')
+    expect(R({ action: 'drill-check' }, { role: 'witness' })).toBe('action_data_node_only')
+    expect(R({ action: 'drill-check' }, {}, { drillBusy: true })).toBeNull()
+    expect(actionRefusal(null, { action: 'drill-check' })).toBe('not_clustered')
+  })
+  it('test : confirmation = nom du cluster, quorum présent, candidat sain', () => {
+    expect(R(d)).toBeNull()
+    expect(R({ ...d, node: 'n2', back: true })).toBeNull()
+    expect(R({ ...d, confirm: 'autre' })).toBe('confirm_mismatch')
+    expect(R({ ...d, confirm: '' })).toBe('confirm_mismatch')
+    expect(R({ ...d, node: 'n1' })).toBe('invalid_candidate')   // le primaire actuel n’est pas un candidat
+    expect(R({ ...d, node: 'n3' })).toBe('invalid_candidate')   // l’arbitre non plus
+    expect(R({ ...d, node: 'inconnu' })).toBe('invalid_candidate')
+    expect(R(d, { at: NOW - 900 })).toBe('cluster_state_stale')
+    expect(R(d, { etcd: { healthy: false, members: 3, quorum: quorum({ hasQuorum: false, healthy: 1 }) } })).toBe('quorum_required')
+    expect(R(d, { patroni: { members: [{ name: 'n1', role: 'leader', state: 'running' }, { name: 'n2', role: 'replica', state: 'starting' }] } })).toBe('invalid_candidate')
+    expect(R(d, { role: 'witness' })).toBe('action_data_node_only')
+  })
+  it('pendant un test : tout ce qui change la topologie est refusé ; la reprise après perte du quorum, le certificat et l’interface restent possibles', () => {
+    const busy = { drillBusy: true }
+    for (const a of [d, { action: 'remove-node', node: 'n3', confirm: 'n3' }, { action: 'take-ca', confirm: 'n2' }, { action: 'set-vip', vip: '192.0.2.50/24', iface: 'ens18', confirm: 'lab' },
+      { action: 'clear-vip', confirm: 'lab' }, { action: 'set-net', net: '10.9.0.0/16', confirm: 'lab' }, { action: 'change-ip', ip: '10.9.0.20', confirm: 'n2' }]) {
+      expect(R(a, {}, busy), JSON.stringify(a)).toBe('drill_active')
+    }
+    expect(R({ action: 'recover', confirm: 'lab' }, { etcd: { healthy: false, members: 3, quorum: quorum({ hasQuorum: false, healthy: 1 }) } }, busy)).toBeNull()
+    expect(R({ action: 'renew-cert' }, {}, busy)).toBeNull()
+    expect(R({ action: 'vip-iface', iface: 'ens19' }, { vip: { address: '192.0.2.10/24', iface: 'ens18', held: false } }, busy)).toBeNull()
+    expect(R(d, {}, { drillBusy: false })).toBeNull()
+  })
+})

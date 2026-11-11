@@ -1,4 +1,5 @@
 // Appels d'API : jeton CSRF, redirection si la session a expiré, erreurs traduites.
+import { isSessionExpired } from '../utils/session'
 export interface ApiErrorInfo { status: number; code: string; message: string; issues: Array<{ path: string; message: string }> }
 
 export function useApi() {
@@ -23,7 +24,7 @@ export function useApi() {
       return await $fetch<T>('/api' + url, { method, body: body as any, headers: method === 'GET' ? {} : { 'x-csrf-token': csrf.value } })
     } catch (e: any) {
       const info = describe(e)
-      if (info.status === 401 && !opts.silent) { useState<any>('user').value = null; await navigateTo('/login') }
+      if (isSessionExpired(info.status, info.code) && !opts.silent) { useState<any>('user').value = null; await navigateTo('/login') }
       throw Object.assign(new Error(info.code), { info })
     } finally {
       if (track) busy.value = Math.max(0, busy.value - 1)

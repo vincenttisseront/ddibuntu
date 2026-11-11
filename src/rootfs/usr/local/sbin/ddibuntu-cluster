@@ -25,6 +25,8 @@
 #   renew-cert [--force] [--wait S]                                             renouvelle le certificat de CE nœud (signé par l'autorité ; la clé ne quitte pas le nœud)
 #   sign-requests                                                               (nœud autorité) signe les demandes de certificat en attente (aussi à chaque « sync »)
 #   change-ip --ip NOUVELLE --yes                                               change l'adresse de CE nœud sur le réseau dédié, sans interruption du quorum
+#   drill-check [--candidate N]                                                 pré-contrôles d'un test de bascule (JSON ; lecture seule)
+#   drill --yes [--candidate N] [--back]                                        test de bascule mesuré (+ retour au primaire d'origine), rapport conservé dans etcd ; « drills » : historique ; « drill-clear --yes » : marque d'un test abandonné
 #   vip-check                                                                   (Keepalived) code 0 si ce nœud est le leader Patroni ; « init --vip CIDR --vip-iface IFACE [--vip-vrid N] » active la VIP de service
 #
 # Variables de test : DDI_GENERATED_DIR, DDI_RELOAD_CMD, DDI_KEA_SOCKET, DDI_DB_NAME ; DDI_ROOT (préfixe de tous les chemins), DDI_TEST=1 (ni systemctl ni exigence root), DDI_PY (interpréteur de Patroni)
@@ -682,7 +684,7 @@ cmd_vip_iface() {   # propre à CE nœud : l'interface qui porte l'adresse virtu
   log "interface de l'adresse virtuelle de ce nœud : $vif"
 }
 cmd_set_net() {
-  local net="${1:-}"; conf_load
+  local net="${1:-}"; conf_load; drill_guard
   valid_cidr "$net" || die "réseau invalide (attendu : adresse/préfixe, par exemple 10.9.0.0/24)"
   local bad; bad="$(PEERS="${C[PEERS]}" python3 -c '
 import ipaddress, os, sys
@@ -907,7 +909,7 @@ ectl_all() {   # tous les membres (celui de ce nœud d'abord) : fonctionne même
 cmd_change_ip() {
   local new="" yes=0
   while [ $# -gt 0 ]; do case "$1" in --ip) new="${2:-}"; shift 2 ;; --yes) yes=1; shift ;; *) die "option inconnue : $1" ;; esac; done
-  conf_load
+  conf_load; drill_guard
   valid_ip "$new" || die "--ip invalide"
   [ "$yes" -eq 1 ] || die "opération sensible : relancer avec --yes pour confirmer"
   local old="${C[NODE_IP]}" name="${C[NODE_NAME]}" p
@@ -1425,6 +1427,7 @@ d["at"] = int(time.time())
 print(json.dumps(d, ensure_ascii=False))' > "$t" 2>/dev/null; then
     chmod 0644 "$t"; mv -f "$t" "$d/cluster-status.json"
   else rm -f "$t"; fi
+  publish_drills || true
   return 0
 }
 cmd_follow() {
@@ -1487,6 +1490,7 @@ cmd_switchover() {
   local cand=""
   while [ $# -gt 0 ]; do case "$1" in --candidate) cand="${2:-}"; shift 2 ;; *) die "option inconnue : $1" ;; esac; done
   conf_load; [ "${C[NODE_ROLE]}" = data ] || die "la bascule se lance depuis un nœud de données"
+  [ -n "${DDI_DRILL_RUN:-}" ] || drill_guard   # le test de bascule lance lui-même ses bascules
   [ -z "$cand" ] || valid_name "$cand" || die "--candidate invalide"
   local args=(--force); [ -z "$cand" ] || args+=(--candidate "$cand")
   local leader; leader="$(curl -fsS --max-time 4 --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "https://${C[NODE_IP]}:${C[PATRONI_PORT]}/cluster" | python3 -c 'import json,sys; print(next(m["name"] for m in json.load(sys.stdin)["members"] if m["role"] in ("leader","master")))')"
@@ -1529,6 +1533,166 @@ print(json.dumps({"at": int(time.time()), "candidate": c, "ok": os.environ["OK"]
   [ "$ok" = true ] || return 1
 }
 
+# ---------------------------------------------------------------- test de bascule guidé (« drill »)
+# Une bascule réelle, mesurée de bout en bout, avec rapport. Les mesures viennent de l'API Patroni de chaque nœud de données (assistant
+# cluster-drill.py) ; la bascule elle-même passe par « switchover ». Le rapport est conservé dans etcd (les 20 derniers) et publié pour la console.
+# Tant qu'un test est en cours (clé « drill/active », valable 20 minutes), les opérations qui changent la topologie sont refusées.
+DRILLS=/ddibuntu-cluster/drills/
+DRILL_ACTIVE=/ddibuntu-cluster/drill/active
+drill_active_json() {   # le test en cours (JSON), vide s'il n'y en a pas (ou si la clé est périmée)
+  local raw; raw="$(ectl --command-timeout=3s get "$DRILL_ACTIVE" --print-value-only 2>/dev/null | head -c 600)" || return 0
+  [ -n "$raw" ] || return 0
+  printf '%s' "$raw" | python3 -c '
+import json, sys, time
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+if isinstance(d, dict) and isinstance(d.get("at"), int) and 0 <= time.time() - d["at"] < 1200: print(json.dumps(d))' 2>/dev/null || true
+}
+drill_guard() {   # drill_guard : refuse l'opération pendant un test de bascule
+  local a; a="$(drill_active_json)"
+  [ -z "$a" ] || die "un test de bascule est en cours : attendre sa fin (il dure quelques minutes)"
+}
+# drill_py SOUS-COMMANDE CANDIDAT RETOUR(0|1) PAR IDENTIFIANT : lance l'assistant avec l'état courant
+drill_py() {
+  local sub="$1" cand="${2:-}" back="${3:-0}" by="${4:-cli}" id="${5:-}" lib="${DDI_LIBDIR:-/usr/local/lib/ddibuntu}"
+  local quorum kea hraw active vip=""
+  quorum="$(quorum_json 2>/dev/null)" || quorum=null; [ -n "$quorum" ] || quorum=null
+  kea="$(kea_ha_json)" || kea=null; [ -n "$kea" ] || kea=null
+  hraw="$(ectl --command-timeout=3s get --prefix "$HEALTHKEYS" -w json 2>/dev/null | head -c 200000)" || hraw=""; [ -n "$hraw" ] || hraw="{}"
+  active="$(drill_active_json)"
+  [ -z "${C[VIP]}" ] || vip="${C[VIP]}|${C[VIP_IFACE]}"
+  DDI_DRILL_RUN=1 DRILL_PEERS="${C[PEERS]}" DRILL_NODE="${C[NODE_NAME]}" DRILL_CLUSTER="${C[CLUSTER_NAME]}" DRILL_PORT="${C[PATRONI_PORT]}" DRILL_PKI="$PKI" \
+    DRILL_CAND="$cand" DRILL_BACK="$back" DRILL_BY="$by" DRILL_ID="$id" DRILL_SELF="$0" DRILL_QUORUM="$quorum" DRILL_KEA="$kea" \
+    DRILL_HEALTH_RAW="$hraw" DRILL_ACTIVE="$active" DRILL_VIP="$vip" python3 "$lib/cluster-drill.py" "$sub"
+}
+# publication pour la console : historique (les 10 derniers rapports, relus et bornés) + test en cours
+drills_json() {
+  local raw act
+  raw="$(ectl --command-timeout=5s get --prefix "$DRILLS" -w json 2>/dev/null | head -c 3000000)" || raw=""; [ -n "$raw" ] || raw="{}"
+  act="$(drill_active_json)"
+  RAW="$raw" ACT="$act" python3 -c '
+import base64, json, os, re, time
+reports = []
+try: kvs = json.loads(os.environ["RAW"]).get("kvs", [])[:64]
+except Exception: kvs = []
+for kv in kvs:
+    try:
+        i = base64.b64decode(kv["key"]).decode().rsplit("/", 1)[-1]
+        raw = base64.b64decode(kv.get("value", ""))
+        if not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", i) or len(raw) > 100000: continue
+        r = json.loads(raw)
+        if isinstance(r, dict) and r.get("v") == 1 and r.get("id") == i: reports.append(r)
+    except Exception: continue
+reports.sort(key=lambda r: r["id"], reverse=True)
+act = None
+try:
+    a = json.loads(os.environ["ACT"] or "null")
+    if isinstance(a, dict): act = {"id": str(a.get("id"))[:20], "node": str(a.get("node"))[:31], "at": int(a["at"]), "phase": str(a.get("phase", ""))[:20]}
+except Exception: pass
+print(json.dumps({"at": int(time.time()), "active": act, "reports": reports[:10]}, ensure_ascii=False))'
+}
+publish_drills() {
+  local d="$ROOT/run/ddibuntu" t; install -d -m 0755 "$d" 2>/dev/null || return 0
+  t="$(mktemp "$d/.drills.XXXXXX" 2>/dev/null)" || return 0
+  if drills_json > "$t" 2>/dev/null && [ -s "$t" ]; then chmod 0644 "$t"; mv -f "$t" "$d/cluster-drills.json"; else rm -f "$t"; fi
+  return 0
+}
+cmd_drills() { conf_load; drills_json; }
+drill_put_active() { printf '{"id":"%s","node":"%s","at":%s,"phase":"%s"}' "$DRILL_RUN_ID" "$DRILL_RUN_NODE" "$(date +%s)" "$1" | ectl --command-timeout=5s put "$DRILL_ACTIVE" >/dev/null 2>&1 || true; }
+# la marque n'est retirée que si elle porte NOTRE identifiant (un test refusé ne doit jamais effacer celle d'un autre)
+drill_end() {
+  local cur; cur="$(ectl --command-timeout=5s get "$DRILL_ACTIVE" --print-value-only 2>/dev/null | head -c 600)" || cur=""
+  case "$cur" in *"\"id\":\"${DRILL_RUN_ID:-x}\""*) ectl --command-timeout=5s del "$DRILL_ACTIVE" >/dev/null 2>&1 || true ;; esac
+  rm -f "${DRILL_LIVE_FILE:-/nonexistent}"
+}
+# drill-clear --yes : retire la marque d'un test dont le nœud a disparu en plein test (sinon elle expire seule au bout de 20 minutes)
+cmd_drill_clear() {
+  [ "${1:-}" = --yes ] || die "relancer avec --yes (retire la marque « test de bascule en cours »)"
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || die "à lancer depuis un nœud de données"
+  local a; a="$(drill_active_json)"; [ -n "$a" ] || { log "aucun test de bascule en cours"; return 0; }
+  ectl --command-timeout=5s del "$DRILL_ACTIVE" >/dev/null 2>&1 || die "marque non retirée (etcd injoignable ?)"
+  publish_drills || true
+  log "marque du test en cours retirée"
+}
+# drill-check [--candidate N] [--publish] : pré-contrôles seuls ; --publish dépose le résultat pour la console
+cmd_drill_check() {
+  local cand="" pub=0
+  while [ $# -gt 0 ]; do case "$1" in --candidate) cand="${2:-}"; shift 2 ;; --publish) pub=1; shift ;; *) die "option inconnue : $1" ;; esac; done
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || die "le test de bascule se lance depuis un nœud de données"
+  [ -z "$cand" ] || valid_name "$cand" || die "--candidate invalide"
+  local out rc=0; out="$(drill_py check "$cand")" || rc=$?
+  [ -n "$out" ] || die "pré-contrôles impossibles (assistant muet)"
+  if [ "$pub" -eq 1 ]; then
+    local d="$ROOT/run/ddibuntu" t; install -d -m 0755 "$d" 2>/dev/null || true
+    if t="$(mktemp "$d/.drillchk.XXXXXX" 2>/dev/null)"; then printf '%s\n' "$out" > "$t"; chmod 0644 "$t"; mv -f "$t" "$d/cluster-drill-check.json"; fi
+  else printf '%s\n' "$out"; fi
+  return "$rc"
+}
+cmd_drill() {
+  local cand="" back=0 yes=0 by=cli json=0
+  while [ $# -gt 0 ]; do case "$1" in --candidate) cand="${2:-}"; shift 2 ;; --back) back=1; shift ;; --yes) yes=1; shift ;; --by) by="${2:-cli}"; shift 2 ;; --json) json=1; shift ;; *) die "option inconnue : $1" ;; esac; done
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || die "le test de bascule se lance depuis un nœud de données"
+  [ "$yes" -eq 1 ] || die "opération sensible (une vraie bascule du primaire) : relancer avec --yes"
+  [ -z "$cand" ] || valid_name "$cand" || die "--candidate invalide"
+  case "$by" in cli|console) ;; *) die "--by invalide" ;; esac
+  install -d -m 0700 "$STATE"
+  { exec 7>>"$STATE/drill.lock"; } 2>/dev/null
+  flock -n 7 || die "un test de bascule est déjà en cours sur ce nœud"
+  drill_guard
+  # le verrou de nœud est rendu : la synchronisation et le suivi (Kea, BIND) doivent continuer pendant le test, comme lors d'une vraie bascule
+  { exec 8>&-; } 2>/dev/null || true
+  local id live d="$ROOT/run/ddibuntu" report="" line phase="" lastphase=""
+  id="$(date -u +%Y%m%dT%H%M%SZ)"; live="$d/cluster-drill-live.json"
+  install -d -m 0755 "$d" 2>/dev/null || true
+  DRILL_RUN_ID="$id"; DRILL_RUN_NODE="${C[NODE_NAME]}"; DRILL_LIVE_FILE="$live"   # globales : le piège EXIT s'exécute après le retour de la fonction
+  trap drill_end EXIT
+  drill_put_active checks
+  while IFS= read -r line; do
+    case "$line" in
+      '{"type":"live"'*)
+        phase="$(printf '%s' "$line" | sed -n 's/.*"phase":"\([a-z]*\)".*/\1/p')"
+        if [ -n "$phase" ] && [ "$phase" != "$lastphase" ]; then drill_put_active "$phase"; lastphase="$phase"; fi
+        local t; if t="$(mktemp "$d/.drilllive.XXXXXX" 2>/dev/null)"; then printf '%s\n' "$line" > "$t"; chmod 0644 "$t"; mv -f "$t" "$live"; fi ;;
+      '{"type":"report"'*) report="$line" ;;
+      '{"type":"error"'*) log "test de bascule : $(printf '%s' "$line" | head -c 300)" ;;
+    esac
+  done < <(drill_py run "$cand" "$back" "$by" "$id" 2>/dev/null)
+  [ -n "$report" ] || { log "test de bascule : l'assistant s'est arrêté sans rapport"; publish_drills || true; die "test de bascule interrompu sans rapport (voir le journal)"; }
+  local rj; rj="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["report"], ensure_ascii=False, separators=(",", ":")))')" || die "rapport illisible"
+  if [ "${#rj}" -gt 90000 ]; then die "rapport trop volumineux (${#rj} octets) : non conservé"; fi
+  printf '%s' "$rj" | ectl --command-timeout=10s put "$DRILLS$id" >/dev/null 2>&1 || log "AVERTISSEMENT : rapport non conservé dans etcd (quorum ?) — affiché ci-dessous seulement"
+  # on ne garde que les 20 derniers
+  local keys k n=0
+  keys="$(ectl --command-timeout=5s get --prefix "$DRILLS" --keys-only 2>/dev/null | sed '/^$/d' | sort -r)" || keys=""
+  while IFS= read -r k; do   # seuls les rapports (clé = identifiant horodaté) comptent et peuvent être supprimés
+    [[ "${k##*/}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || continue
+    n=$((n + 1)); if [ "$n" -gt 20 ]; then ectl --command-timeout=5s del "$k" >/dev/null 2>&1 || true; fi
+  done <<< "$keys"
+  publish_drills || true
+  if [ "$json" -eq 1 ]; then printf '%s\n' "$rj"; else drill_summary "$rj"; fi
+  local oc; oc="$(printf '%s' "$rj" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("outcome",""))')"
+  log "test de bascule $id : $oc"
+  case "$oc" in success|warning) return 0 ;; *) return 1 ;; esac
+}
+drill_summary() {
+  printf '%s' "$1" | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+lab = {"success": "SUCCÈS", "warning": "SUCCÈS AVEC RÉSERVES", "failed": "ÉCHEC", "refused": "REFUSÉ (rien n a été modifié)"}
+print("test de bascule %s : %s" % (r["id"], lab.get(r["outcome"], r["outcome"])))
+for c in r["pre"]["checks"]:
+    if c["status"] in ("warn", "fail"): print("  pré-contrôle %-9s %-4s %s" % (c["id"], c["status"], c["detail"]))
+for p in r["phases"]:
+    m = p["metrics"]
+    print("  %s %s → %s : sans primaire %s ms, promotion %s ms, réintégration %s ms, rattrapage %s ms, lignes de temps %s → %s, retard max %s octets" % (
+        p["name"], p["from"], p["to"], m["noPrimaryMs"], m["promotionMs"], m["rejoinMs"], m["catchUpMs"], m["timeline"][0], m["timeline"][1], m["lagMaxBytes"]))
+    for k, v in p["verdicts"].items():
+        if v != "ok": print("    écart %-10s %s" % (k, v))
+    for c in p["post"]:
+        if c["status"] != "ok": print("    contrôle %-9s %-4s %s" % (c["id"], c["status"], c["detail"]))
+if r.get("message"): print("  " + r["message"])'
+}
+
 # ---------------------------------------------------------------- perte de nœuds : retrait, reprise après perte du quorum, autorité de certification
 # etcd_member_id NOM : identifiant (hexadécimal) du membre etcd de ce nom, vide si absent
 etcd_member_id() {
@@ -1558,6 +1722,7 @@ reapply_peers() {   # après un changement de PEERS : Patroni (hôtes etcd), Kee
 cmd_remove_node() {
   local name="${1:-}"
   conf_load; valid_name "$name" || die "nom de nœud invalide"
+  drill_guard
   [ "$name" != "${C[NODE_NAME]}" ] || die "un nœud ne se retire pas lui-même : lancez la commande depuis un autre nœud du cluster"
   ( cmd_sync ) >/dev/null 2>&1 || true; conf_load   # pairs à jour avant de juger du quorum
   local p found=0 nip=""; for p in ${C[PEERS]}; do if [ "$(peer_field "$p" name)" = "$name" ]; then found=1; nip="$(peer_field "$p" ip)"; fi; done
@@ -1591,7 +1756,7 @@ print("ok" if healthy >= need else "non : %d voix saines sur %d nécessaires apr
 # répertoire etcd conservée à côté. Refus tant qu'etcd a son quorum ou qu'un autre nœud répond encore (risque de deux cerveaux).
 cmd_recover() {
   local yes=0; [ "${1:-}" != --yes ] || yes=1
-  conf_load
+  conf_load; drill_guard
   if ectl --command-timeout=5s endpoint health >/dev/null 2>&1; then die "etcd a encore son quorum : rien à reconstruire (utilisez « remove-node » pour retirer un nœud perdu)"; fi
   local q others; q="$(quorum_json)"
   others="$(printf '%s' "$q" | NODE="${C[NODE_NAME]}" python3 -c 'import json,os,sys; print(" ".join(m["name"] for m in json.load(sys.stdin)["members"] if m["name"]!=os.environ["NODE"] and m["reachable"]))')"
@@ -1645,6 +1810,7 @@ cmd_ca_sync() {
 cmd_take_ca() {
   local yes=0; [ "${1:-}" != --yes ] || yes=1
   conf_load; [ "${C[NODE_ROLE]}" = data ] || die "seul un nœud de données peut reprendre l'autorité"
+  drill_guard
   [ "${C[CA_NODE]}" = 0 ] || die "ce nœud porte déjà l'autorité"
   [ -f "$XFRKEY" ] || die "pas de clé de cluster (ddi-xfr) sur ce nœud : la clé de l'autorité ne peut pas être déchiffrée"
   local own; own="$(ectl --command-timeout=5s get "$CAOWN" --print-value-only 2>/dev/null)" || die "etcd injoignable (quorum ?)"
@@ -1681,7 +1847,7 @@ cmd_take_ca() {
 cmd_action() {
   conf_load; [ "${C[NODE_ROLE]}" = data ] || return 0
   local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" f raw="" parsed act="" node="" msg="" ok=false bip="" brole="" bpass=""
-  local svip="" sif="" svrid="" snet="" sip=""
+  local svip="" sif="" svrid="" snet="" sip="" dcand="" dback=0
   f="$gen/.cluster-action"
   [ -e "$f" ] || [ -L "$f" ] || return 0
   if [ -f "$f" ] && [ ! -L "$f" ]; then raw="$(head -c 1024 "$f")"; fi
@@ -1690,7 +1856,7 @@ cmd_action() {
 import json, os, re, sys
 try: d = json.loads(sys.stdin.read())
 except Exception: print("invalid"); sys.exit(0)
-if not isinstance(d, dict) or not set(d) <= {"action", "node", "confirm", "ip", "role", "pass", "vip", "iface", "vrid", "net"}: print("invalid"); sys.exit(0)
+if not isinstance(d, dict) or not set(d) <= {"action", "node", "confirm", "ip", "role", "pass", "vip", "iface", "vrid", "net", "back"}: print("invalid"); sys.exit(0)
 a, n, c = d.get("action"), d.get("node", ""), d.get("confirm", "")
 name = r"[a-z][a-z0-9-]{1,30}"
 def ipv4(v): return isinstance(v, str) and re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", v) is not None and all(int(x) <= 255 for x in v.split("."))
@@ -1707,8 +1873,14 @@ if a == "clear-vip": print("clear-vip -" if keys == {"action", "confirm"} and c 
 if a == "vip-iface": print("vip-iface " + d["iface"] if keys == {"action", "iface"} and iface(d["iface"]) else "invalid"); sys.exit(0)
 if a == "set-net": print("set-net " + d["net"] if keys == {"action", "net", "confirm"} and cidr(d["net"]) and c == os.environ["CL"] else "invalid"); sys.exit(0)
 if a == "renew-cert": print("renew-cert -" if keys == {"action"} else "invalid"); sys.exit(0)
+if a == "drill-check":
+    print("drill-check " + (n if n else "-") if keys in ({"action"}, {"action", "node"}) and (not n or (isinstance(n, str) and re.fullmatch(name, n))) else "invalid"); sys.exit(0)
+if a == "drill":
+    bk = d.get("back", False)
+    ok = {"action", "confirm"} <= keys <= {"action", "confirm", "node", "back"} and c == os.environ["CL"] and isinstance(bk, bool) and (not n or (isinstance(n, str) and re.fullmatch(name, n)))
+    print("drill %s %d" % (n if n else "-", 1 if bk else 0) if ok else "invalid"); sys.exit(0)
 if a == "change-ip": print("change-ip " + d["ip"] if keys == {"action", "ip", "confirm"} and ipv4(d["ip"]) and c == os.environ["ME"] else "invalid"); sys.exit(0)
-extra = {"ip", "role", "pass", "vip", "iface", "vrid", "net"} & keys
+extra = {"ip", "role", "pass", "vip", "iface", "vrid", "net", "back"} & keys
 if a != "bundle" and extra: print("invalid"); sys.exit(0)
 if a == "refresh" and not n and not c: print("refresh -")
 elif a == "bundle" and isinstance(n, str) and re.fullmatch(name, n) and c == n and ipv4(d.get("ip")) and d.get("role") in ("data", "witness") and isinstance(d.get("pass"), str) and re.fullmatch(r"[A-Za-z0-9]{24,64}", d["pass"]):
@@ -1730,6 +1902,8 @@ else: print("invalid")' 2>/dev/null || echo invalid)"
     "set-net "*) act=set-net; snet="${parsed#* }" ;;
     "renew-cert -") act=renew-cert ;;
     "change-ip "*) act=change-ip; sip="${parsed#* }"; node="${C[NODE_NAME]}" ;;
+    "drill-check "*) act=drill-check; read -r _ dcand <<<"$parsed"; [ "$dcand" != - ] || dcand="" ;;
+    "drill "*) act=drill; read -r _ dcand dback <<<"$parsed"; [ "$dcand" != - ] || dcand="" ;;
     *) msg="demande invalide" ;;
   esac
   local out=""
@@ -1745,6 +1919,14 @@ else: print("invalid")' 2>/dev/null || echo invalid)"
       set-net) out="$( ( cmd_set_net "$snet" ) 2>&1 )" && ok=true ;;
       renew-cert) out="$( ( cmd_renew_cert --force ) 2>&1 )" && ok=true ;;
       change-ip) out="$( ( cmd_change_ip --ip "$sip" --yes ) 2>&1 )" && ok=true ;;
+      drill-check)   # lecture seule : l'action réussit dès que les pré-contrôles ont pu être faits (leur verdict est dans le fichier publié)
+        rm -f "$ROOT/run/ddibuntu/cluster-drill-check.json"
+        ( cmd_drill_check --candidate "$dcand" --publish ) >/dev/null 2>&1 || true
+        if [ -s "$ROOT/run/ddibuntu/cluster-drill-check.json" ]; then ok=true; out="pré-contrôles effectués"; else out="pré-contrôles impossibles (voir le journal)"; fi ;;
+      drill)   # le verrou du nœud est rendu avant le test (qui dure plusieurs minutes) : la synchronisation continue, comme lors d'une vraie bascule
+        { exec 8>&-; } 2>/dev/null || true
+        local da=(--yes --by console); [ -z "$dcand" ] || da+=(--candidate "$dcand"); [ "$dback" != 1 ] || da+=(--back)
+        out="$( ( cmd_drill "${da[@]}" ) 2>&1 )" && ok=true ;;
       bundle) local bf="$gen/cluster-bundle-$node.bundle"
         out="$( ( DDI_BUNDLE_PASS="$bpass" cmd_bundle --name "$node" --ip "$bip" --role "$brole" --out "$bf" ) 2>&1 )" && ok=true
         if [ "$ok" = true ]; then chown root:ddiconsole "$bf" 2>/dev/null || true; chmod 0640 "$bf"; fi ;;
@@ -1876,5 +2058,11 @@ case "${1:-}" in
   sign-requests) cmd_sign_requests ;;
   cert-status) cmd_cert_status ;;
   change-ip) shift; cmd_change_ip "$@" ;;
-  *) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  drill-check) shift; cmd_drill_check "$@" ;;
+  drill) shift; cmd_drill "$@" ;;
+  drill-clear) shift; cmd_drill_clear "$@" ;;
+  drills) cmd_drills ;;
+  _quorum) conf_load; quorum_json ;;
+  _kea) conf_load; kea_ha_json ;;
+  *) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

@@ -11,10 +11,11 @@ Appliance **DDI** (DNS, DHCP, IPAM) sur Ubuntu Server 24.04 LTS, installable par
 - **Sauvegarde et restauration à un instant donné** de la base (PITR) : sauvegardes planifiées, journaux archivés en continu, copie externe, restauration depuis la console, cluster compris.
 - **Alertes et supervision** : 23 règles (cluster, quorum, réplication, chaque nœud arbitre compris, sauvegardes, sous-réseaux), mise en silence, notifications par webhook (signé) et e-mail, exportateur Prometheus `/api/metrics`, tableau de bord qui se rafraîchit seul.
 - **Réglages du cluster à chaud** : adresse virtuelle et réseau dédié publiés une fois pour tous les nœuds, **certificats renouvelés automatiquement sans interruption** (la clé ne quitte jamais le nœud, seule l'autorité signe), **changement d'adresse d'un nœud** sans perdre le quorum, avec retour arrière automatique si etcd ne redémarre pas.
+- **Test de bascule guidé** : pré-contrôles, **vraie bascule du primaire mesurée de bout en bout** (fenêtre sans primaire, promotion, réintégration de l'ancien primaire, rattrapage, ligne de temps, continuité WAL), retour au primaire d'origine et **rapport conservé dans le cluster**, depuis la console ou `ddibuntu-cluster drill`; les opérations de topologie sont suspendues pendant le test.
 - **Retour arrière partout** : un point de restauration est créé avant chaque configuration, déploiement ou import ; les changements réseau s'annulent seuls sans confirmation.
 - **Sécurité** : chaîne d'approvisionnement vérifiée (signatures et empreintes), console sans privilège, application privilégiée séparée et contrôlée, pare-feu nftables, durcissement.
 
-> État : version de développement **0.9.2**. Voir « Limites connues » ci-dessous avant tout usage en production.
+> État : version de développement **0.9.3**. Voir « Limites connues » ci-dessous avant tout usage en production.
 
 ## Démarrage rapide
 
@@ -36,7 +37,7 @@ src/ps1/                 modèle du lanceur Windows
 src/VERSION              numéro de version unique
 webui/                   console web (Nuxt 4 + Nuxt UI 4, serveur Nitro, PostgreSQL)
 tools/                   construction de la console, fichier unique, bases de test, traductions
-tests/                   batteries shell b01..b20 (système, ISO, QEMU, cluster, sauvegardes) ; webui/tests : vitest
+tests/                   batteries shell b01..b22 (système, ISO, QEMU, cluster, sauvegardes) ; webui/tests : vitest
 docs/                    architecture, installation, tests, publication
 ```
 

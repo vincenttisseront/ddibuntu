@@ -64,7 +64,7 @@ export function getJson(u: URL, o: GetOpts): Promise<any> {
       const st = res.statusCode ?? 0
       res.on('error', () => ko(new NetboxError('netbox_unreachable')))
       if (st >= 300 && st < 400) { res.resume(); return ko(new NetboxError('netbox_redirect')) }   // jamais suivi : le jeton ne doit pas changer de destinataire
-      if (st === 401 || st === 403) { res.resume(); return ko(new NetboxError('netbox_auth', 401)) }
+      if (st === 401 || st === 403) { res.resume(); return ko(new NetboxError('netbox_auth', 502)) }   // 502 et non 401 : c'est NetBox qui refuse, pas la session de la console (un 401 déconnecterait l'utilisateur)
       if (st === 404) { res.resume(); return ko(new NetboxError('netbox_not_found', 404)) }
       if (st !== 200) { res.resume(); return ko(new NetboxError('netbox_http')) }
       const chunks: Buffer[] = []; let size = 0

@@ -138,13 +138,27 @@ export type ClusterAction =
   | { action: 'remove-node'; node: string; confirm: string } | { action: 'take-ca'; confirm: string } | { action: 'recover'; confirm: string }
   | { action: 'set-vip'; vip: string; iface: string; vrid?: number; confirm: string } | { action: 'clear-vip'; confirm: string } | { action: 'vip-iface'; iface: string }
   | { action: 'set-net'; net: string; confirm: string } | { action: 'renew-cert' } | { action: 'change-ip'; ip: string; confirm: string }
+  | { action: 'drill-check'; node?: string } | { action: 'drill'; node?: string; back?: boolean; confirm: string }
+// Contexte d'une demande que l'état du cluster seul ne dit pas : un test de bascule est-il en cours (marque etcd ou avancement vivant) ?
+export interface ActionContext { drillBusy?: boolean }
 const hostPart = (cidr: string) => cidr.split('/')[0]!
 // Retourne le code d'erreur API (409) si la demande est incohérente avec l'état courant, sinon null. root revalide tout de son côté.
-export function actionRefusal(st: ClusterState | null, a: ClusterAction): string | null {
+export function actionRefusal(st: ClusterState | null, a: ClusterAction, ctx: ActionContext = {}): string | null {
   if (!st) return 'not_clustered'
   if (st.nodeRole !== 'data') return 'action_data_node_only'
   const q = st.etcd.quorum
   const needQuorum = () => (st.stale || !q || !q.hasQuorum ? 'quorum_required' : null)
+  // pendant un test de bascule, la topologie ne bouge pas (la reprise après perte du quorum reste possible : elle ne dépend pas de ce test)
+  if (ctx.drillBusy && a.action !== 'recover' && a.action !== 'drill-check' && a.action !== 'renew-cert' && a.action !== 'vip-iface') return 'drill_active'
+  if (a.action === 'drill-check') return st.stale ? 'cluster_state_stale' : null
+  if (a.action === 'drill') {
+    if (a.confirm !== st.cluster) return 'confirm_mismatch'
+    if (st.stale) return 'cluster_state_stale'
+    const nq = needQuorum(); if (nq) return nq
+    const cands = switchoverCandidates(st)
+    if (!cands.length || (a.node !== undefined && !cands.includes(a.node))) return 'invalid_candidate'
+    return null
+  }
   if (a.action === 'remove-node') {
     if (a.confirm !== a.node) return 'confirm_mismatch'
     if (a.node === st.node) return 'cannot_remove_self'

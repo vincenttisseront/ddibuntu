@@ -64,7 +64,7 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
     1. ~~**0.9.0**~~ ✅ fait — Sauvegarde et restauration à un instant donné (PITR), cluster compris.
     2. ~~**0.9.1**~~ ✅ fait — Alertes et supervision : exportateur Prometheus `/api/metrics`, e-mail, webhook, mise en silence, santé de chaque nœud partagée par etcd, tableau de bord évolué (les alertes « fantômes » et « tunnels » rejoignent l'itération 7).
     3. ~~**0.9.2**~~ ✅ fait — Remplacement d'adresse virtuelle / de réseau dédié, changement d'adresse d'un nœud, renouvellement des certificats (automatique, sans interruption), verrou de nœud.
-    4. **0.9.3** — Test de bascule guidé avec rapport.
+    4. ~~**0.9.3**~~ ✅ fait — Test de bascule guidé avec rapport : pré-contrôles, vraie bascule mesurée (fenêtre sans primaire, promotion, réintégration, rattrapage, ligne de temps, continuité WAL), retour au primaire d'origine, rapports conservés dans etcd, refus des opérations de topologie pendant le test.
     5. **0.9.4** — Vues DNS.
     6. **0.9.5** — Traçabilité bail / MAC / nom / utilisateur AD.
     7. **0.9.6** — Découverte planifiée et alertes d'hygiène.

@@ -273,7 +273,7 @@ describe('import NetBox', () => {
     code(await admin.post('/api/netbox/test', { url: nbBase(), tlsVerify: true }), 400, 'netbox_token_missing')
   })
   it('test de connexion : mauvais jeton refusé, serveur injoignable signalé', async () => {
-    code(await admin.post('/api/netbox/test', { url: nbBase(), tlsVerify: true, token: 'mauvais' }), 401, 'netbox_auth')
+    code(await admin.post('/api/netbox/test', { url: nbBase(), tlsVerify: true, token: 'mauvais' }), 502, 'netbox_auth')
     expect((await admin.post('/api/netbox/test', { url: nbBase(), tlsVerify: true, token: NB_TOKEN })).json).toMatchObject({ ok: true })
     code(await admin.post('/api/netbox/test', { url: 'http://127.0.0.1:1/', tlsVerify: true, token: NB_TOKEN }), 502, 'netbox_unreachable')
   })
@@ -335,7 +335,7 @@ describe('import NetBox', () => {
     expect((await rows("select count(*)::int n from subnets where source = 'netbox'"))[0].n).toBe(0)
   })
   it('erreurs : aperçu avec un mauvais jeton, URL interdite, serveur injoignable', async () => {
-    code(await admin.post('/api/netbox/preview', body({ token: 'mauvais' })), 401, 'netbox_auth')
+    code(await admin.post('/api/netbox/preview', body({ token: 'mauvais' })), 502, 'netbox_auth')
     code(await admin.post('/api/netbox/preview', body({ url: 'http://169.254.169.254/' })), 400, 'netbox_url_forbidden')
     code(await admin.post('/api/netbox/preview', body({ url: 'http://127.0.0.1:1/' })), 502, 'netbox_unreachable')
   })

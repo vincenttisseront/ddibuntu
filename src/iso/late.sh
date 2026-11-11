@@ -76,7 +76,7 @@ for f in usr/local/sbin/ddibuntu-apply usr/local/sbin/ddibuntu-setup usr/local/s
          usr/local/bin/ddibuntu-menu usr/local/lib/ddibuntu/common.sh etc/ddibuntu/nftables.nft \
          etc/ssh/sshd_config.d/10-ddibuntu.conf etc/sysctl.d/90-ddibuntu.conf \
          usr/local/sbin/ddibuntu-db-init usr/local/sbin/ddibuntu-reload usr/local/lib/ddibuntu/console-start \
-         usr/local/sbin/ddibuntu-selfupdate usr/local/sbin/ddibuntu-cluster usr/local/sbin/ddibuntu-ad usr/local/sbin/ddibuntu-backup usr/local/sbin/ddibuntu-health usr/local/lib/ddibuntu/wal-archive.sh etc/ddibuntu/backup.conf etc/postgresql/16/main/conf.d/ddibuntu-archive.conf etc/ddibuntu/update.conf etc/ddibuntu/update-pubkey.pem \
+         usr/local/sbin/ddibuntu-selfupdate usr/local/sbin/ddibuntu-cluster usr/local/sbin/ddibuntu-ad usr/local/sbin/ddibuntu-backup usr/local/sbin/ddibuntu-health usr/local/lib/ddibuntu/wal-archive.sh usr/local/lib/ddibuntu/cluster-drill.py etc/ddibuntu/backup.conf etc/postgresql/16/main/conf.d/ddibuntu-archive.conf etc/ddibuntu/update.conf etc/ddibuntu/update-pubkey.pem \
          opt/ddibuntu/console/app/server/index.mjs; do
   [ -f "$TARGET/$f" ] || fail "fichier attendu absent après déploiement : /$f"
 done

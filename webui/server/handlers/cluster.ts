@@ -7,6 +7,7 @@ import { inRecovery } from '../utils/db'
 import { cfg } from '../utils/config'
 import { randomBytes } from 'node:crypto'
 import { actionRefusal, bundleRefusal, localAddresses, NODE_NAME_RE, readClusterState, readSwitchoverResult, shortHostname, switchoverCandidates } from '../utils/cluster'
+import { DRILL_ID_RE, drillBusy, readDrillCheck, readDrillLive, readDrills } from '../utils/drill'
 
 // Public et minimal : l'écran de connexion d'un nœud secondaire doit pouvoir l'expliquer (aucune adresse ni nom de nœud).
 route('GET', '/cluster/role', 'public', async () => ({ replica: await inRecovery() }))
@@ -31,6 +32,7 @@ route('POST', '/cluster/switchover', 'admin', async (c) => {
   if (!st) fail(409, 'not_clustered')
   if (st.stale) fail(409, 'cluster_state_stale')
   if (!switchoverCandidates(st).includes(candidate)) fail(409, 'invalid_candidate')
+  if (drillBusy(await readDrills(), await readDrillLive())) fail(409, 'drill_active')
   await fs.writeFile(join(cfg().generatedDir, '.cluster-switchover'), candidate + '\n', { mode: 0o640 })
   await audit(c, 'cluster.switchover', 'node', candidate)
   return { accepted: true }
@@ -65,19 +67,34 @@ const Action = z.discriminatedUnion('action', [
   z.object({ action: z.literal('set-net'), net: CIDR, confirm: CONFIRM }).strict(),
   z.object({ action: z.literal('renew-cert') }).strict(),
   z.object({ action: z.literal('change-ip'), ip: IPV4, confirm: CONFIRM }).strict(),
+  // test de bascule guidé (0.9.3) : pré-contrôles seuls (lecture), puis bascule mesurée avec retour optionnel au primaire d'origine
+  z.object({ action: z.literal('drill-check'), node: NAME.optional() }).strict(),
+  z.object({ action: z.literal('drill'), node: NAME.optional(), back: z.boolean().optional(), confirm: CONFIRM }).strict(),
 ])
 route('POST', '/cluster/action', 'admin', async (c) => {
   const a = await c.body(Action)
   const st = await readClusterState()
-  const refusal = actionRefusal(st, a)
+  const refusal = actionRefusal(st, a, { drillBusy: drillBusy(await readDrills(), await readDrillLive()) })
   if (refusal) fail(409, refusal)
   // l'interface doit exister sur CE serveur ; adresse du nœud : portée par ce serveur. Liste vide = lecture impossible ici (service durci) : root vérifie.
   const addrs = localAddresses(cfg().testMode)
   if ((a.action === 'set-vip' || a.action === 'vip-iface') && addrs.length && !new Set(addrs.map((x) => x.iface)).has(a.iface)) fail(409, 'iface_unknown')
   if (a.action === 'change-ip' && addrs.length && !addrs.some((x) => x.address === a.ip)) fail(409, 'ip_not_local')
   await drop('.cluster-action', JSON.stringify(a))
-  await audit(c, `cluster.${a.action}`, 'node', a.action === 'remove-node' ? a.node : (st?.node ?? ''))
+  await audit(c, `cluster.${a.action}`, 'node', a.action === 'remove-node' ? a.node : a.action === 'drill' ? (a.node ?? '') : (st?.node ?? ''))
   return { accepted: true }
+})
+
+// Test de bascule : rapports conservés (10 derniers), pré-contrôles du dernier « drill-check », avancement du test en cours. Lecture seule.
+route('GET', '/cluster/drills', 'viewer', async () => {
+  const [drills, check, live] = await Promise.all([readDrills(), readDrillCheck(), readDrillLive()])
+  return { drills, check, live, busy: drillBusy(drills, live) }
+})
+route('GET', '/cluster/drills/:id', 'viewer', async (c) => {
+  const id = String(c.params.id ?? ''); if (!DRILL_ID_RE.test(id)) fail(404, 'not_found')
+  const rep = (await readDrills())?.reports.find((r) => r.id === id); if (!rep) fail(404, 'not_found')
+  setResponseHeader(c.event, 'Content-Disposition', `attachment; filename="ddibuntu-drill-${id}.json"`)
+  return rep
 })
 
 // ---- Assistants (nœud hors cluster) : créer un cluster / rejoindre un cluster. root revalide chaque champ.

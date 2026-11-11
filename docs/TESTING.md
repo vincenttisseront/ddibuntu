@@ -15,7 +15,8 @@
 | `tests/b19-backup-cluster-live.sh` | sauvegardes et restauration dans un vrai cluster Patroni + etcd (76 contrôles) | root, PostgreSQL 16, Patroni, etcd |
 | `tests/b20-health-live.sh` | santé de nœud : collecte réelle, partage par un vrai etcd, écritures et valeurs piégées refusées (50 contrôles) | root, etcd |
 | `tests/b21-cluster-settings-live.sh` | réglages communs (adresse virtuelle, réseau), renouvellement des certificats, changement d'adresse des trois types de nœuds, retour arrière, verrou, demandes de la console, pare-feu et accusés lors d'un changement d'adresse (309 contrôles) | root, etcd, Patroni, PostgreSQL 16 |
-| `webui/tests/unit-*.test.ts` | analyseurs, rendu, NetBox, découverte, AD, moteur d'alertes, client SMTP (sans base) | Node 22 |
+| `tests/b22-cluster-drill-live.sh` | test de bascule guidé dans un vrai cluster Patroni + etcd : pré-contrôles et refus motivés (pause, secondaire arrêté), bascule réelle mesurée avec et sans retour, aucune perte de données, refus des opérations de topologie pendant un test, demandes de la console (dont demandes hostiles), arrêt brutal en pleine bascule, marque abandonnée (104 contrôles) | root, etcd, Patroni, PostgreSQL 16 |
+| `webui/tests/unit-*.test.ts` | analyseurs, rendu, NetBox, découverte, AD, moteur d'alertes, client SMTP, test de bascule, règle de session (sans base) | Node 22 |
 | `webui/tests/e2e*.test.ts` | serveur construit + PostgreSQL + BIND/Kea réels | `tools/setup-test-db.sh`, `tools/build-console.sh` |
 
 `tests/run-all.sh` rejoue toutes les batteries shell (et reconstruit le fichier unique avant, pour tester ce qui sera livré). Les fichiers e2e partagent une base : `tools/run-console-tests.sh e2e` les lance l'un après l'autre. Ne jamais lancer deux exécutions en parallèle.
