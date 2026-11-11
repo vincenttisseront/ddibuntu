@@ -1,5 +1,9 @@
 # Journal des modifications
 
+## 0.9.9 — « Correctif : l'IPAM se rafraîchit après un import »
+- Après un import NetBox (ou une découverte réseau, ou l'annulation d'un import), seuls les VLAN apparaissaient dans l'IPAM : les onglets Réseaux, Adresses, Pools et Espaces gardaient l'état d'avant l'import jusqu'au rechargement de la page. Les assistants préviennent maintenant la page, qui recharge toutes ses listes.
+- Numérotation : suite en 0.9.10 (traçabilité) … DHCP multi-espaces en 0.9.14.
+
 ## 0.9.8 — « Vues DNS »
 - **Vues DNS** (page DNS, onglet « Vues ») : un même nom de zone peut recevoir des réponses différentes selon le client (`match-clients`, éventuellement `match-destinations`), avec ou sans récursion par vue. Listes de clients validées élément par élément (`any`, `none`, `localhost`, `localnets`, adresse, réseau, négation `!`), 50 éléments et 16 vues au plus ; **la première vue dont la liste correspond répond** (ordre réglable, avertissement quand une vue est masquée par une vue « any » placée avant).
 - **Règle** : sans vue, la configuration est exactement celle d'avant. Dès qu'une vue existe, **toute zone appartient à une vue** (BIND n'admet pas de zone hors vue) : la première vue reprend explicitement les zones existantes (confirmation), la création d'une zone exige une vue, et le rendu revérifie la règle. Supprimer la dernière vue rend ses zones ordinaires (confirmation). Fichiers `db.<vue>.<zone>` ; **copie d'une zone vers une autre vue** avec ses enregistrements (point de départ d'une vue « externe »). Les modifications de zone sans `view_id` laissent la zone dans sa vue.

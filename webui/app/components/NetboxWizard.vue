@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Assistant d'import NetBox : connexion (jeton jamais conservé sauf demande), périmètre, aperçu sans écriture, import avec point de restauration.
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm()
+const emit = defineEmits<{ (e: 'changed'): void }>()
 const step = ref(0), busy = ref(false), error = ref(''), done = ref(false)
 const steps = computed(() => [{ id: 'conn', label: t('nbw.s_conn') }, { id: 'scope', label: t('nbw.s_scope') }, { id: 'preview', label: t('nbw.s_preview') }, { id: 'apply', label: t('nbw.s_apply') }])
 const fail = (e: any) => { const u = e.info?.upstream; error.value = (e.info?.message ?? t('err.internal')) + (u ? ' ' + t('nbw.upstream', { s: u.status, d: u.detail || '—' }) : '') }
@@ -15,11 +16,11 @@ async function preview() { busy.value = true; error.value = ''; plan.value = nul
 async function apply() {
   if (!(await ask(t('nbw.apply'), t('nbw.apply_confirm'), false))) return
   busy.value = true; error.value = ''
-  try { result.value = await api.call('POST', '/netbox/commit', { planId: plan.value.planId }); done.value = true; toast.add({ title: t('import.done'), color: 'success', icon: 'i-lucide-check' }) } catch (e: any) { fail(e) } finally { busy.value = false }
+  try { result.value = await api.call('POST', '/netbox/commit', { planId: plan.value.planId }); done.value = true; emit('changed'); toast.add({ title: t('import.done'), color: 'success', icon: 'i-lucide-check' }) } catch (e: any) { fail(e) } finally { busy.value = false }
 }
 async function undo() {
   if (!(await ask(t('restore.restore'), t('restore.undo_confirm'), true))) return
-  try { await api.call('POST', `/snapshots/${result.value.snapshotId}/restore`, {}); toast.add({ title: t('restore.done'), color: 'success', icon: 'i-lucide-check' }); result.value = null; done.value = false; step.value = 0 } catch (e: any) { fail(e) }
+  try { await api.call('POST', `/snapshots/${result.value.snapshotId}/restore`, {}); emit('changed'); toast.add({ title: t('restore.done'), color: 'success', icon: 'i-lucide-check' }); result.value = null; done.value = false; step.value = 0 } catch (e: any) { fail(e) }
 }
 const KINDS = ['vlans', 'subnets', 'addresses']
 const COLS = ['created', 'updated', 'unchanged', 'kept_manual', 'existing']

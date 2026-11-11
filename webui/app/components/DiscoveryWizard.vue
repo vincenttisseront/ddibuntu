@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Assistant de découverte : sous-réseaux de l'IPAM, méthodes (sondes et lectures passives), exécution suivie, revue, import des adresses choisies.
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm()
+const emit = defineEmits<{ (e: 'changed'): void }>()
 const step = ref(0), busy = ref(false), error = ref(''), done = ref(false)
 const steps = computed(() => [{ id: 'scope', label: t('disc.s_scope') }, { id: 'methods', label: t('disc.s_methods') }, { id: 'run', label: t('disc.s_run') }, { id: 'review', label: t('disc.s_review') }, { id: 'apply', label: t('disc.s_apply') }])
 const fail = (e: any) => { error.value = e.info?.message ?? t('err.internal') }
@@ -35,7 +36,7 @@ const chosen = computed(() => hosts.value.filter((h: any) => h.status === 'new' 
 async function commit() {
   if (!(await ask(t('disc.apply'), t('disc.apply_confirm', { n: chosen.value.length }), false))) return
   busy.value = true; error.value = ''
-  try { result.value = await api.call('POST', `/discovery/${job.value.id}/commit`, { ips: chosen.value, updateKnown: updateKnown.value }); done.value = true; toast.add({ title: t('import.done'), color: 'success', icon: 'i-lucide-check' }) } catch (e: any) { fail(e) } finally { busy.value = false }
+  try { result.value = await api.call('POST', `/discovery/${job.value.id}/commit`, { ips: chosen.value, updateKnown: updateKnown.value }); done.value = true; emit('changed'); toast.add({ title: t('import.done'), color: 'success', icon: 'i-lucide-check' }) } catch (e: any) { fail(e) } finally { busy.value = false }
 }
 async function undo() {
   if (!(await ask(t('restore.restore'), t('restore.undo_confirm'), true))) return

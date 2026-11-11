@@ -33,6 +33,8 @@ const templateOptions = computed(() => [{ label: t('common.none'), value: 0 }, .
 const leafOptions = computed(() => (nets.value?.items ?? []).filter((n: any) => n.kind === 'network').map((n: any) => ({ label: `${n.cidr} — ${n.name}${spaceId.value ? '' : ` (${n.space})`}`, value: n.id })))
 const statusOptions = computed(() => ['used', 'reserved', 'dhcp', 'gateway', 'infra'].map((v) => ({ label: t(`ipam.status.${v}`), value: v })))
 const refreshAll = () => Promise.all([refreshSpaces(), refreshNets(), refreshPools(), refreshAddrs(), refreshTemplates()])
+// après un import (NetBox, découverte) ou son annulation : tout ce qui est affiché peut avoir changé
+const reloadData = () => Promise.all([refreshAll(), refreshVlans()])
 const fail = (e: any) => toast.add({ title: e.info?.message ?? t('err.internal'), color: 'error', icon: 'i-lucide-triangle-alert' })
 const ok = () => toast.add({ title: t('common.saved'), color: 'success', icon: 'i-lucide-check' })
 
@@ -304,8 +306,8 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
 
     <ResourceTable v-else-if="tab === 'vlans'" endpoint="/ipam/vlans" :columns="vlanCols" :fields="vlanFields" :can-write="canWrite" create-url="/ipam/vlans" :update-url="(r: any) => `/ipam/vlans/${r.id}`" :delete-url="(r: any) => `/ipam/vlans/${r.id}`" :delete-name="(r: any) => r.name" @changed="refreshVlans" />
     <GhostAddresses v-else-if="tab === 'ghosts'" />
-    <DiscoveryWizard v-else-if="tab === 'discovery' && canWrite" />
-    <NetboxWizard v-else-if="tab === 'sources' && isAdmin" />
+    <DiscoveryWizard v-else-if="tab === 'discovery' && canWrite" @changed="reloadData" />
+    <NetboxWizard v-else-if="tab === 'sources' && isAdmin" @changed="reloadData" />
     <div v-else-if="tab === 'search'" class="flex flex-col gap-3">
       <UInput v-model="sq" icon="i-lucide-search" :placeholder="t('ipam.search_ph')" :aria-label="t('common.search')" class="w-96" autofocus />
       <div class="grid gap-4 lg:grid-cols-2">

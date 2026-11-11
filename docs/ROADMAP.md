@@ -70,9 +70,10 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
     4d. ~~**0.9.6**~~ ✅ fait — Correctif intercalaire : jeton NetBox v2 (`<clé>.<jeton>`) envoyé en `Bearer`.
     4e. ~~**0.9.7**~~ ✅ fait — Correctif intercalaire : jeton NetBox collé avec le mot « Token ».
     5. ~~**0.9.8**~~ ✅ fait — Vues DNS (clé de transfert par vue, RPZ par vue, copie de zone, garde-fous).
-    6. **0.9.9** — Traçabilité bail / MAC / nom / utilisateur AD.
-    7. **0.9.10** — Découverte planifiée et alertes d'hygiène.
-    8. **0.9.11** — API : description OpenAPI et jetons d'API.
-    9. **0.9.12** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
-    10. **0.9.13** — DHCP multi-espaces.
+    4f. ~~**0.9.9**~~ ✅ fait — Correctif intercalaire : l'IPAM se rafraîchit après un import ou une annulation.
+    6. **0.9.10** — Traçabilité bail / MAC / nom / utilisateur AD.
+    7. **0.9.11** — Découverte planifiée et alertes d'hygiène.
+    8. **0.9.12** — API : description OpenAPI et jetons d'API.
+    9. **0.9.13** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
+    10. **0.9.14** — DHCP multi-espaces.
 5. **1.0** — Consolidation de la série 0.9.x et passage en revue avant usage en production.
