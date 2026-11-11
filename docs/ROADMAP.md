@@ -69,7 +69,7 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
     4c. ~~**0.9.5**~~ ✅ fait — Correctif intercalaire : les assistants (NetBox, AD) affichent enfin leurs erreurs.
     4d. ~~**0.9.6**~~ ✅ fait — Correctif intercalaire : jeton NetBox v2 (`<clé>.<jeton>`) envoyé en `Bearer`.
     4e. ~~**0.9.7**~~ ✅ fait — Correctif intercalaire : jeton NetBox collé avec le mot « Token ».
-    5. **0.9.8** — Vues DNS.
+    5. ~~**0.9.8**~~ ✅ fait — Vues DNS (clé de transfert par vue, RPZ par vue, copie de zone, garde-fous).
     6. **0.9.9** — Traçabilité bail / MAC / nom / utilisateur AD.
     7. **0.9.10** — Découverte planifiée et alertes d'hygiène.
     8. **0.9.11** — API : description OpenAPI et jetons d'API.

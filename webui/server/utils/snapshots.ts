@@ -7,7 +7,7 @@ import { fail } from './router'
 
 // Ordre = dépendances (parents d'abord). Les listes de blocage (volumineuses, retéléchargeables), les utilisateurs,
 // sessions, journaux, statistiques et baux Kea n'en font pas partie.
-export const SNAPSHOT_TABLES = ['vlans', 'ipam_spaces', 'dns_zones', 'dns_records', 'network_templates', 'subnets', 'ipam_pools', 'addresses', 'dhcp_scopes', 'dhcp_pools', 'dhcp_reservations', 'filter_rules'] as const
+export const SNAPSHOT_TABLES = ['vlans', 'ipam_spaces', 'dns_views', 'dns_zones', 'dns_records', 'network_templates', 'subnets', 'ipam_pools', 'addresses', 'dhcp_scopes', 'dhcp_pools', 'dhcp_reservations', 'filter_rules'] as const
 const SETTING_KEYS = ['dns', 'dhcp']
 export type SnapshotKind = 'manual' | 'deploy' | 'pre-import' | 'pre-restore'
 const KEEP = 40, KEEP_DEPLOY = 20
@@ -39,6 +39,7 @@ export async function captureSnapshot(kind: SnapshotKind, label: string, usernam
 
 const LABELS: Record<string, (x: any) => string> = {
   vlans: (x) => `VLAN ${x.vlan_id} ${x.name}`, ipam_spaces: (x) => String(x.name), network_templates: (x) => String(x.name), ipam_pools: (x) => `${x.name} ${x.start_ip} – ${x.end_ip}`, subnets: (x) => String(x.cidr), addresses: (x) => String(x.ip), dns_zones: (x) => String(x.name),
+  dns_views: (x) => String(x.name),
   dns_records: (x) => `${x.name} ${x.type} ${x.rdata}`, dhcp_scopes: (x) => `scope #${x.id}`, dhcp_pools: (x) => `${x.start_ip} – ${x.end_ip}`,
   dhcp_reservations: (x) => `${x.mac} → ${x.ip}`, filter_rules: (x) => `${x.action} ${x.domain}`,
 }
@@ -76,7 +77,7 @@ export async function restoreSnapshot(id: number, username: string | null): Prom
     if (snap.schema_version !== (await schemaVersion(cl))) fail(409, 'snapshot_schema_mismatch')
     // pas de purge pendant une restauration : elle pourrait supprimer le point en cours de restauration
     const preSnapshot = await captureSnapshot('pre-restore', `avant la restauration du point #${id}`, username, cl, false)
-    const serials = new Map<string, bigint>((await cl.query('select lower(name) as n, serial::text as s from dns_zones')).rows.map((r: any) => [r.n as string, BigInt(r.s)]))
+    const serials = new Map<string, bigint>((await cl.query(`select lower(z.name) || '|' || coalesce(v.name, '') as n, z.serial::text as s from dns_zones z left join dns_views v on v.id = z.view_id`)).rows.map((r: any) => [r.n as string, BigInt(r.s)]))
     for (const t of [...SNAPSHOT_TABLES].reverse()) await cl.query(`delete from ${t}`)
     const data = snap.data as Record<string, any>, counts: Record<string, number> = {}
     for (const t of SNAPSHOT_TABLES) {
@@ -85,7 +86,7 @@ export async function restoreSnapshot(id: number, username: string | null): Prom
       await cl.query(`select setval(pg_get_serial_sequence('${t}', 'id'), greatest((select coalesce(max(id), 0) from ${t}), 1), (select count(*) > 0 from ${t}))`)
     }
     // Un secondaire ignore une zone dont le numéro de série baisse : on repart de « plus grand que tout ce qui a été publié ».
-    for (const [name, serial] of serials) await cl.query('update dns_zones set serial = greatest(serial, $2::bigint) + 1 where lower(name) = $1', [name, serial.toString()])
+    for (const [name, serial] of serials) await cl.query(`update dns_zones z set serial = greatest(z.serial, $2::bigint) + 1 where lower(z.name) || '|' || coalesce((select v.name from dns_views v where v.id = z.view_id), '') = $1`, [name, serial.toString()])
     await cl.query("update dns_zones set dirty = true where type = 'primary'")
     await cl.query('delete from settings where key = any($1)', [SETTING_KEYS])
     for (const k of SETTING_KEYS) if (data.settings?.[k] !== undefined) await cl.query('insert into settings (key, value) values ($1, $2::jsonb)', [k, JSON.stringify(data.settings[k])])

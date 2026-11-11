@@ -9,6 +9,7 @@ import { one, query } from '../utils/db'
 import { cfg } from '../utils/config'
 import { KDC_RE, REALM_RE, depositAdRequest, readAdResult, readAdState, readAdSync } from '../utils/adkrb'
 import { isValidDnsName, normIp } from '../utils/net'
+import { viewTarget } from '../utils/viewdb'
 
 const bumpGeneration = () => query('update config_generation set generation = generation + 1, changed_at = now() where id = 1')
 async function pending(): Promise<boolean> {
@@ -53,6 +54,7 @@ const ipOk = (v: string) => { const n = normIp(v); return !!n && !/^(0\.|127\.|1
 const Forwarders = z.object({
   domain: z.string().trim().toLowerCase().transform((v) => v.replace(/\.$/, '')).refine((v) => isValidDnsName(v, false), 'domain'),
   servers: z.array(z.string().trim().refine(ipOk, 'server')).min(1).max(4),
+  view_id: z.number().int().positive().nullable().optional(),
 }).strict()
 
 async function probe(server: string, domain: string) {
@@ -75,11 +77,12 @@ route('POST', '/ad/forwarders/check', 'operator', async (c) => {
 route('POST', '/ad/forwarders/apply', 'operator', async (c) => {
   const b = await c.body(Forwarders)
   const servers = b.servers.map((s) => normIp(s)!)
-  const ex = await one<any>('select id, type from dns_zones where lower(name) = $1', [b.domain])
+  const vid = await viewTarget(b.view_id)
+  const ex = await one<any>('select id, type from dns_zones where lower(name) = $1 and view_id is not distinct from $2', [b.domain, vid])
   if (ex && ex.type !== 'forward') fail(409, 'zone_exists_not_forward')   // une zone locale du même nom masquerait la redirection
   let id: number
   if (ex) { await query('update dns_zones set forwarders = $2, ad_integrated = true, disabled = false, dirty = true, updated_at = now() where id = $1', [ex.id, servers]); id = ex.id }
-  else id = (await one<any>("insert into dns_zones (name, type, forwarders, ad_integrated) values ($1, 'forward', $2, true) returning id", [b.domain, servers])).id
+  else id = (await one<any>("insert into dns_zones (name, type, forwarders, ad_integrated, view_id) values ($1, 'forward', $2, true, $3) returning id", [b.domain, servers, vid])).id
   await audit(c, ex ? 'ad.forwarder.update' : 'ad.forwarder.create', 'zone', id, { domain: b.domain, servers })
   return { id, created: !ex }
 })

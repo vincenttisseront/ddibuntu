@@ -9,18 +9,30 @@ import { getSetting, one, query, tx } from './db'
 import { nextSerial } from './dns'
 import { captureSnapshot } from './snapshots'
 import { resetPending } from './filterstate'
-import { DNS_DEFAULTS, KEA_DEFAULTS, deployFiles, renderKea, renderNamedOptions, renderNamedZones, renderRpz, validateFiles, zoneFile } from './render'
+import { fail } from './router'
+import { uncoveredLocal } from './views'
+import type { ViewInfo } from './views'
+import { DNS_DEFAULTS, KEA_DEFAULTS, deployFiles, renderKea, renderNamedOptions, renderNamedZones, renderRpz, rpzBase, validateFiles, zoneFile } from './render'
 import type { CheckResult, DnsSettings, KeaScope, KeaSettings, OutFile, ZoneRow } from './render'
 
 export async function loadDns(): Promise<DnsSettings> { return { ...DNS_DEFAULTS, ...(await getSetting<Partial<DnsSettings>>('dns', {})) } }
 export async function loadKea(): Promise<any> { return { ...KEA_DEFAULTS, ...(await getSetting<any>('dhcp', {})) } }
 
+export async function loadViews(): Promise<ViewInfo[]> {
+  return (await query<any>('select id, name, position, match_clients, match_destinations, recursion from dns_views order by position, id')) as ViewInfo[]
+}
+
 export async function buildConfig(): Promise<{ files: OutFile[]; bumps: Array<{ id: number; serial: number }>; warnings: string[] }> {
   // le domaine Kerberos vient de l'état publié par root, jamais d'un réglage de la console : le rendu ne peut pas diverger de ce que root acceptera
   const dns: DnsSettings = { ...(await loadDns()), kerberosRealm: (await readAdState())?.realm ?? '' }
   const warnings: string[] = []
-  const zones = await query<any>(`select id, name, type, masters, forwarders, allow_transfer, ddns_enabled, ddns_secure, disabled, soa_mname, soa_rname, soa_refresh, soa_retry, soa_expire,
-    soa_minimum, default_ttl, serial::text as serial, dirty from dns_zones order by name`)
+  const views = await loadViews()
+  const zones = await query<any>(`select z.id, z.name, z.type, z.masters, z.forwarders, z.allow_transfer, z.ddns_enabled, z.ddns_secure, z.disabled, z.soa_mname, z.soa_rname, z.soa_refresh, z.soa_retry, z.soa_expire,
+    z.soa_minimum, z.default_ttl, z.serial::text as serial, z.dirty, v.name as view from dns_zones z left join dns_views v on v.id = z.view_id order by z.name, v.position`)
+  // BIND n'admet pas de zone hors vue dès qu'une vue existe : l'API l'empêche, et le rendu le vérifie une seconde fois (base modifiée à la main, restauration…)
+  if (views.length && zones.some((z) => !z.view)) fail(409, 'zones_without_view')
+  if (!views.length && zones.some((z) => z.view)) fail(409, 'zones_without_view')
+  if (views.length) for (const ip of uncoveredLocal(views)) warnings.push(`view_local_uncovered:${ip}`)
   const files: OutFile[] = []
   const bumps: Array<{ id: number; serial: number }> = []
   for (const z of zones) {
@@ -35,11 +47,12 @@ export async function buildConfig(): Promise<{ files: OutFile[]; bumps: Array<{ 
     const blocked = (await query<any>('select distinct e.domain from block_entries e join block_lists l on l.id = e.list_id where l.enabled')).map((r) => r.domain as string)
     for (const r of await query<any>("select domain from filter_rules where action = 'block'")) blocked.push(r.domain)
     const allowed = (await query<any>("select domain from filter_rules where action = 'allow'")).map((r) => r.domain as string)
-    files.push({ path: 'zones/db.rpz', content: renderRpz({ zone: dns.rpzZone, serial: Math.floor(Date.now() / 1000), action: dns.rpzAction, sinkhole4: dns.sinkhole4, sinkhole6: dns.sinkhole6 }, new Set(blocked), allowed), mode: 0o644, kind: 'rpz' })
+    const rpzContent = renderRpz({ zone: dns.rpzZone, serial: Math.floor(Date.now() / 1000), action: dns.rpzAction, sinkhole4: dns.sinkhole4, sinkhole6: dns.sinkhole6 }, new Set(blocked), allowed)
+    for (const base of views.length ? views.map((v) => rpzBase(v.name)) : [rpzBase()]) files.push({ path: `zones/${base}`, content: rpzContent, mode: 0o644, kind: 'rpz' })
   }
   const anyDdns = zones.some((z) => z.ddns_enabled && !z.disabled)
   files.push({ path: 'named.conf.options', content: renderNamedOptions(dns, anyDdns), mode: 0o644, kind: 'named' })
-  files.push({ path: 'named.conf.zones', content: renderNamedZones(zones as ZoneRow[], dns), mode: 0o644, kind: 'named' })
+  files.push({ path: 'named.conf.zones', content: renderNamedZones(zones as ZoneRow[], dns, views), mode: 0o644, kind: 'named' })
 
   const ks: KeaSettings = await loadKea()
   const lease = { ...ks.lease }
@@ -90,6 +103,9 @@ export async function applyConfig(opts: { deploy: boolean; username: string | nu
   const generation = (await configState()).generation
   const { files, bumps, warnings } = await buildConfig()
   const results = await validateFiles(files)
+  // le serveur doit se résoudre lui-même : sans vue pour 127.0.0.1 / ::1, contrôles de santé et mises à jour locales échoueraient
+  const unc = warnings.filter((w) => w.startsWith('view_local_uncovered:')).map((w) => w.split(':').slice(1).join(':'))
+  if (unc.length) results.push({ name: 'vues DNS : couverture locale', ok: false, output: `aucune vue ne répond à ${unc.join(', ')} : ajoutez ces adresses (ou « localhost ») à la liste des clients d'une vue` })
   const ok = results.length > 0 && results.every((r) => r.ok === true)
   let deployed = false
   if (opts.deploy && ok) {

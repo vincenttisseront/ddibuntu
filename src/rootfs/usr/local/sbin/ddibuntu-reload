@@ -86,7 +86,7 @@ PY
 # Codes de sortie des sondes : 0 = s'applique, 1 = ne s'applique pas (pas de cluster, arbitre, un seul nœud de données), 2 = cluster.conf invalide.
 cluster_py() {
   python3 - "$@" <<'PY'
-import glob, ipaddress, json, os, re, sys
+import base64, glob, hashlib, hmac, ipaddress, json, os, re, sys
 mode, cldir = sys.argv[1], sys.argv[2]
 def die(m): sys.stderr.write("cluster : %s\n" % m); sys.exit(2)
 def cluster():
@@ -146,7 +146,7 @@ if mode == "kea-render":
     json.dump(d, sys.stdout, indent=2); sys.stdout.write("\n"); sys.exit(0)
 
 if mode == "bind-render":
-    role, opts_src, zones_src, out_opts, out_zones, keyfile = sys.argv[3:9]
+    role, opts_src, zones_src, out_opts, out_zones, keyfile, out_vkeys = sys.argv[3:10]
     if not cl: die("pas de cluster à deux nœuds de données")
     if role not in ("primary", "secondary"): die("rôle BIND inconnu")
     name, node_ip, data = cl
@@ -168,8 +168,34 @@ if mode == "bind-render":
     if not seen or not replaced: die("named.conf.options inattendu (bloc options ou allow-transfer global absent)")
     open(out_opts, "w", encoding="utf-8").write('include "%s";\n' % keyfile + "\n".join(out))
     prop = re.compile(r'\s*(notify yes;|allow-update \{ key "ddi-ddns"; \};|update-policy \{ ([^{}"]*) \};|allow-query \{ none; \};|allow-transfer \{ ([^{}"]*) \};)')
+    # Vues : chaque vue a SA clé de transfert, dérivée de la clé du cluster (HMAC-SHA256 du nom de la vue) : les deux nœuds la calculent à
+    # l'identique, rien de plus à distribuer. Le secondaire demande chaque zone avec la clé de SA vue, et le primaire range la requête dans la bonne vue.
+    secret = re.search(r'secret "([A-Za-z0-9+/=]+)"', open(keyfile, encoding="utf-8").read())
+    if not secret: die("secret illisible dans " + keyfile)
+    base_secret = base64.b64decode(secret.group(1))
+    def vkey(v): return "ddi-xfr-" + v
+    def vsecret(v): return base64.b64encode(hmac.new(base_secret, b"ddibuntu-view:" + v.encode(), hashlib.sha256).digest()).decode()
+    all_views = re.findall(r'^view "([a-z][a-z0-9-]{0,30})" \{$', open(zones_src, encoding="utf-8").read(), re.M)
+    if len(set(all_views)) != len(all_views): die("vue en double")
+    cur = None
     zo = []
     for l in open(zones_src, encoding="utf-8").read().split("\n"):
+        m = re.fullmatch(r'view "([a-z][a-z0-9-]{0,30})" \{', l)
+        if m:
+            if cur: die("vue imbriquée")
+            cur = m.group(1); zo.append(l); continue
+        if cur and l == "};":
+            if role == "primary": zo.append('  also-notify { %s key "%s"; };' % (peer, vkey(cur)))
+            else: zo.append('  server %s { keys "%s"; };' % (peer, vkey(cur)))
+            zo.append(l); cur = None; continue
+        if cur:
+            mc = re.fullmatch(r'  match-clients \{ ([^{}"]*) \};', l)
+            if mc:
+                # le transfert signé avec la clé de CETTE vue lui revient toujours ; signé avec la clé d'une autre vue, il ne peut pas lui revenir,
+                # quelle que soit l'adresse source (celle du pair peut faire partie de la liste d'une autre vue)
+                others = "".join('!key "%s"; ' % vkey(o) for o in all_views if o != cur)
+                zo.append('  match-clients { key "%s"; %s%s };' % (vkey(cur), others, mc.group(1))); continue
+            if re.fullmatch(r'  (match-destinations \{ [^{}"]* \};|recursion (yes|no);|allow-recursion \{ none; \};)', l): zo.append(l); continue
         if l == "" or l.startswith("//") or re.match(r'zone "[^"]+" \{ type (secondary|forward);', l):
             if l.startswith("zone") and "ddi-" in l: die("zone externe inattendue")
             zo.append(l); continue
@@ -188,11 +214,22 @@ if mode == "bind-render":
             elif t.startswith("allow-update"): ddns = True
             elif t.startswith("update-policy"): upol = pm.group(2).strip()
             pos = pm.end()
+        kn = vkey(cur) if cur else "ddi-xfr"
         if role == "primary":
-            acl = (user_acl.rstrip(";").strip() + "; " if user_acl else "") + 'key "ddi-xfr";'
+            acl = (user_acl.rstrip(";").strip() + "; " if user_acl else "") + 'key "%s";' % kn
             zo.append('zone "%s" { type primary; file "%s"; notify yes; allow-transfer { %s };%s%s };' % (z, f, acl, (' update-policy { %s };' % upol) if upol else (' allow-update { key "ddi-ddns"; };' if ddns else ""), " allow-query { none; };" if quiet else ""))
         else:
-            zo.append('zone "%s" { type secondary; primaries { %s key "ddi-xfr"; }; file "%s";%s };' % (z, peer, f, " allow-query { none; };" if quiet else ""))
+            zo.append('zone "%s" { type secondary; primaries { %s key "%s"; }; file "%s";%s };' % (z, peer, kn, f, " allow-query { none; };" if quiet else ""))
+    if cur: die("vue non fermée")
+    if all_views:
+        vk = ["// Généré par DDI-Buntu (root) : clés de transfert par vue, dérivées de ddi-xfr.", ]
+        for v in all_views: vk.append('key "%s" { algorithm hmac-sha256; secret "%s"; };' % (vkey(v), vsecret(v)))
+        open(out_vkeys, "w", encoding="utf-8").write("\n".join(vk) + "\n")
+        # une seule ligne « include » de plus en tête des options (relue telle quelle par la suite)
+        txt = open(out_opts, encoding="utf-8").read()
+        open(out_opts, "w", encoding="utf-8").write('include "%s";\n' % os.path.join(os.path.dirname(keyfile), "ddi-xfr-views.key") + txt)
+    else:
+        open(out_vkeys, "w", encoding="utf-8").write("")
     zo.append('server %s { keys "ddi-xfr"; };' % peer)
     open(out_zones, "w", encoding="utf-8").write("\n".join(zo) + "\n")
     sys.exit(0)
@@ -283,9 +320,11 @@ install_named() {
     return 0
   fi
   local t; t="$(mktemp -d)"
-  if ! cluster_py bind-render "$CLUSTER_DIR" "$bind_role" "$SRC_OPTS" "$SRC_ZONES" "$t/options" "$t/local" "$XFR_KEY" 2>"$STATE/cluster-probe.err"; then
+  if ! cluster_py bind-render "$CLUSTER_DIR" "$bind_role" "$SRC_OPTS" "$SRC_ZONES" "$t/options" "$t/local" "$XFR_KEY" "$t/viewkeys" 2>"$STATE/cluster-probe.err"; then
     tr '\n' ' ' < "$STATE/cluster-probe.err" >&2; rm -rf "$t"; return 1
   fi
+  # clés de transfert par vue (dérivées de ddi-xfr) : installées AVANT les options qui les incluent ; retirées quand il n'y a plus de vue
+  if [ -s "$t/viewkeys" ]; then install -m 0640 -o root -g bind "$t/viewkeys" "$BIND_ETC/ddi-xfr-views.key"; else rm -f "$BIND_ETC/ddi-xfr-views.key"; fi
   install -m 0644 -o root -g bind "$t/options" "$BIND_ETC/named.conf.options"
   install -m 0644 -o root -g bind "$t/local" "$BIND_ETC/named.conf.local"
   rm -rf "$t"
@@ -342,7 +381,7 @@ if [ "$MODE" = full ] || [ "$MODE" = promote ]; then
   for f in "$ZONES"/db.*; do cp -p "$f" "$BACKUP/zones/"; done
 fi
 rm -f "$BACKUP"/*.prev
-for f in "$BIND_ETC/named.conf.options" "$BIND_ETC/named.conf.local" "$KEA_ETC/kea-dhcp4.conf"; do
+for f in "$BIND_ETC/named.conf.options" "$BIND_ETC/named.conf.local" "$BIND_ETC/ddi-xfr-views.key" "$KEA_ETC/kea-dhcp4.conf"; do
   [ "$MODE" != kea-only ] || [ "$(basename "$f")" = kea-dhcp4.conf ] || continue
   [ -f "$f" ] && cp -p "$f" "$BACKUP/$(basename "$f").prev"
 done

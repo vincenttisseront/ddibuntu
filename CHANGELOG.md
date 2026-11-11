@@ -1,5 +1,17 @@
 # Journal des modifications
 
+## 0.9.8 — « Vues DNS »
+- **Vues DNS** (page DNS, onglet « Vues ») : un même nom de zone peut recevoir des réponses différentes selon le client (`match-clients`, éventuellement `match-destinations`), avec ou sans récursion par vue. Listes de clients validées élément par élément (`any`, `none`, `localhost`, `localnets`, adresse, réseau, négation `!`), 50 éléments et 16 vues au plus ; **la première vue dont la liste correspond répond** (ordre réglable, avertissement quand une vue est masquée par une vue « any » placée avant).
+- **Règle** : sans vue, la configuration est exactement celle d'avant. Dès qu'une vue existe, **toute zone appartient à une vue** (BIND n'admet pas de zone hors vue) : la première vue reprend explicitement les zones existantes (confirmation), la création d'une zone exige une vue, et le rendu revérifie la règle. Supprimer la dernière vue rend ses zones ordinaires (confirmation). Fichiers `db.<vue>.<zone>` ; **copie d'une zone vers une autre vue** avec ses enregistrements (point de départ d'une vue « externe »). Les modifications de zone sans `view_id` laissent la zone dans sa vue.
+- **Filtrage (RPZ)** : la zone de politique est déclarée dans **chaque** vue, un fichier par vue (`db.rpz-<vue>`).
+- **Cluster** : une **clé de transfert par vue** (`ddi-xfr-<vue>`), dérivée par HMAC-SHA256 du secret du cluster et du nom de la vue : les deux nœuds la calculent à l'identique, **rien de nouveau à distribuer**. Le primaire range chaque transfert signé dans la bonne vue (`key "ddi-xfr-V"; !key "ddi-xfr-AUTRE"; …`), envoie ses NOTIFY avec la clé de la vue ; le secondaire demande chaque zone avec la clé de sa vue. Les clés sont dans `/etc/bind/ddi-xfr-views.key` (0640 root:bind, écrites par root, incluses par les options, retirées quand il n'y a plus de vue, sauvegardées avec le retour arrière). Promotion, réintégration et retour arrière automatique fonctionnent par vue. **Tous les nœuds doivent être en 0.9.8** pour utiliser des vues.
+- **Garde-fou** : le serveur doit se résoudre lui-même — si aucune vue ne répond à 127.0.0.1 et ::1, le déploiement est refusé avec le motif.
+- Points de restauration et import/synchronisation (NetBox, AD) tiennent compte des vues ; le journal des requêtes accepte le préfixe « view <nom>: » de BIND.
+- **Limites** : les mises à jour dynamiques de Kea (DDNS) vont à la vue qui correspond à l'adresse de l'expéditeur ; `localhost` couvre **toutes** les adresses du serveur (utiliser des adresses explicites pour séparer un client local).
+- Correctif : une adresse IP seule (sans `/32`) dans une liste de clients ne correspondait jamais (repéré par les tests).
+- Tests : `unit-views` (12), `e2e-iter13` (11), `tests/b23-bind-views-live.sh` (64 contrôles, deux vrais BIND : réponses par client, clé par vue, AXFR/NOTIFY, RPZ par vue, promotion, retour sans vue, refus sans effet).
+- Numérotation : suite en 0.9.9 (traçabilité) … DHCP multi-espaces en 0.9.13.
+
 ## 0.9.7 — « Correctif : jeton NetBox collé avec « Token » »
 - NetBox affiche le jeton sous la forme « Token xxxxxxxx » : quand ce texte était collé tel quel, la console envoyait « Token Token xxxxxxxx » et NetBox répondait « Invalid authorization header ». Le mot « Token » (ou « Bearer ») collé devant le jeton est maintenant retiré, aussi pour un jeton déjà enregistré.
 - Tests : `unit-iter4` (+1 assertion).

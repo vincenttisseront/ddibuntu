@@ -383,7 +383,30 @@ create table alert_deliveries (
 create index alert_deliveries_at on alert_deliveries (at desc);
 `
 
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }]
+// Itération 0.9.5 (vues DNS) : une vue répond selon l'adresse du client (ou celle du serveur interrogé) ; chaque zone appartient à UNE vue
+// dès qu'il en existe (BIND l'exige), et un même nom de zone peut exister dans plusieurs vues avec des enregistrements différents.
+const SCHEMA_10 = String.raw`
+create table dns_views (
+  id serial primary key,
+  name text not null check (name ~ '^[a-z][a-z0-9-]{0,30}$'),
+  position int not null,
+  match_clients text[] not null default '{}',
+  match_destinations text[] not null default '{}',
+  recursion boolean not null default true,
+  comment text,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create unique index dns_views_name on dns_views (name);
+alter table dns_zones add column view_id int references dns_views(id) on delete restrict;
+drop index dns_zones_name;
+create unique index dns_zones_name on dns_zones (lower(name), coalesce(view_id, 0));
+create trigger cfg_gen_views after insert or delete or update on dns_views for each statement execute function bump_config_generation();
+drop trigger cfg_gen_zones on dns_zones;
+create trigger cfg_gen_zones after insert or delete or update of name, type, masters, forwarders, allow_transfer, ddns_enabled, ddns_secure, soa_mname, soa_rname,
+  soa_refresh, soa_retry, soa_expire, soa_minimum, default_ttl, ad_integrated, disabled, view_id on dns_zones for each statement execute function bump_config_generation();
+`
+
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

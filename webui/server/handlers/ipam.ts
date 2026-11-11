@@ -166,13 +166,13 @@ const addrBody = z.object({ ip: ipS, status: status.default('used'), hostname: h
 
 /** Crée les enregistrements A/AAAA et PTR correspondant à une adresse (si une zone inverse primaire existe). */
 async function syncDns(cl: PoolClient, ip: string, hostname: string, zoneId: number): Promise<void> {
-  const z = (await cl.query("select id, name from dns_zones where id = $1 and type = 'primary'", [zoneId])).rows[0]
+  const z = (await cl.query("select id, name, view_id from dns_zones where id = $1 and type = 'primary'", [zoneId])).rows[0]
   if (!z) fail(400, 'zone_not_primary')
   const addr = parseIp(ip)!
   await cl.query("insert into dns_records (zone_id, name, type, rdata) values ($1,$2,$3,$4) on conflict do nothing", [z.id, hostname, addr.v === 4 ? 'A' : 'AAAA', ip])
   await cl.query('update dns_zones set dirty = true, updated_at = now() where id = $1', [z.id])
   const ptr = ptrName(addr)
-  const rz = (await cl.query("select id, name from dns_zones where type = 'primary' and $1 like '%.' || lower(name) order by length(name) desc limit 1", [ptr])).rows[0]
+  const rz = (await cl.query("select id, name from dns_zones where type = 'primary' and $1 like '%.' || lower(name) order by (view_id is not distinct from $2) desc, length(name) desc limit 1", [ptr, z.view_id])).rows[0]
   if (rz) {
     await cl.query('insert into dns_records (zone_id, name, type, rdata) values ($1,$2,$3,$4) on conflict do nothing', [rz.id, ptr.slice(0, -(rz.name.length + 1)), 'PTR', `${hostname}.${z.name}.`])
     await cl.query('update dns_zones set dirty = true, updated_at = now() where id = $1', [rz.id])

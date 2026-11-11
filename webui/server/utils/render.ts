@@ -9,6 +9,7 @@ import { cfg } from './config'
 import { renderZone } from './dns'
 import type { RecInfo, ZoneInfo } from './dns'
 import { isValidDnsName } from './net'
+import type { ViewInfo } from './views'
 
 export const ZONES_DIR = '@ZONESDIR@'
 
@@ -32,6 +33,8 @@ const acl = (l: string[], fallback = 'any') => (l.length ? l.map((x) => `${x};`)
 export interface ZoneRow extends ZoneInfo {
   type: 'primary' | 'secondary' | 'forward'; masters: string[]; forwarders: string[]; allow_transfer: string[]
   ddns_enabled: boolean; disabled: boolean; ddns_secure?: 'ms-self' | 'krb5-self' | 'both' | null
+  /** Nom de la vue (null = pas de vue : tant qu'aucune vue n'existe, la configuration est celle d'avant les vues). */
+  view?: string | null
 }
 
 export function renderNamedOptions(s: DnsSettings, anyDdns: boolean): string {
@@ -71,27 +74,52 @@ export function secureGrants(z: Pick<ZoneRow, 'ddns_enabled' | 'ddns_secure'>, r
   return g
 }
 
-export function renderNamedZones(zones: ZoneRow[], s: DnsSettings): string {
-  const out: string[] = ['// Généré par DDI-Buntu — ne pas modifier à la main.']
-  for (const z of zones) {
-    if (z.disabled) continue
-    const n = z.name.replace(/\.$/, '')
-    if (!isValidDnsName(n, false) && !/^[a-z0-9_-]+$/i.test(n)) continue
-    if (z.type === 'primary') {
-      const props = [`type primary;`, `file "${ZONES_DIR}/db.${n}";`, 'notify yes;']
-      if (z.allow_transfer.length) props.push(`allow-transfer { ${acl(z.allow_transfer)} };`)
-      const grants = secureGrants(z, s.kerberosRealm ?? '')
-      // « allow-update » et « update-policy » s'excluent dans BIND : la clé DDNS (Kea) devient alors un octroi de la politique
-      if (grants.length) props.push(`update-policy { ${grants.join('; ')}; };`)
-      else if (z.ddns_enabled) props.push('allow-update { key "ddi-ddns"; };')
-      out.push(`zone "${n}" { ${props.join(' ')} };`)
-    } else if (z.type === 'secondary') {
-      out.push(`zone "${n}" { type secondary; primaries { ${acl(z.masters)} }; file "${ZONES_DIR}/db.${n}"; };`)
-    } else {
-      out.push(`zone "${n}" { type forward; forward only; forwarders { ${acl(z.forwarders)} }; };`)
-    }
+/** Nom du fichier de zone : « db.<zone> » sans vue ; « db.<vue>.<zone> » avec vues (une même zone peut exister dans plusieurs vues ; un nom de vue ne contient pas de point). */
+export const zoneBase = (z: Pick<ZoneRow, 'name' | 'view'>): string => `db.${z.view ? z.view + '.' : ''}${z.name.replace(/\.$/, '')}`
+
+/** Fichier de la zone de politique de réponse : « db.rpz » sans vue, « db.rpz-<vue> » avec vues. */
+export const rpzBase = (view?: string): string => (view ? `db.rpz-${view}` : 'db.rpz')
+
+function zoneStatement(z: ZoneRow, s: DnsSettings): string | null {
+  if (z.disabled) return null
+  const n = z.name.replace(/\.$/, '')
+  if (!isValidDnsName(n, false) && !/^[a-z0-9_-]+$/i.test(n)) return null
+  const file = `${ZONES_DIR}/${zoneBase(z)}`
+  if (z.type === 'primary') {
+    const props = [`type primary;`, `file "${file}";`, 'notify yes;']
+    if (z.allow_transfer.length) props.push(`allow-transfer { ${acl(z.allow_transfer)} };`)
+    const grants = secureGrants(z, s.kerberosRealm ?? '')
+    // « allow-update » et « update-policy » s'excluent dans BIND : la clé DDNS (Kea) devient alors un octroi de la politique
+    if (grants.length) props.push(`update-policy { ${grants.join('; ')}; };`)
+    else if (z.ddns_enabled) props.push('allow-update { key "ddi-ddns"; };')
+    return `zone "${n}" { ${props.join(' ')} };`
   }
-  if (s.rpzEnabled) out.push(`zone "${s.rpzZone}" { type primary; file "${ZONES_DIR}/db.rpz"; allow-query { none; }; };`)
+  if (z.type === 'secondary') return `zone "${n}" { type secondary; primaries { ${acl(z.masters)} }; file "${file}"; };`
+  return `zone "${n}" { type forward; forward only; forwarders { ${acl(z.forwarders)} }; };`
+}
+
+/**
+ * Sans vue : une zone par ligne. Avec vues : chaque vue ouvre un bloc dont l'en-tête tient sur des lignes de forme fixe (ddibuntu-reload les relit
+ * ligne à ligne pour dériver le secondaire), les zones restent une par ligne, à la marge, et le bloc se ferme par « }; ».
+ */
+export function renderNamedZones(zones: ZoneRow[], s: DnsSettings, views: ViewInfo[] = []): string {
+  const out: string[] = ['// Généré par DDI-Buntu — ne pas modifier à la main.']
+  const rpzFor = (view?: string) => (s.rpzEnabled ? `zone "${s.rpzZone}" { type primary; file "${ZONES_DIR}/${rpzBase(view)}"; allow-query { none; }; };` : '')
+  if (!views.length) {
+    for (const z of zones) { const l = zoneStatement(z, s); if (l) out.push(l) }
+    if (s.rpzEnabled) out.push(rpzFor())
+    return out.join('\n') + '\n'
+  }
+  for (const v of [...views].sort((a, b) => a.position - b.position)) {
+    out.push(`view "${v.name}" {`, `  match-clients { ${acl(v.match_clients, 'none')} };`)
+    if (v.match_destinations.length) out.push(`  match-destinations { ${acl(v.match_destinations)} };`)
+    // « recursion no » avec le « allow-recursion » global donne un avertissement de BIND : la liste est vidée pour cette vue
+    out.push(v.recursion ? '  recursion yes;' : '  recursion no;', ...(v.recursion ? [] : ['  allow-recursion { none; };']))
+    for (const z of zones) if (z.view === v.name) { const l = zoneStatement(z, s); if (l) out.push(l) }
+    // la zone de politique de réponse (filtrage) doit exister dans CHAQUE vue ; un fichier par vue (le secondaire ne peut pas écrire deux zones dans le même fichier)
+    if (s.rpzEnabled) out.push(rpzFor(v.name))
+    out.push('};')
+  }
   return out.join('\n') + '\n'
 }
 
@@ -161,7 +189,7 @@ export interface OutFile { path: string; content: string; mode: number; kind: 'z
 export interface CheckResult { name: string; ok: boolean | null; output: string }
 
 export function zoneFile(z: ZoneRow, records: RecInfo[]): OutFile {
-  return { path: `zones/db.${z.name.replace(/\.$/, '')}`, content: renderZone(z, records), mode: 0o644, kind: 'zone' }
+  return { path: `zones/${zoneBase(z)}`, content: renderZone(z, records), mode: 0o644, kind: 'zone' }
 }
 
 const sub = (t: string, zonesDir: string) => t.split(ZONES_DIR).join(zonesDir)

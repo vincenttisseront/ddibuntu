@@ -11,7 +11,7 @@ export function parseBindLog(text: string, fallbackNow = new Date()): LogEvent[]
     const client = line.match(/client (?:@0x[0-9a-f]+ )?([0-9a-f.:]+)#\d+/i)?.[1] ?? ''
     const rpz = line.match(/rpz (?:QNAME|IP|NSDNAME|NSIP|CLIENT-IP) (NXDOMAIN|NODATA|PASSTHRU|DROP|TCP-ONLY|LOCAL-DATA|CNAME)\b.*?rewrite ([^/\s]+)\//)
     if (rpz) { out.push({ at, kind: rpz[1] === 'PASSTHRU' ? 'passthru' : 'blocked', domain: rpz[2]!.toLowerCase().replace(/\.$/, ''), client, qtype: '' }); continue }
-    const q = line.match(/\): query: (\S+) IN (\S+)/)
+    const q = line.match(/\): (?:view \S+: )?query: (\S+) IN (\S+)/)
     if (q) out.push({ at, kind: 'query', domain: q[1]!.toLowerCase().replace(/\.$/, ''), client, qtype: q[2]!.toUpperCase().slice(0, 12) })
   }
   return out

@@ -8,6 +8,7 @@ import type { AdSettings } from '../utils/ad'
 import { AdImportError, adDiscover, allowedDcHosts, axfrZone } from '../utils/adimport'
 import { isAdCritical, parseZoneFile } from '../utils/dns'
 import { isValidDnsName } from '../utils/net'
+import { viewTarget } from '../utils/viewdb'
 import { dnsCommitCore, preImportSnapshot, record } from './importer'
 
 const adErr = (e: unknown): never => {
@@ -48,7 +49,7 @@ route('POST', '/import/ad/subnets', 'admin', async (c) => {
   return out
 })
 
-const dnsReq = z.object({ server: z.string().max(253), zone: z.string().max(253) })
+const dnsReq = z.object({ server: z.string().max(253), zone: z.string().max(253), view_id: z.number().int().positive().nullable().optional() })
 async function axfrFor(b: z.infer<typeof dnsReq>) {
   const { s } = await loadAd()
   if (!allowedDcHosts(s).includes(b.server)) fail(400, 'axfr_server_not_allowed')
@@ -60,7 +61,7 @@ route('POST', '/import/ad/dns/preview', 'admin', async (c) => {
   const b = await c.body(dnsReq)
   const { zone, text } = await axfrFor(b)
   const parsed = parseZoneFile(text, zone)
-  const exist = await one<any>('select id from dns_zones where lower(name) = $1', [zone])
+  const exist = await one<any>('select id from dns_zones where lower(name) = $1 and view_id is not distinct from $2', [zone, await viewTarget(b.view_id)])
   const byType: Record<string, number> = {}
   for (const r of parsed.records) byType[r.type] = (byType[r.type] ?? 0) + 1
   return { zone, zoneExists: !!exist, total: parsed.records.length, byType, adCritical: parsed.records.filter((r) => isAdCritical(r.name, r.type)).length, skipped: parsed.skipped, warnings: parsed.warnings.slice(0, 50) }
@@ -69,10 +70,11 @@ route('POST', '/import/ad/dns/commit', 'admin', async (c) => {
   const b = await c.body(dnsReq.extend({ create: z.boolean().default(false), applySoa: z.boolean().default(true) }))
   const { zone, text } = await axfrFor(b)
   const snapshotId = await preImportSnapshot(c, `avant import AD DNS : ${zone}`)
-  let zrow = await one<any>('select id from dns_zones where lower(name) = $1', [zone])
+  const vid = await viewTarget(b.view_id)
+  let zrow = await one<any>('select id from dns_zones where lower(name) = $1 and view_id is not distinct from $2', [zone, vid])
   if (!zrow) {
     if (!b.create) fail(404, 'zone_missing')
-    zrow = await one<any>("insert into dns_zones (name, type, ad_integrated, dirty) values ($1,'primary',true,true) returning id", [zone])
+    zrow = await one<any>("insert into dns_zones (name, type, ad_integrated, dirty, view_id) values ($1,'primary',true,true,$2) returning id", [zone, vid])
   }
   const out = await dnsCommitCore(c, { content: text, filename: `AXFR ${zone} @ ${b.server}`, zone_id: zrow.id, mode: 'skip', apply_soa: b.applySoa }, snapshotId)
   await audit(c, 'import_ad_live_dns', 'zone', zrow.id, { zone, server: b.server })
