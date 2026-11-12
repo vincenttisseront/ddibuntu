@@ -1,7 +1,7 @@
 // État du cluster publié par root (ddibuntu-cluster follow, chaque minute) : fichier JSON sans secret, lu ici en lecture seule.
 // La console ne pilote jamais le cluster : les demandes d'action passent par un fichier de demande traité par root (voir demandes de bascule).
 import { networkInterfaces, hostname } from 'node:os'
-import { promises as fs } from 'node:fs'
+import { existsSync, promises as fs } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { cfg } from './config'
 import { parseNodeHealth } from './health'
@@ -297,4 +297,12 @@ export function bundleRefusal(st: ClusterState | null, name: string, ip: string)
   if (st.nodes.some((n) => n.name === name)) return 'node_name_taken'
   if (st.nodes.some((n) => n.ip === ip)) return 'node_ip_taken'
   return null
+}
+
+// Composants nécessaires à la création / au rattachement d'un cluster (même liste que le contrôle préalable de root). Recherche dans les dossiers
+// habituels + PATH ; en mode test, jamais d'absence signalée (la machine d'essai n'a pas à les porter).
+export const CLUSTER_TOOLS = ['etcd', 'etcdctl', 'patroni', 'patronictl'] as const
+export const CLUSTER_INSTALL_CMD = 'apt install patroni etcd-server etcd-client python3-psycopg2 gnupg'
+export function missingClusterTools(dirs: string[] = [...(process.env.PATH ?? '').split(':'), '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'], exists: (p: string) => boolean = (p) => existsSync(p)): string[] {
+  return CLUSTER_TOOLS.filter((t) => !dirs.some((d) => d && exists(`${d}/${t}`)))
 }

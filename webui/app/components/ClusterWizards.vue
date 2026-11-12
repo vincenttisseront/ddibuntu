@@ -10,6 +10,8 @@ const mode = ref<Mode | null>(null), busy = ref(false), err = ref(''), step = re
 const open = computed({ get: () => mode.value !== null, set: (v: boolean) => { if (!v && !busy.value) close() } })
 const addrs = computed<any[]>(() => props.setup?.addresses ?? [])
 const hostname = computed(() => props.setup?.hostname ?? '')
+const missing = computed<string[]>(() => props.setup?.missing ?? [])
+const installCmd = computed(() => `sudo ${props.setup?.install ?? 'apt install patroni etcd-server etcd-client python3-psycopg2 gnupg'}`)
 
 // ---- création
 const ini = reactive({ cluster: 'ddibuntu', node: '', ip: '', net: '', vip: '', vipIface: '', vrid: '', confirm: '' })
@@ -84,11 +86,13 @@ defineExpose({ begin })
           <UFormField :label="t('cluster.w.vip')" :hint="t('cluster.w.optional')"><UInput v-model="ini.vip" class="w-full" placeholder="192.0.2.10" :disabled="busy" /></UFormField>
           <UFormField :label="t('cluster.w.vip_iface')"><USelectMenu v-if="addrs.length" v-model="ini.vipIface" class="w-full" :items="[...new Set(addrs.map((a: any) => a.iface))]" :disabled="busy || !ini.vip" /><UInput v-else v-model="ini.vipIface" class="w-full" placeholder="ens18" :disabled="busy || !ini.vip" /></UFormField>
         </div>
+        <UAlert v-if="missing.length" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('cluster.w.missing', { list: missing.join(', ') })" :description="installCmd" />
         <UAlert color="info" variant="subtle" icon="i-lucide-info" :title="t('cluster.w.init.note')" />
         <label class="text-sm">{{ t('cluster.op.type', { v: ini.node || '…' }) }}<UInput v-model="ini.confirm" class="w-full mt-1" autocomplete="off" :disabled="busy" /></label>
       </div>
 
       <div v-else-if="mode === 'join'" class="flex flex-col gap-3">
+        <UAlert v-if="missing.length" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('cluster.w.missing', { list: missing.join(', ') })" :description="installCmd" />
         <UAlert color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="t('cluster.w.join.warn_title')" :description="t('cluster.w.join.warn_desc')" />
         <UFormField :label="t('cluster.w.join.file')"><input type="file" class="block w-full text-sm" :disabled="busy" @change="pick"></UFormField>
         <UFormField :label="t('cluster.w.join.pass')"><UInput v-model="jn.pass" class="w-full" type="password" autocomplete="off" :disabled="busy" /></UFormField>
@@ -126,8 +130,8 @@ defineExpose({ begin })
         <template v-if="mode === 'add' && step === 'done'"><UButton :label="t('cluster.w.add.finish')" @click="close" /></template>
         <template v-else>
           <UButton color="neutral" variant="outline" :label="t('common.cancel')" :disabled="busy" @click="close" />
-          <UButton v-if="mode === 'init'" :label="t('cluster.w.init.go')" :disabled="!initOk || busy" :loading="busy" @click="submitInit" />
-          <UButton v-else-if="mode === 'join'" color="error" :label="t('cluster.w.join.go')" :disabled="!joinOk || busy" :loading="busy" @click="submitJoin" />
+          <UButton v-if="mode === 'init'" :label="t('cluster.w.init.go')" :disabled="!initOk || busy || missing.length > 0" :loading="busy" @click="submitInit" />
+          <UButton v-else-if="mode === 'join'" color="error" :label="t('cluster.w.join.go')" :disabled="!joinOk || busy || missing.length > 0" :loading="busy" @click="submitJoin" />
           <UButton v-else :label="t('cluster.w.add.go')" :disabled="!addOk || busy" :loading="busy" @click="submitAdd" />
         </template>
       </div>

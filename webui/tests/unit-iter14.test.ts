@@ -130,3 +130,38 @@ describe('mise à jour du cluster : état publié et refus préalables', () => {
     expect(R(c, { update: upd({ order: { target: '0.9.13', at: 1, by: 'n1' } }) })).toBeNull()
   })
 })
+
+// 0.9.14 — réglages de session communs : relecture stricte de la valeur enregistrée.
+import { envSessionDefaults, parseSessionSetting, SESSION_LIMITS } from '../server/utils/session-settings'
+describe('réglages de session communs', () => {
+  const d = { hours: 8, idleMinutes: 30 }
+  it('valeur valide conservée', () => expect(parseSessionSetting({ hours: 12, idleMinutes: 60 }, d)).toEqual({ hours: 12, idleMinutes: 60 }))
+  it('hors bornes, texte, flottant, absent : défaut du nœud champ par champ', () => {
+    expect(parseSessionSetting({ hours: 0, idleMinutes: 5 }, d)).toEqual({ hours: 8, idleMinutes: 5 })
+    expect(parseSessionSetting({ hours: SESSION_LIMITS.hours.max + 1, idleMinutes: 'x' }, d)).toEqual(d)
+    expect(parseSessionSetting({ hours: 1.5, idleMinutes: 99999 }, d)).toEqual(d)
+    expect(parseSessionSetting(null, d)).toEqual(d)
+    expect(parseSessionSetting([1, 2], d)).toEqual(d)
+    expect(parseSessionSetting('abc', d)).toEqual(d)
+  })
+  it('défauts du nœud toujours dans les bornes', () => {
+    const e = envSessionDefaults()
+    expect(e.hours).toBeGreaterThanOrEqual(SESSION_LIMITS.hours.min); expect(e.hours).toBeLessThanOrEqual(SESSION_LIMITS.hours.max)
+    expect(e.idleMinutes).toBeGreaterThanOrEqual(SESSION_LIMITS.idle.min); expect(e.idleMinutes).toBeLessThanOrEqual(SESSION_LIMITS.idle.max)
+  })
+  it('jeton signé : durée donnée, plafonnée à 4 h', () => {
+    const u = { id: 1, password_hash: 'h', source: 'local' }
+    expect(signReplicaSession(u, 1_000_000, 2).maxAge).toBe(7200)
+    expect(signReplicaSession(u, 1_000_000, 30).maxAge).toBe(4 * 3600)
+  })
+})
+
+import { missingClusterTools } from '../server/utils/cluster'
+describe('composants du cluster (0.9.14)', () => {
+  it('liste ce qui manque, selon les dossiers fournis', () => {
+    const have = new Set(['/usr/bin/etcd', '/usr/bin/etcdctl'])
+    expect(missingClusterTools(['/usr/bin', '', '/opt'], (p) => have.has(p))).toEqual(['patroni', 'patronictl'])
+    expect(missingClusterTools(['/usr/bin'], () => true)).toEqual([])
+    expect(missingClusterTools([], () => true)).toHaveLength(4)
+  })
+})

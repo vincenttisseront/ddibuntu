@@ -6,7 +6,7 @@ import { audit, fail, route } from '../utils/router'
 import { inRecovery } from '../utils/db'
 import { cfg } from '../utils/config'
 import { randomBytes } from 'node:crypto'
-import { actionRefusal, bundleRefusal, localAddresses, NODE_NAME_RE, readClusterState, readSwitchoverResult, shortHostname, switchoverCandidates } from '../utils/cluster'
+import { actionRefusal, bundleRefusal, CLUSTER_INSTALL_CMD, localAddresses, missingClusterTools, NODE_NAME_RE, readClusterState, readSwitchoverResult, shortHostname, switchoverCandidates } from '../utils/cluster'
 import { DRILL_ID_RE, drillBusy, readDrillCheck, readDrillLive, readDrills } from '../utils/drill'
 
 // Public et minimal : l'écran de connexion d'un nœud secondaire doit pouvoir l'expliquer (aucune adresse ni nom de nœud).
@@ -18,7 +18,7 @@ route('GET', '/cluster/status', 'viewer', async () => {
   return {
     clustered: state !== null, replica: await inRecovery(), state, candidates: switchoverCandidates(state), result: await readSwitchoverResult(),
     // hors cluster : de quoi remplir l'assistant de création (adresses réelles du serveur, nom de la machine)
-    ...(state === null ? { setup: { hostname: shortHostname(), addresses: localAddresses(cfg().testMode) } } : {}),
+    ...(state === null ? { setup: { hostname: shortHostname(), addresses: localAddresses(cfg().testMode), missing: cfg().testMode ? [] : missingClusterTools(), install: CLUSTER_INSTALL_CMD } } : {}),
     // dans un cluster : interfaces et adresses de CE serveur (formulaires de réglages) — liste vide si le service durci ne peut pas les lire
     ...(state !== null ? { local: { addresses: localAddresses(cfg().testMode) } } : {}),
   }

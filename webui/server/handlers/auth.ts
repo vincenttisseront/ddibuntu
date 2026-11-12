@@ -3,6 +3,7 @@ import { audit, clearSessionCookie, fail, route, setSessionCookie, COOKIE } from
 import { one, query, tx, getSetting, isSchemaReady, inRecovery } from '../utils/db'
 import { cfg } from '../utils/config'
 import { createSession, destroySession, REPLICA_TOKEN_PREFIX, replicaLoginBlocked, replicaRecordAttempt, signReplicaSession, destroyUserSessions, dummyVerify, hashPassword, loginBlocked, passwordPolicyError, recordAttempt, safeEqual, verifyPassword, decryptSecret } from '../utils/auth'
+import { sessionSettings } from '../utils/session-settings'
 import { AD_DEFAULTS, authenticateAd, defaultLdapFactory } from '../utils/ad'
 import type { AdSettings } from '../utils/ad'
 import { getCookie, getRequestHeader } from 'h3'
@@ -53,7 +54,7 @@ route('POST', '/auth/login', 'public', async (c) => {
   if (userId === null) { await audit(c, 'login_failed', 'user', undefined, { username: b.username.slice(0, 64) }); fail(401, 'bad_credentials') }
   const me = await one<any>('select id, username, role, source, display_name, password_hash from users where id = $1', [userId])
   let s: { token: string; csrf: string; maxAge: number }
-  if (replica) s = signReplicaSession(me)
+  if (replica) s = signReplicaSession(me, Date.now(), (await sessionSettings()).hours)
   else { await query('update users set last_login = now() where id = $1', [userId]); s = await createSession(userId, c.ip, getRequestHeader(c.event, 'user-agent') ?? null) }
   setSessionCookie(c.event, s.token, s.maxAge)
   c.user = { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name, csrf: s.csrf, sessionId: 0 }

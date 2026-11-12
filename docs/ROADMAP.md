@@ -75,7 +75,7 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
     4h. ~~**0.9.11**~~ ✅ fait — Cluster : sélecteur de nœuds, bandeau et accès à l'adresse de service, nœud préféré du primaire, connexion sur un secondaire (jeton signé), icône de l'onglet.
     4i. ~~**0.9.12**~~ ✅ fait — Correctif intercalaire : plus de demandes d'actualisation (409 répétés) hors cluster.
     4j. ~~**0.9.13**~~ ✅ fait — Mise à jour du cluster nœud par nœud (ordre commun, arbitre → secondaires → primaire, un échec arrête la file).
-    4k. **0.9.14** — Réglages de session communs à tous les nœuds (durée, inactivité) et contrôle de cohérence des comptes entre nœuds.
+    4k. ~~**0.9.14**~~ ✅ fait — Réglages de session communs à tous les nœuds (durée, inactivité) ; composants du cluster vérifiés avant l'assistant. (Reste : contrôle de cohérence des comptes entre nœuds, repris plus tard.)
     6. **0.9.15** — Traçabilité bail / MAC / nom / utilisateur AD.
     7. **0.9.16** — Découverte planifiée et alertes d'hygiène.
     8. **0.9.17** — API : description OpenAPI et jetons d'API.

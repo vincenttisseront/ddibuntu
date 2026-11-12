@@ -22,7 +22,8 @@ const { data: deps } = await useFetch<any>('/api/system/deployments')
 <template>
   <div class="flex flex-col gap-3">
     <UTabs v-model="tab" :items="tabs" :content="false" :aria-label="t('nav.system')" />
-    <ResourceTable v-if="tab === 'users'" endpoint="/users" :columns="userCols" :fields="userFields" can-write create-url="/users" :update-url="(r: any) => `/users/${r.id}`" :delete-url="(r: any) => `/users/${r.id}`" :delete-name="(r: any) => r.username" :create-label="t('system.add_user')" :transform="userBody" />
+    <div v-if="tab === 'users'" class="flex flex-col gap-3"><SessionSettings />
+          <ResourceTable endpoint="/users" :columns="userCols" :fields="userFields" can-write create-url="/users" :update-url="(r: any) => `/users/${r.id}`" :delete-url="(r: any) => `/users/${r.id}`" :delete-name="(r: any) => r.username" :create-label="t('system.add_user')" :transform="userBody" /></div>
     <ResourceTable v-else-if="tab === 'audit'" endpoint="/audit" :columns="auditCols" searchable />
     <AlertsPanel v-else-if="tab === 'alerts'" />
     <BackupPanel v-else-if="tab === 'backup'" />

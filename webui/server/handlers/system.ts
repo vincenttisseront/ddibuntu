@@ -5,6 +5,7 @@ import { applyConfig, buildConfig, configState } from '../utils/apply'
 import { capacity, parseCidr } from '../utils/net'
 import { RECORD_TYPES } from '../utils/dns'
 import { z } from 'zod'
+import { envSessionDefaults, resetSessionSettings, saveSessionSettings, SESSION_LIMITS, sessionSettings } from '../utils/session-settings'
 import { reconcileDeployments, readReloadStatus } from '../utils/reload-status'
 import { hostInfo } from '../utils/hostinfo'
 import { ROLE_RANK } from '../utils/auth'
@@ -120,3 +121,22 @@ async function supervision() {
   }
   return { node, cluster, backup, alerts }
 }
+
+// ---- Réglages de session communs au cluster (0.9.14) : durée maximale et inactivité, en base donc identiques sur tous les nœuds ----
+const SessionBody = z.object({
+  hours: z.number().int().min(SESSION_LIMITS.hours.min).max(SESSION_LIMITS.hours.max),
+  idleMinutes: z.number().int().min(SESSION_LIMITS.idle.min).max(SESSION_LIMITS.idle.max),
+}).strict()
+const sessionView = async () => { const s = await sessionSettings(); return { hours: s.hours, idleMinutes: s.idleMinutes, stored: s.stored, defaults: envSessionDefaults(), limits: SESSION_LIMITS } }
+route('GET', '/system/session', 'admin', async () => sessionView())
+route('PUT', '/system/session', 'admin', async (c) => {
+  const b = await c.body(SessionBody)
+  await saveSessionSettings(b)
+  await audit(c, 'session_settings', 'system', undefined, b)
+  return sessionView()
+})
+route('DELETE', '/system/session', 'admin', async (c) => {
+  await resetSessionSettings()
+  await audit(c, 'session_settings_reset', 'system')
+  return sessionView()
+})

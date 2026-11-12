@@ -170,3 +170,44 @@ describe('mise à jour du cluster, nœud par nœud (demandes)', () => {
     writeFileSync(CL, state())
   })
 })
+
+describe('0.9.14 — réglages de session communs', () => {
+  const loginMaxAge = async () => {
+    const r = await fetch(BASE + '/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: PW }) })
+    const c = (r.headers.getSetCookie?.() ?? []).find((x) => x.startsWith('ddi_session=')) ?? ''
+    return Number(/Max-Age=(\d+)/i.exec(c)?.[1] ?? 0)
+  }
+  it('nœud hors cluster : l\'état annonce les composants manquants (vide en mode test)', async () => {
+    const r = await admin.get('/api/cluster/status'); expect(r.status).toBe(200)
+    if (r.json.setup) { expect(r.json.setup.missing).toEqual([]); expect(r.json.setup.install).toContain('apt install') }
+  })
+  it('réservé aux administrateurs', async () => {
+    expect((await viewer.get('/api/system/session')).status).toBe(403)
+    expect((await viewer.put('/api/system/session', { hours: 4, idleMinutes: 20 })).status).toBe(403)
+    expect((await anon.get('/api/system/session')).status).toBe(401)
+  })
+  it('valeurs par défaut du nœud tant que rien n\'est enregistré', async () => {
+    const r = await admin.get('/api/system/session'); expect(r.status).toBe(200)
+    expect(r.json.stored).toBe(false); expect(r.json.hours).toBe(r.json.defaults.hours); expect(r.json.limits.hours.max).toBe(72)
+  })
+  it('refus : hors bornes, flottant, champ inconnu, champ manquant', async () => {
+    for (const b of [{ hours: 0, idleMinutes: 30 }, { hours: 73, idleMinutes: 30 }, { hours: 8, idleMinutes: 4 }, { hours: 8, idleMinutes: 1441 }, { hours: 1.5, idleMinutes: 30 }, { hours: 8, idleMinutes: 30, x: 1 }, { hours: 8 }])
+      code(await admin.put('/api/system/session', b), 400, 'validation')
+  })
+  it('enregistrement : stocké en base, durée appliquée aux nouvelles connexions, audité', async () => {
+    const r = await admin.put('/api/system/session', { hours: 3, idleMinutes: 45 }); expect(r.status, r.text).toBe(200)
+    expect([r.json.hours, r.json.idleMinutes, r.json.stored]).toEqual([3, 45, true])
+    expect((await db.query("select value from settings where key = 'session'")).rows[0].value).toEqual({ hours: 3, idleMinutes: 45 })
+    expect(await loginMaxAge()).toBe(3 * 3600)
+    expect((await db.query("select 1 from audit_log where action = 'session_settings'")).rowCount).toBeGreaterThan(0)
+  })
+  it('valeur corrompue en base : retour au défaut, la connexion reste possible', async () => {
+    await db.query("update settings set value = '{\"hours\":99999,\"idleMinutes\":\"x\"}'::jsonb where key = 'session'")
+    await new Promise((r) => setTimeout(r, 16000))
+    expect((await admin.get('/api/system/session')).json.hours).toBe((await admin.get('/api/system/session')).json.defaults.hours)
+  }, 30000)
+  it('retour aux valeurs par défaut', async () => {
+    const r = await admin.delete('/api/system/session'); expect(r.status).toBe(200); expect(r.json.stored).toBe(false)
+    expect((await db.query("select 1 from settings where key = 'session'")).rowCount).toBe(0)
+  })
+})

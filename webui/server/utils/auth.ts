@@ -3,6 +3,7 @@ import { randomBytes, pbkdf2, timingSafeEqual, createHash, createHmac, createCip
 import { promisify } from 'node:util'
 import { cfg, requireSecret } from './config'
 import { one, query } from './db'
+import { sessionSettings } from './session-settings'
 
 const pbkdf2p = promisify(pbkdf2)
 export const sha256hex = (s: string) => createHash('sha256').update(s).digest('hex')
@@ -63,12 +64,12 @@ export interface SessionUser { id: number; username: string; role: Role; source:
 
 export async function createSession(userId: number, ip: string | null, ua: string | null) {
   const token = newToken(), csrf = newToken(24)
-  const c = cfg()
+  const ss = await sessionSettings()
   await query(
     `insert into sessions (token_hash, user_id, csrf_token, expires_at, ip, user_agent)
      values ($1, $2, $3, now() + make_interval(hours => $4), $5, $6)`,
-    [sha256hex(token), userId, csrf, c.sessionHours, ip, ua?.slice(0, 300) ?? null])
-  return { token, csrf, maxAge: c.sessionHours * 3600 }
+    [sha256hex(token), userId, csrf, ss.hours, ip, ua?.slice(0, 300) ?? null])
+  return { token, csrf, maxAge: ss.hours * 3600 }
 }
 // ---- Sessions « signées » (nœud secondaire du cluster, 0.9.11) ----
 // Un secondaire ne peut rien écrire en base : pas de ligne « sessions ». Sa connexion délivre donc un jeton SIGNÉ (HMAC-SHA256 avec une clé dérivée de
@@ -82,8 +83,8 @@ const b64u = (b: Buffer | string) => Buffer.from(b).toString('base64url')
 const hmac = (label: string, data: string) => createHmac('sha256', rkey()).update(label + '\0' + data).digest()
 // empreinte de l'identifiant d'authentification : change avec le mot de passe local (ou le mode de compte) ; ne révèle rien du hachage
 export const credentialStamp = (u: { id: number; password_hash: string | null; source: string }) => sha256hex(`${u.id}|${u.source}|${u.password_hash ?? ''}`).slice(0, 16)
-export function signReplicaSession(u: { id: number; password_hash: string | null; source: string }, now = Date.now()) {
-  const hours = Math.min(cfg().sessionHours, REPLICA_SESSION_MAX_HOURS)
+export function signReplicaSession(u: { id: number; password_hash: string | null; source: string }, now = Date.now(), sessionHours = cfg().sessionHours) {
+  const hours = Math.min(sessionHours, REPLICA_SESSION_MAX_HOURS)
   const payload = b64u(JSON.stringify({ u: u.id, e: Math.floor(now / 1000) + hours * 3600, n: newToken(12), v: credentialStamp(u) }))
   return { token: `${REPLICA_TOKEN_PREFIX}${payload}.${b64u(hmac('sig', payload))}`, csrf: b64u(hmac('csrf', payload)), maxAge: hours * 3600 }
 }
@@ -122,13 +123,13 @@ export function replicaRecordAttempt(username: string, ip: string | null, succes
 
 export async function sessionFromToken(token: string): Promise<SessionUser | null> {
   if (token.startsWith(REPLICA_TOKEN_PREFIX)) return sessionFromSigned(token)
-  const c = cfg()
+  const ss = await sessionSettings()
   const r = await one<any>(
     `select s.id as sid, s.csrf_token, u.id, u.username, u.role, u.source, u.display_name
        from sessions s join users u on u.id = s.user_id
       where s.token_hash = $1 and s.expires_at > now()
         and s.last_seen > now() - make_interval(mins => $2) and not u.disabled`,
-    [sha256hex(token), c.idleMinutes])
+    [sha256hex(token), ss.idleMinutes])
   if (!r) return null
   // meilleur effort : sur un nœud secondaire la base est en lecture seule (la session, répliquée, reste lisible)
   await query('update sessions set last_seen = now() where id = $1 and last_seen < now() - interval \'30 seconds\'', [r.sid]).catch((e: any) => { if (e?.code !== '25006') throw e })
