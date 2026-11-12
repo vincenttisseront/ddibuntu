@@ -429,6 +429,11 @@ activate() {
     # PostgreSQL passe sous la conduite de Patroni : l'unité Debian ne doit plus jamais le démarrer elle-même
     sysctl_do disable --now "postgresql@${C[PGVER]}-main.service" 2>/dev/null || true
     sysctl_do mask "postgresql@${C[PGVER]}-main.service" 2>/dev/null || true
+    # Patroni (utilisateur postgres) réécrit postgresql.conf dans ce dossier : il doit appartenir à postgres, comme à l'installation Debian
+    # (constaté sur un nœud réel : « PermissionError … postgresql.conf -> postgresql.base.conf », Patroni ne démarrait pas)
+    if [ -n "${C[PG_CONFIG_DIR]}" ] && [ -z "${DDI_TEST:-}" ] && [ -d "$ROOT${C[PG_CONFIG_DIR]}" ]; then
+      chown -R postgres:postgres "$ROOT${C[PG_CONFIG_DIR]}" 2>/dev/null || log "AVERTISSEMENT : droits de ${C[PG_CONFIG_DIR]} non corrigés"
+    fi
   fi
   sysctl_do daemon-reload
   # redémarrage (et non « --now ») : le paquet Debian démarre etcd avec sa configuration par défaut (sans TLS, adresse locale) dès son installation ;

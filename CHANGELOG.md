@@ -1,5 +1,9 @@
 # Journal des modifications
 
+## 0.9.20 — « Création de cluster : droits du dossier de configuration PostgreSQL »
+- Correctif constaté sur un nœud réel : Patroni ne démarrait pas (`PermissionError … /etc/postgresql/16/main/postgresql.conf -> postgresql.base.conf`). L'activation d'un nœud de données remet le dossier de configuration PostgreSQL à `postgres:postgres` (propriétaire d'une installation Debian) avant de démarrer Patroni.
+- Pour un nœud déjà dans cet état : `sudo chown -R postgres:postgres /etc/postgresql/16/main; sudo systemctl reset-failed patroni; sudo systemctl restart patroni`.
+
 ## 0.9.19 — « Interface plus compacte »
 - Affichage global réduit de 20 % (polices, cartes, tableaux, espacements) : échelle unique `html { font-size: 80% }` dans `main.css`.
 
