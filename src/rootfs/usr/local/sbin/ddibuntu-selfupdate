@@ -35,6 +35,7 @@ BACKUPS="$DDI_STATEDIR/update-backup"
 PUBKEY="${DDI_UPDATE_PUBKEY:-$DDI_CONFDIR/update-pubkey.pem}"
 TOKFILE="$DDI_CONFDIR/update-token"
 API="${DDI_UPDATE_API:-https://api.github.com}"
+WEB="${DDI_UPDATE_WEB:-https://github.com}"
 APP="$DDI_ROOT/opt/ddibuntu"
 REPO=""; AUTO_CHECK=1
 MAX_BUNDLE=$((400 * 1024 * 1024))
@@ -99,6 +100,19 @@ gh_curl() {
 
 # ---- release la plus récente ----
 REL_JSON=""; LATEST=""; NOTES=""; PAGE=""; PUBLISHED=""; BUNDLE_URL=""; SUMS_URL=""; SIG_URL=""; BUNDLE_NAME=""
+# Repli quand l'API est limitée : la page « releases/latest » redirige vers le dernier tag, et les fichiers se téléchargent par leur adresse publique.
+# Rien n'est pris sur parole : la signature de SHA256SUMS est vérifiée avant toute installation.
+fetch_release_web() {
+  local url ver
+  url="$(gh_curl -o /dev/null -w '%{url_effective}' "$WEB/$REPO/releases/latest" 2>/dev/null)" || return 1
+  [[ "$url" =~ /releases/tag/v?([0-9]+\.[0-9]+\.[0-9]+)$ ]] || return 1
+  ver="${BASH_REMATCH[1]}"
+  LATEST="$ver"; PAGE="$WEB/$REPO/releases/tag/v$ver"; PUBLISHED=""; NOTES=""
+  BUNDLE_NAME="ddibuntu-update-$ver.tar.gz"
+  BUNDLE_URL="$WEB/$REPO/releases/download/v$ver/$BUNDLE_NAME"; SUMS_URL="$WEB/$REPO/releases/download/v$ver/SHA256SUMS"; SIG_URL="$WEB/$REPO/releases/download/v$ver/SHA256SUMS.sig"
+  log "API GitHub limitée : release $ver lue sur le site web"
+  return 0
+}
 fetch_release() {
   REL_JSON="$(mktemp)"
   local code out
@@ -106,7 +120,7 @@ fetch_release() {
   case "$code" in
     200) ;;
     404) rm -f "$REL_JSON"; return 4 ;;      # aucune release publiée (ou dépôt privé sans jeton : GitHub répond aussi 404)
-    401|403|429) rm -f "$REL_JSON"; return 5 ;;   # jeton refusé ou limite de débit de l'API GitHub
+    401|403|429) rm -f "$REL_JSON"; fetch_release_web && return 0; return 5 ;;   # jeton refusé ou limite de débit de l'API GitHub (60 requêtes/h/IP sans jeton : plusieurs nœuds derrière la même adresse la saturent) : repli sur le site web
     *) rm -f "$REL_JSON"; return 1 ;;        # réseau, DNS, proxy, TLS : pas de réponse HTTP
   esac
   out="$(python3 - "$REL_JSON" <<'PY'
@@ -193,7 +207,13 @@ cmd_apply() {
   [ -f "$PUBKEY" ] || die "clé publique de signature absente ($PUBKEY) : mise à jour refusée"
   cur="$(ddi_version)"
   st "current=$cur" state=checking "message=Recherche de la version $want" error= "target=$want"
-  fetch_release || die "impossible de relire la dernière release sur GitHub"
+  local frc=0; fetch_release || frc=$?
+  case "$frc" in
+    0) ;;
+    1) die "impossible de joindre GitHub (réseau, DNS, proxy ou pare-feu sortant de ce nœud : api.github.com et github.com en 443)" ;;
+    5) die "GitHub a refusé la requête (limite de débit de l'API ou jeton invalide) : réessayer dans quelques minutes" ;;
+    *) die "impossible de relire la dernière release sur GitHub (code $frc)" ;;
+  esac
   [ "$LATEST" = "$want" ] || die "la version demandée ($want) n'est plus la dernière release ($LATEST) : relancer la recherche"
   newer "$LATEST" "$cur" || die "la version $LATEST n'est pas plus récente que la version installée ($cur)"
   if [ -z "$BUNDLE_URL" ] || [ -z "$SUMS_URL" ] || [ -z "$SIG_URL" ]; then die "la release $LATEST n'a pas tous ses fichiers signés"; fi

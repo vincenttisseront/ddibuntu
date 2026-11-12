@@ -146,4 +146,33 @@ expect_eq "check sans réseau : code 1" 1 "$(bash "$SU" check >"$W/out.log" 2>&1
 if jget "$ST" error | grep -q "joindre GitHub"; then ok "erreur lisible dans l'état"; else ko "erreur" "$(jget "$ST" error)"; fi
 expect_eq "check sans réseau : version actuelle conservée" 0.5.0 "$(jget "$ST" current)"
 
+echo "== 8. API GitHub limitée (403) : repli sur le site web =="
+mkrelease 0.6.0 "$W/priv.pem"
+PORT2=$((PORT + 1))
+cat > "$W/rate.py" <<'PY'
+import http.server, os, sys
+dl, port = sys.argv[1], int(sys.argv[2])
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        p = self.path
+        if p.startswith('/repos/'): self.send_response(403); self.end_headers(); self.wfile.write(b'rate limit exceeded'); return
+        if p == '/acme/ddibuntu/releases/latest': self.send_response(302); self.send_header('Location', '/acme/ddibuntu/releases/tag/v0.6.0'); self.end_headers(); return
+        if p == '/acme/ddibuntu/releases/tag/v0.6.0': self.send_response(200); self.end_headers(); self.wfile.write(b'ok'); return
+        if p.startswith('/acme/ddibuntu/releases/download/v0.6.0/'):
+            f = os.path.join(dl, p.rsplit('/', 1)[1])
+            if os.path.isfile(f): self.send_response(200); self.end_headers(); self.wfile.write(open(f, 'rb').read()); return
+        self.send_response(404); self.end_headers()
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PY
+python3 "$W/rate.py" "$SRV/dl" "$PORT2" >/dev/null 2>&1 & RATE_PID=$!
+sleep 1
+export DDI_UPDATE_API="http://127.0.0.1:$PORT2" DDI_UPDATE_WEB="http://127.0.0.1:$PORT2"
+expect_eq "check avec API limitée : code 0" 0 "$(bash "$SU" check >"$W/out.log" 2>&1; echo $?)"
+expect_eq "…la dernière release est lue sur le site" 0.6.0 "$(jget "$ST" latest)"
+expect_eq "…et elle est proposée" true "$(jget "$ST" available)"
+expect_eq "apply avec API limitée : code 0" 0 "$(req '{"action":"apply","version":"0.6.0"}')"
+expect_eq "…version installée" 0.6.0 "$(cat "$R/var/lib/ddibuntu/installed-version")"
+kill "$RATE_PID" 2>/dev/null
+
 finish
