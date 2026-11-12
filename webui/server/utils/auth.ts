@@ -60,7 +60,7 @@ export function decryptSecret(enc: string): string {
 // ---- Sessions ----
 export type Role = 'viewer' | 'operator' | 'admin'
 export const ROLE_RANK: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 }
-export interface SessionUser { id: number; username: string; role: Role; source: string; displayName: string | null; csrf: string; sessionId: number }
+export interface SessionUser { id: number; username: string; role: Role; source: string; displayName: string | null; csrf: string; sessionId: number; spaceIds?: number[] | null }
 
 export async function createSession(userId: number, ip: string | null, ua: string | null) {
   const token = newToken(), csrf = newToken(24)
@@ -101,9 +101,9 @@ export function parseReplicaToken(token: string, now = Date.now()): { uid: numbe
 }
 async function sessionFromSigned(token: string): Promise<SessionUser | null> {
   const p = parseReplicaToken(token); if (!p) return null
-  const u = await one<any>('select id, username, role, source, display_name, password_hash, disabled from users where id = $1', [p.uid])
+  const u = await one<any>('select id, username, role, source, display_name, password_hash, disabled, space_ids from users where id = $1', [p.uid])
   if (!u || u.disabled || credentialStamp(u) !== p.stamp) return null
-  return { id: u.id, username: u.username, role: u.role, source: u.source, displayName: u.display_name, csrf: p.csrf, sessionId: 0 }
+  return { id: u.id, username: u.username, role: u.role, source: u.source, displayName: u.display_name, csrf: p.csrf, sessionId: 0, spaceIds: u.space_ids ?? null }
 }
 // Anti-force brute d'un secondaire : compteur en mémoire (le journal des tentatives est en lecture seule ici), ajouté à celui qui est répliqué.
 const replicaFails = new Map<string, number[]>()
@@ -125,7 +125,7 @@ export async function sessionFromToken(token: string): Promise<SessionUser | nul
   if (token.startsWith(REPLICA_TOKEN_PREFIX)) return sessionFromSigned(token)
   const ss = await sessionSettings()
   const r = await one<any>(
-    `select s.id as sid, s.csrf_token, u.id, u.username, u.role, u.source, u.display_name
+    `select s.id as sid, s.csrf_token, u.id, u.username, u.role, u.source, u.display_name, u.space_ids
        from sessions s join users u on u.id = s.user_id
       where s.token_hash = $1 and s.expires_at > now()
         and s.last_seen > now() - make_interval(mins => $2) and not u.disabled`,
@@ -133,7 +133,7 @@ export async function sessionFromToken(token: string): Promise<SessionUser | nul
   if (!r) return null
   // meilleur effort : sur un nœud secondaire la base est en lecture seule (la session, répliquée, reste lisible)
   await query('update sessions set last_seen = now() where id = $1 and last_seen < now() - interval \'30 seconds\'', [r.sid]).catch((e: any) => { if (e?.code !== '25006') throw e })
-  return { id: r.id, username: r.username, role: r.role, source: r.source, displayName: r.display_name, csrf: r.csrf_token, sessionId: Number(r.sid) }
+  return { id: r.id, username: r.username, role: r.role, source: r.source, displayName: r.display_name, csrf: r.csrf_token, sessionId: Number(r.sid), spaceIds: r.space_ids ?? null }
 }
 export async function destroySession(token: string) { await query('delete from sessions where token_hash = $1', [sha256hex(token)]) }
 export async function destroyUserSessions(userId: number) { await query('delete from sessions where user_id = $1', [userId]) }

@@ -140,6 +140,8 @@ export async function dispatch(event: H3Event): Promise<unknown> {
       }
       if (user.source === 'token' && path.startsWith('/auth/') && path !== '/auth/me') fail(403, 'forbidden')   // mot de passe, sessions… : réservés aux comptes
       if (ROLE_RANK[user.role] < ROLE_RANK[entry.role]) fail(403, 'forbidden')
+      // délégation : un opérateur restreint à des espaces IPAM n'écrit que dans l'IPAM (les routes /ipam/ vérifient l'espace elles-mêmes)
+      if (unsafe && user.spaceIds && ROLE_RANK[entry.role] >= ROLE_RANK.operator && !path.startsWith('/ipam/')) fail(403, 'out_of_scope')
     }
     const ctx: Ctx = {
       event, params, user, ip,

@@ -149,7 +149,7 @@ function readOptions(vals: any[], plan: DhcpPlan, scope: string | undefined): Dh
 // Authentification Active Directory (LDAPS)
 export interface AdSettings {
   enabled: boolean; urls: string[]; baseDn: string; bindDn: string; bindPasswordEnc?: string
-  userAttr: 'sAMAccountName' | 'userPrincipalName'; groupMap: Array<{ groupDn: string; role: Role }>
+  userAttr: 'sAMAccountName' | 'userPrincipalName'; groupMap: Array<{ groupDn: string; role: Role; spaceIds?: number[] }>
   nestedGroups: boolean; tlsRejectUnauthorized: boolean; caPem?: string
 }
 export const AD_DEFAULTS: AdSettings = { enabled: false, urls: [], baseDn: '', bindDn: '', userAttr: 'sAMAccountName', groupMap: [], nestedGroups: true, tlsRejectUnauthorized: true }
@@ -168,7 +168,13 @@ export function defaultLdapFactory(s: AdSettings): (url: string) => LdapLike {
   return (url) => new Client({ url, timeout: 8000, connectTimeout: 5000, tlsOptions: { rejectUnauthorized: s.tlsRejectUnauthorized, ...(s.caPem ? { ca: s.caPem } : {}) } }) as unknown as LdapLike
 }
 
-export type AdResult = { ok: true; dn: string; displayName: string; username: string; role: Role } | { ok: false; reason: 'disabled' | 'empty_password' | 'service_bind' | 'not_found' | 'bad_credentials' | 'no_group' | 'unreachable' }
+/** Périmètre délégué : null = tout ; sinon union des espaces IPAM des groupes qui donnent le rôle retenu (un groupe sans périmètre lève la restriction). */
+export function delegatedSpaces(role: Role, groups: Array<{ spaceIds?: number[] }>): number[] | null {
+  if (role === 'admin' || !groups.length || groups.some((g) => !g.spaceIds?.length)) return null
+  return [...new Set(groups.flatMap((g) => g.spaceIds!))].sort((a, b) => a - b)
+}
+
+export type AdResult = { ok: true; dn: string; displayName: string; username: string; role: Role; spaceIds: number[] | null } | { ok: false; reason: 'disabled' | 'empty_password' | 'service_bind' | 'not_found' | 'bad_credentials' | 'no_group' | 'unreachable' }
 
 export async function authenticateAd(username: string, password: string, s: AdSettings, bindPassword: string, factory: (url: string) => LdapLike): Promise<AdResult> {
   if (!s.enabled || !s.urls.length) return { ok: false, reason: 'disabled' }
@@ -186,19 +192,22 @@ export async function authenticateAd(username: string, password: string, s: AdSe
       const dn = String(e.dn)
       const groups = arr(e.memberOf).map((g) => dnNorm(String(g)))
       let role: Role | null = null
+      const matched: Array<{ role: Role; spaceIds?: number[] }> = []
       for (const m of s.groupMap) {
         let member = groups.includes(dnNorm(m.groupDn))
         if (!member && s.nestedGroups) {
           const n = await svc.search(s.baseDn, { scope: 'sub', filter: `(&(distinguishedName=${escapeFilter(dn)})(memberOf:${NESTED}:=${escapeFilter(m.groupDn)}))`, attributes: ['dn'], sizeLimit: 1 })
           member = n.searchEntries.length > 0
         }
+        if (member) matched.push(m)
         if (member && (!role || RANK[m.role] > RANK[role])) role = m.role
       }
       // authentification de l'utilisateur sur une connexion distincte
       const usr = factory(url)
       try { await usr.bind(dn, password) } catch { return { ok: false, reason: 'bad_credentials' } } finally { await usr.unbind().catch(() => undefined) }
       if (!role) return { ok: false, reason: 'no_group' }
-      return { ok: true, dn, displayName: String(arr(e.displayName)[0] ?? username), username: String(arr(e[s.userAttr])[0] ?? username), role }
+      const spaceIds = delegatedSpaces(role, matched.filter((m) => m.role === role))
+      return { ok: true, dn, spaceIds, displayName: String(arr(e.displayName)[0] ?? username), username: String(arr(e[s.userAttr])[0] ?? username), role }
     } catch { lastErr = 'unreachable' } finally { await svc.unbind().catch(() => undefined) }
   }
   return { ok: false, reason: lastErr }

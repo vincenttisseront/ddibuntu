@@ -185,7 +185,7 @@ route('GET', '/import/runs', 'operator', async () => ({ items: await query('sele
 const adBody = z.object({
   enabled: z.boolean(), urls: z.array(z.string().regex(/^ldaps:\/\/[A-Za-z0-9._-]+(:\d{1,5})?$/, 'ldaps')).max(5), baseDn: z.string().max(500), bindDn: z.string().max(500),
   bindPassword: z.string().max(200).optional(), userAttr: z.enum(['sAMAccountName', 'userPrincipalName']),
-  groupMap: z.array(z.object({ groupDn: z.string().min(3).max(500), role: z.enum(['admin', 'operator', 'viewer']) })).max(20),
+  groupMap: z.array(z.object({ groupDn: z.string().min(3).max(500), role: z.enum(['admin', 'operator', 'viewer']), spaceIds: z.array(z.number().int().positive()).max(50).optional() })).max(20),
   nestedGroups: z.boolean(), tlsRejectUnauthorized: z.boolean(), caPem: z.string().max(20000).regex(/^(|-----BEGIN CERTIFICATE-----[\s\S]*-----END CERTIFICATE-----\s*)$/).optional(),
 })
 route('GET', '/ad/settings', 'admin', async () => {

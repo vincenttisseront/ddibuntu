@@ -10,6 +10,7 @@ import { getCookie, getRequestHeader } from 'h3'
 
 const username = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9._@-]+$/)
 const role = z.enum(['admin', 'operator', 'viewer'])
+const spaceIds = z.array(z.number().int().positive()).max(50).nullable()   // null = tout l'IPAM
 
 // Un secondaire dont la console vient d'être mise à jour attend que le leader applique les migrations : le processus est sain (la mise à jour en ligne
 // ne doit pas faire de retour arrière), mais l'API répond « schema_pending » tant que le schéma n'est pas au niveau.
@@ -19,7 +20,7 @@ route('GET', '/health', 'public', async () => {
   fail(503, 'starting')
 })
 
-route('GET', '/auth/me', 'public', async (c) => (c.user ? { user: { id: c.user.id, username: c.user.username, role: c.user.role, source: c.user.source, displayName: c.user.displayName }, csrf: c.user.csrf } : { user: null }))
+route('GET', '/auth/me', 'public', async (c) => (c.user ? { user: { id: c.user.id, username: c.user.username, role: c.user.role, source: c.user.source, displayName: c.user.displayName, spaceIds: c.user.spaceIds ?? null }, csrf: c.user.csrf } : { user: null }))
 
 route('POST', '/auth/login', 'public', async (c) => {
   const b = await c.body(z.object({ username: z.string().min(1).max(256), password: z.string().min(1).max(512) }))
@@ -39,27 +40,27 @@ route('POST', '/auth/login', 'public', async (c) => {
       const res = await authenticateAd(b.username, b.password, ad, ad.bindPasswordEnc ? decryptSecret(ad.bindPasswordEnc) : '', defaultLdapFactory(ad))
       if (res.ok) {
         const r = await one<any>(
-          `insert into users (username, display_name, role, source) values ($1, $2, $3, 'ad')
-           on conflict (lower(username)) do update set role = excluded.role, display_name = excluded.display_name returning id`,
-          [res.username, res.displayName, res.role])
+          `insert into users (username, display_name, role, source, space_ids) values ($1, $2, $3, 'ad', $4)
+           on conflict (lower(username)) do update set role = excluded.role, display_name = excluded.display_name, space_ids = excluded.space_ids returning id`,
+          [res.username, res.displayName, res.role, res.spaceIds])
         userId = r.id
       }
     } else await dummyVerify(b.password)
   } else if (u.source === 'ad' && !u.disabled) {
     const ad = await getSetting<AdSettings>('ad', AD_DEFAULTS)
     const res = await authenticateAd(b.username, b.password, ad, ad.bindPasswordEnc ? decryptSecret(ad.bindPasswordEnc) : '', defaultLdapFactory(ad))
-    if (res.ok) { if (!replica) await query('update users set role = $2, display_name = $3 where id = $1', [u.id, res.role, res.displayName]); userId = u.id }
+    if (res.ok) { if (!replica) await query('update users set role = $2, display_name = $3, space_ids = $4 where id = $1', [u.id, res.role, res.displayName, res.spaceIds]); userId = u.id }
   } else await dummyVerify(b.password)
   if (replica) replicaRecordAttempt(b.username, c.ip, userId !== null); else await recordAttempt(b.username, c.ip, userId !== null)
   if (userId === null) { await audit(c, 'login_failed', 'user', undefined, { username: b.username.slice(0, 64) }); fail(401, 'bad_credentials') }
-  const me = await one<any>('select id, username, role, source, display_name, password_hash from users where id = $1', [userId])
+  const me = await one<any>('select id, username, role, source, display_name, password_hash, space_ids from users where id = $1', [userId])
   let s: { token: string; csrf: string; maxAge: number }
   if (replica) s = signReplicaSession(me, Date.now(), (await sessionSettings()).hours)
   else { await query('update users set last_login = now() where id = $1', [userId]); s = await createSession(userId, c.ip, getRequestHeader(c.event, 'user-agent') ?? null) }
   setSessionCookie(c.event, s.token, s.maxAge)
-  c.user = { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name, csrf: s.csrf, sessionId: 0 }
+  c.user = { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name, csrf: s.csrf, sessionId: 0, spaceIds: me.space_ids ?? null }
   await audit(c, 'login', 'user', userId)
-  return { user: { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name }, csrf: s.csrf }
+  return { user: { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name, spaceIds: me.space_ids ?? null }, csrf: s.csrf }
 })
 
 route('POST', '/auth/logout', 'viewer', async (c) => {
@@ -103,19 +104,19 @@ route('POST', '/setup/admin', 'public', async (c) => {
 })
 
 // ---- Utilisateurs (administrateur) ----
-route('GET', '/users', 'admin', async () => ({ items: await query('select id, username, display_name, role, source, disabled, created_at, last_login from users order by lower(username)') }))
+route('GET', '/users', 'admin', async () => ({ items: await query('select id, username, display_name, role, source, disabled, created_at, last_login, space_ids from users order by lower(username)') }))
 route('POST', '/users', 'admin', async (c) => {
-  const b = await c.body(z.object({ username, display_name: z.string().max(100).optional(), role, password: z.string().min(1).max(512) }))
+  const b = await c.body(z.object({ username, display_name: z.string().max(100).optional(), role, password: z.string().min(1).max(512), space_ids: spaceIds.optional() }))
   const pe = passwordPolicyError(b.password, b.username)
   if (pe) fail(400, pe)
-  const r = await one<any>("insert into users (username, display_name, role, source, password_hash) values ($1,$2,$3,'local',$4) returning id", [b.username, b.display_name ?? null, b.role, await hashPassword(b.password)])
+  const r = await one<any>("insert into users (username, display_name, role, source, password_hash, space_ids) values ($1,$2,$3,'local',$4,$5) returning id", [b.username, b.display_name ?? null, b.role, await hashPassword(b.password), b.role === 'admin' ? null : b.space_ids ?? null])
   await audit(c, 'user_create', 'user', r.id, { username: b.username, role: b.role })
   return { id: r.id }
 })
 route('PUT', '/users/:id', 'admin', async (c) => {
   const id = Number(c.params.id)
   if (!Number.isInteger(id)) fail(400, 'invalid_id')
-  const b = await c.body(z.object({ display_name: z.string().max(100).nullable().optional(), role: role.optional(), disabled: z.boolean().optional(), password: z.string().min(1).max(512).optional() }))
+  const b = await c.body(z.object({ display_name: z.string().max(100).nullable().optional(), role: role.optional(), disabled: z.boolean().optional(), password: z.string().min(1).max(512).optional(), space_ids: spaceIds.optional() }))
   await tx(async (cl) => {
     const u = (await cl.query('select * from users where id = $1 for update', [id])).rows[0]
     if (!u) fail(404, 'not_found')
@@ -131,9 +132,10 @@ route('PUT', '/users/:id', 'admin', async (c) => {
       await cl.query('update users set password_hash = $2 where id = $1', [id, await hashPassword(b.password)])
     }
     await cl.query('update users set display_name = coalesce($2, display_name), role = coalesce($3, role), disabled = coalesce($4, disabled) where id = $1', [id, b.display_name ?? null, b.role ?? null, b.disabled ?? null])
+    if (b.space_ids !== undefined || b.role === 'admin') await cl.query('update users set space_ids = $2 where id = $1', [id, (b.role ?? u.role) === 'admin' ? null : b.space_ids ?? u.space_ids])
   })
-  if (b.disabled || b.password !== undefined || b.role) await destroyUserSessions(id)
-  await audit(c, 'user_update', 'user', id, { role: b.role, disabled: b.disabled, password: b.password !== undefined })
+  if (b.disabled || b.password !== undefined || b.role || b.space_ids !== undefined) await destroyUserSessions(id)
+  await audit(c, 'user_update', 'user', id, { role: b.role, disabled: b.disabled, password: b.password !== undefined, space_ids: b.space_ids })
   return { ok: true }
 })
 route('DELETE', '/users/:id', 'admin', async (c) => {

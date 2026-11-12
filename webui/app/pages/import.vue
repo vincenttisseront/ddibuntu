@@ -16,9 +16,9 @@ const histCols = computed(() => [{ key: 'created_at', label: t('common.date'), k
 // ---- Active Directory (authentification LDAPS) ----
 const { data: ad, refresh: refreshAd } = await useFetch<any>('/api/ad/settings', { server: false })
 const f = reactive<any>({ enabled: false, urls: '', baseDn: '', bindDn: '', bindPassword: '', userAttr: 'sAMAccountName', groups: '', nestedGroups: true, tlsRejectUnauthorized: true, caPem: '' })
-watch(ad, (s) => { if (!s) return; f.enabled = s.enabled; f.urls = (s.urls ?? []).join('\n'); f.baseDn = s.baseDn; f.bindDn = s.bindDn; f.userAttr = s.userAttr; f.groups = (s.groupMap ?? []).map((g: any) => `${g.groupDn} | ${g.role}`).join('\n'); f.nestedGroups = s.nestedGroups; f.tlsRejectUnauthorized = s.tlsRejectUnauthorized; f.caPem = s.caPem ?? '' }, { immediate: true })
+watch(ad, (s) => { if (!s) return; f.enabled = s.enabled; f.urls = (s.urls ?? []).join('\n'); f.baseDn = s.baseDn; f.bindDn = s.bindDn; f.userAttr = s.userAttr; f.groups = (s.groupMap ?? []).map((g: any) => `${g.groupDn} | ${g.role}${g.spaceIds?.length ? ' | ' + g.spaceIds.join(',') : ''}`).join('\n'); f.nestedGroups = s.nestedGroups; f.tlsRejectUnauthorized = s.tlsRejectUnauthorized; f.caPem = s.caPem ?? '' }, { immediate: true })
 const adErr = ref(''), testRes = ref<any>(null), testUser = ref('')
-const parseGroups = () => String(f.groups ?? '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const [dn, role] = l.split('|').map((x) => x.trim()); return { groupDn: dn, role } })
+const parseGroups = () => String(f.groups ?? '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const [dn, role, sp] = l.split('|').map((x) => x.trim()); const spaceIds = (sp ?? '').split(/[\s,;]+/).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0); return { groupDn: dn, role, ...(spaceIds.length ? { spaceIds } : {}) } })
 async function saveAd() {
   adErr.value = ''
   try {

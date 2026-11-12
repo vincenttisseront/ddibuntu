@@ -271,8 +271,8 @@ cmd_apply() {
   svc enable ddibuntu-update-check.timer ddibuntu-selfupdate.path >/dev/null 2>&1 || true
   svc start ddibuntu-update-check.timer ddibuntu-selfupdate.path >/dev/null 2>&1 || true
   # unités « demande de la console » ajoutées après l'installation initiale (ex. création de cluster) : activées aussi sur les nœuds mis à jour
-  svc enable ddibuntu-cluster-setup.path ddibuntu-ad-request.path ddibuntu-backup-request.path ddibuntu-reload.path ddibuntu-health.timer >/dev/null 2>&1 || true
-  svc start ddibuntu-cluster-setup.path ddibuntu-ad-request.path ddibuntu-backup-request.path ddibuntu-reload.path ddibuntu-health.timer >/dev/null 2>&1 || true
+  svc enable ddibuntu-cluster-setup.path ddibuntu-ad-request.path ddibuntu-backup-request.path ddibuntu-reload.path ddibuntu-health.timer ddibuntu-backup.timer >/dev/null 2>&1 || true
+  svc start ddibuntu-cluster-setup.path ddibuntu-ad-request.path ddibuntu-backup-request.path ddibuntu-reload.path ddibuntu-health.timer ddibuntu-backup.timer >/dev/null 2>&1 || true
   st state=restarting "message=Redémarrage de la console"
   svc start ddibuntu-console.service
   local ok=0

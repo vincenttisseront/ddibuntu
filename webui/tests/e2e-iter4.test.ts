@@ -90,7 +90,7 @@ const mk = async () => {
   return { vlan, s1, s2, z }
 }
 let W: Awaited<ReturnType<typeof mk>>
-const MIGRATIONS_LAST = 14   // dernière migration du schéma (14 : jetons d’API)
+const MIGRATIONS_LAST = 15   // dernière migration du schéma (15 : périmètre délégué des utilisateurs)
 
 describe('points de restauration des données', () => {
   it('migration 2 appliquée, version 0.4.0', async () => {

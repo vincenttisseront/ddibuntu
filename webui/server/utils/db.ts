@@ -446,7 +446,12 @@ create table api_tokens (
 create unique index api_tokens_name on api_tokens (lower(name)) where revoked_at is null;
 `
 
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }]
+// Itération 0.9.41 : délégation par périmètre. NULL = tout l'IPAM ; sinon liste des espaces IPAM où l'utilisateur (opérateur) peut écrire.
+const SCHEMA_15 = String.raw`
+alter table users add column space_ids integer[];
+`
+
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

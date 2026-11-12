@@ -58,17 +58,20 @@ route('GET', '/ipam/subnets', 'viewer', async (c) => {
 })
 
 // ---- Espaces ----
+import { allowAddress, allowPool, allowSpace, allowSubnet, denyScoped } from '../utils/scope'
 const spaceBody = z.object({ name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional() })
 route('GET', '/ipam/spaces', 'viewer', async () => ({ items: await query(`select sp.id, sp.name, sp.description,
   (select count(*)::int from subnets s where s.space_id = sp.id) as subnets,
   (select count(*)::int from addresses a join subnets s on s.id = a.subnet_id where s.space_id = sp.id) as addresses from ipam_spaces sp order by sp.id`) }))
 route('POST', '/ipam/spaces', 'operator', async (c) => {
+  denyScoped(c)
   const b = await c.body(spaceBody)
   const r = await one<any>('insert into ipam_spaces (name, description) values ($1,$2) returning id', [b.name, b.description ?? null])
   await audit(c, 'space_create', 'space', r.id, { name: b.name })
   return { id: r.id }
 })
 route('PUT', '/ipam/spaces/:id', 'operator', async (c) => {
+  allowSpace(c, Number(c.params.id))
   const id = intParam(c, 'id')
   const b = await c.body(spaceBody.partial())
   const r = await query('update ipam_spaces set name = coalesce($2, name), description = coalesce($3, description), updated_at = now() where id = $1 returning id', [id, b.name ?? null, b.description ?? null])
@@ -77,6 +80,7 @@ route('PUT', '/ipam/spaces/:id', 'operator', async (c) => {
   return { ok: true }
 })
 route('DELETE', '/ipam/spaces/:id', 'operator', async (c) => {
+  allowSpace(c, Number(c.params.id))
   const id = intParam(c, 'id')
   if (id === 1) fail(409, 'space_default')
   const n = await one<any>('select count(*)::int as n from subnets where space_id = $1', [id])
@@ -104,6 +108,7 @@ route('POST', '/ipam/subnets', 'operator', async (c) => {
   const cidr = cidrToString(parseCidr(b.cidr)!)
   checkGateway(cidr, b.gateway)
   const spaceId = b.space_id ?? 1
+  allowSpace(c, spaceId)
   await checkSpace(spaceId)
   if (b.kind === 'container' && b.gateway) fail(400, 'container_no_addresses')
   const kind = b.kind ?? 'network'
@@ -129,11 +134,12 @@ route('POST', '/ipam/subnets', 'operator', async (c) => {
   return out
 })
 route('PUT', '/ipam/subnets/:id', 'operator', async (c) => {
+  await allowSubnet(c, Number(c.params.id))
   const id = intParam(c, 'id')
   const b = await c.body(subnetBody.partial())
   const cur = await one<any>('select text(cidr) as cidr, (select count(*)::int from addresses where subnet_id = $1) as n from subnets where id = $1', [id])
   if (!cur) fail(404, 'not_found')
-  if (b.space_id !== undefined) await checkSpace(b.space_id)
+  if (b.space_id !== undefined) { allowSpace(c, b.space_id); await checkSpace(b.space_id) }
   if (b.kind === 'container' && cur.n > 0) fail(409, 'container_no_addresses')
   if (b.template_id && !(await one('select 1 from network_templates where id = $1', [b.template_id]))) fail(400, 'template_not_found')
   if (b.cidr && cidrToString(parseCidr(b.cidr)!) !== cur.cidr) fail(400, 'cidr_immutable')
@@ -145,6 +151,7 @@ route('PUT', '/ipam/subnets/:id', 'operator', async (c) => {
   return { ok: true }
 })
 route('DELETE', '/ipam/subnets/:id', 'operator', async (c) => {
+  await allowSubnet(c, Number(c.params.id))
   const id = intParam(c, 'id')
   const n = await one<any>('select (select count(*) from addresses where subnet_id = $1)::int a, (select count(*) from dhcp_scopes where subnet_id = $1)::int d', [id])
   if ((n.a > 1 || n.d > 0) && qstr(c, 'force') !== '1') fail(409, 'subnet_not_empty', 'subnet_not_empty', { addresses: n.a, dhcp: n.d })
@@ -180,6 +187,7 @@ async function syncDns(cl: PoolClient, ip: string, hostname: string, zoneId: num
 }
 
 route('POST', '/ipam/subnets/:id/addresses', 'operator', async (c) => {
+  await allowSubnet(c, Number(c.params.id))
   const sid = intParam(c, 'id')
   const b = await c.body(addrBody)
   const ip = normIp(b.ip)!
@@ -198,6 +206,7 @@ route('POST', '/ipam/subnets/:id/addresses', 'operator', async (c) => {
 
 // Prochaine adresse libre : hors adresses prises, passerelle, réseau/diffusion et plages DHCP
 route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
+  await allowSubnet(c, Number(c.params.id))
   const sid = intParam(c, 'id')
   const b = await c.body(z.object({ status: status.default('used'), hostname: host.nullable().optional(), description: z.string().max(500).nullable().optional(), dns_zone_id: z.number().int().nullable().optional(), pool_id: z.number().int().optional() }))
   const out = await tx(async (cl) => {
@@ -231,6 +240,7 @@ route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
 })
 
 route('PUT', '/ipam/addresses/:id', 'operator', async (c) => {
+  await allowAddress(c, Number(c.params.id))
   const id = intParam(c, 'id')
   const b = await c.body(addrBody.omit({ ip: true, dns_zone_id: true }).partial())
   const dhcp = await tx(async (cl) => {
@@ -246,6 +256,7 @@ route('PUT', '/ipam/addresses/:id', 'operator', async (c) => {
   return { ok: true, dhcp }
 })
 route('DELETE', '/ipam/addresses/:id', 'operator', async (c) => {
+  await allowAddress(c, Number(c.params.id))
   const id = intParam(c, 'id')
   await query('delete from addresses where id = $1', [id])
   await audit(c, 'address_delete', 'address', id)
@@ -266,6 +277,7 @@ route('GET', '/ipam/pools', 'viewer', async (c) => {
   return { items: rows.map(withPct) }
 })
 route('POST', '/ipam/subnets/:id/pools', 'operator', async (c) => {
+  await allowSubnet(c, Number(c.params.id))
   const sid = intParam(c, 'id')
   const b = await c.body(poolBody)
   const sub = await one<any>('select kind from subnets where id = $1', [sid])
@@ -276,6 +288,7 @@ route('POST', '/ipam/subnets/:id/pools', 'operator', async (c) => {
   return { id: r.id }
 })
 route('PUT', '/ipam/pools/:id', 'operator', async (c) => {
+  await allowPool(c, Number(c.params.id))
   const id = intParam(c, 'id')
   const b = await c.body(poolBody.partial())
   const r = await query('update ipam_pools set name = coalesce($2, name), description = coalesce($3, description), start_ip = coalesce($4, start_ip), end_ip = coalesce($5, end_ip), updated_at = now() where id = $1 returning id',
@@ -285,6 +298,7 @@ route('PUT', '/ipam/pools/:id', 'operator', async (c) => {
   return { ok: true }
 })
 route('DELETE', '/ipam/pools/:id', 'operator', async (c) => {
+  await allowPool(c, Number(c.params.id))
   const id = intParam(c, 'id')
   await query('delete from ipam_pools where id = $1', [id])
   await audit(c, 'pool_delete', 'pool', id)
@@ -318,6 +332,7 @@ async function checkTemplate(b: z.infer<typeof templateBody> | Partial<z.infer<t
 route('GET', '/ipam/templates', 'viewer', async () => ({ items: await query(`select t.id, t.name, t.description, t.create_scope, t.lease_time, t.dhcp_options, t.dns_zone_id, z.name as dns_zone, t.hostname_pattern,
   (select count(*)::int from subnets s where s.template_id = t.id) as subnets from network_templates t left join dns_zones z on z.id = t.dns_zone_id order by lower(t.name)`) }))
 route('POST', '/ipam/templates', 'operator', async (c) => {
+  denyScoped(c)
   const b = await c.body(templateBody)
   await checkTemplate(b)
   const r = await one<any>('insert into network_templates (name, description, create_scope, lease_time, dhcp_options, dns_zone_id, hostname_pattern) values ($1,$2,$3,$4,$5::jsonb,$6,$7) returning id',
@@ -326,6 +341,7 @@ route('POST', '/ipam/templates', 'operator', async (c) => {
   return { id: r.id }
 })
 route('PUT', '/ipam/templates/:id', 'operator', async (c) => {
+  denyScoped(c)
   const id = intParam(c, 'id')
   const b = await c.body(templateBody)
   await checkTemplate(b)
@@ -336,6 +352,7 @@ route('PUT', '/ipam/templates/:id', 'operator', async (c) => {
   return { ok: true }
 })
 route('DELETE', '/ipam/templates/:id', 'operator', async (c) => {
+  denyScoped(c)
   const id = intParam(c, 'id')
   await query('delete from network_templates where id = $1', [id])
   await audit(c, 'template_delete', 'template', id)
@@ -346,12 +363,14 @@ route('DELETE', '/ipam/templates/:id', 'operator', async (c) => {
 const vlanBody = z.object({ vlan_id: z.number().int().min(1).max(4094), name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional() })
 route('GET', '/ipam/vlans', 'viewer', async () => ({ items: await query('select v.id, v.vlan_id, v.name, v.description, (select count(*)::int from subnets s where s.vlan_id = v.id) as subnets from vlans v order by v.vlan_id') }))
 route('POST', '/ipam/vlans', 'operator', async (c) => {
+  denyScoped(c)
   const b = await c.body(vlanBody)
   const r = await one<any>('insert into vlans (vlan_id, name, description) values ($1,$2,$3) returning id', [b.vlan_id, b.name, b.description ?? null])
   await audit(c, 'vlan_create', 'vlan', r.id)
   return { id: r.id }
 })
 route('PUT', '/ipam/vlans/:id', 'operator', async (c) => {
+  denyScoped(c)
   const id = intParam(c, 'id')
   const b = await c.body(vlanBody.partial())
   await query('update vlans set vlan_id = coalesce($2, vlan_id), name = coalesce($3, name), description = coalesce($4, description) where id = $1', [id, b.vlan_id ?? null, b.name ?? null, b.description ?? null])
@@ -359,6 +378,7 @@ route('PUT', '/ipam/vlans/:id', 'operator', async (c) => {
   return { ok: true }
 })
 route('DELETE', '/ipam/vlans/:id', 'operator', async (c) => {
+  denyScoped(c)
   const id = intParam(c, 'id')
   await query('delete from vlans where id = $1', [id])
   await audit(c, 'vlan_delete', 'vlan', id)

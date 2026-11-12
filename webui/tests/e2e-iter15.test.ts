@@ -216,3 +216,54 @@ describe('jetons d\'API et OpenAPI', () => {
   })
 })
 
+
+describe('délégation par périmètre (espaces IPAM)', () => {
+  const sc = new Client(); let scId = 0, sp2 = 0, sp3 = 0, sn2 = 0, sn3 = 0, ad2 = 0, ad3 = 0
+  it('un opérateur restreint écrit dans son espace, pas ailleurs, ni hors IPAM', async () => {
+    sp2 = (await admin.post('/api/ipam/spaces', { name: 'Paris' })).json.id; sp3 = (await admin.post('/api/ipam/spaces', { name: 'Lyon' })).json.id
+    const r2 = await admin.post('/api/ipam/subnets', { cidr: '10.92.0.0/24', name: 'p', space_id: sp2 }); sn2 = r2.json?.id; if (!sn2) throw new Error(r2.text); const r3 = await admin.post('/api/ipam/subnets', { cidr: '10.93.0.0/24', name: 'l', space_id: sp3 }); sn3 = r3.json?.id
+    ad2 = (await admin.post(`/api/ipam/subnets/${sn2}/addresses`, { ip: '10.92.0.5', status: 'used' })).json.id; ad3 = (await admin.post(`/api/ipam/subnets/${sn3}/addresses`, { ip: '10.93.0.5', status: 'used' })).json.id
+    expect([sp2, sp3, sn2, sn3, ad2, ad3].every(Boolean), JSON.stringify([sp2, sp3, sn2, sn3, ad2, ad3])).toBe(true)
+    expect((await admin.post('/api/users', { username: 'paris', role: 'operator', password: PW, space_ids: [sp2] })).status).toBe(200)
+    expect((await sc.login('paris', PW)).json.user.spaceIds).toEqual([sp2]); scId = (await db.query("select id from users where username='paris'")).rows[0].id
+    // dans son espace
+    expect((await sc.post(`/api/ipam/subnets/${sn2}/addresses`, { ip: '10.92.0.6', status: 'used' })).status).toBe(200)
+    expect((await sc.put(`/api/ipam/addresses/${ad2}`, { description: 'ok' })).status).toBe(200)
+    expect((await sc.post('/api/ipam/subnets', { cidr: '10.92.1.0/24', name: 'p2', space_id: sp2 })).status).toBe(200)
+    // hors de son espace
+    code(await sc.post(`/api/ipam/subnets/${sn3}/addresses`, { ip: '10.93.0.6', status: 'used' }), 403, 'out_of_scope')
+    code(await sc.put(`/api/ipam/addresses/${ad3}`, { description: 'non' }), 403, 'out_of_scope')
+    code(await sc.delete(`/api/ipam/addresses/${ad3}`), 403, 'out_of_scope')
+    code(await sc.post('/api/ipam/subnets', { cidr: '10.93.1.0/24', name: 'l2', space_id: sp3 }), 403, 'out_of_scope')
+    code(await sc.put(`/api/ipam/subnets/${sn2}`, { space_id: sp3 }), 403, 'out_of_scope')            // pas de déménagement vers un autre espace
+    code(await sc.delete(`/api/ipam/spaces/${sp3}`), 403, 'out_of_scope'); code(await sc.post('/api/ipam/spaces', { name: 'X' }), 403, 'out_of_scope')
+    code(await sc.post('/api/ipam/vlans', { vlan_id: 99, name: 'v' }), 403, 'out_of_scope')
+    // hors IPAM : toute écriture d'opérateur refusée ; la lecture reste libre
+    code(await sc.post('/api/system/apply', {}), 403, 'forbidden')
+    expect((await admin.get('/api/ipam/spaces')).status).toBe(200); expect((await sc.get(`/api/ipam/subnets/${sn3}/addresses`)).status).toBe(200)
+    expect((await db.query('select 1 from addresses where id = $1', [ad3])).rows).toHaveLength(1)
+  })
+  it('opérateur restreint : DNS/DHCP/découverte refusés ; administrateur et opérateur libre non concernés', async () => {
+    code(await sc.post('/api/dns/zones', { name: 'x.example.', type: 'primary' }), 403, 'out_of_scope')
+    code(await sc.post('/api/discovery/schedule/run', {}), 403, 'out_of_scope')
+    expect((await admin.post(`/api/ipam/subnets/${sn3}/addresses`, { ip: '10.93.0.7', status: 'used' })).status).toBe(200)
+    expect((await admin.post('/api/users', { username: 'libre', role: 'operator', password: PW })).status).toBe(200)
+    const lib = new Client(); expect((await lib.login('libre', PW)).json.user.spaceIds).toBeNull()
+    expect((await lib.post(`/api/ipam/subnets/${sn3}/addresses`, { ip: '10.93.0.8', status: 'used' })).status).toBe(200)
+  })
+  it('changer le périmètre ferme la session ; passer administrateur lève la restriction', async () => {
+    expect((await admin.put(`/api/users/${scId}`, { space_ids: [sp3] })).status).toBe(200)
+    expect((await sc.get('/api/auth/me')).json.user).toBeNull()
+    expect((await sc.login('paris', PW)).json.user.spaceIds).toEqual([sp3])
+    expect((await sc.post(`/api/ipam/subnets/${sn3}/addresses`, { ip: '10.93.0.9', status: 'used' })).status).toBe(200)
+    expect((await admin.put(`/api/users/${scId}`, { role: 'admin' })).status).toBe(200)
+    expect((await db.query('select space_ids from users where id = $1', [scId])).rows[0].space_ids).toBeNull()
+    expect((await admin.put(`/api/users/${scId}`, { role: 'viewer', space_ids: [] })).status).toBe(200)
+    expect((await admin.post('/api/users', { username: 'bad', role: 'operator', password: PW, space_ids: [0] })).status).toBe(400)
+  })
+  it('groupes AD : le périmètre est accepté dans la table de correspondance', async () => {
+    const r = await admin.put('/api/ad/settings', { enabled: false, urls: [], baseDn: '', bindDn: '', userAttr: 'sAMAccountName', nestedGroups: true, tlsRejectUnauthorized: true, groupMap: [{ groupDn: 'CN=Ops,OU=G,DC=c,DC=l', role: 'operator', spaceIds: [sp2] }] })
+    expect(r.status, r.text).toBe(200)
+    expect((await admin.get('/api/ad/settings')).json.groupMap).toEqual([{ groupDn: 'CN=Ops,OU=G,DC=c,DC=l', role: 'operator', spaceIds: [sp2] }])
+  })
+})

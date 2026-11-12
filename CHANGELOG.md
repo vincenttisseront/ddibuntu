@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.9.41 — « Délégation par périmètre »
+- **Périmètre IPAM** : un utilisateur (local ou issu d'Active Directory) peut être limité à certains espaces IPAM. Il n'écrit alors que dans ces espaces (adresses, réseaux, pools) ; tout le reste (DNS, DHCP, découverte, réglages, espaces, VLAN, modèles) lui est refusé (`out_of_scope`), la lecture reste libre. Un administrateur n'est jamais restreint. Système → Utilisateurs : champ « Périmètre IPAM » (numéros d'espaces, vide = tout). Migration de schéma 15.
+- **Groupes AD** : la table de correspondance accepte un 3ᵉ champ, `DN du groupe | rôle | 1,3` (Import / AD). Le périmètre est l'union des groupes qui donnent le rôle retenu ; un groupe sans espaces lève la restriction. Recalculé à chaque connexion.
+- Changer le périmètre ou le rôle d'un utilisateur ferme ses sessions.
+- **Correctif** : « État des sauvegardes indisponible » sur les nœuds installés avant l'ajout des sauvegardes : la mise à jour n'activait pas `ddibuntu-backup.timer` (qui publie l'état). Elle l'active désormais.
+
 ## 0.9.40 — « Jetons d'API et OpenAPI »
 - **Correctif** : depuis la 0.9.39, la vérification Kea « confiée à ddibuntu-reload » était comptée comme non validée : la console affichait « Configuration invalide » et bloquait le déploiement. Elle est désormais acceptée à la validation (ddibuntu-reload la refait en root et annule tout si la configuration est invalide).
 - **Jetons d'API** (Système → API, administrateur) : jeton `ddi_…` en en-tête `Authorization: Bearer`, rôle lecteur ou opérateur (jamais administrateur), expiration facultative, révocation. Le secret n'est affiché qu'une fois ; seul son empreinte SHA-256 est stockée. Sans cookie ni jeton CSRF ; un jeton ne peut gérer ni jetons, ni comptes, ni session. Actions journalisées sous `token:<nom>`. Migration de schéma 14.

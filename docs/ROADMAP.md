@@ -79,6 +79,6 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
     6. ~~**0.9.28**~~ ✅ fait — Traçabilité des baux : historique IP / MAC / nom, page de recherche (le nom d’'utilisateur AD reste à corréler avec les rôles par groupe).
     7. ~~**0.9.35**~~ ✅ fait — Découverte planifiée et alertes d'hygiène (fantômes, hôtes inconnus, MAC différente).
     8. ~~**0.9.40**~~ ✅ fait — API : description OpenAPI et jetons d'API ; correctif de la validation Kea différée.
-    9. **0.9.41** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
+    9. ~~**0.9.41**~~ ✅ fait — Délégation par périmètre (espaces IPAM) pour utilisateurs et groupes AD (la connexion AD et les rôles par groupe existaient déjà) ; correctif du minuteur de sauvegarde.
     10. **0.9.42** — DHCP multi-espaces.
 5. **1.0** — Consolidation de la série 0.9.x et passage en revue avant usage en production.
