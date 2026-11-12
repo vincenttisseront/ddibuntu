@@ -352,7 +352,7 @@ if [ "$MODE" = full ]; then for z in "$GEN"/zones/db.*; do check_zone "$z"; done
 ptmp=""; adtmp=""; trap 'rm -rf "${ptmp:-}" "${adtmp:-}"' EXIT
 if [ "$MODE" != kea-only ]; then
   # recomposition des « update-policy » et ajout du keytab GSS-TSIG AVANT toute modification : un dépôt refusé ne touche à rien
-  install -d -m 0750 "$STATE"
+  [ -d "$STATE" ] || install -d -m 0755 "$STATE"   # ne JAMAIS changer les droits d’un dossier existant : la console (ddiconsole) doit le traverser
   adtmp="$(mktemp -d "$STATE/.ad.XXXXXX")"
   ad_py "$bind_role" "$GEN/named.conf.options" "$GEN/named.conf.zones" "$adtmp/options" "$adtmp/zones" "$BIND_ETC/krb5.keytab" 2>"$adtmp/err" \
     || fail "mises à jour sécurisées refusées : $(tr '\n' ' ' < "$adtmp/err" | cut -c1-200)"

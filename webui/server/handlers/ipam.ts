@@ -58,6 +58,7 @@ route('GET', '/ipam/subnets', 'viewer', async (c) => {
 })
 
 // ---- Espaces ----
+import { assertNoDhcpOverlap } from '../utils/dhcp-space'
 import { allowAddress, allowPool, allowSpace, allowSubnet, denyScoped } from '../utils/scope'
 const spaceBody = z.object({ name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional() })
 route('GET', '/ipam/spaces', 'viewer', async () => ({ items: await query(`select sp.id, sp.name, sp.description,
@@ -121,9 +122,10 @@ route('POST', '/ipam/subnets', 'operator', async (c) => {
     // gabarit : l'étendue DHCP naît avec le réseau, dans la même transaction (IPv4, réseau, espace par défaut : Kea ne distingue pas les espaces)
     let dhcp: 'scope_created' | 'scope_skipped' | null = null
     if (tpl?.create_scope) {
-      if (parseCidr(cidr)!.v === 4 && kind === 'network' && spaceId === 1) {
+      if (parseCidr(cidr)!.v === 4 && kind === 'network') {
         const opts = { ...cleanOptions(tpl.dhcp_options) }
         if (!opts.routers && b.gateway) opts.routers = [normIp(b.gateway)]
+        await assertNoDhcpOverlap(r, null, async (q, a) => (await cl.query(q, a)).rows)
         await cl.query('insert into dhcp_scopes (subnet_id, name, lease_time, enabled, options) values ($1,$2,$3,true,$4::jsonb)', [r, b.name, tpl.lease_time, JSON.stringify(opts)])
         dhcp = 'scope_created'
       } else dhcp = 'scope_skipped'
@@ -139,7 +141,7 @@ route('PUT', '/ipam/subnets/:id', 'operator', async (c) => {
   const b = await c.body(subnetBody.partial())
   const cur = await one<any>('select text(cidr) as cidr, (select count(*)::int from addresses where subnet_id = $1) as n from subnets where id = $1', [id])
   if (!cur) fail(404, 'not_found')
-  if (b.space_id !== undefined) { allowSpace(c, b.space_id); await checkSpace(b.space_id) }
+  if (b.space_id !== undefined) { allowSpace(c, b.space_id); await checkSpace(b.space_id); await assertNoDhcpOverlap(id, b.space_id) }
   if (b.kind === 'container' && cur.n > 0) fail(409, 'container_no_addresses')
   if (b.template_id && !(await one('select 1 from network_templates where id = $1', [b.template_id]))) fail(400, 'template_not_found')
   if (b.cidr && cidrToString(parseCidr(b.cidr)!) !== cur.cidr) fail(400, 'cidr_immutable')

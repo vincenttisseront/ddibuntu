@@ -461,7 +461,7 @@ const messages: Record<string, string> = {
   "err.gateway_outside": "The gateway must belong to the subnet.",
   "err.cidr_immutable": "A subnet’s network cannot be changed.",
   "err.subnet_not_empty": "The subnet contains addresses or a DHCP scope.",
-  "err.dhcp_space_only": "DHCP only serves networks of the default space (Kea does not distinguish spaces).",
+  "err.dhcp_overlap": "Overlaps network {cidr}, already served by DHCP in space “{space}”: Kea does not distinguish spaces. Disable that scope or use distinct ranges.",
   "err.template_not_found": "Template not found.",
   "err.hostname_rule": "The hostname does not follow the naming rule of the network template.",
   "err.pattern_length": "The pattern must be 1 to 100 characters long.",

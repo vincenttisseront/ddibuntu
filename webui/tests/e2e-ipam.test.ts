@@ -106,10 +106,11 @@ describe('hiérarchie, conteneurs et agrégats', () => {
 })
 
 describe('DHCP et espaces', () => {
-  it('une étendue DHCP n’est créée que sur un réseau de l’espace par défaut', async () => {
+  it('DHCP multi-espaces : un réseau d’un autre espace est servi s’il ne chevauche aucun réseau servi ailleurs', async () => {
     const b = (await admin.get('/api/ipam/spaces')).json.items.find((s: any) => s.name === 'Client B').id
     const other = (await list(`?space_id=${b}`)).find((s) => s.cidr === '10.0.0.0/8')
-    code(await admin.post('/api/dhcp/scopes', { subnet_id: other.id }), 400, 'dhcp_space_only')
+    const sc = await admin.post('/api/dhcp/scopes', { subnet_id: other.id }); expect(sc.status, sc.text).toBe(200)   // aucun chevauchement avec un réseau servi ailleurs
+    expect((await admin.del(`/api/dhcp/scopes/${sc.json.id}`)).status).toBe(200)
     const root = (await list('?space_id=1')).find((s) => s.cidr === '10.0.0.0/8')
     code(await admin.post('/api/dhcp/scopes', { subnet_id: root.id }), 400, 'container_no_addresses')
   })

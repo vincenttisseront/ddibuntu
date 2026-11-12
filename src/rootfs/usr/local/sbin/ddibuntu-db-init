@@ -60,6 +60,7 @@ chown root:bind /etc/bind/ddi-ddns.key; chmod 0640 /etc/bind/ddi-ddns.key
 install -d -m 0750 -o bind -g bind /var/lib/bind/ddibuntu
 # journal des requêtes : écrit par BIND, LU par la console (cockpit de filtrage) via le groupe ddiconsole ; jamais en écriture
 install -d -m 0750 -o bind -g ddiconsole /var/log/named
+chmod 0755 "$STATE"   # la console doit traverser ce dossier
 install -d -m 0750 -o ddiconsole -g ddiconsole "$STATE/generated"
 
 log "environnement de la console"

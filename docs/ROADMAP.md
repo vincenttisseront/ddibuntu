@@ -18,7 +18,7 @@ Légende : ✅ fait · 🟡 partiel · ⬜ à faire.
 | Démons autonomes (Kea, BIND) pilotés par la console | ✅ | Déploiement validé avec retour arrière. |
 | Haute disponibilité DHCP (Kea HA, actif/actif ou actif/passif) | ⬜ | Suppose deux appliances : jumelage, état de synchronisation dans la console. |
 | Vues DNS (réponses selon l'IP source) | ⬜ | Zones rattachées à une vue (`view` BIND + ACL de clients). |
-| DHCP multi-espaces | ⬜ | Une instance Kea par espace, ou refus de chevauchement. |
+| DHCP multi-espaces | ✅ 0.9.42 | Une instance Kea par espace, ou refus de chevauchement. |
 
 ## 3. Sécurité
 | Capacité | État | Détail |
@@ -80,5 +80,5 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
     7. ~~**0.9.35**~~ ✅ fait — Découverte planifiée et alertes d'hygiène (fantômes, hôtes inconnus, MAC différente).
     8. ~~**0.9.40**~~ ✅ fait — API : description OpenAPI et jetons d'API ; correctif de la validation Kea différée.
     9. ~~**0.9.41**~~ ✅ fait — Délégation par périmètre (espaces IPAM) pour utilisateurs et groupes AD (la connexion AD et les rôles par groupe existaient déjà) ; correctif du minuteur de sauvegarde.
-    10. **0.9.42** — DHCP multi-espaces.
+    10. ~~**0.9.42**~~ ✅ fait — DHCP multi-espaces (refus de chevauchement entre espaces) ; correctif des droits de /var/lib/ddibuntu.
 5. **1.0** — Consolidation de la série 0.9.x et passage en revue avant usage en production.

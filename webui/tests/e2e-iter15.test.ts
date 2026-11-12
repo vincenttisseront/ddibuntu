@@ -267,3 +267,27 @@ describe('délégation par périmètre (espaces IPAM)', () => {
     expect((await admin.get('/api/ad/settings')).json.groupMap).toEqual([{ groupDn: 'CN=Ops,OU=G,DC=c,DC=l', role: 'operator', spaceIds: [sp2] }])
   })
 })
+
+describe('DHCP multi-espaces', () => {
+  it('un même plan dans deux espaces : un seul est servi à la fois ; des plans distincts coexistent dans Kea', async () => {
+    const sx = (await admin.post('/api/ipam/spaces', { name: 'Client X' })).json.id
+    const mk = async (cidr: string, space: number, name: string) => { const r = await admin.post('/api/ipam/subnets', { cidr, name, space_id: space }); expect(r.status, r.text).toBe(200); return r.json.id as number }
+    const a1 = await mk('10.50.0.0/24', 1, 'a1'), ax = await mk('10.50.0.0/24', sx, 'ax'), bx = await mk('10.51.0.0/24', sx, 'bx')
+    const sc1 = await admin.post('/api/dhcp/scopes', { subnet_id: a1 }); expect(sc1.status, sc1.text).toBe(200)
+    const r = await admin.post('/api/dhcp/scopes', { subnet_id: ax }); code(r, 409, 'dhcp_overlap'); expect(r.json.data).toMatchObject({ cidr: '10.50.0.0/24', space: 'Défaut' })
+    // étendue désactivée : ne bloque pas ; la réactiver est refusée si l'autre est servie
+    const scx = await admin.post('/api/dhcp/scopes', { subnet_id: ax, enabled: false }); expect(scx.status, scx.text).toBe(200)
+    code(await admin.put(`/api/dhcp/scopes/${scx.json.id}`, { lease_time: 3600, enabled: true }), 409, 'dhcp_overlap')
+    // plan distinct dans l'autre espace : servi sans souci, présent dans la configuration Kea
+    expect((await admin.post('/api/dhcp/scopes', { subnet_id: bx })).status).toBe(200)
+    const kea = (await admin.get('/api/system/render')).json.files.find((f: any) => f.kind === 'kea').content
+    expect(kea).toContain('10.50.0.0/24'); expect(kea).toContain('10.51.0.0/24')
+    // déménager un réseau servi vers un espace où son plan est déjà servi : refusé
+    const big = await mk('10.54.0.0/24', 1, 'big'), small = await mk('10.54.0.0/25', 1, 'small')   // imbriqués dans le même espace : accepté
+    expect((await admin.post('/api/dhcp/scopes', { subnet_id: big })).status).toBe(200); expect((await admin.post('/api/dhcp/scopes', { subnet_id: small })).status).toBe(200)
+    code(await admin.put(`/api/ipam/subnets/${big}`, { space_id: sx }), 409, 'dhcp_overlap')
+    // libérer le plan : l'autre devient activable
+    expect((await admin.put(`/api/dhcp/scopes/${sc1.json.id}`, { lease_time: 3600, enabled: false })).status).toBe(200)
+    expect((await admin.put(`/api/dhcp/scopes/${scx.json.id}`, { lease_time: 3600, enabled: true })).status).toBe(200)
+  })
+})

@@ -12,6 +12,7 @@ async function scopeSubnet(id: number) {
   return { ...r, net: parseCidr(r.cidr)! }
 }
 
+import { assertNoDhcpOverlap } from '../utils/dhcp-space'
 route('GET', '/dhcp/scopes', 'viewer', async () => ({ items: await query(`select d.id, d.subnet_id, text(s.cidr) as cidr, s.name as subnet_name, d.name, d.lease_time, d.enabled, d.options,
   (select count(*)::int from dhcp_pools p where p.scope_id = d.id) as pools, (select count(*)::int from dhcp_reservations r where r.scope_id = d.id) as reservations
   from dhcp_scopes d join subnets s on s.id = d.subnet_id order by s.cidr`) }))
@@ -28,9 +29,8 @@ route('POST', '/dhcp/scopes', 'operator', async (c) => {
   const s = await one<any>('select family(cidr) as fam, space_id, kind from subnets where id = $1', [b.subnet_id])
   if (!s) fail(400, 'subnet_not_found')
   if (s.fam !== 4) fail(400, 'ipv4_only')
-  // Kea ne distingue pas les espaces : deux plans identiques produiraient des sous-réseaux en conflit
-  if (s.space_id !== 1) fail(400, 'dhcp_space_only')
   if (s.kind === 'container') fail(400, 'container_no_addresses')
+  if (b.enabled) await assertNoDhcpOverlap(b.subnet_id)   // Kea n'a qu'un espace d'adressage : pas de chevauchement entre espaces
   const r = await one<any>('insert into dhcp_scopes (subnet_id, name, lease_time, enabled, options) values ($1,$2,$3,$4,$5::jsonb) returning id', [b.subnet_id, b.name ?? null, b.lease_time, b.enabled, JSON.stringify(cleanOptions(b.options))])
   await audit(c, 'scope_create', 'dhcp_scope', r.id)
   return { id: r.id }
@@ -38,6 +38,8 @@ route('POST', '/dhcp/scopes', 'operator', async (c) => {
 route('PUT', '/dhcp/scopes/:id', 'operator', async (c) => {
   const id = intParam(c, 'id')
   const b = await c.body(scopeBody.omit({ subnet_id: true }))
+  const cur = await one<any>('select subnet_id from dhcp_scopes where id = $1', [id])
+  if (cur && b.enabled) await assertNoDhcpOverlap(cur.subnet_id)
   const r = await one('update dhcp_scopes set name=$2, lease_time=$3, enabled=$4, options=$5::jsonb, updated_at=now() where id=$1 returning id', [id, b.name ?? null, b.lease_time, b.enabled, JSON.stringify(cleanOptions(b.options))])
   if (!r) fail(404, 'not_found')
   await audit(c, 'scope_update', 'dhcp_scope', id)

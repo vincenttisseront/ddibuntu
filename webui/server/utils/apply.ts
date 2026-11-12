@@ -106,6 +106,8 @@ export async function applyConfig(opts: { deploy: boolean; username: string | nu
   // le serveur doit se résoudre lui-même : sans vue pour 127.0.0.1 / ::1, contrôles de santé et mises à jour locales échoueraient
   const unc = warnings.filter((w) => w.startsWith('view_local_uncovered:')).map((w) => w.split(':').slice(1).join(':'))
   if (unc.length) results.push({ name: 'vues DNS : couverture locale', ok: false, output: `aucune vue ne répond à ${unc.join(', ')} : ajoutez ces adresses (ou « localhost ») à la liste des clients d'une vue` })
+  const ovl = await query<any>('select text(a.cidr) a, text(b.cidr) b from dhcp_scopes x join subnets a on a.id = x.subnet_id join dhcp_scopes y on y.id > x.id join subnets b on b.id = y.subnet_id where x.enabled and y.enabled and a.cidr && b.cidr limit 5')
+  for (const o of ovl) results.push({ name: 'DHCP : réseaux qui se chevauchent', ok: false, output: `${o.a} et ${o.b} se chevauchent : Kea ne distingue pas les espaces IPAM, désactivez l'une des deux étendues` })
   const ok = results.length > 0 && results.every((r) => r.ok === true || r.note === 'deferred')   // « différé » : ddibuntu-reload (root) tranche à l'application
   let deployed = false
   if (opts.deploy && ok) {

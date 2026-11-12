@@ -163,6 +163,8 @@ want="$(sha256sum "$DIST" | cut -d' ' -f1)"
 expect_grep "PS1 : empreinte SHA-256 = celle du script .sh" "ExpectedSha256 = '$want'" "$PS1"
 # shellcheck disable=SC2016  # motif sed littéral
 sed -n '/^\$PayloadB64 = @/,/^'"'"'@$/p' "$PS1" | sed '1d;$d' | tr -d '\n ' | base64 -d | gunzip > "$T_TMP/roundtrip.sh" 2>/dev/null
+# régression 0.9.42 : ddibuntu-reload ne doit jamais changer les droits de /var/lib/ddibuntu (la console doit le traverser)
+check "ddibuntu-reload : ne modifie pas les droits du dossier d'état" bash -c '! grep -nE "install -d -m 0[0-9]+ \"\$STATE\"" "$1"' _ "$ROOT/src/rootfs/usr/local/sbin/ddibuntu-reload"
 check "PS1 : le script embarqué décompressé est identique octet pour octet" cmp "$T_TMP/roundtrip.sh" "$DIST"
 
 finish

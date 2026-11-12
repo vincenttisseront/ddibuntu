@@ -264,6 +264,7 @@ cmd_apply() {
   if [ "$TEST" = 1 ] && [ "$(id -u)" != 0 ]; then :; else chown -R 0:0 "$APP/console"; fi
   tar -xpf "$WORKDIR/b/rootfs.tar" --numeric-owner "${ex[@]}" -C "$DDI_ROOT/"
   cp "$WORKDIR/b/VERSION" "$DDI_STATEDIR/installed-version"
+  chmod 0755 "$DDI_STATEDIR" 2>/dev/null || true   # répare les droits changés par ddibuntu-reload (≤ 0.9.41) : la console doit traverser ce dossier
   svc daemon-reload
   # unités « demande » éventuellement modifiées par cette version : redémarrées pour prendre en compte leurs nouvelles règles (sans effet si elles sont inactives)
   svc restart ddibuntu-cluster-request.path ddibuntu-cluster-setup.path ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-backup-request.path >/dev/null 2>&1 || true

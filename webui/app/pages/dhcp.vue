@@ -6,7 +6,7 @@ const tab = useHashTab('scopes', ['scopes', 'ranges', 'leases', 'settings', 'dep
 const tabs = computed(() => [{ label: t('dhcp.scopes'), value: 'scopes', icon: 'i-lucide-server' }, { label: t('dhcp.ranges'), value: 'ranges', icon: 'i-lucide-bookmark' }, { label: t('dhcp.leases'), value: 'leases', icon: 'i-lucide-clock' }, { label: t('dhcp.settings'), value: 'settings', icon: 'i-lucide-sliders-horizontal' }, { label: t('apply.title'), value: 'deploy', icon: 'i-lucide-rocket' }])
 const { data: scopes, refresh: refreshScopes } = await useFetch<any>('/api/dhcp/scopes')
 const { data: subnets } = await useFetch<any>('/api/ipam/subnets')
-const free = computed(() => (subnets.value?.items ?? []).filter((s: any) => s.family === 4 && !s.has_dhcp).map((s: any) => ({ label: `${s.cidr} — ${s.name}`, value: s.id })))
+const free = computed(() => (subnets.value?.items ?? []).filter((s: any) => s.family === 4 && !s.has_dhcp).map((s: any) => ({ label: `${s.cidr} — ${s.name}${s.space_id !== 1 ? ' (' + s.space + ')' : ''}`, value: s.id })))
 const scopeOptions = computed(() => (scopes.value?.items ?? []).map((s: any) => ({ label: `${s.cidr} — ${s.name ?? s.subnet_name}`, value: s.id })))
 const sel = ref<number | null>(null)
 watch(scopes, (s) => { if (sel.value === null && s?.items?.length) sel.value = s.items[0].id }, { immediate: true })

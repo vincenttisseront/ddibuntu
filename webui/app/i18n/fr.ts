@@ -461,7 +461,7 @@ const messages: Record<string, string> = {
   "err.gateway_outside": "La passerelle doit appartenir au sous-réseau.",
   "err.cidr_immutable": "Le réseau d’un sous-réseau ne peut pas être modifié.",
   "err.subnet_not_empty": "Le sous-réseau contient des adresses ou une étendue DHCP.",
-  "err.dhcp_space_only": "Le DHCP ne gère que les réseaux de l’espace par défaut (Kea ne distingue pas les espaces).",
+  "err.dhcp_overlap": "Chevauchement avec le réseau {cidr} déjà servi en DHCP dans l’espace « {space} » : Kea ne distingue pas les espaces. Désactivez cette étendue ou choisissez des plages distinctes.",
   "err.template_not_found": "Gabarit introuvable.",
   "err.hostname_rule": "Le nom d’hôte ne respecte pas la règle de nommage du gabarit du réseau.",
   "err.pattern_length": "Le motif doit faire entre 1 et 100 caractères.",

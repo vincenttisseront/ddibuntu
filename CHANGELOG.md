@@ -1,5 +1,9 @@
 # Journal des modifications
 
+## 0.9.42 — « DHCP multi-espaces »
+- **DHCP sur tous les espaces IPAM** : le DHCP n'était servi que pour l'espace par défaut. Un réseau d'un autre espace peut maintenant avoir une étendue, tant qu'il ne chevauche aucun réseau déjà servi (étendue active) d'un autre espace (Kea n'a qu'un seul espace d'adressage) : sinon refus `dhcp_overlap` indiquant le réseau et l'espace en cause. Le contrôle s'applique à la création et à la réactivation d'une étendue, à la création avec gabarit et au déplacement d'un réseau vers un autre espace ; la validation de configuration le revérifie. Une étendue désactivée ne bloque rien. Le sélecteur DHCP indique l'espace des réseaux.
+- **Correctif important** : `ddibuntu-reload` remettait les droits de `/var/lib/ddibuntu` à 0750 (root) à chaque déploiement : la console ne pouvait plus le traverser (« Rechercher des mises à jour » et autres actions en erreur interne, `EACCES`). Les droits ne sont plus modifiés ; la mise à jour et le démarrage rétablissent 0755. Remède immédiat sur un nœud déjà touché : `chmod 755 /var/lib/ddibuntu`.
+
 ## 0.9.41 — « Délégation par périmètre »
 - **Périmètre IPAM** : un utilisateur (local ou issu d'Active Directory) peut être limité à certains espaces IPAM. Il n'écrit alors que dans ces espaces (adresses, réseaux, pools) ; tout le reste (DNS, DHCP, découverte, réglages, espaces, VLAN, modèles) lui est refusé (`out_of_scope`), la lecture reste libre. Un administrateur n'est jamais restreint. Système → Utilisateurs : champ « Périmètre IPAM » (numéros d'espaces, vide = tout). Migration de schéma 15.
 - **Groupes AD** : la table de correspondance accepte un 3ᵉ champ, `DN du groupe | rôle | 1,3` (Import / AD). Le périmètre est l'union des groupes qui donnent le rôle retenu ; un groupe sans espaces lève la restriction. Recalculé à chaque connexion.
