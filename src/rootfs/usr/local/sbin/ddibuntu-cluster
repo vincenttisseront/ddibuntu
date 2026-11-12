@@ -1348,7 +1348,8 @@ for name, ip, role in peers:
                  "inEtcd": (name in mem or ip in mem_ip) if (mem or mem_ip) else None, "errors": [str(e)[:120] for e in (st.get("errors") or [])][:3]})
 for r in rows:
     r["isLeader"] = bool(leader_id) and r["memberId"] is not None and int(r["memberId"], 16) == leader_id
-voters = [r for r in rows if not r["learner"]]
+# un pair inscrit au registre mais ABSENT de la liste des membres d'etcd (retiré à la main, pas encore déclaré) ne vote pas
+voters = [r for r in rows if not r["learner"] and r["inEtcd"] is not False]
 need = len(voters) // 2 + 1
 healthy = sum(1 for r in voters if r["healthy"])
 print(json.dumps({"voters": len(voters), "needed": need, "healthy": healthy, "hasQuorum": healthy >= need, "tolerance": healthy - need,

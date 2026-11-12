@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.26 — « Quorum : un pair absent d'etcd ne vote plus ; bouton Retirer expliqué »
+- **Correctif** : un nœud encore inscrit au registre du cluster mais **absent de la liste des membres d'etcd** (retiré à la main, ou jamais déclaré) était compté comme votant : « quorum perdu » à tort, bouton « Retirer » grisé. Il n'est plus compté ; « Retirer » nettoie alors le registre, les clés Patroni et le pare-feu.
+- Le bouton « Retirer » inactif (quorum réellement perdu) affiche maintenant une info-bulle qui explique pourquoi.
+- Test `b24-cluster-quorum-live` : étape « pair retiré d'etcd à la main » (76/0).
+
 ## 0.9.25 — « Quorum : un nœud déclaré mais pas encore démarré ne compte plus comme votant »
 - **Correctif important** : après « Ajouter un nœud », le membre etcd est déclaré en « learner » (sans voix) mais n'a **pas de nom** tant que le nouveau serveur n'a pas démarré. La console ne le reconnaissait donc pas comme learner et le comptait comme votant : la page affichait « quorum perdu » (1 sain sur 2, majorité 2) alors que le quorum réel était intact, et des actions comme « Retirer » étaient refusées. Le membre est maintenant reconnu à son adresse de pair.
 - Test `b24-cluster-quorum-live` : étape « nœud déclaré, pas démarré » (72/0 ; échoue sur l'ancien code).

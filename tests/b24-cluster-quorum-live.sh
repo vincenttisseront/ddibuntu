@@ -169,4 +169,11 @@ expect_eq "la dernière écriture acceptée avant la panne n'a pas disparu" "ret
 wait_for 120 "PostgreSQL : un seul primaire accessible en écriture" one_primary 1
 stage "après les épreuves" 3 1 2 3
 
+# pair encore inscrit au registre mais retiré d'etcd (retrait manuel du membre) : il ne vote plus, le quorum ne doit pas le compter
+id3="$(ectl 1 member list -w json 2>/dev/null | python3 -c 'import json,sys; print(next(("%x" % m["ID"] for m in json.load(sys.stdin)["members"] if m.get("name")=="n3"), ""))')"
+[ -n "$id3" ] && ok "identifiant du membre n3 relevé" || ko "identifiant du membre n3 relevé" "introuvable"
+check "retrait manuel du membre n3 d'etcd" ectl 1 member remove "$id3"
+wait_cond 30 "n1 ne compte plus n3 comme votant" '[ "$(qv 1 "d[\"voters\"]")" = "2" ]'
+expect_eq "n3 absent d'etcd mais encore au registre : 2 votants, majorité 2, quorum présent" "2 2 True" "$(quorum 1 | rep 'str(d["voters"])+" "+str(d["needed"])+" "+str(d["hasQuorum"])')"
+
 finish
