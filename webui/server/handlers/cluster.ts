@@ -6,7 +6,7 @@ import { audit, fail, route } from '../utils/router'
 import { inRecovery } from '../utils/db'
 import { cfg } from '../utils/config'
 import { randomBytes } from 'node:crypto'
-import { actionRefusal, bundleRefusal, CLUSTER_INSTALL_CMD, localAddresses, missingClusterTools, NODE_NAME_RE, readClusterState, readSwitchoverResult, shortHostname, switchoverCandidates } from '../utils/cluster'
+import { actionRefusal, bundleRefusal, cancelPending, CLUSTER_INSTALL_CMD, readPending, localAddresses, missingClusterTools, NODE_NAME_RE, readClusterState, readSwitchoverResult, shortHostname, switchoverCandidates } from '../utils/cluster'
 import { DRILL_ID_RE, drillBusy, readDrillCheck, readDrillLive, readDrills } from '../utils/drill'
 
 // Public et minimal : l'écran de connexion d'un nœud secondaire doit pouvoir l'expliquer (aucune adresse ni nom de nœud).
@@ -16,6 +16,7 @@ route('GET', '/cluster/role', 'public', async () => ({ replica: await inRecovery
 route('GET', '/cluster/status', 'viewer', async () => {
   const state = await readClusterState()
   return {
+    pending: await readPending(cfg().generatedDir).catch(() => null),
     clustered: state !== null, replica: await inRecovery().catch(() => false), state, candidates: switchoverCandidates(state), result: await readSwitchoverResult(),
     // hors cluster : de quoi remplir l'assistant de création (adresses réelles du serveur, nom de la machine)
     ...(state === null ? { setup: { hostname: shortHostname(), addresses: localAddresses(cfg().testMode), missing: cfg().testMode ? [] : missingClusterTools(), install: CLUSTER_INSTALL_CMD } } : {}),
@@ -41,7 +42,7 @@ route('POST', '/cluster/switchover', 'admin', async (c) => {
 // Actualisation immédiate de l'état (sondes etcd en direct) : root republie l'état dans la seconde. Sans effet sur le cluster.
 async function drop(file: string, body: string): Promise<void> {
   const f = join(cfg().generatedDir, file)
-  try { await fs.stat(f); fail(409, 'action_pending') } catch (e: any) { if (e?.code !== 'ENOENT') throw e }
+  try { await fs.stat(f); fail(409, 'action_pending', undefined, { pending: await readPending(cfg().generatedDir).catch(() => null) }) } catch (e: any) { if (e?.code !== 'ENOENT') throw e }
   await fs.writeFile(f, body, { mode: 0o640, flag: 'wx' })
 }
 route('POST', '/cluster/refresh', 'operator', async () => {
@@ -132,7 +133,7 @@ route('POST', '/cluster/join', 'admin', async (c) => {
   await standalone()
   if (b.confirm !== shortHostname()) fail(409, 'confirm_mismatch')
   const dir = cfg().generatedDir, setup = join(dir, '.cluster-setup'), bf = join(dir, 'cluster-join.bundle')
-  try { await fs.stat(setup); fail(409, 'action_pending') } catch (e: any) { if (e?.code !== 'ENOENT') throw e }
+  try { await fs.stat(setup); fail(409, 'action_pending', undefined, { pending: await readPending(dir).catch(() => null) }) } catch (e: any) { if (e?.code !== 'ENOENT') throw e }
   try { await fs.writeFile(bf, Buffer.from(b.bundle, 'base64'), { mode: 0o640, flag: 'wx' }) } catch (e: any) { if (e?.code === 'EEXIST') fail(409, 'action_pending'); throw e }
   try { await fs.writeFile(setup, JSON.stringify({ action: 'join', pass: b.pass, confirm: b.confirm }), { mode: 0o640, flag: 'wx' }) } catch (e) { await fs.rm(bf, { force: true }); throw e }
   await audit(c, 'cluster.join', 'node', b.confirm)
@@ -167,3 +168,10 @@ route('DELETE', '/cluster/bundle/:name', 'admin', async (c) => {
 })
 
 export const registered = true
+
+// Annulation d'une demande restée en attente (root ne l'a pas lue : unité inactive, fichier ancien…). N'arrête jamais une opération en cours d'exécution.
+route('DELETE', '/cluster/pending', 'admin', async (c) => {
+  const n = await cancelPending(cfg().generatedDir)
+  await audit(c, 'cluster.pending_cancel', 'cluster', undefined, { removed: n })
+  return { removed: n }
+})

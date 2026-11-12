@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.9.23 — « Cluster : on sait quelle tâche est en cours »
+- **Tâche en attente visible** : la page Cluster affiche un bandeau « Une demande attend d'être exécutée : <tâche> » (création du cluster, rattachement, bascule, lot d'enrôlement de tel nœud, mise à jour du cluster, etc.) avec son ancienneté. Le message « Une opération est déjà en cours sur ce nœud » nomme maintenant la tâche concernée.
+- **Demande bloquée** : au-delà de 2 minutes le bandeau passe en avertissement et un administrateur peut **Annuler la demande** (boîte de confirmation) ; seules les demandes pas encore lues par root sont retirées, jamais une opération commencée. Action auditée.
+- **Cause d'un blocage constaté** : une demande déposée avant que l'unité `ddibuntu-cluster-request.path` soit active n'était jamais traitée (l'unité ne surveillait que les changements). Elle traite aussi, maintenant, une demande déjà présente.
+- Contenu des fichiers de demande jamais renvoyé tel quel : seuls le type d'action et un nom de nœud valides sont extraits.
+- Tests : unitaires 280, e2e `e2e-iter14` (état, annulation, droits).
+
 ## 0.9.22 — « Cluster : la nouvelle version est annoncée aussitôt après une mise à jour »
 - Constaté : juste après une mise à jour, la page Cluster affichait encore l'ancienne version du nœud (« versions homogènes 0.9.16 » alors que le nœud était en 0.9.21) jusqu'au prochain passage de la synchronisation (≤ 1 min). Une mise à jour réussie publie désormais la version du nœud dans etcd immédiatement.
 

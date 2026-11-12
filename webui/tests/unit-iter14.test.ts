@@ -165,3 +165,31 @@ describe('composants du cluster (0.9.14)', () => {
     expect(missingClusterTools([], () => true)).toHaveLength(4)
   })
 })
+
+// 0.9.15+ — tâche en cours : lecture assainie des fichiers de demande.
+import { mkdtempSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join as pjoin } from 'node:path'
+import { cancelPending, readPending } from '../server/utils/cluster'
+describe('tâche du cluster en attente', () => {
+  const mk = () => mkdtempSync(pjoin(tmpdir(), 'pend-'))
+  it('aucune demande : null', async () => { const d = mk(); expect(await readPending(d)).toBeNull(); rmSync(d, { recursive: true }) })
+  it('action et nœud lus, contenu inattendu écarté', async () => {
+    const d = mk()
+    writeFileSync(pjoin(d, '.cluster-action'), JSON.stringify({ action: 'bundle', node: 'vmtools-ddi02', pass: 'secret' }))
+    const p = await readPending(d); expect(p).toMatchObject({ kind: 'action', action: 'bundle', node: 'vmtools-ddi02' }); expect(JSON.stringify(p)).not.toContain('secret')
+    writeFileSync(pjoin(d, '.cluster-action'), JSON.stringify({ action: '../../etc', node: 'X;rm' }))
+    expect(await readPending(d)).toMatchObject({ action: 'other' }); expect((await readPending(d))?.node).toBeUndefined()
+    writeFileSync(pjoin(d, '.cluster-action'), 'pas du json'); expect((await readPending(d))?.action).toBe('other')
+    rmSync(d, { recursive: true })
+  })
+  it('création du cluster, bascule et lot de rattachement reconnus ; ancienneté', async () => {
+    const d = mk(); writeFileSync(pjoin(d, '.cluster-setup'), JSON.stringify({ action: 'init', name: 'n1' }))
+    const old = new Date(Date.now() - 600_000); utimesSync(pjoin(d, '.cluster-setup'), old, old)
+    const p = await readPending(d); expect(p).toMatchObject({ kind: 'setup', action: 'init' }); expect(Date.now() / 1000 - p!.since).toBeGreaterThan(590)
+    expect(await cancelPending(d)).toBe(1); expect(await readPending(d)).toBeNull()
+    writeFileSync(pjoin(d, '.cluster-switchover'), 'vmtools-ddi02\n'); expect(await readPending(d)).toMatchObject({ kind: 'switchover', action: 'switchover', node: 'vmtools-ddi02' })
+    rmSync(pjoin(d, '.cluster-switchover')); writeFileSync(pjoin(d, 'cluster-join.bundle'), 'x'); expect(await readPending(d)).toMatchObject({ kind: 'join', action: 'join' })
+    rmSync(d, { recursive: true })
+  })
+})

@@ -17,12 +17,22 @@ onMounted(() => {
   timer = setInterval(() => {
     if (document.hidden) return
     if (canWrite.value && data.value?.clustered && !data.value?.replica && ticks++ % 3 === 0) api.call('POST', '/cluster/refresh', undefined, { silent: true }).catch(() => {})
-    load(true)
+    nowS.value = Math.floor(Date.now() / 1000); load(true)
   }, 5000)
 })
 onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 
 const st = computed(() => data.value?.state ?? null)
+// tâche déposée par la console et pas encore prise en charge par root : laquelle, depuis quand, et possibilité de l'annuler si elle semble bloquée
+const pending = computed(() => data.value?.pending ?? null)
+const nowS = ref(Math.floor(Date.now() / 1000))
+const pendingAge = computed(() => (pending.value ? Math.max(0, nowS.value - pending.value.since) : 0))
+const pendingStuck = computed(() => pendingAge.value > 120)
+const ageText = (s: number) => (s < 90 ? `${s} s` : `${Math.round(s / 60)} min`)
+async function cancelPending() {
+  if (!(await ask(t('cluster.pending.cancel_title'), t('cluster.pending.cancel_body'), true))) return
+  try { await api.call('DELETE', '/cluster/pending'); toast.add({ title: t('cluster.pending.cancelled'), color: 'success' }); await load(true) } catch (e: any) { error.value = e?.info?.message ?? t('err.internal') }
+}
 const wiz = ref<any>(null)
 const canAdd = computed(() => isAdmin.value && st.value?.nodeRole === 'data' && st.value?.ca?.node === true && !data.value?.replica)
 const isLeader = computed(() => st.value?.localRole === 'leader')
@@ -63,6 +73,12 @@ async function switchover(node: string) {
 <template>
   <div class="flex flex-col gap-4 max-w-5xl">
     <ClusterWizards ref="wiz" :st="st" :setup="data?.setup" :result="data?.result" @reload="load(true)" />
+    <UAlert v-if="pending" :color="pendingStuck ? 'warning' : 'info'" variant="subtle" icon="i-lucide-loader" :title="t('cluster.pending.title', { task: pendingLabel(t, pending) })" data-test="pending-task">
+      <template #description>
+        <span>{{ t('cluster.pending.since', { s: ageText(pendingAge) }) }} — {{ pendingStuck ? t('cluster.pending.stuck') : t('cluster.pending.wait') }}</span>
+        <div v-if="isAdmin && pendingStuck" class="mt-2"><UButton size="xs" color="warning" variant="outline" :label="t('cluster.pending.cancel')" @click="cancelPending" /></div>
+      </template>
+    </UAlert>
     <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
     <div v-if="loading" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader" class="animate-spin" />{{ t('cluster.loading') }}</div>
     <template v-else-if="!data?.clustered">

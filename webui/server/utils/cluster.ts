@@ -306,3 +306,36 @@ export const CLUSTER_INSTALL_CMD = 'apt install patroni etcd-server etcd-client 
 export function missingClusterTools(dirs: string[] = [...(process.env.PATH ?? '').split(':'), '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'], exists: (p: string) => boolean = (p) => existsSync(p)): string[] {
   return CLUSTER_TOOLS.filter((t) => !dirs.some((d) => d && exists(`${d}/${t}`)))
 }
+
+// Tâche du cluster en attente d'exécution par root (fichiers de demande déposés par la console, pas encore consommés).
+// Sert à dire à l'administrateur QUELLE opération est en cours, et depuis quand ; le contenu est assaini (jamais renvoyé tel quel).
+export interface ClusterPending { kind: 'action' | 'setup' | 'switchover' | 'join'; action: string; node?: string; since: number }
+const PENDING_FILES: Array<{ file: string; kind: ClusterPending['kind'] }> = [
+  { file: '.cluster-setup', kind: 'setup' }, { file: '.cluster-action', kind: 'action' }, { file: '.cluster-switchover', kind: 'switchover' }, { file: 'cluster-join.bundle', kind: 'join' },
+]
+export async function readPending(dir: string): Promise<ClusterPending | null> {
+  for (const { file, kind } of PENDING_FILES) {
+    const f = `${dir}/${file}`
+    let st
+    try { st = await fs.stat(f) } catch { continue }
+    let action = kind === 'join' ? 'join' : kind === 'switchover' ? 'switchover' : 'other', node: string | undefined
+    if (kind === 'action' || kind === 'setup') {
+      try {
+        const j = JSON.parse((await fs.readFile(f, 'utf8')).slice(0, 4096))
+        if (typeof j?.action === 'string' && /^[a-z][a-z-]{1,24}$/.test(j.action)) action = j.action
+        const n = j?.node ?? j?.name
+        if (typeof n === 'string' && /^[a-z][a-z0-9-]{1,30}$/.test(n)) node = n
+      } catch { /* illisible : on garde « other » */ }
+    } else if (kind === 'switchover') {
+      try { const n = (await fs.readFile(f, 'utf8')).trim(); if (/^[a-z][a-z0-9-]{1,30}$/.test(n)) node = n } catch { /* ignoré */ }
+    }
+    return { kind, action, ...(node ? { node } : {}), since: Math.floor(st.mtimeMs / 1000) }
+  }
+  return null
+}
+// Annule les demandes que root n'a pas encore prises en charge (jamais une opération déjà commencée : root retire le fichier dès qu'il le lit).
+export async function cancelPending(dir: string): Promise<number> {
+  let n = 0
+  for (const { file } of PENDING_FILES) { try { await fs.unlink(`${dir}/${file}`); n++ } catch (e: any) { if (e?.code !== 'ENOENT') throw e } }
+  return n
+}

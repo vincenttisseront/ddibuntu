@@ -3,6 +3,9 @@ Description=Watch for a controlled switchover requested from the DDI-Buntu conso
 ConditionPathExists=/etc/ddibuntu-cluster/cluster.conf
 
 [Path]
+# PathExists : une demande déjà présente au démarrage de l'unité (posée avant qu'elle soit active) est traitée, pas oubliée
+PathExists=/var/lib/ddibuntu/generated/.cluster-switchover
+PathExists=/var/lib/ddibuntu/generated/.cluster-action
 PathChanged=/var/lib/ddibuntu/generated/.cluster-switchover
 PathChanged=/var/lib/ddibuntu/generated/.cluster-action
 Unit=ddibuntu-cluster-request.service

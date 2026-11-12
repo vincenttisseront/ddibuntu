@@ -2,6 +2,11 @@
 import { isSessionExpired } from '../utils/session'
 export interface ApiErrorInfo { status: number; code: string; message: string; issues: Array<{ path: string; message: string }>; upstream?: { status: number; detail: string } }
 
+export function pendingLabel(t: (k: string, p?: Record<string, unknown>) => string, p: { kind?: string; action?: string; node?: string }): string {
+  const k = `cluster.pending.${p.action ?? 'other'}`, r = t(k, { node: p.node ?? '?' })
+  return r === k ? t('cluster.pending.other') : r
+}
+
 export function useApi() {
   const csrf = useState<string>('csrf', () => '')
   const { t } = useT()
@@ -13,7 +18,8 @@ export function useApi() {
     const key = `err.${code}`
     const msg = t(key)
     const up = body?.data?.upstream
-    return { status, code, message: msg === key ? t('err.internal') : msg, issues: body?.data?.issues ?? [], ...(up && typeof up.status === 'number' ? { upstream: { status: up.status, detail: String(up.detail ?? '') } } : {}) }
+    const pend = code === 'action_pending' ? body?.data?.pending : null
+    return { status, code, message: msg === key ? t('err.internal') : pend ? `${msg} ${t('cluster.pending.current', { task: pendingLabel(t, pend) })}` : msg, issues: body?.data?.issues ?? [], ...(up && typeof up.status === 'number' ? { upstream: { status: up.status, detail: String(up.detail ?? '') } } : {}) }
   }
 
   async function call<T = any>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, body?: unknown, opts: { silent?: boolean; busy?: boolean } = {}): Promise<T> {

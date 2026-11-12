@@ -211,3 +211,14 @@ describe('0.9.14 — réglages de session communs', () => {
     expect((await db.query("select 1 from settings where key = 'session'")).rowCount).toBe(0)
   })
 })
+
+describe('tâche du cluster en attente (API)', () => {
+  it('une demande déposée apparaît dans l\'état, puis disparaît à l\'annulation (administrateur seulement)', async () => {
+    mkdirSync(join(TMP, 'gen'), { recursive: true }); writeFileSync(ACT, JSON.stringify({ action: 'drill', confirm: 'x' }))
+    const st = await admin.get('/api/cluster/status'); expect(st.json.pending).toMatchObject({ kind: 'action', action: 'drill' })
+    expect((await viewer.delete('/api/cluster/pending')).status).toBe(403)
+    expect(existsSync(ACT)).toBe(true)
+    const r = await admin.delete('/api/cluster/pending'); expect(r.status).toBe(200); expect(r.json.removed).toBeGreaterThan(0)
+    expect(existsSync(ACT)).toBe(false); expect((await admin.get('/api/cluster/status')).json.pending).toBeNull()
+  })
+})
