@@ -740,6 +740,7 @@ const messages: Record<string, string> = {
   "cluster.pending.cancel_title": "Cancel the pending request?",
   "cluster.pending.cancel_body": "The request has not run yet: it will simply be removed. An operation that already started is not stopped.",
   "cluster.pending.cancelled": "Request cancelled",
+  "cluster.op.remove_needs_quorum": "Removal is not possible while the etcd quorum is lost (the change must be approved by the majority).",
   "disc.select_all": "Select all (scan everything)",
   "disc.hosts": "{n} addresses",
   "disc.total": "{n} address(es) to explore (4096 maximum)",

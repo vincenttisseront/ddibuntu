@@ -740,6 +740,7 @@ const messages: Record<string, string> = {
   "cluster.pending.cancel_title": "Annuler la demande en attente ?",
   "cluster.pending.cancel_body": "La demande n’a pas encore été exécutée : elle sera simplement retirée. Une opération déjà commencée n’est pas arrêtée.",
   "cluster.pending.cancelled": "Demande annulée",
+  "cluster.op.remove_needs_quorum": "Retrait impossible tant que le quorum etcd est perdu (la modification doit être validée par la majorité).",
   "disc.select_all": "Tout sélectionner (scanner l’ensemble)",
   "disc.hosts": "{n} adresses",
   "disc.total": "{n} adresse(s) à explorer (4096 au maximum)",

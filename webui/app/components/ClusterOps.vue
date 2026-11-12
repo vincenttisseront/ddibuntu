@@ -69,7 +69,7 @@ defineExpose({ begin })
               <td class="pr-4 font-mono">{{ m.raftIndex ?? '—' }}<span class="text-muted"> / {{ m.raftTerm ?? '—' }}</span></td>
               <td class="pr-4 font-mono">{{ bytes(m.dbSize) }}</td>
               <td class="pr-4 font-mono">{{ m.version || '—' }}</td>
-              <td class="text-right"><UButton v-if="isAdmin && isData && m.name !== st.node" size="xs" color="error" variant="outline" icon="i-lucide-user-minus" :label="t('cluster.op.remove')" :disabled="!q.hasQuorum" @click="begin('remove-node', m.name)" /></td>
+              <td class="text-right"><UButton v-if="isAdmin && isData && m.name !== st.node" size="xs" color="error" variant="outline" icon="i-lucide-user-minus" :label="t('cluster.op.remove')" :disabled="!q.hasQuorum" :title="!q.hasQuorum ? t('cluster.op.remove_needs_quorum') : undefined" @click="begin('remove-node', m.name)" /></td>
             </tr>
           </tbody>
         </table>
