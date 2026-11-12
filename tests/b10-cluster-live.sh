@@ -405,11 +405,14 @@ else
   CSRF="$(python3 -c "import json; print(json.load(open('$B/hc.out'))['csrf'])")"
   expect_eq "leader : écriture acceptée (nouvel utilisateur)" "200" "$(hc $PL POST /api/users "{\"username\":\"lect\",\"role\":\"viewer\",\"password\":\"$PW\"}")"
   wait_cond 20 "la session et l'utilisateur sont répliqués sur le secondaire" '[ "$(sql $RN -c "select count(*) from users")" = 2 ]'
-  expect_eq "secondaire : connexion refusée (lecture seule)" "503/replica" "$(hc $PR POST /api/auth/login "{\"username\":\"admin\",\"password\":\"$PW\"}")/$(hcode)"
-  expect_eq "secondaire : la session ouverte sur le leader reste lisible" "200" "$(hc $PR GET /api/users)"
+  expect_eq "secondaire : connexion acceptée (session signée, rien n'est écrit en base)" "200" "$(hc $PR POST /api/auth/login "{\"username\":\"admin\",\"password\":\"$PW\"}")"
+  expect_eq "secondaire : la session signée est lisible" "200" "$(hc $PR GET /api/users)"
+  expect_eq "secondaire : aucune session écrite pour cette connexion" "1" "$(sql $RN -c "select count(*) from sessions")"
+  expect_eq "secondaire : mauvais mot de passe refusé (401)" "401" "$(hc $PR POST /api/auth/login "{\"username\":\"admin\",\"password\":\"mauvais-mot-de-passe-1\"}")"
   expect_eq "secondaire : écriture refusée proprement (503)" "503/replica" "$(hc $PR POST /api/users "{\"username\":\"intrus\",\"role\":\"viewer\",\"password\":\"$PW\"}")/$(hcode)"
   expect_eq "secondaire : déploiement refusé et aucun fichier écrit" "503/0" "$(hc $PR POST /api/system/apply '{"deploy":true}')/$([ -e "$B/congen$RN/.deployed" ] && echo 1 || echo 0)"
   expect_eq "secondaire : l'utilisateur refusé n'existe pas" "0" "$(sql $RN -c "select count(*) from users where username = 'intrus'")"
+  hc $PL POST /api/auth/login "{\"username\":\"admin\",\"password\":\"$PW\"}" >/dev/null; CSRF="$(python3 -c "import json; print(json.load(open('$B/hc.out'))['csrf'])")"   # le pot de cookies est commun aux deux consoles : retour sur la session du leader
   # états publiés par root (follow) lus par les deux consoles
   fol "$LN" >/dev/null 2>&1; fol "$RN" >/dev/null 2>&1
   expect_eq "leader : état du cluster visible, rôle local = leader" "true/leader/n$LN" "$(hc $PL GET /api/cluster/status >/dev/null; python3 -c "import json; d=json.load(open('$B/hc.out')); print(str(d['clustered']).lower()+'/'+d['state']['localRole']+'/'+d['state']['leader'])")"

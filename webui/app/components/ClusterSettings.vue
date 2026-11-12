@@ -17,14 +17,17 @@ const me = computed(() => (props.st?.nodes ?? []).find((n: any) => n.name === pr
 const addrs = computed<any[]>(() => props.local?.addresses ?? [])
 const ifaces = computed<string[]>(() => [...new Set(addrs.value.map((a: any) => a.iface))] as string[])
 
+const preferred = computed(() => props.st?.preferred ?? null)
+const dataNodes = computed<string[]>(() => (props.st?.nodes ?? []).filter((n: any) => n.role === 'data').map((n: any) => n.name))
+const leaderName = computed(() => props.st?.leader ?? null)
 const ipOk = (v: string) => /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(v)
 const cidrOk = (v: string) => { const m = v.match(/^([0-9.]+)\/(\d{1,2})$/); return !!m && ipOk(m[1]!) && Number(m[2]) <= 32 }
 const ifaceOk = (v: string) => /^[a-z][a-z0-9._-]{0,14}$/.test(v)
 const dayColor = (d: number) => (d <= 7 ? 'error' : d <= 30 ? 'warning' : 'success') as any
 
-type Kind = 'set-vip' | 'clear-vip' | 'vip-iface' | 'set-net' | 'change-ip'
+type Kind = 'set-vip' | 'clear-vip' | 'vip-iface' | 'set-net' | 'change-ip' | 'set-preferred' | 'clear-preferred'
 const kind = ref<Kind | null>(null), busy = ref(false), err = ref(''), renewing = ref(false)
-const f = reactive({ vip: '', iface: '', vrid: '', net: '', ip: '', confirm: '' })
+const f = reactive({ vip: '', iface: '', vrid: '', net: '', ip: '', node: '', confirm: '' })
 const open = computed({ get: () => kind.value !== null, set: (v: boolean) => { if (!v && !busy.value) kind.value = null } })
 const expected = computed(() => (kind.value === 'change-ip' ? props.st?.node : props.st?.cluster) ?? '')
 const needsConfirm = computed(() => kind.value !== null && kind.value !== 'vip-iface')
@@ -35,12 +38,14 @@ const valid = computed(() => {
     case 'vip-iface': return ifaceOk(f.iface)
     case 'set-net': return cidrOk(f.net) && f.confirm === expected.value
     case 'change-ip': return ipOk(f.ip) && f.ip !== me.value?.ip && f.confirm === expected.value
+    case 'set-preferred': return dataNodes.value.includes(f.node) && f.node !== preferred.value?.node && f.confirm === expected.value
+    case 'clear-preferred': return f.confirm === expected.value
     default: return false
   }
 })
 function begin(k: Kind) {
   err.value = ''
-  Object.assign(f, { vip: app.value?.vip ?? '', iface: app.value?.iface ?? ifaces.value[0] ?? '', vrid: app.value?.vrid && app.value.vip ? String(app.value.vrid) : '', net: app.value?.net ?? '', ip: '', confirm: '' })
+  Object.assign(f, { vip: app.value?.vip ?? '', iface: app.value?.iface ?? ifaces.value[0] ?? '', vrid: app.value?.vrid && app.value.vip ? String(app.value.vrid) : '', net: app.value?.net ?? '', ip: '', node: preferred.value?.node ?? props.st?.leader ?? dataNodes.value[0] ?? '', confirm: '' })
   if (k === 'set-vip' && !app.value?.vip) f.vip = ''
   kind.value = k
 }
@@ -50,6 +55,8 @@ function payload(): Record<string, unknown> {
     case 'clear-vip': return { action: 'clear-vip', confirm: f.confirm }
     case 'vip-iface': return { action: 'vip-iface', iface: f.iface }
     case 'set-net': return { action: 'set-net', net: f.net, confirm: f.confirm }
+    case 'set-preferred': return { action: 'set-preferred', node: f.node, confirm: f.confirm }
+    case 'clear-preferred': return { action: 'clear-preferred', confirm: f.confirm }
     default: return { action: 'change-ip', ip: f.ip, confirm: f.confirm }
   }
 }
@@ -140,6 +147,26 @@ defineExpose({ begin })
     </UCard>
 
     <UCard class="lg:col-span-2">
+      <template #header>
+        <div class="flex items-center justify-between gap-2">
+          <span class="font-medium">{{ t('cluster.pref.title') }}</span>
+          <UBadge v-if="preferred" :color="leaderName === preferred.node ? 'success' : 'warning'" variant="subtle" :label="leaderName === preferred.node ? t('cluster.pref.at_pref') : t('cluster.pref.drift')" />
+        </div>
+      </template>
+      <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt class="text-muted">{{ t('cluster.pref.node') }}</dt>
+        <dd><span v-if="preferred" class="font-mono">{{ preferred.node }}</span><span v-else class="text-muted">{{ t('cluster.pref.none') }}</span></dd>
+        <dt class="text-muted">{{ t('cluster.pref.current') }}</dt><dd class="font-mono">{{ leaderName || '—' }}</dd>
+        <template v-if="preferred"><dt class="text-muted">{{ t('cluster.pref.set_by') }}</dt><dd>{{ preferred.by || '—' }} · {{ preferred.at ? fmt.dateTime(preferred.at * 1000) : '—' }}</dd></template>
+      </dl>
+      <p class="text-xs text-muted mt-3">{{ t('cluster.pref.hint') }}</p>
+      <div v-if="canAct" class="flex flex-wrap gap-2 mt-3">
+        <UButton size="sm" icon="i-lucide-star" :label="preferred ? t('cluster.pref.change') : t('cluster.pref.set')" @click="begin('set-preferred')" />
+        <UButton v-if="preferred" size="sm" color="error" variant="outline" icon="i-lucide-star-off" :label="t('cluster.pref.clear')" @click="begin('clear-preferred')" />
+      </div>
+    </UCard>
+
+    <UCard class="lg:col-span-2">
       <template #header><span class="font-medium">{{ t('cluster.ip.title') }}</span></template>
       <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         <dt class="text-muted">{{ t('cluster.name') }}</dt><dd class="font-mono">{{ st.node }}</dd>
@@ -173,6 +200,9 @@ defineExpose({ begin })
           <UFormField :label="t('cluster.ip.new')" :hint="t('cluster.ip.new_hint', { a: me?.ip ?? '' })"><UInput v-model="f.ip" class="w-full" placeholder="10.10.0.12" autocomplete="off" :disabled="busy" /></UFormField>
           <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('cluster.ip.warn_title')" :description="t('cluster.ip.warn_desc')" />
         </template>
+        <UFormField v-else-if="kind === 'set-preferred'" :label="t('cluster.pref.node')">
+          <USelectMenu v-model="f.node" class="w-full" :items="dataNodes" :disabled="busy" />
+        </UFormField>
         <UAlert v-if="kind === 'clear-vip'" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('cluster.set.clear.warn')" />
         <label v-if="needsConfirm" class="text-sm">{{ t('cluster.op.type', { v: expected }) }}
           <UInput v-model="f.confirm" class="w-full mt-1" autocomplete="off" :disabled="busy" @keyup.enter="go" />

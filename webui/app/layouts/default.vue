@@ -5,9 +5,15 @@ const api = useApi()
 const route = useRoute()
 const pwOpen = ref(false)
 const { data: about } = useFetch<any>('/api/about', { server: false, lazy: true, default: () => null })
-const { data: clusterInfo } = useFetch<any>('/api/cluster/status', { server: false, lazy: true, default: () => null })
+const { data: clusterInfo, refresh: refreshCluster } = useFetch<any>('/api/cluster/status', { server: false, lazy: true, default: () => null })
 const clusterOn = computed(() => !!clusterInfo.value?.clustered)
 const replicaNode = computed(() => !!clusterInfo.value?.replica)
+const clusterSt = computed(() => clusterInfo.value?.state ?? null)
+const target = computed(() => primaryTarget(clusterSt.value))
+// état du cluster rafraîchi toutes les 15 s tant qu'on est en mode cluster (rôles du sélecteur et bandeau toujours justes, y compris après une bascule)
+let clusterTimer: ReturnType<typeof setInterval> | undefined
+onMounted(() => { clusterTimer = setInterval(() => { if (clusterOn.value && !document.hidden) refreshCluster() }, 15000) })
+onBeforeUnmount(() => { if (clusterTimer) clearInterval(clusterTimer) })
 const updateAvailable = computed(() => !!about.value?.update?.available)
 const role = computed(() => user.value?.role)
 // Navigation par module : données (IPAM, DNS, DHCP), sécurité, puis exploitation. Les groupes vides n'apparaissent pas.
@@ -74,13 +80,16 @@ async function logout() {
       <template #header>
         <UDashboardNavbar :title="title">
           <template #right>
+            <ClusterNodeSwitcher v-if="clusterOn" :st="clusterSt" />
             <UButton color="neutral" variant="ghost" size="sm" :label="lang === 'fr' ? 'EN' : 'FR'" :aria-label="t('nav.language')" @click="setLang(lang === 'fr' ? 'en' : 'fr')" />
             <UColorModeButton :aria-label="t('nav.theme')" />
           </template>
         </UDashboardNavbar>
       </template>
       <template #body>
-        <UAlert v-if="replicaNode" class="mb-3" color="info" variant="subtle" icon="i-lucide-copy" :title="t('cluster.replica_title')" :description="t('cluster.replica_desc')" />
+        <UAlert v-if="replicaNode" class="mb-3" color="info" variant="subtle" icon="i-lucide-copy" :title="t('cluster.replica_title')"
+          :description="[t('cluster.replica_desc'), clusterSt?.leader ? t('cluster.replica_where', { n: clusterSt.leader }) : ''].filter(Boolean).join(' ')"
+          :actions="target ? [{ label: target.viaVip ? t('cluster.replica_go_vip') : t('cluster.replica_go'), icon: 'i-lucide-external-link', color: 'neutral', variant: 'outline', onClick: () => openConsole(target!.host) }] : []" />
         <slot />
       </template>
     </UDashboardPanel>

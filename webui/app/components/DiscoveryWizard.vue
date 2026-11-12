@@ -10,6 +10,9 @@ const { data: caps } = useFetch<any>('/api/discovery/capabilities', { server: fa
 const v4 = computed(() => (subs.value?.items ?? []).filter((s: any) => /^\d+\.\d+\.\d+\.\d+\//.test(s.cidr)))
 const pick = reactive<Record<number, boolean>>({})
 const ids = computed(() => v4.value.filter((s: any) => pick[s.id]).map((s: any) => s.id as number))
+const allPicked = computed(() => v4.value.length > 0 && v4.value.every((s: any) => pick[s.id]))
+const somePicked = computed(() => v4.value.some((s: any) => pick[s.id]))
+const toggleAll = (on: boolean) => { for (const s of v4.value) pick[s.id] = on }
 const hostsOf = (cidr: string) => { const p = Number(cidr.split('/')[1]); return p >= 31 ? 2 ** (32 - p) : 2 ** (32 - p) - 2 }
 const total = computed(() => v4.value.filter((s: any) => pick[s.id]).reduce((n: number, s: any) => n + hostsOf(s.cidr), 0))
 const m = reactive({ tcp: true, icmp: true, arp: true, leases: true, reverse: true })
@@ -56,6 +59,7 @@ const onNext = () => { if (step.value === 1) start(); else step.value++ }
         <UCard><div class="flex flex-col gap-3 text-sm">
           <p class="text-muted">{{ t('disc.scope_desc') }}</p>
           <p v-if="!v4.length" class="text-muted">{{ t('disc.no_subnet') }}</p>
+          <label v-if="v4.length" class="flex items-center gap-2 font-medium"><UCheckbox :model-value="allPicked ? true : somePicked ? 'indeterminate' : false" @update:model-value="toggleAll(allPicked ? false : true)" />{{ t('disc.select_all') }}<span class="num text-xs text-dimmed font-normal">({{ ids.length }}/{{ v4.length }})</span></label>
           <ul class="flex flex-col gap-1 max-h-72 overflow-auto"><li v-for="s in v4" :key="s.id"><label class="flex items-center gap-2"><input v-model="pick[s.id]" type="checkbox"><span class="font-mono">{{ s.cidr }}</span><span class="text-muted">{{ s.name }}</span><span class="num text-xs text-dimmed ms-auto">{{ t('disc.hosts', { n: hostsOf(s.cidr) }) }}</span></label></li></ul>
           <p class="num" :class="total > 4096 ? 'text-error' : 'text-muted'">{{ t('disc.total', { n: total }) }}<span v-if="total > 4096"> — {{ t('err.discovery_too_large') }}</span></p>
         </div></UCard>

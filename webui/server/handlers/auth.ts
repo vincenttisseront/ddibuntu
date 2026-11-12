@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { audit, clearSessionCookie, fail, route, setSessionCookie, COOKIE } from '../utils/router'
 import { one, query, tx, getSetting, isSchemaReady, inRecovery } from '../utils/db'
 import { cfg } from '../utils/config'
-import { createSession, destroySession, destroyUserSessions, dummyVerify, hashPassword, loginBlocked, passwordPolicyError, recordAttempt, safeEqual, verifyPassword, decryptSecret } from '../utils/auth'
+import { createSession, destroySession, REPLICA_TOKEN_PREFIX, replicaLoginBlocked, replicaRecordAttempt, signReplicaSession, destroyUserSessions, dummyVerify, hashPassword, loginBlocked, passwordPolicyError, recordAttempt, safeEqual, verifyPassword, decryptSecret } from '../utils/auth'
 import { AD_DEFAULTS, authenticateAd, defaultLdapFactory } from '../utils/ad'
 import type { AdSettings } from '../utils/ad'
 import { getCookie, getRequestHeader } from 'h3'
@@ -22,11 +22,15 @@ route('GET', '/auth/me', 'public', async (c) => (c.user ? { user: { id: c.user.i
 
 route('POST', '/auth/login', 'public', async (c) => {
   const b = await c.body(z.object({ username: z.string().min(1).max(256), password: z.string().min(1).max(512) }))
-  if (await loginBlocked(b.username, c.ip)) fail(429, 'too_many_attempts')
+  // nœud secondaire : lecture seule, donc compteur d'échecs en mémoire et session SIGNÉE (aucune écriture) ; comptes AD déjà connus seulement
+  const replica = await inRecovery()
+  if (replica ? replicaLoginBlocked(b.username, c.ip) || await loginBlocked(b.username, c.ip) : await loginBlocked(b.username, c.ip)) fail(429, 'too_many_attempts')
   const u = await one<any>('select * from users where lower(username) = lower($1)', [b.username])
   let userId: number | null = null
   if (u && !u.disabled && u.source === 'local') {
     if (await verifyPassword(b.password, u.password_hash)) userId = u.id
+  } else if (!u && replica) {
+    await dummyVerify(b.password)
   } else if (!u) {
     // compte inconnu localement : tentative Active Directory si activé
     const ad = await getSetting<AdSettings>('ad', AD_DEFAULTS)
@@ -43,14 +47,15 @@ route('POST', '/auth/login', 'public', async (c) => {
   } else if (u.source === 'ad' && !u.disabled) {
     const ad = await getSetting<AdSettings>('ad', AD_DEFAULTS)
     const res = await authenticateAd(b.username, b.password, ad, ad.bindPasswordEnc ? decryptSecret(ad.bindPasswordEnc) : '', defaultLdapFactory(ad))
-    if (res.ok) { await query('update users set role = $2, display_name = $3 where id = $1', [u.id, res.role, res.displayName]); userId = u.id }
+    if (res.ok) { if (!replica) await query('update users set role = $2, display_name = $3 where id = $1', [u.id, res.role, res.displayName]); userId = u.id }
   } else await dummyVerify(b.password)
-  await recordAttempt(b.username, c.ip, userId !== null)
+  if (replica) replicaRecordAttempt(b.username, c.ip, userId !== null); else await recordAttempt(b.username, c.ip, userId !== null)
   if (userId === null) { await audit(c, 'login_failed', 'user', undefined, { username: b.username.slice(0, 64) }); fail(401, 'bad_credentials') }
-  await query('update users set last_login = now() where id = $1', [userId])
-  const s = await createSession(userId, c.ip, getRequestHeader(c.event, 'user-agent') ?? null)
+  const me = await one<any>('select id, username, role, source, display_name, password_hash from users where id = $1', [userId])
+  let s: { token: string; csrf: string; maxAge: number }
+  if (replica) s = signReplicaSession(me)
+  else { await query('update users set last_login = now() where id = $1', [userId]); s = await createSession(userId, c.ip, getRequestHeader(c.event, 'user-agent') ?? null) }
   setSessionCookie(c.event, s.token, s.maxAge)
-  const me = await one<any>('select id, username, role, source, display_name from users where id = $1', [userId])
   c.user = { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name, csrf: s.csrf, sessionId: 0 }
   await audit(c, 'login', 'user', userId)
   return { user: { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name }, csrf: s.csrf }
@@ -58,7 +63,7 @@ route('POST', '/auth/login', 'public', async (c) => {
 
 route('POST', '/auth/logout', 'viewer', async (c) => {
   const t = getCookie(c.event, COOKIE)
-  if (t) await destroySession(t)
+  if (t && !t.startsWith(REPLICA_TOKEN_PREFIX)) await destroySession(t)   // jeton signé : rien en base ; il meurt avec le cookie (et à l'échéance)
   clearSessionCookie(c.event)
   await audit(c, 'logout', 'user', c.user!.id)
   return { ok: true }

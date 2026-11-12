@@ -1,0 +1,95 @@
+// 0.9.11 — nœud préféré du primaire (lecture bornée, refus préalables) ; sessions signées d'un secondaire (jeton, révocation, anti-force brute).
+import { describe, expect, it } from 'vitest'
+import { actionRefusal, parseClusterState, parsePreferred } from '../server/utils/cluster'
+import { credentialStamp, parseReplicaToken, replicaLoginBlocked, replicaRecordAttempt, signReplicaSession } from '../server/utils/auth'
+
+process.env.DDI_TEST_MODE = '1'
+const NOW = 1_800_000_000
+const base = {
+  cluster: 'lab', node: 'n1', role: 'data', local_role: 'leader', at: NOW - 30, bind: 'primary',
+  etcd: { healthy: true, members: 3, quorum: { voters: 3, needed: 2, healthy: 3, hasQuorum: true, tolerance: 1, leader: 'n1', members: [], unknownToEtcd: [] } },
+  peers: [{ name: 'n1', ip: '10.9.0.1', role: 'data' }, { name: 'n2', ip: '10.9.0.2', role: 'data' }, { name: 'n3', ip: '10.9.0.3', role: 'witness' }],
+  patroni: { members: [{ name: 'n1', role: 'leader', state: 'running' }, { name: 'n2', role: 'replica', state: 'streaming', lag: 0 }] },
+}
+const mk = (over: Record<string, unknown> = {}) => parseClusterState(JSON.stringify({ ...base, ...over }), NOW)!
+
+describe('nœud préféré dans l\'état publié', () => {
+  it('lu quand c\'est un nœud de données du registre', () => {
+    expect(mk({ preferred: { node: 'n2', at: 1700000000, by: 'n1' } }).preferred).toEqual({ node: 'n2', at: 1700000000, by: 'n1' })
+  })
+  it('absent (ancien nœud), arbitre, inconnu ou valeur piégée : null, jamais d\'erreur', () => {
+    expect(mk().preferred).toBeNull()
+    for (const v of [{ node: 'n3', at: 1, by: 'n1' }, { node: 'zz', at: 1, by: 'n1' }, { node: 7 }, 'n2', [], null]) expect(mk({ preferred: v }).preferred, JSON.stringify(v)).toBeNull()
+    expect(parsePreferred({ node: 'n1', at: 'x', by: 'y'.repeat(500) }, mk().nodes)).toEqual({ node: 'n1', at: 0, by: 'y'.repeat(31) })
+  })
+})
+
+describe('refus préalables du nœud préféré', () => {
+  const R = (a: any, over: Record<string, unknown> = {}) => actionRefusal(mk(over), a)
+  const set = { action: 'set-preferred', node: 'n2', confirm: 'lab' }
+  it('confirmation = nom du cluster ; nœud de données connu uniquement', () => {
+    expect(R(set)).toBeNull()
+    expect(R({ ...set, confirm: 'autre' })).toBe('confirm_mismatch')
+    expect(R({ ...set, node: 'n3' })).toBe('invalid_node')    // l'arbitre ne porte jamais le primaire
+    expect(R({ ...set, node: 'inconnu' })).toBe('invalid_node')
+  })
+  it('quorum exigé, état périmé refusé, nœud d\'arbitre refusé', () => {
+    const lost = { etcd: { healthy: false, members: 3, quorum: { ...base.etcd.quorum, hasQuorum: false, healthy: 1 } } }
+    expect(R(set, lost)).toBe('quorum_required')
+    expect(R(set, { at: NOW - 900 })).toBe('quorum_required')
+    expect(R(set, { role: 'witness' })).toBe('action_data_node_only')
+  })
+  it('retrait : seulement s\'il y a une consigne', () => {
+    const clr = { action: 'clear-preferred', confirm: 'lab' }
+    expect(R(clr)).toBe('no_preferred')
+    expect(R(clr, { preferred: { node: 'n2', at: 1, by: 'n1' } })).toBeNull()
+    expect(R({ ...clr, confirm: 'x' }, { preferred: { node: 'n2', at: 1, by: 'n1' } })).toBe('confirm_mismatch')
+  })
+})
+
+describe('session signée d\'un secondaire', () => {
+  const user = { id: 7, password_hash: 'pbkdf2$sha256$600000$AAAA$BBBB', source: 'local' }
+  it('jeton valide : utilisateur, empreinte et jeton CSRF reconstitués', () => {
+    const s = signReplicaSession(user, 1_000_000)
+    const p = parseReplicaToken(s.token, 1_000_000 + 1000)!
+    expect(p.uid).toBe(7); expect(p.stamp).toBe(credentialStamp(user)); expect(p.csrf).toBe(s.csrf)
+    expect(s.maxAge).toBeLessThanOrEqual(4 * 3600)
+  })
+  it('échéance respectée', () => {
+    const s = signReplicaSession(user, 1_000_000)
+    expect(parseReplicaToken(s.token, 1_000_000 + 4 * 3600 * 1000 + 2000)).toBeNull()
+  })
+  it('jeton altéré, tronqué, d\'un autre format ou signé autrement : refusé', () => {
+    const s = signReplicaSession(user, 1_000_000)
+    const [pre, payload, sig] = [s.token.slice(0, 3), s.token.slice(3).split('.')[0]!, s.token.slice(3).split('.')[1]!]
+    const forged = Buffer.from(JSON.stringify({ u: 1, e: 9_999_999_999, n: 'x', v: credentialStamp(user) })).toString('base64url')
+    for (const bad of [`${pre}${forged}.${sig}`, `${pre}${payload}.${sig.slice(0, -2)}AA`, `${pre}${payload}`, `${pre}${payload}.${sig}.x`, 'r1.', 'x1.a.b', '', 'r1.' + 'a'.repeat(700)]) expect(parseReplicaToken(bad, 1_000_000), bad.slice(0, 30)).toBeNull()
+  })
+  it('l\'empreinte change avec le mot de passe (le jeton est alors révoqué à la lecture de l\'utilisateur)', () => {
+    expect(credentialStamp(user)).not.toBe(credentialStamp({ ...user, password_hash: 'autre' }))
+    expect(credentialStamp(user)).toBe(credentialStamp({ ...user }))
+    expect(credentialStamp(user)).not.toContain('pbkdf2')
+  })
+  it('anti-force brute en mémoire : 5 échecs par identifiant, 30 par adresse, réussite = remise à zéro, fenêtre de 15 minutes', () => {
+    const t0 = 5_000_000
+    for (let i = 0; i < 4; i++) replicaRecordAttempt('alice', '203.0.113.5', false, t0 + i)
+    expect(replicaLoginBlocked('alice', '203.0.113.5', t0 + 10)).toBe(false)
+    replicaRecordAttempt('alice', '203.0.113.5', false, t0 + 5)
+    expect(replicaLoginBlocked('ALICE', '203.0.113.9', t0 + 10)).toBe(true)          // insensible à la casse
+    expect(replicaLoginBlocked('alice', '203.0.113.5', t0 + 16 * 60_000)).toBe(false)  // fenêtre écoulée
+    replicaRecordAttempt('bob', null, false, t0); replicaRecordAttempt('bob', null, true, t0 + 1)
+    expect(replicaLoginBlocked('bob', null, t0 + 2)).toBe(false)
+    for (let i = 0; i < 30; i++) replicaRecordAttempt('u' + i, '198.51.100.7', false, t0)
+    expect(replicaLoginBlocked('nouveau', '198.51.100.7', t0 + 1)).toBe(true)         // 30 échecs depuis la même adresse
+  })
+})
+
+import { readFileSync } from 'node:fs'
+describe('découverte : tout sélectionner', () => {
+  it('la case « tout sélectionner » coche l\'ensemble des sous-réseaux IPv4 (état partiel géré)', () => {
+    const src = readFileSync(new URL('../app/components/DiscoveryWizard.vue', import.meta.url), 'utf8')
+    expect(src).toContain("t('disc.select_all')")
+    expect(src).toMatch(/toggleAll = \(on: boolean\) => \{ for \(const s of v4\.value\) pick\[s\.id\] = on \}/)
+    expect(src).toContain("'indeterminate'")
+  })
+})

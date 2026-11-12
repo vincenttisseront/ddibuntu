@@ -19,6 +19,7 @@
 #   follow                                                                      (nœud de données) aligne Kea (HA) et BIND (primaire/secondaire) : primaire = fichiers de la console, secondaire = copie répliquée en base
 #   ad-sync                                                                     (nœud de données) le keytab et le domaine Kerberos suivent le cluster (chiffrés dans etcd ; l'arbitre ne les lit pas)
 #   set-vip --vip CIDR --iface IF [--vrid N] | clear-vip                        (nœud de données) adresse virtuelle de TOUT le cluster, publiée par etcd ; chaque nœud l'applique seul
+#   set-preferred NOEUD | clear-preferred | preferred                           nœud de données où le primaire doit se trouver en temps normal (clé etcd ; écart signalé par la console, bascule guidée)
 #   vip-iface IF                                                                interface qui porte l'adresse virtuelle sur CE nœud
 #   set-net CIDR                                                                réseau dédié (pg_hba) de tout le cluster ; refusé si un nœud en sort
 #   settings | cert-status                                                      réglages communs (publiés / appliqués) ; échéances des certificats
@@ -711,6 +712,59 @@ if e["CUR"]:
 print(json.dumps({"published": p, "applied": {"rev": int(e["REV"]), "vip": e["VIP"] or None, "vrid": int(e["VRID"]), "iface": e["IFACE"] or None, "net": e["NET"]}}, ensure_ascii=False))'
 }
 
+# ---------------------------------------------------------------- nœud préféré du primaire (0.9.11)
+# Clé etcd distincte des réglages (format strict inchangé) : {"node": nom, "at": date, "by": nom}. Elle dit sur QUEL nœud de données le primaire (donc
+# l'adresse virtuelle et la console en écriture) doit se trouver en temps normal. Pas de retour automatique : la console signale l'écart et propose
+# la bascule contrôlée (avec contrôle du quorum) ; un administrateur reste maître du moment.
+PREFERRED=/ddibuntu-cluster/preferred
+# preferred_read → nom du nœud préféré (stdout) ; échec si la clé est absente, invalide, ou si le nœud n'est plus un nœud de données du registre
+preferred_read() {
+  local raw p data=""; raw="$(ectl --command-timeout=5s get "$PREFERRED" --print-value-only 2>/dev/null | head -c 400)" || return 1
+  [ -n "$raw" ] || return 1
+  for p in ${C[PEERS]}; do if [ "$(peer_field "$p" role)" = data ]; then data="$data $(peer_field "$p" name)"; fi; done
+  printf '%s' "$raw" | DATA="$data" python3 -c '
+import json, os, re, sys
+try: d = json.loads(sys.stdin.read())
+except Exception: sys.exit(1)
+if not isinstance(d, dict) or not set(d) <= {"node", "at", "by"}: sys.exit(1)
+n = d.get("node")
+if not isinstance(n, str) or not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", n) or n not in os.environ["DATA"].split(): sys.exit(1)
+print(n)' 2>/dev/null
+}
+preferred_json() {   # JSON : {"node","at","by"} ou null
+  local raw n; raw="$(ectl --command-timeout=5s get "$PREFERRED" --print-value-only 2>/dev/null | head -c 400)" || raw=""
+  n="$(preferred_read 2>/dev/null)" || n=""
+  RAW="$raw" N="$n" python3 -c '
+import json, os
+n = os.environ["N"]
+if not n: print("null")
+else:
+    d = json.loads(os.environ["RAW"]); at = d.get("at"); by = d.get("by")
+    print(json.dumps({"node": n, "at": at if isinstance(at, int) and not isinstance(at, bool) else 0, "by": by if isinstance(by, str) and len(by) <= 31 else ""}, ensure_ascii=False))'
+}
+# quorum_ok : la majorité des voix etcd répond (mesure en direct)
+quorum_ok() { quorum_json 2>/dev/null | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("hasQuorum") else 1)' 2>/dev/null; }
+# set-preferred NOEUD | clear-preferred : le quorum etcd doit être là (l'écriture se réplique sur tous les nœuds, qui la lisent à chaque publication)
+cmd_set_preferred() {
+  local name="${1:-}"; conf_load; [ "${C[NODE_ROLE]}" = data ] || die "le nœud préféré se règle depuis un nœud de données"
+  valid_name "$name" || die "nom de nœud invalide"
+  local p ok=0; for p in ${C[PEERS]}; do if [ "$(peer_field "$p" name)" = "$name" ] && [ "$(peer_field "$p" role)" = data ]; then ok=1; fi; done
+  [ "$ok" -eq 1 ] || die "« $name » n'est pas un nœud de données de ce cluster (l'arbitre ne porte jamais le primaire)"
+  quorum_ok || die "le quorum etcd est indisponible : le choix ne pourrait pas être publié sur tous les nœuds"
+  local v; v="$(NODE="$name" BY="${C[NODE_NAME]}" python3 -c '
+import json, os, time
+print(json.dumps({"node": os.environ["NODE"], "at": int(time.time()), "by": os.environ["BY"]}, separators=(",", ":")))')" || die "valeur illisible"
+  printf '%s' "$v" | ectl --command-timeout=5s put "$PREFERRED" >/dev/null 2>&1 || die "écriture des réglages impossible (quorum etcd indisponible ?)"
+  log "nœud préféré du primaire : $name (publié pour tout le cluster)"
+}
+cmd_clear_preferred() {
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || die "le nœud préféré se règle depuis un nœud de données"
+  quorum_ok || die "le quorum etcd est indisponible : le choix ne pourrait pas être publié sur tous les nœuds"
+  preferred_read >/dev/null 2>&1 || die "aucun nœud préféré n'est défini"
+  ectl --command-timeout=5s del "$PREFERRED" >/dev/null 2>&1 || die "écriture des réglages impossible (quorum etcd indisponible ?)"
+  log "nœud préféré du primaire retiré pour tout le cluster"
+}
+
 # ---------------------------------------------------------------- renouvellement des certificats des nœuds
 # La clé privée d'un nœud ne quitte JAMAIS ce nœud : il produit une demande de signature (CSR), l'autorité (nœud CA_NODE=1) la signe et dépose le
 # certificat dans etcd, le nœud l'installe quand il correspond à SA clé. L'autorité ne signe qu'une demande dont le nom est inscrit au registre, dont
@@ -1268,9 +1322,10 @@ cmd_status() {
   local caown; caown="$(ectl --command-timeout=3s get "$CAOWN" --print-value-only 2>/dev/null | head -c 40 | tr -cd 'a-z0-9-')" || caown=""
   local caesc=false; if [ -n "$(ectl --command-timeout=3s get "$CAESC" --keys-only 2>/dev/null)" ]; then caesc=true; fi
   local hraw; hraw="$(ectl --command-timeout=3s get --prefix "$HEALTHKEYS" -w json 2>/dev/null | head -c 200000)" || hraw=""; [ -n "$hraw" ] || hraw="{}"
-  local setj certj; setj="$(settings_json 2>/dev/null)" || setj=""; [ -n "$setj" ] || setj="null"
+  local setj certj prefj; setj="$(settings_json 2>/dev/null)" || setj=""; [ -n "$setj" ] || setj="null"
+  prefj="$(preferred_json 2>/dev/null)" || prefj=""; [ -n "$prefj" ] || prefj="null"
   certj="$(cert_json 2>/dev/null)" || certj=""; [ -n "$certj" ] || certj="null"
-  SETTINGS_J="$setj" PKI_J="$certj" HEALTH_RAW="$hraw" CAOWN_V="$caown" CAESC_V="$caesc" CANODE_V="${C[CA_NODE]}" QUORUM="$quorum" VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
+  SETTINGS_J="$setj" PKI_J="$certj" PREF_J="$prefj" HEALTH_RAW="$hraw" CAOWN_V="$caown" CAESC_V="$caesc" CANODE_V="${C[CA_NODE]}" QUORUM="$quorum" VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
     python3 -c '
 import base64, json, os, re
 pat = json.loads(os.environ["PAT"])
@@ -1291,7 +1346,7 @@ print(json.dumps({"cluster": os.environ["CLUSTER"], "node": os.environ["NODE"], 
   "peers": [dict(zip(("name", "ip", "role"), (p.split("=")[0], p.split("=")[1].split(":")[0], p.split(":")[-1]))) for p in os.environ["PEERS"].split()],
   "ca": {"node": os.environ["CANODE_V"] == "1", "owner": os.environ["CAOWN_V"] or None, "escrow": os.environ["CAESC_V"] == "true"},
   "patroni": pat, "kea": json.loads(os.environ["KEA"]), "vip": json.loads(os.environ["VIP"]), "health": health,
-  "settings": json.loads(os.environ["SETTINGS_J"]), "pki": json.loads(os.environ["PKI_J"])}, ensure_ascii=False))'
+  "settings": json.loads(os.environ["SETTINGS_J"]), "pki": json.loads(os.environ["PKI_J"]), "preferred": json.loads(os.environ["PREF_J"])}, ensure_ascii=False))'
 }
 
 # ---------------------------------------------------------------- Kea HA
@@ -1743,6 +1798,7 @@ need = len(rest) // 2 + 1; healthy = sum(1 for m in rest if m["healthy"])
 print("ok" if healthy >= need else "non : %d voix saines sur %d nécessaires après retrait" % (healthy, need))')"
   [ "$verdict" = ok ] || die "retirer « $name » ferait perdre le quorum ($verdict)"
   forget_node "$name" "$nip" || die "écriture dans etcd impossible"
+  if [ "$(preferred_read 2>/dev/null || true)" = "$name" ]; then ectl --command-timeout=5s del "$PREFERRED" >/dev/null 2>&1 || true; fi   # le nœud préféré retiré ne laisse pas de consigne orpheline
   local id; id="$(etcd_member_id "$name")"
   if [ -n "$id" ]; then ectl --command-timeout=10s member remove "$id" >/dev/null 2>&1 || die "etcd a refusé de retirer le membre $name (réessayez ; l'opération est répétable)"; fi
   C[PEERS]="$(peers_without "$name")"; reapply_peers
@@ -1873,6 +1929,8 @@ if a == "clear-vip": print("clear-vip -" if keys == {"action", "confirm"} and c 
 if a == "vip-iface": print("vip-iface " + d["iface"] if keys == {"action", "iface"} and iface(d["iface"]) else "invalid"); sys.exit(0)
 if a == "set-net": print("set-net " + d["net"] if keys == {"action", "net", "confirm"} and cidr(d["net"]) and c == os.environ["CL"] else "invalid"); sys.exit(0)
 if a == "renew-cert": print("renew-cert -" if keys == {"action"} else "invalid"); sys.exit(0)
+if a == "set-preferred": print("set-preferred " + n if keys == {"action", "node", "confirm"} and isinstance(n, str) and re.fullmatch(name, n) and c == os.environ["CL"] else "invalid"); sys.exit(0)
+if a == "clear-preferred": print("clear-preferred -" if keys == {"action", "confirm"} and c == os.environ["CL"] else "invalid"); sys.exit(0)
 if a == "drill-check":
     print("drill-check " + (n if n else "-") if keys in ({"action"}, {"action", "node"}) and (not n or (isinstance(n, str) and re.fullmatch(name, n))) else "invalid"); sys.exit(0)
 if a == "drill":
@@ -1901,6 +1959,8 @@ else: print("invalid")' 2>/dev/null || echo invalid)"
     "vip-iface "*) act="vip-iface"; sif="${parsed#* }" ;;
     "set-net "*) act=set-net; snet="${parsed#* }" ;;
     "renew-cert -") act=renew-cert ;;
+    "set-preferred "*) act=set-preferred; node="${parsed#* }" ;;
+    "clear-preferred -") act=clear-preferred ;;
     "change-ip "*) act=change-ip; sip="${parsed#* }"; node="${C[NODE_NAME]}" ;;
     "drill-check "*) act=drill-check; read -r _ dcand <<<"$parsed"; [ "$dcand" != - ] || dcand="" ;;
     "drill "*) act=drill; read -r _ dcand dback <<<"$parsed"; [ "$dcand" != - ] || dcand="" ;;
@@ -1918,6 +1978,8 @@ else: print("invalid")' 2>/dev/null || echo invalid)"
       vip-iface) out="$( ( cmd_vip_iface "$sif" ) 2>&1 )" && ok=true ;;
       set-net) out="$( ( cmd_set_net "$snet" ) 2>&1 )" && ok=true ;;
       renew-cert) out="$( ( cmd_renew_cert --force ) 2>&1 )" && ok=true ;;
+      set-preferred) out="$( ( cmd_set_preferred "$node" ) 2>&1 )" && ok=true ;;
+      clear-preferred) out="$( ( cmd_clear_preferred ) 2>&1 )" && ok=true ;;
       change-ip) out="$( ( cmd_change_ip --ip "$sip" --yes ) 2>&1 )" && ok=true ;;
       drill-check)   # lecture seule : l'action réussit dès que les pré-contrôles ont pu être faits (leur verdict est dans le fichier publié)
         rm -f "$ROOT/run/ddibuntu/cluster-drill-check.json"
@@ -2023,7 +2085,7 @@ take_lock() {   # take_lock SECONDES (0 = ne pas attendre)
 case "${1:-}" in
   sync|follow|ca-sync) take_lock 0 || { log "une autre opération du cluster est en cours : « ${1} » reprendra à la prochaine échéance"; exit 0; } ;;
   request) take_lock 600 || die "une autre opération du cluster est en cours depuis plus de 10 minutes" ;;
-  activate|switchover|remove-node|recover|take-ca|keepalived|set-vip|clear-vip|vip-iface|set-net|renew-cert|sign-requests|change-ip)
+  activate|switchover|remove-node|recover|take-ca|keepalived|set-vip|clear-vip|vip-iface|set-net|renew-cert|sign-requests|change-ip|set-preferred|clear-preferred)
     take_lock 120 || die "une autre opération du cluster est en cours ; réessayer dans un instant" ;;
 esac
 case "${1:-}" in
@@ -2054,6 +2116,9 @@ case "${1:-}" in
   vip-iface) shift; cmd_vip_iface "$@" ;;
   set-net) shift; cmd_set_net "$@" ;;
   settings) cmd_settings ;;
+  set-preferred) shift; cmd_set_preferred "$@" ;;
+  clear-preferred) cmd_clear_preferred ;;
+  preferred) conf_load; preferred_json ;;
   renew-cert) shift; cmd_renew_cert "$@" ;;
   sign-requests) cmd_sign_requests ;;
   cert-status) cmd_cert_status ;;

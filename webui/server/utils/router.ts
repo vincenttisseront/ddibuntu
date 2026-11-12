@@ -9,6 +9,8 @@ import { ROLE_RANK, safeEqual, sessionFromToken } from './auth'
 import type { Role, SessionUser } from './auth'
 
 export const COOKIE = 'ddi_session'
+// Seules requêtes d'écriture admises sur un secondaire : ouvrir/fermer une session (jeton signé, rien n'est écrit en base ; voir utils/auth.ts)
+const REPLICA_WRITABLE = new Set(['/auth/login', '/auth/logout'])
 export interface Ctx {
   event: H3Event
   params: Record<string, string>
@@ -50,6 +52,8 @@ export function qstr(c: Ctx, key: string, max = 200): string | undefined {
 }
 
 export async function audit(c: Ctx, action: string, entity?: string, entityId?: string | number, detail?: unknown) {
+  // secondaire (lecture seule) : la trace va au journal du service (le primaire garde le journal d'audit réparti)
+  if (await inRecovery().catch(() => false)) { console.warn(`[audit-replica] ${action} ${entity ?? ''} ${entityId ?? ''} user=${c.user?.username ?? '-'} ip=${c.ip ?? '-'}`); return }
   await query('insert into audit_log (user_id, username, action, entity, entity_id, detail, ip) values ($1,$2,$3,$4,$5,$6::jsonb,$7)',
     [c.user?.id ?? null, c.user?.username ?? null, action, entity ?? null, entityId === undefined ? null : String(entityId),
      detail === undefined ? null : JSON.stringify(detail), c.ip])
@@ -111,7 +115,7 @@ export async function dispatch(event: H3Event): Promise<unknown> {
     if (!isSchemaReady() && !['/health', '/cluster/role'].includes(path)) fail(503, 'schema_pending')   // secondaire en attente des migrations du leader
     if (unsafe) {
       // nœud secondaire du cluster : aucune écriture (ni déploiement de fichiers) ; les modifications se font sur le leader / l'adresse de service
-      if (await inRecovery()) fail(503, 'replica')
+      if (!REPLICA_WRITABLE.has(path) && await inRecovery()) fail(503, 'replica')
       checkOrigin(event)
       const len = Number(getRequestHeader(event, 'content-length') ?? 0)
       if (len > cfg().maxBodyBytes) fail(413, 'too_large')

@@ -1,5 +1,5 @@
 // Authentification : PBKDF2, sessions en base (jeton haché), CSRF, anti-force brute, chiffrement des secrets.
-import { randomBytes, pbkdf2, timingSafeEqual, createHash, createCipheriv, createDecipheriv } from 'node:crypto'
+import { randomBytes, pbkdf2, timingSafeEqual, createHash, createHmac, createCipheriv, createDecipheriv } from 'node:crypto'
 import { promisify } from 'node:util'
 import { cfg, requireSecret } from './config'
 import { one, query } from './db'
@@ -70,7 +70,58 @@ export async function createSession(userId: number, ip: string | null, ua: strin
     [sha256hex(token), userId, csrf, c.sessionHours, ip, ua?.slice(0, 300) ?? null])
   return { token, csrf, maxAge: c.sessionHours * 3600 }
 }
+// ---- Sessions « signées » (nœud secondaire du cluster, 0.9.11) ----
+// Un secondaire ne peut rien écrire en base : pas de ligne « sessions ». Sa connexion délivre donc un jeton SIGNÉ (HMAC-SHA256 avec une clé dérivée de
+// DDI_SECRET_KEY, la même sur tous les nœuds du cluster) qui contient l'utilisateur, l'échéance et une empreinte du mot de passe. Il est validé à chaque
+// requête contre la table des utilisateurs (répliquée) : compte désactivé ou mot de passe changé = jeton mort. Il reste valable sur le primaire
+// (continuité après une bascule). Pas de suivi d'inactivité (rien à écrire) : durée courte, plafonnée à REPLICA_SESSION_MAX_HOURS.
+export const REPLICA_TOKEN_PREFIX = 'r1.'
+export const REPLICA_SESSION_MAX_HOURS = 4
+const rkey = () => createHmac('sha256', requireSecret()).update('ddibuntu-signed-session-v1').digest()
+const b64u = (b: Buffer | string) => Buffer.from(b).toString('base64url')
+const hmac = (label: string, data: string) => createHmac('sha256', rkey()).update(label + '\0' + data).digest()
+// empreinte de l'identifiant d'authentification : change avec le mot de passe local (ou le mode de compte) ; ne révèle rien du hachage
+export const credentialStamp = (u: { id: number; password_hash: string | null; source: string }) => sha256hex(`${u.id}|${u.source}|${u.password_hash ?? ''}`).slice(0, 16)
+export function signReplicaSession(u: { id: number; password_hash: string | null; source: string }, now = Date.now()) {
+  const hours = Math.min(cfg().sessionHours, REPLICA_SESSION_MAX_HOURS)
+  const payload = b64u(JSON.stringify({ u: u.id, e: Math.floor(now / 1000) + hours * 3600, n: newToken(12), v: credentialStamp(u) }))
+  return { token: `${REPLICA_TOKEN_PREFIX}${payload}.${b64u(hmac('sig', payload))}`, csrf: b64u(hmac('csrf', payload)), maxAge: hours * 3600 }
+}
+export function parseReplicaToken(token: string, now = Date.now()): { uid: number; stamp: string; csrf: string } | null {
+  if (!token.startsWith(REPLICA_TOKEN_PREFIX) || token.length > 600) return null
+  const parts = token.slice(REPLICA_TOKEN_PREFIX.length).split('.')
+  if (parts.length !== 2) return null
+  const [payload, sig] = parts as [string, string]
+  if (!safeEqual(sig, b64u(hmac('sig', payload)))) return null
+  let j: any
+  try { j = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) } catch { return null }
+  if (!j || !Number.isInteger(j.u) || !Number.isInteger(j.e) || typeof j.v !== 'string' || j.e * 1000 <= now) return null
+  return { uid: j.u, stamp: j.v, csrf: b64u(hmac('csrf', payload)) }
+}
+async function sessionFromSigned(token: string): Promise<SessionUser | null> {
+  const p = parseReplicaToken(token); if (!p) return null
+  const u = await one<any>('select id, username, role, source, display_name, password_hash, disabled from users where id = $1', [p.uid])
+  if (!u || u.disabled || credentialStamp(u) !== p.stamp) return null
+  return { id: u.id, username: u.username, role: u.role, source: u.source, displayName: u.display_name, csrf: p.csrf, sessionId: 0 }
+}
+// Anti-force brute d'un secondaire : compteur en mémoire (le journal des tentatives est en lecture seule ici), ajouté à celui qui est répliqué.
+const replicaFails = new Map<string, number[]>()
+const WINDOW_MS = 15 * 60_000
+function recent(key: string, now: number) { const a = (replicaFails.get(key) ?? []).filter((t) => now - t < WINDOW_MS); if (a.length) replicaFails.set(key, a); else replicaFails.delete(key); return a }
+export function replicaLoginBlocked(username: string, ip: string | null, now = Date.now()): boolean {
+  if (recent('u:' + username.toLowerCase(), now).length >= 5) return true
+  return !!ip && recent('i:' + ip, now).length >= 30
+}
+export function replicaRecordAttempt(username: string, ip: string | null, success: boolean, now = Date.now()) {
+  const ku = 'u:' + username.toLowerCase()
+  if (success) { replicaFails.delete(ku); return }
+  replicaFails.set(ku, [...recent(ku, now), now])
+  if (ip) replicaFails.set('i:' + ip, [...recent('i:' + ip, now), now])
+  if (replicaFails.size > 5000) replicaFails.clear()   // borne mémoire : mieux vaut oublier que grossir sans fin
+}
+
 export async function sessionFromToken(token: string): Promise<SessionUser | null> {
+  if (token.startsWith(REPLICA_TOKEN_PREFIX)) return sessionFromSigned(token)
   const c = cfg()
   const r = await one<any>(
     `select s.id as sid, s.csrf_token, u.id, u.username, u.role, u.source, u.display_name

@@ -160,6 +160,7 @@ wait_cond 30 "pré-contrôles de nouveau au vert" '[ "$(cl 1 drill-check | rep "
 
 echo "== 3. Bascule réelle mesurée (sans retour) =="
 sql 1 -c "insert into t(lot) values ('avant-drill')" >/dev/null
+# shellcheck disable=SC2034  # lu dans les chaînes évaluées par wait_cond
 CNT0="$(count_on 1)"
 wait_cond 30 "n2 a reçu l'écriture" '[ "$(count_on 2)" = "$CNT0" ]'
 OUT="$(cl 1 drill --yes --json 2>"$B/drill3.err")"; RC=$?

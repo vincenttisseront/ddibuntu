@@ -16,6 +16,8 @@ export interface SettingsValue { rev: number; vip: string | null; vrid: number; 
 export interface ClusterSettings { published: SettingsValue | null; applied: SettingsValue }
 // Certificat de ce nœud et de l'autorité (jours restants), demande de renouvellement en cours ?
 export interface ClusterPki { node: { notAfter: number; daysLeft: number; serial: string }; ca: { notAfter: number; daysLeft: number }; renewDays: number; pending: boolean }
+// Consigne du nœud préféré du primaire (clé etcd /ddibuntu-cluster/preferred) : jamais appliquée automatiquement, seulement signalée.
+export interface ClusterPreferred { node: string; at: number; by: string }
 export interface ClusterState {
   cluster: string; node: string; nodeRole: string; localRole: 'leader' | 'replica' | 'unknown'; at: number; ageSeconds: number; stale: boolean
   etcd: { healthy: boolean; members: number; quorum: Quorum | null }
@@ -28,6 +30,7 @@ export interface ClusterState {
   health: Record<string, NodeHealth>   // santé de chaque nœud (arbitre compris), partagée par etcd et relayée par root
   settings: ClusterSettings | null
   pki: ClusterPki | null
+  preferred: ClusterPreferred | null   // nœud où le primaire doit se trouver en temps normal (etcd, commun à tous les nœuds)
 }
 
 const MAX_AGE_SECONDS = 180   // la minuterie publie chaque minute : au-delà de 3 minutes, l'information est périmée
@@ -76,6 +79,13 @@ export function parsePki(j: any): ClusterPki | null {
   }
 }
 
+// Le nœud préféré doit être un nœud de DONNÉES connu du registre ; sinon la consigne est ignorée (valeur piégée ou nœud retiré).
+export function parsePreferred(v: any, nodes: ClusterNode[]): ClusterPreferred | null {
+  if (!v || typeof v !== 'object' || typeof v.node !== 'string') return null
+  const n = nodes.find((x) => x.name === v.node && x.role === 'data')
+  return n ? { node: n.name, at: num(v.at) ?? 0, by: typeof v.by === 'string' ? str(v.by, 31) : '' } : null
+}
+
 // Assainit le fichier : uniquement les champs connus, bornés ; un fichier mal formé est ignoré (jamais d'erreur côté appelant).
 export function parseClusterState(raw: string, nowSec = Date.now() / 1000): ClusterState | null {
   let j: any
@@ -105,7 +115,7 @@ export function parseClusterState(raw: string, nowSec = Date.now() / 1000): Clus
     kea: j.kea ?? null,
     vip: j.vip && typeof j.vip.address === 'string' ? { address: str(j.vip.address, 64), iface: str(j.vip.iface, 32), held: j.vip.held === true } : null,
     health: parseHealthMap(j.health, nowSec),
-    settings: parseSettings(j.settings), pki: parsePki(j.pki),
+    settings: parseSettings(j.settings), pki: parsePki(j.pki), preferred: parsePreferred(j.preferred, nodes),
   }
 }
 
@@ -138,6 +148,7 @@ export type ClusterAction =
   | { action: 'remove-node'; node: string; confirm: string } | { action: 'take-ca'; confirm: string } | { action: 'recover'; confirm: string }
   | { action: 'set-vip'; vip: string; iface: string; vrid?: number; confirm: string } | { action: 'clear-vip'; confirm: string } | { action: 'vip-iface'; iface: string }
   | { action: 'set-net'; net: string; confirm: string } | { action: 'renew-cert' } | { action: 'change-ip'; ip: string; confirm: string }
+  | { action: 'set-preferred'; node: string; confirm: string } | { action: 'clear-preferred'; confirm: string }
   | { action: 'drill-check'; node?: string } | { action: 'drill'; node?: string; back?: boolean; confirm: string }
 // Contexte d'une demande que l'état du cluster seul ne dit pas : un test de bascule est-il en cours (marque etcd ou avancement vivant) ?
 export interface ActionContext { drillBusy?: boolean }
@@ -186,6 +197,16 @@ export function actionRefusal(st: ClusterState | null, a: ClusterAction, ctx: Ac
     if (a.confirm !== st.cluster) return 'confirm_mismatch'
     const net = parseCidr(a.net)
     if (!net || st.nodes.some((n) => { const ip = parseIp(n.ip); return !ip || !cidrContainsIp(net, ip) })) return 'nodes_outside_net'
+    return needQuorum()
+  }
+  if (a.action === 'set-preferred') {
+    if (a.confirm !== st.cluster) return 'confirm_mismatch'
+    if (!st.nodes.some((n) => n.name === a.node && n.role === 'data')) return 'invalid_node'
+    return needQuorum()
+  }
+  if (a.action === 'clear-preferred') {
+    if (a.confirm !== st.cluster) return 'confirm_mismatch'
+    if (!st.preferred) return 'no_preferred'
     return needQuorum()
   }
   if (a.action === 'renew-cert') return st.pki?.pending ? 'renew_pending' : null

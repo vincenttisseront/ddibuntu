@@ -72,9 +72,11 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
     5. ~~**0.9.8**~~ ✅ fait — Vues DNS (clé de transfert par vue, RPZ par vue, copie de zone, garde-fous).
     4f. ~~**0.9.9**~~ ✅ fait — Correctif intercalaire : l'IPAM se rafraîchit après un import ou une annulation.
     4g. ~~**0.9.10**~~ ✅ fait — Lien « Première configuration » retiré une fois l'appliance initialisée ; validation réelle de l'élection du quorum.
-    6. **0.9.11** — Traçabilité bail / MAC / nom / utilisateur AD.
-    7. **0.9.12** — Découverte planifiée et alertes d'hygiène.
-    8. **0.9.13** — API : description OpenAPI et jetons d'API.
-    9. **0.9.14** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
-    10. **0.9.15** — DHCP multi-espaces.
+    4h. ~~**0.9.11**~~ ✅ fait — Cluster : sélecteur de nœuds, bandeau et accès à l'adresse de service, nœud préféré du primaire, connexion sur un secondaire (jeton signé), icône de l'onglet.
+    4i. **0.9.12** — Réglages de session communs à tous les nœuds (durée, inactivité) et contrôle de cohérence des comptes entre nœuds.
+    6. **0.9.13** — Traçabilité bail / MAC / nom / utilisateur AD.
+    7. **0.9.14** — Découverte planifiée et alertes d'hygiène.
+    8. **0.9.15** — API : description OpenAPI et jetons d'API.
+    9. **0.9.16** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
+    10. **0.9.17** — DHCP multi-espaces.
 5. **1.0** — Consolidation de la série 0.9.x et passage en revue avant usage en production.

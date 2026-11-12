@@ -34,6 +34,11 @@ const stateColor = (s?: string) => (['running', 'streaming'].includes(s ?? '') ?
 const nodeKind = (n: any) => (n.role === 'witness' ? t('cluster.witness') : t(`cluster.pg.${n.patroniRole || 'unknown'}`))
 const lag = (n: any) => (n.lagBytes === null || n.lagBytes === undefined ? '—' : n.lagBytes < 1024 ? `${n.lagBytes} B` : `${Math.round(n.lagBytes / 1024)} KiB`)
 const kea = computed(() => st.value?.kea)
+const member = (name: string) => st.value?.etcd?.quorum?.members?.find((m: any) => m.name === name) ?? null
+const etcdLabel = (m: any) => (!m.reachable ? t('cluster.etcd.down') : m.learner ? t('cluster.etcd.learner') : m.isLeader ? t('cluster.etcd.leader') : t('cluster.etcd.voter'))
+// écart avec le nœud préféré : le primaire n'est pas là où la consigne le veut (jamais corrigé automatiquement)
+const drift = computed(() => (st.value?.preferred && st.value.leader && st.value.preferred.node !== st.value.leader ? st.value.preferred : null))
+const canReturn = computed(() => !!drift.value && canSwitch.value && (data.value?.candidates ?? []).includes(drift.value.node))
 
 async function switchover(node: string) {
   if (!(await ask(t('cluster.switch_title', { n: node }), t('cluster.switch_body', { n: node }), true))) return
@@ -71,7 +76,11 @@ async function switchover(node: string) {
     </template>
     <template v-else-if="st">
       <UAlert v-if="st.stale" color="warning" variant="subtle" icon="i-lucide-clock-alert" :title="t('cluster.stale')" :description="t('cluster.stale_desc', { d: when(st.at) })" />
-      <UAlert v-if="data.replica" color="info" variant="subtle" icon="i-lucide-copy" :title="t('cluster.replica_title')" :description="t('cluster.replica_desc')" />
+      <UAlert v-if="data.replica" color="info" variant="subtle" icon="i-lucide-copy" :title="t('cluster.replica_title')" :description="t('cluster.replica_desc')"
+        :actions="primaryTarget(st) ? [{ label: primaryTarget(st)!.viaVip ? t('cluster.replica_go_vip') : t('cluster.replica_go'), icon: 'i-lucide-external-link', color: 'neutral', variant: 'outline', onClick: () => openConsole(primaryTarget(st)!.host) }] : []" />
+      <UAlert v-if="drift" color="warning" variant="subtle" icon="i-lucide-star" :title="t('cluster.pref.drift_title')"
+        :description="[t('cluster.pref.drift_desc', { l: st.leader, p: drift.node }), canReturn ? '' : t('cluster.pref.drift_elsewhere')].filter(Boolean).join(' ')"
+        :actions="canReturn ? [{ label: t('cluster.pref.drift_go', { n: drift.node }), icon: 'i-lucide-arrow-left-right', color: 'warning', variant: 'outline', loading: switching === drift.node, onClick: () => switchover(drift!.node) }] : []" />
       <div class="grid gap-4 lg:grid-cols-2">
         <UCard>
           <template #header><span class="font-medium">{{ t('cluster.this_node') }}</span></template>
@@ -104,14 +113,23 @@ async function switchover(node: string) {
         <template #header><div class="flex items-center justify-between"><span class="font-medium">{{ t('cluster.nodes') }}</span><UButton v-if="canAdd" size="xs" icon="i-lucide-user-plus" :label="t('cluster.w.add_btn')" @click="wiz?.begin('add')" /><span v-if="switching" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader" class="animate-spin" />{{ t('cluster.switching', { n: switching }) }}</span></div></template>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
-            <thead><tr class="text-left text-muted"><th class="py-1 pr-4">{{ t('cluster.name') }}</th><th class="pr-4">{{ t('cluster.address') }}</th><th class="pr-4">{{ t('cluster.kind') }}</th><th class="pr-4">{{ t('cluster.state') }}</th><th class="pr-4">{{ t('cluster.lag') }}</th><th /></tr></thead>
+            <thead><tr class="text-left text-muted"><th class="py-1 pr-4">{{ t('cluster.name') }}</th><th class="pr-4">{{ t('cluster.address') }}</th><th class="pr-4">{{ t('cluster.kind') }}</th><th class="pr-4">{{ t('cluster.state') }}</th><th class="pr-4">{{ t('cluster.lag') }}</th><th class="pr-4">{{ t('cluster.col.etcd') }}</th><th class="pr-4">{{ t('cluster.col.dns') }}</th><th class="pr-4">{{ t('cluster.col.console') }}</th><th /></tr></thead>
             <tbody>
               <tr v-for="n in st.nodes" :key="n.name" class="border-t border-default">
-                <td class="py-1.5 pr-4 font-mono">{{ n.name }}<UBadge v-if="n.name === st.node" class="ml-2" size="sm" color="neutral" variant="outline" :label="t('cluster.me')" /></td>
+                <td class="py-1.5 pr-4 font-mono">{{ n.name }}<UBadge v-if="n.name === st.node" class="ml-2" size="sm" color="neutral" variant="outline" :label="t('cluster.me')" />
+                  <UIcon v-if="st.preferred?.node === n.name" name="i-lucide-star" class="ml-2 size-4 text-warning align-text-bottom" :title="t('cluster.pref.star')" />
+                  <div v-if="st.vip && st.leader === n.name" class="text-xs text-muted font-sans">{{ t('cluster.vip_on_node') }} · {{ st.vip.address }}</div></td>
                 <td class="pr-4 font-mono">{{ n.ip }}</td>
                 <td class="pr-4"><UBadge :color="roleColor(n.patroniRole || '')" variant="subtle" :label="nodeKind(n)" /></td>
                 <td class="pr-4"><UBadge v-if="n.role === 'data'" :color="stateColor(n.state)" variant="subtle" :label="n.state || t('cluster.pg.unknown')" /><span v-else class="text-muted">—</span></td>
                 <td class="pr-4 font-mono">{{ n.role === 'data' && n.patroniRole !== 'leader' ? lag(n) : '—' }}</td>
+                <td class="pr-4">
+                  <template v-if="member(n.name)"><UBadge :color="!member(n.name).reachable ? 'error' : member(n.name).healthy ? 'success' : 'warning'" variant="subtle" :label="etcdLabel(member(n.name))" />
+                    <div class="text-xs text-muted">{{ member(n.name).raftTerm !== null ? t('cluster.etcd.term', { n: member(n.name).raftTerm }) : '' }}{{ member(n.name).latencyMs !== null ? ` · ${member(n.name).latencyMs} ms` : '' }}</div></template>
+                  <span v-else class="text-muted">—</span>
+                </td>
+                <td class="pr-4"><UBadge v-if="n.role === 'data' && n.patroniRole" :color="n.patroniRole === 'leader' ? 'success' : 'neutral'" variant="subtle" :label="t(`cluster.bind.${n.patroniRole === 'leader' ? 'primary' : 'secondary'}`)" /><span v-else class="text-muted">—</span></td>
+                <td class="pr-4"><UButton v-if="n.role === 'data' && n.name !== st.node" size="xs" color="neutral" variant="ghost" icon="i-lucide-external-link" :label="t('cluster.open')" @click="openConsole(n.ip)" /><span v-else class="text-muted">—</span></td>
                 <td class="text-right"><UButton v-if="canSwitch && (data.candidates ?? []).includes(n.name)" size="xs" color="neutral" variant="outline" icon="i-lucide-arrow-left-right" :loading="switching === n.name" :label="t('cluster.make_leader')" @click="switchover(n.name)" /></td>
               </tr>
             </tbody>
