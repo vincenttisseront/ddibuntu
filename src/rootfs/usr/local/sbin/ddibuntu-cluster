@@ -20,6 +20,7 @@
 #   ad-sync                                                                     (nœud de données) le keytab et le domaine Kerberos suivent le cluster (chiffrés dans etcd ; l'arbitre ne les lit pas)
 #   set-vip --vip CIDR --iface IF [--vrid N] | clear-vip                        (nœud de données) adresse virtuelle de TOUT le cluster, publiée par etcd ; chaque nœud l'applique seul
 #   set-preferred NOEUD | clear-preferred | preferred                           nœud de données où le primaire doit se trouver en temps normal (clé etcd ; écart signalé par la console, bascule guidée)
+#   update-start VERSION | update-cancel | update                               mise à jour du cluster NŒUD PAR NŒUD (arbitre, secondaires, primaire en dernier ; un échec arrête la file) ; état
 #   vip-iface IF                                                                interface qui porte l'adresse virtuelle sur CE nœud
 #   set-net CIDR                                                                réseau dédié (pg_hba) de tout le cluster ; refusé si un nœud en sort
 #   settings | cert-status                                                      réglages communs (publiés / appliqués) ; échéances des certificats
@@ -1324,8 +1325,9 @@ cmd_status() {
   local hraw; hraw="$(ectl --command-timeout=3s get --prefix "$HEALTHKEYS" -w json 2>/dev/null | head -c 200000)" || hraw=""; [ -n "$hraw" ] || hraw="{}"
   local setj certj prefj; setj="$(settings_json 2>/dev/null)" || setj=""; [ -n "$setj" ] || setj="null"
   prefj="$(preferred_json 2>/dev/null)" || prefj=""; [ -n "$prefj" ] || prefj="null"
+  local updj; updj="$(update_json 2>/dev/null)" || updj=""; [ -n "$updj" ] || updj="null"
   certj="$(cert_json 2>/dev/null)" || certj=""; [ -n "$certj" ] || certj="null"
-  SETTINGS_J="$setj" PKI_J="$certj" PREF_J="$prefj" HEALTH_RAW="$hraw" CAOWN_V="$caown" CAESC_V="$caesc" CANODE_V="${C[CA_NODE]}" QUORUM="$quorum" VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
+  SETTINGS_J="$setj" PKI_J="$certj" PREF_J="$prefj" UPD_J="$updj" HEALTH_RAW="$hraw" CAOWN_V="$caown" CAESC_V="$caesc" CANODE_V="${C[CA_NODE]}" QUORUM="$quorum" VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
     python3 -c '
 import base64, json, os, re
 pat = json.loads(os.environ["PAT"])
@@ -1346,7 +1348,7 @@ print(json.dumps({"cluster": os.environ["CLUSTER"], "node": os.environ["NODE"], 
   "peers": [dict(zip(("name", "ip", "role"), (p.split("=")[0], p.split("=")[1].split(":")[0], p.split(":")[-1]))) for p in os.environ["PEERS"].split()],
   "ca": {"node": os.environ["CANODE_V"] == "1", "owner": os.environ["CAOWN_V"] or None, "escrow": os.environ["CAESC_V"] == "true"},
   "patroni": pat, "kea": json.loads(os.environ["KEA"]), "vip": json.loads(os.environ["VIP"]), "health": health,
-  "settings": json.loads(os.environ["SETTINGS_J"]), "pki": json.loads(os.environ["PKI_J"]), "preferred": json.loads(os.environ["PREF_J"])}, ensure_ascii=False))'
+  "settings": json.loads(os.environ["SETTINGS_J"]), "pki": json.loads(os.environ["PKI_J"]), "preferred": json.loads(os.environ["PREF_J"]), "update": json.loads(os.environ["UPD_J"])}, ensure_ascii=False))'
 }
 
 # ---------------------------------------------------------------- Kea HA
@@ -1440,6 +1442,174 @@ print(m[0].get("state","") if m else "")' 2>/dev/null || true)"
   return 0
 }
 
+# ---------------------------------------------------------------- mise à jour du cluster, nœud par nœud (0.9.13)
+# Un ORDRE commun (clé etcd /ddibuntu-cluster/update : {"target","at","by"}) demande la version cible. Chaque nœud, à chaque « follow » (chaque minute),
+# applique SEUL l'ordre quand c'est son tour : arbitre d'abord, puis les secondaires, le primaire en dernier ; un nœud n'attend que des nœuds déjà à la
+# version cible (versions publiées dans etcd). Rien ne se fait en parallèle, et un nœud en échec ARRÊTE la file (jamais de version mélangée qui se creuse).
+# L'installation elle-même est celle de ddibuntu-selfupdate (signature, sauvegarde, retour arrière) : l'ordre ne fait que déposer sa demande.
+UPDATE=/ddibuntu-cluster/update
+USTATES=/ddibuntu-cluster/update-state/
+# update_order → « cible<TAB>date<TAB>auteur » ; échec si absent ou invalide
+update_order() {
+  local raw; raw="$(ectl --command-timeout=5s get "$UPDATE" --print-value-only 2>/dev/null | head -c 400)" || return 1
+  [ -n "$raw" ] || return 1
+  printf '%s' "$raw" | python3 -c '
+import json, re, sys
+try: d = json.loads(sys.stdin.read())
+except Exception: sys.exit(1)
+if not isinstance(d, dict) or set(d) != {"target", "at", "by"}: sys.exit(1)
+t, a, b = d["target"], d["at"], d["by"]
+if not (isinstance(t, str) and re.fullmatch(r"\d+\.\d+\.\d+", t) and isinstance(a, int) and not isinstance(a, bool) and isinstance(b, str) and re.fullmatch(r"[a-z][a-z0-9-]{1,30}", b)): sys.exit(1)
+print("\t".join([t, str(a), b]))' 2>/dev/null
+}
+# versions_json → {"nœud":"x.y.z"} (valeurs invalides ignorées)
+versions_json() {
+  ectl --command-timeout=5s get --prefix "$VERSIONS" -w json 2>/dev/null | head -c 100000 | python3 -c '
+import base64, json, re, sys
+out = {}
+try: kvs = json.load(sys.stdin).get("kvs", [])[:64]
+except Exception: kvs = []
+for kv in kvs:
+    try:
+        n = base64.b64decode(kv["key"]).decode().rsplit("/", 1)[-1]; v = base64.b64decode(kv.get("value", "")).decode().strip()
+        if re.fullmatch(r"[a-z][a-z0-9-]{1,30}", n) and re.fullmatch(r"\d+\.\d+\.\d+", v): out[n] = v
+    except Exception: pass
+print(json.dumps(out))' 2>/dev/null || echo '{}'
+}
+# update_sequence → noms dans l'ordre de passage (arbitres, secondaires, primaire en dernier), un par ligne
+update_sequence() {
+  local cl="" leader=""
+  if [ "${C[NODE_ROLE]}" = data ]; then
+    cl="$(curl -fsS --max-time 4 --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "https://${C[NODE_IP]}:${C[PATRONI_PORT]}/cluster" 2>/dev/null || true)"
+  fi
+  leader="$(printf '%s' "$cl" | python3 -c 'import json,sys
+try: print(next((m["name"] for m in json.load(sys.stdin)["members"] if m["role"] in ("leader","master","primary","standby_leader")), ""))
+except Exception: print("")' 2>/dev/null || true)"
+  PEERS="${C[PEERS]}" LEADER="$leader" python3 -c '
+import os
+w, r, l = [], [], []
+for p in os.environ["PEERS"].split():
+    n, rest = p.split("=", 1); role = rest.rsplit(":", 1)[1]
+    (w if role == "witness" else l if n == os.environ["LEADER"] else r).append(n)
+print("\n".join(sorted(w) + sorted(r) + l))'
+}
+# update_selfstate : état de la dernière installation de CE nœud (idle|busy|failed|done) pour la cible demandée
+update_selfstate() {   # $1 = cible, $2 = date de l'ordre
+  local f="${DDI_UPDATE_STATUS:-$ROOT/var/lib/ddibuntu/update-status.json}"
+  [ -f "$f" ] || { echo idle; return; }
+  head -c 20000 "$f" | TARGET="$1" AT="$2" NOW="$(date +%s)" python3 -c '
+import json, os, sys
+try: d = json.load(sys.stdin)
+except Exception: print("idle"); sys.exit(0)
+busy = ("checking", "downloading", "verifying", "backup", "installing", "restarting")
+st, up = d.get("state"), d.get("updated_at") if isinstance(d.get("updated_at"), int) else 0
+if st in busy and int(os.environ["NOW"]) - up < 3600: print("busy")
+elif st == "failed" and d.get("target") == os.environ["TARGET"] and up >= int(os.environ["AT"]): print("failed")
+else: print("idle")' 2>/dev/null || echo idle
+}
+ustate_put() {   # ustate_put ÉTAT VERSION MESSAGE
+  STATE_V="$1" VER="$2" MSG="$3" python3 -c '
+import json, os, time
+print(json.dumps({"state": os.environ["STATE_V"], "version": os.environ["VER"], "at": int(time.time()), "msg": os.environ["MSG"][:200]}, ensure_ascii=False, separators=(",", ":")))' \
+    | ectl --command-timeout=5s put "$USTATES${C[NODE_NAME]}" >/dev/null 2>&1 || true
+}
+# update_step : appelée par « follow » sur TOUS les nœuds (arbitre compris). Ne fait rien sans ordre.
+update_step() {
+  local ord target at by me vers seq n v turn=1 st
+  ord="$(update_order 2>/dev/null)" || { ectl --command-timeout=3s del "$USTATES${C[NODE_NAME]}" >/dev/null 2>&1 || true; return 0; }
+  IFS=$'\t' read -r target at by <<<"$ord"
+  me="$(my_version)"; [ -n "$me" ] || return 0
+  vers="$(versions_json)"
+  if [ "$me" = "$target" ]; then
+    ustate_put "done" "$me" "à la version cible"
+    # tout le monde y est : l'ordre est terminé (n'importe quel nœud peut le constater)
+    if [ "$(printf '%s' "$vers" | PEERS="${C[PEERS]}" T="$target" python3 -c '
+import json, os, sys
+v = json.load(sys.stdin)
+print("yes" if all(v.get(p.split("=")[0]) == os.environ["T"] for p in os.environ["PEERS"].split()) else "no")' 2>/dev/null)" = yes ]; then
+      ectl --command-timeout=5s del "$UPDATE" >/dev/null 2>&1 && log "mise à jour du cluster vers $target terminée : tous les nœuds sont à la même version"
+    fi
+    return 0
+  fi
+  seq="$(update_sequence)"
+  for n in $seq; do
+    [ "$n" != "${C[NODE_NAME]}" ] || break
+    v="$(printf '%s' "$vers" | N="$n" python3 -c 'import json,os,sys; print(json.load(sys.stdin).get(os.environ["N"], ""))' 2>/dev/null)"
+    if [ "$v" != "$target" ]; then turn=0; ustate_put waiting "$me" "attend $n"; return 0; fi
+  done
+  [ "$turn" = 1 ] || return 0
+  st="$(update_selfstate "$target" "$at")"
+  case "$st" in
+    busy) ustate_put updating "$me" "installation en cours"; return 0 ;;
+    failed) ustate_put failed "$me" "installation échouée : l'ordre est suspendu ici (voir la page Système)"; return 0 ;;
+  esac
+  local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}"
+  if [ -e "$gen/.update-request" ]; then ustate_put requested "$me" "demande déposée"; return 0; fi
+  install -d -m 0755 "$gen" 2>/dev/null || true
+  printf '{"action":"apply","version":"%s"}' "$target" > "$gen/.update-request.tmp" && mv -f "$gen/.update-request.tmp" "$gen/.update-request"
+  ustate_put requested "$me" "demande déposée"
+  log "mise à jour du cluster : c'est le tour de ce nœud ($me → $target), demande déposée pour ddibuntu-selfupdate"
+}
+# update-start VERSION : dépose l'ordre (nœud de données, quorum, tous les nœuds sains et à une version connue)
+cmd_update_start() {
+  local target="${1:-}"; conf_load; [ "${C[NODE_ROLE]}" = data ] || die "l'ordre de mise à jour se donne depuis un nœud de données"
+  [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version visée invalide"
+  drill_guard
+  quorum_ok || die "le quorum etcd est indisponible : l'ordre ne pourrait pas être publié sur tous les nœuds"
+  update_order >/dev/null 2>&1 && die "une mise à jour du cluster est déjà en cours (annulez-la d'abord)"
+  local vers; vers="$(versions_json)"
+  local bad; bad="$(printf '%s' "$vers" | PEERS="${C[PEERS]}" T="$target" python3 -c '
+import json, os, sys
+v = json.load(sys.stdin); miss = []; newer = False
+def key(x): return tuple(int(i) for i in x.split("."))
+for p in os.environ["PEERS"].split():
+    n = p.split("=")[0]
+    if n not in v: miss.append(n)
+    elif key(v[n]) < key(os.environ["T"]): newer = True
+if miss: print("version inconnue : " + " ".join(miss))
+elif not newer: print("aucun nœud n\x27est plus ancien que " + os.environ["T"])
+elif any(key(v[p.split("=")[0]]) > key(os.environ["T"]) for p in os.environ["PEERS"].split()): print("un nœud est déjà plus récent que " + os.environ["T"])')"
+  [ -z "$bad" ] || die "$bad"
+  local q; q="$(quorum_json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("ok" if all(m["healthy"] for m in d["members"]) else "non")' 2>/dev/null || echo non)"
+  [ "$q" = ok ] || die "tous les membres etcd doivent être sains pour démarrer (un nœud absent ferait attendre la file indéfiniment)"
+  local v; v="$(TARGET="$target" BY="${C[NODE_NAME]}" python3 -c '
+import json, os, time
+print(json.dumps({"target": os.environ["TARGET"], "at": int(time.time()), "by": os.environ["BY"]}, separators=(",", ":")))')"
+  printf '%s' "$v" | ectl --command-timeout=5s put "$UPDATE" >/dev/null 2>&1 || die "écriture impossible (quorum etcd indisponible ?)"
+  log "mise à jour du cluster vers $target ordonnée (arbitre, secondaires, puis primaire)"
+}
+cmd_update_cancel() {
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || die "réservé aux nœuds de données"
+  quorum_ok || die "le quorum etcd est indisponible"
+  update_order >/dev/null 2>&1 || die "aucune mise à jour du cluster en cours"
+  ectl --command-timeout=5s del "$UPDATE" >/dev/null 2>&1 || die "écriture impossible"
+  ectl --command-timeout=5s del --prefix "$USTATES" >/dev/null 2>&1 || true
+  log "ordre de mise à jour du cluster annulé (une installation déjà commencée va jusqu'à son terme)"
+}
+update_json() {   # {"order": {...}|null, "versions": {...}, "states": {...}} pour l'état publié
+  local ord="" vers st
+  ord="$(update_order 2>/dev/null)" || ord=""
+  vers="$(versions_json)"
+  st="$(ectl --command-timeout=3s get --prefix "$USTATES" -w json 2>/dev/null | head -c 100000 | python3 -c '
+import base64, json, re, sys
+out = {}
+try: kvs = json.load(sys.stdin).get("kvs", [])[:32]
+except Exception: kvs = []
+for kv in kvs:
+    try:
+        n = base64.b64decode(kv["key"]).decode().rsplit("/", 1)[-1]; d = json.loads(base64.b64decode(kv.get("value", "")))
+        if re.fullmatch(r"[a-z][a-z0-9-]{1,30}", n) and isinstance(d, dict) and d.get("state") in ("waiting", "requested", "updating", "done", "failed"):
+            out[n] = {"state": d["state"], "at": d.get("at") if isinstance(d.get("at"), int) else 0, "msg": str(d.get("msg", ""))[:200]}
+    except Exception: pass
+print(json.dumps(out, ensure_ascii=False))' 2>/dev/null || echo '{}')"
+  ORD="$ord" VERS="$vers" ST="$st" python3 -c '
+import json, os
+o = None
+if os.environ["ORD"]:
+    t, a, b = os.environ["ORD"].split("\t"); o = {"target": t, "at": int(a), "by": b}
+print(json.dumps({"order": o, "versions": json.loads(os.environ["VERS"]), "states": json.loads(os.environ["ST"])}, ensure_ascii=False))'
+}
+
 # État du cluster lisible par la console (sans secret), remplacé atomiquement. Ne fait jamais échouer « follow ».
 # write_result ACTION NOEUD OK MESSAGE : résultat de la dernière demande de la console (lu par la page Cluster)
 write_result() {
@@ -1487,6 +1657,7 @@ print(json.dumps(d, ensure_ascii=False))' > "$t" 2>/dev/null; then
 }
 cmd_follow() {
   conf_load; publish_state || true
+  ( update_step ) || log "follow : étape de mise à jour du cluster non terminée (réessai à la prochaine échéance)"
   [ "${C[NODE_ROLE]}" = data ] || return 0
   install -d -m 0700 "$STATE"
   if [ "${C[CA_NODE]}" = 1 ]; then ensure_xfr_key; fi
@@ -1912,7 +2083,7 @@ cmd_action() {
 import json, os, re, sys
 try: d = json.loads(sys.stdin.read())
 except Exception: print("invalid"); sys.exit(0)
-if not isinstance(d, dict) or not set(d) <= {"action", "node", "confirm", "ip", "role", "pass", "vip", "iface", "vrid", "net", "back"}: print("invalid"); sys.exit(0)
+if not isinstance(d, dict) or not set(d) <= {"action", "node", "confirm", "ip", "role", "pass", "vip", "iface", "vrid", "net", "back", "version"}: print("invalid"); sys.exit(0)
 a, n, c = d.get("action"), d.get("node", ""), d.get("confirm", "")
 name = r"[a-z][a-z0-9-]{1,30}"
 def ipv4(v): return isinstance(v, str) and re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", v) is not None and all(int(x) <= 255 for x in v.split("."))
@@ -1929,6 +2100,8 @@ if a == "clear-vip": print("clear-vip -" if keys == {"action", "confirm"} and c 
 if a == "vip-iface": print("vip-iface " + d["iface"] if keys == {"action", "iface"} and iface(d["iface"]) else "invalid"); sys.exit(0)
 if a == "set-net": print("set-net " + d["net"] if keys == {"action", "net", "confirm"} and cidr(d["net"]) and c == os.environ["CL"] else "invalid"); sys.exit(0)
 if a == "renew-cert": print("renew-cert -" if keys == {"action"} else "invalid"); sys.exit(0)
+if a == "update-start": print("update-start " + d["version"] if keys == {"action", "version", "confirm"} and isinstance(d["version"], str) and re.fullmatch(r"\d+\.\d+\.\d+", d["version"]) and c == os.environ["CL"] else "invalid"); sys.exit(0)
+if a == "update-cancel": print("update-cancel -" if keys == {"action", "confirm"} and c == os.environ["CL"] else "invalid"); sys.exit(0)
 if a == "set-preferred": print("set-preferred " + n if keys == {"action", "node", "confirm"} and isinstance(n, str) and re.fullmatch(name, n) and c == os.environ["CL"] else "invalid"); sys.exit(0)
 if a == "clear-preferred": print("clear-preferred -" if keys == {"action", "confirm"} and c == os.environ["CL"] else "invalid"); sys.exit(0)
 if a == "drill-check":
@@ -1959,6 +2132,8 @@ else: print("invalid")' 2>/dev/null || echo invalid)"
     "vip-iface "*) act="vip-iface"; sif="${parsed#* }" ;;
     "set-net "*) act=set-net; snet="${parsed#* }" ;;
     "renew-cert -") act=renew-cert ;;
+    "update-start "*) act=update-start; node="${parsed#* }" ;;
+    "update-cancel -") act=update-cancel ;;
     "set-preferred "*) act=set-preferred; node="${parsed#* }" ;;
     "clear-preferred -") act=clear-preferred ;;
     "change-ip "*) act=change-ip; sip="${parsed#* }"; node="${C[NODE_NAME]}" ;;
@@ -1978,6 +2153,8 @@ else: print("invalid")' 2>/dev/null || echo invalid)"
       vip-iface) out="$( ( cmd_vip_iface "$sif" ) 2>&1 )" && ok=true ;;
       set-net) out="$( ( cmd_set_net "$snet" ) 2>&1 )" && ok=true ;;
       renew-cert) out="$( ( cmd_renew_cert --force ) 2>&1 )" && ok=true ;;
+      update-start) out="$( ( cmd_update_start "$node" ) 2>&1 )" && ok=true ;;
+      update-cancel) out="$( ( cmd_update_cancel ) 2>&1 )" && ok=true ;;
       set-preferred) out="$( ( cmd_set_preferred "$node" ) 2>&1 )" && ok=true ;;
       clear-preferred) out="$( ( cmd_clear_preferred ) 2>&1 )" && ok=true ;;
       change-ip) out="$( ( cmd_change_ip --ip "$sip" --yes ) 2>&1 )" && ok=true ;;
@@ -2085,7 +2262,7 @@ take_lock() {   # take_lock SECONDES (0 = ne pas attendre)
 case "${1:-}" in
   sync|follow|ca-sync) take_lock 0 || { log "une autre opération du cluster est en cours : « ${1} » reprendra à la prochaine échéance"; exit 0; } ;;
   request) take_lock 600 || die "une autre opération du cluster est en cours depuis plus de 10 minutes" ;;
-  activate|switchover|remove-node|recover|take-ca|keepalived|set-vip|clear-vip|vip-iface|set-net|renew-cert|sign-requests|change-ip|set-preferred|clear-preferred)
+  activate|switchover|remove-node|recover|take-ca|keepalived|set-vip|clear-vip|vip-iface|set-net|renew-cert|sign-requests|change-ip|set-preferred|clear-preferred|update-start|update-cancel)
     take_lock 120 || die "une autre opération du cluster est en cours ; réessayer dans un instant" ;;
 esac
 case "${1:-}" in
@@ -2116,6 +2293,10 @@ case "${1:-}" in
   vip-iface) shift; cmd_vip_iface "$@" ;;
   set-net) shift; cmd_set_net "$@" ;;
   settings) cmd_settings ;;
+  update-start) shift; cmd_update_start "$@" ;;
+  update-cancel) cmd_update_cancel ;;
+  update-step) conf_load; update_step ;;
+  update) conf_load; update_json ;;
   set-preferred) shift; cmd_set_preferred "$@" ;;
   clear-preferred) cmd_clear_preferred ;;
   preferred) conf_load; preferred_json ;;

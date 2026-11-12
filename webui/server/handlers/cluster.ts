@@ -70,6 +70,9 @@ const Action = z.discriminatedUnion('action', [
   z.object({ action: z.literal('set-net'), net: CIDR, confirm: CONFIRM }).strict(),
   z.object({ action: z.literal('renew-cert') }).strict(),
   // nœud préféré du primaire (0.9.11) : consigne commune publiée dans etcd (quorum exigé)
+  // mise à jour du cluster nœud par nœud (0.9.13) : ordre commun publié dans etcd, chaque nœud l'applique à son tour
+  z.object({ action: z.literal('update-start'), version: z.string().regex(/^\d+\.\d+\.\d+$/), confirm: CONFIRM }).strict(),
+  z.object({ action: z.literal('update-cancel'), confirm: CONFIRM }).strict(),
   z.object({ action: z.literal('set-preferred'), node: NAME, confirm: CONFIRM }).strict(),
   z.object({ action: z.literal('clear-preferred'), confirm: CONFIRM }).strict(),
   z.object({ action: z.literal('change-ip'), ip: IPV4, confirm: CONFIRM }).strict(),
@@ -87,7 +90,7 @@ route('POST', '/cluster/action', 'admin', async (c) => {
   if ((a.action === 'set-vip' || a.action === 'vip-iface') && addrs.length && !new Set(addrs.map((x) => x.iface)).has(a.iface)) fail(409, 'iface_unknown')
   if (a.action === 'change-ip' && addrs.length && !addrs.some((x) => x.address === a.ip)) fail(409, 'ip_not_local')
   await drop('.cluster-action', JSON.stringify(a))
-  await audit(c, `cluster.${a.action}`, 'node', a.action === 'remove-node' || a.action === 'set-preferred' ? a.node : a.action === 'drill' ? (a.node ?? '') : (st?.node ?? ''))
+  await audit(c, `cluster.${a.action}`, 'node', a.action === 'remove-node' || a.action === 'set-preferred' ? a.node : a.action === 'update-start' ? a.version : a.action === 'drill' ? (a.node ?? '') : (st?.node ?? ''))
   return { accepted: true }
 })
 

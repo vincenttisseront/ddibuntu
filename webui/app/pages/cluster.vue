@@ -106,6 +106,7 @@ async function switchover(node: string) {
           </dl>
         </UCard>
       </div>
+      <ClusterUpdate :st="st" :result="data.result" :replica="!!data.replica" @reload="load(true)" />
       <ClusterOps :st="st" :result="data.result" @reload="load(true)" />
       <ClusterDrill :st="st" :result="data.result" :replica="!!data.replica" @reload="load(true)" />
       <ClusterSettings :st="st" :result="data.result" :local="data.local" @reload="load(true)" />

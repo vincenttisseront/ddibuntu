@@ -3,6 +3,7 @@ Description=Watch for a cluster creation or join requested from the DDI-Buntu co
 ConditionPathExists=!/etc/ddibuntu-cluster/cluster.conf
 
 [Path]
+PathExists=/var/lib/ddibuntu/generated/.cluster-setup
 PathChanged=/var/lib/ddibuntu/generated/.cluster-setup
 Unit=ddibuntu-cluster-setup.service
 

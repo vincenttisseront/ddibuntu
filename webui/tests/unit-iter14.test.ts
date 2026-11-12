@@ -93,3 +93,40 @@ describe('découverte : tout sélectionner', () => {
     expect(src).toContain("'indeterminate'")
   })
 })
+
+import { parseUpdate, versionSpread } from '../server/utils/cluster'
+describe('mise à jour du cluster : état publié et refus préalables', () => {
+  const upd = (o: Record<string, unknown> = {}) => ({ order: null, versions: { n1: '0.9.12', n2: '0.9.12', n3: '0.9.12' }, states: {}, ...o })
+  it('lecture bornée : nœuds inconnus, versions et états invalides écartés', () => {
+    const s = mk({ update: { order: { target: '0.9.13', at: 5, by: 'n1' }, versions: { n1: '0.9.12', n2: 'x', zz: '1.0.0', n3: ['0.9.12'] }, states: { n1: { state: 'done', at: 1, msg: 'ok' }, n2: { state: 'rm -rf', at: 1 }, zz: { state: 'done' } } } })
+    expect(s.update).toEqual({ order: { target: '0.9.13', at: 5, by: 'n1' }, versions: { n1: '0.9.12' }, states: { n1: { state: 'done', at: 1, msg: 'ok' } } })
+    expect(mk().update).toBeNull()
+    expect(parseUpdate('x', mk().nodes)).toBeNull()
+    expect(mk({ update: { order: { target: 'latest' }, versions: {}, states: {} } }).update!.order).toBeNull()
+  })
+  it('homogénéité : une seule version connue pour tous les nœuds', () => {
+    expect(versionSpread(mk({ update: upd() }))).toEqual({ homogeneous: true, versions: ['0.9.12'] })
+    expect(versionSpread(mk({ update: upd({ versions: { n1: '0.9.12', n2: '0.9.9', n3: '0.9.12' } }) }))).toEqual({ homogeneous: false, versions: ['0.9.9', '0.9.12'] })
+    expect(versionSpread(mk({ update: upd({ versions: { n1: '0.9.12' } }) })).homogeneous).toBe(false)
+    expect(versionSpread(mk()).homogeneous).toBe(false)
+  })
+  const R = (a: any, over: Record<string, unknown> = {}) => actionRefusal(mk(over), a)
+  const start = { action: 'update-start', version: '0.9.13', confirm: 'lab' }
+  it('démarrage : confirmation, quorum, versions connues, pas de nœud plus récent, un seul ordre à la fois', () => {
+    const ok = { update: upd({ versions: { n1: '0.9.12', n2: '0.9.12', n3: '0.9.12' } }) }
+    expect(R(start, ok)).toBeNull()
+    expect(R({ ...start, confirm: 'x' }, ok)).toBe('confirm_mismatch')
+    expect(R(start, { update: upd({ versions: { n1: '0.9.12' } }) })).toBe('versions_unknown')
+    expect(R(start)).toBe('versions_unknown')
+    expect(R({ ...start, version: '0.9.12' }, ok)).toBe('already_at_target')
+    expect(R({ ...start, version: '0.9.10' }, ok)).toBe('node_newer')
+    expect(R(start, { update: upd({ order: { target: '0.9.13', at: 1, by: 'n1' } }) })).toBe('update_running')
+    expect(R(start, { ...ok, etcd: { healthy: false, members: 3, quorum: { ...base.etcd.quorum, hasQuorum: false, healthy: 1 } } })).toBe('quorum_required')
+    expect(R(start, { ...ok, role: 'witness' })).toBe('action_data_node_only')
+  })
+  it('annulation : seulement avec un ordre en cours', () => {
+    const c = { action: 'update-cancel', confirm: 'lab' }
+    expect(R(c, { update: upd() })).toBe('no_update')
+    expect(R(c, { update: upd({ order: { target: '0.9.13', at: 1, by: 'n1' } }) })).toBeNull()
+  })
+})
