@@ -1,5 +1,8 @@
 # Journal des modifications
 
+## 0.9.33 — « Sonde de santé activée sur les nœuds mis à jour »
+- Sur un nœud mis à jour par la console, la minuterie `ddibuntu-health.timer` n'était pas activée : « Services de ce nœud » restait sur « Collecte de l'état » indéfiniment. La mise à jour l'active et la démarre désormais.
+
 ## 0.9.32 — « Mise à jour du cluster : échecs lisibles »
 - Une cible dépassée par une release plus récente (ordre lancé pendant une publication) n'est plus un « échec » opaque : l'ordre est annulé automatiquement (rien n'est installé) avec le message « version cible dépassée : relancer la recherche ».
 - La ligne d'un nœud en échec affiche la cause réelle (dernière erreur de la mise à jour du nœud) au lieu d'un message générique.
