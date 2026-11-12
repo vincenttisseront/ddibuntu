@@ -15,6 +15,8 @@ route('GET', '/cluster/role', 'public', async () => ({ replica: await inRecovery
 // État détaillé (lecture seule) : nœuds, leader, quorum, Kea HA, adresse virtuelle, rôle BIND.
 route('GET', '/cluster/status', 'viewer', async () => {
   const state = await readClusterState()
+  // une demande de création/rattachement n'a plus de sens une fois le nœud en cluster : fichier resté d'une tentative précédente, il bloquerait les assistants (« opération en cours »)
+  if (state !== null) await fs.unlink(join(cfg().generatedDir, '.cluster-setup')).catch(() => {})
   return {
     pending: await readPending(cfg().generatedDir).catch(() => null),
     clustered: state !== null, replica: await inRecovery().catch(() => false), state, candidates: switchoverCandidates(state), result: await readSwitchoverResult(),

@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.24 — « Demandes du cluster : plus de demande perdue »
+- **Cause d'un blocage constaté** (« Créer le lot » qui tourne sans fin, puis « Une opération est déjà en cours ») : une demande déposée pendant qu'une autre était en cours de traitement (l'actualisation automatique, toutes les 5 s) n'était jamais traitée : l'unité de surveillance ne se réarmait pas. Corrigé en 0.9.23 (`PathExists`) ; la mise à jour **redémarre** désormais ces unités pour que la règle s'applique tout de suite.
+- Un fichier de demande de création de cluster resté d'une tentative précédente est retiré automatiquement dès que le nœud est en cluster (il bloquait les assistants).
+- Sur un nœud déjà bloqué : `sudo systemctl restart ddibuntu-cluster-request.path` (ou `sudo systemctl start ddibuntu-cluster-request.service`) traite la demande en attente.
+
 ## 0.9.23 — « Cluster : on sait quelle tâche est en cours »
 - **Tâche en attente visible** : la page Cluster affiche un bandeau « Une demande attend d'être exécutée : <tâche> » (création du cluster, rattachement, bascule, lot d'enrôlement de tel nœud, mise à jour du cluster, etc.) avec son ancienneté. Le message « Une opération est déjà en cours sur ce nœud » nomme maintenant la tâche concernée.
 - **Demande bloquée** : au-delà de 2 minutes le bandeau passe en avertissement et un administrateur peut **Annuler la demande** (boîte de confirmation) ; seules les demandes pas encore lues par root sont retirées, jamais une opération commencée. Action auditée.
