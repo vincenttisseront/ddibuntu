@@ -1154,6 +1154,13 @@ print(ipaddress.ip_interface(l).network if l else "")' 2>/dev/null)" || net=""
   if [ -n "$vip" ] || [ -n "$vif" ]; then
     if [ -z "$vip" ] || [ -z "$vif" ]; then die "--vip et --vip-iface vont ensemble"; fi
     if [ -z "${DDI_TEST:-}" ] && ! ip -o link show "$vif" >/dev/null 2>&1; then die "l'interface $vif n'existe pas sur ce serveur"; fi
+    # adresse virtuelle donnée sans préfixe (le formulaire de la console demande une simple adresse) : préfixe de l'interface choisie, /24 à défaut
+    if valid_ip "$vip"; then
+      local vp
+      vp="$(ip -o -4 addr show dev "$vif" 2>/dev/null | awk '{ split($4, a, "/"); print a[2]; exit }')"
+      { [[ "$vp" =~ ^[0-9]{1,2}$ ]] && [ "$vp" -ge 8 ] && [ "$vp" -le 32 ]; } || vp=24
+      log "adresse virtuelle sans préfixe : /$vp retenu ($vip/$vp)"; vip="$vip/$vp"
+    fi
     C[VIP]="$vip"; C[VIP_IFACE]="$vif"; [ -z "$vrid" ] || C[VIP_VRID]="$vrid"
   fi
   [ -z "${DDI_PORT_ETCD_CLIENT:-}" ] || C[ETCD_CLIENT_PORT]="$DDI_PORT_ETCD_CLIENT"; [ -z "${DDI_PORT_ETCD_PEER:-}" ] || C[ETCD_PEER_PORT]="$DDI_PORT_ETCD_PEER"

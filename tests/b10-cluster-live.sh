@@ -89,6 +89,10 @@ out8="$(cl 8 init --name n8 --ip 127.0.1.8 --no-activate 2>&1)"   # pas de Postg
 case "$out8" in *"sous-réseau de 127.0.1.8 retenu (127.0.1.0/24)"*) pass_=1 ;; *) pass_=0 ;; esac
 case "$out8" in *"REPL_NET invalide"*) pass_=0 ;; esac
 expect_eq "sans --net : le sous-réseau du nœud est retenu (pas de « REPL_NET invalide »)" 1 "$pass_"
+out8="$(cl 8 init --name n8 --ip 127.0.1.8 --vip 192.0.2.50 --vip-iface lo --no-activate 2>&1)"   # VIP sans préfixe (formulaire de la console)
+case "$out8" in *"192.0.2.50/"*) pass_=1 ;; *) pass_=0 ;; esac
+case "$out8" in *"VIP invalide"*) pass_=0 ;; esac
+expect_eq "VIP sans préfixe : préfixe ajouté (pas de « VIP invalide »)" 1 "$pass_"
 C1="$(R 1)/etc/ddibuntu-cluster"
 expect_eq "la clé de l'autorité ne quitte pas le nœud 1" "yes" "$([ -f "$(R 1)/var/lib/ddibuntu/cluster/ca/ca.key" ] && echo yes || echo no)"
 expect_eq "clé privée du nœud : 0640 groupe ddicluster" "640 ddicluster" "$(stat -c '%a %G' "$C1/pki/node.key")"
