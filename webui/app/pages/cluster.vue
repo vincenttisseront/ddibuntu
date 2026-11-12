@@ -16,7 +16,7 @@ onMounted(() => {
   load()
   timer = setInterval(() => {
     if (document.hidden) return
-    if (canWrite.value && ticks++ % 3 === 0) api.call('POST', '/cluster/refresh', undefined, { silent: true }).catch(() => {})
+    if (canWrite.value && data.value?.clustered && !data.value?.replica && ticks++ % 3 === 0) api.call('POST', '/cluster/refresh', undefined, { silent: true }).catch(() => {})
     load(true)
   }, 5000)
 })

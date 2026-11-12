@@ -45,6 +45,7 @@ async function drop(file: string, body: string): Promise<void> {
   await fs.writeFile(f, body, { mode: 0o640, flag: 'wx' })
 }
 route('POST', '/cluster/refresh', 'operator', async () => {
+  if ((await readClusterState()) === null) fail(409, 'not_clustered')   // hors cluster : l'unité de relecture de root n'est pas active, la demande ne serait jamais consommée
   // une demande est déjà en attente (root ne l'a pas encore relue) : l'actualisation viendra avec elle, ce n'est pas une erreur (pas de 409 dans la console du navigateur)
   try { await fs.stat(join(cfg().generatedDir, '.cluster-action')); return { accepted: true, pending: true } } catch (e: any) { if (e?.code !== 'ENOENT') throw e }
   await drop('.cluster-action', JSON.stringify({ action: 'refresh' }))
