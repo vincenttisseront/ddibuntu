@@ -18,8 +18,8 @@ getent group ddiconsole >/dev/null || fail "le groupe ddiconsole n'existe pas (i
 [ -f "$KEA_SCHEMA" ] || fail "schéma Kea introuvable : $KEA_SCHEMA (paquet kea-admin)"
 
 log "attente de PostgreSQL"
-for _ in $(seq 60); do pg_isready -q -h 127.0.0.1 -p "$PORT" && break; sleep 1; done
-pg_isready -q -h 127.0.0.1 -p "$PORT" || fail "PostgreSQL ne répond pas sur 127.0.0.1:$PORT"
+for _ in $(seq 60); do pg_isready -q -U postgres -d postgres -h 127.0.0.1 -p "$PORT" && break; sleep 1; done
+pg_isready -q -U postgres -d postgres -h 127.0.0.1 -p "$PORT" || fail "PostgreSQL ne répond pas sur 127.0.0.1:$PORT"
 
 DB_PW="$(openssl rand -hex 24)"; KEA_PW="$(openssl rand -hex 24)"
 SECRET="$(openssl rand -base64 48 | tr -d '\n')"; TOKEN="$(openssl rand -hex 16)"

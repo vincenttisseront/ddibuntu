@@ -71,7 +71,7 @@ fi
 # ---------------------------------------------------------------- base de données (nœuds qui en portent une)
 pg="null"
 if [ "$NROLE" != witness ] && [ -x "$PGBIN/pg_isready" ]; then
-  if "$PGBIN/pg_isready" -q -h "$PGSOCK" -p "$PGPORT" -t 3 >/dev/null 2>&1; then pg=true; else pg=false; fi
+  if "$PGBIN/pg_isready" -q -U postgres -d postgres -h "$PGSOCK" -p "$PGPORT" -t 3 >/dev/null 2>&1; then pg=true; else pg=false; fi
 fi
 
 # ---------------------------------------------------------------- disques (une ligne par système de fichiers distinct)

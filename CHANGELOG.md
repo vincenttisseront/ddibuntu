@@ -1,5 +1,8 @@
 # Journal des modifications
 
+## 0.9.29 — « Journal PostgreSQL plus propre »
+- La sonde de santé (1 fois par minute) et l'initialisation de la base se présentent désormais sous le rôle `postgres` : fini le message `FATAL: role "root" does not exist` dans le journal de Patroni/PostgreSQL à chaque passage.
+
 ## 0.9.28 — « Traçabilité des baux »
 - Nouvelle page **Traçabilité** (menu DDI) : retrouvez qui (MAC, nom) détenait une adresse IP et quand. Recherche par IP ou début d'IP, MAC (tout format, début accepté) ou fragment de nom ; corrélation avec le nom saisi dans l'IPAM.
 - La console relève chaque minute les baux actifs de Kea (primaire uniquement) dans un historique : une ligne par association IP/MAC/nom, ouverte tant que le bail vit, fermée quand il disparaît ou change de poste. Rétention 400 jours (`DDI_LEASETRACE_RETENTION_DAYS`), intervalle `DDI_LEASETRACE_INTERVAL_MS` (0 = désactivé).
