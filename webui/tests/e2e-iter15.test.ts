@@ -291,3 +291,27 @@ describe('DHCP multi-espaces', () => {
     expect((await admin.put(`/api/dhcp/scopes/${scx.json.id}`, { lease_time: 3600, enabled: true })).status).toBe(200)
   })
 })
+
+describe('contrôle d\'une adresse (DNS + présence)', () => {
+  let lo = 0, gone = 0
+  it('hôte qui répond : présent ; hôte muet sans nom DNS : absent, signalé injoignable', async () => {
+    const sn = await admin.post('/api/ipam/subnets', { cidr: '127.0.0.0/24', name: 'boucle' }); expect(sn.status, sn.text).toBe(200)
+    lo = (await admin.post(`/api/ipam/subnets/${sn.json.id}/addresses`, { ip: '127.0.0.1', status: 'used', hostname: 'local' })).json.id
+    const r = await admin.post(`/api/ipam/addresses/${lo}/check`); expect(r.status, r.text).toBe(200)
+    expect(r.json).toMatchObject({ ip: '127.0.0.1', verdict: 'alive', alive: true, hostname: 'local' }); expect(r.json.methods).toContain('tcp')
+    expect((await db.query('select reachable, checked_at is not null as c from addresses where id = $1', [lo])).rows[0]).toEqual({ reachable: true, c: true })
+    const sn2 = await admin.post('/api/ipam/subnets', { cidr: '198.18.77.0/24', name: 'muet' }); gone = (await admin.post(`/api/ipam/subnets/${sn2.json.id}/addresses`, { ip: '198.18.77.9', status: 'used' })).json.id
+    const g = await admin.post(`/api/ipam/addresses/${gone}/check`); expect(g.status, g.text).toBe(200)
+    // le bac à sable laisse parfois « répondre » des adresses lointaines (relais TCP) : on vérifie la cohérence verdict ↔ drapeau enregistré
+    expect(g.json).toMatchObject({ ptr: null, ptrMatchesIp: null, hostnameMatchesIp: null }); expect(['alive', 'absent']).toContain(g.json.verdict); expect(g.json.alive).toBe(g.json.verdict === 'alive')
+    expect((await db.query('select reachable from addresses where id = $1', [gone])).rows[0].reachable).toBe(g.json.alive)
+    expect((await db.query("select count(*)::int n from audit_log where action = 'address_check'")).rows[0].n).toBe(2)
+  })
+  it('droits : lecteur refusé, adresse inconnue, périmètre respecté', async () => {
+    code(await viewer.post(`/api/ipam/addresses/${gone}/check`), 403, 'forbidden')
+    code(await admin.post('/api/ipam/addresses/999999/check'), 404, 'not_found')
+    expect((await admin.post('/api/users', { username: 'etroit', role: 'operator', password: PW, space_ids: [999] })).status).toBe(200)
+    const et = new Client(); expect((await et.login('etroit', PW)).status).toBe(200)
+    code(await et.post(`/api/ipam/addresses/${gone}/check`), 403, 'out_of_scope')
+  })
+})

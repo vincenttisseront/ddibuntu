@@ -1,5 +1,9 @@
 # Journal des modifications
 
+## 0.9.44 — « Contrôle d'une adresse »
+- Sur chaque ligne de la liste des adresses (IPAM), un bouton **« Interroger le DNS et tester la présence »** ouvre une fenêtre avec : le **nom DNS** (enregistrement PTR, confirmé ou non par l'enregistrement A correspondant), la cohérence du nom enregistré dans l'IPAM, et un **test de présence** (TCP, ping, ARP, baux DHCP) avec les ports et la MAC trouvés. Verdict : « l'hôte répond », « aucune réponse mais le DNS connaît un nom » (ne pas libérer sans vérifier) ou « aucune réponse et aucun nom DNS » (l'hôte semble inexistant : bouton pour supprimer l'adresse). Boutons « Utiliser ce nom » (reprend le PTR comme nom d'hôte) et « Relancer ».
+- Le contrôle met à jour la colonne « Joignable » (et « vue le ») ; il ne change ni le nom ni le statut sans action de l'utilisateur. Réservé aux opérateurs, limité à leur périmètre, journalisé (`address_check`).
+
 ## 0.9.43 — « Mise à jour : repli quand l'API GitHub est limitée »
 - Une mise à jour pouvait échouer sur un nœud avec « impossible de relire la dernière release sur GitHub » : sans jeton, l'API GitHub n'autorise que 60 requêtes par heure et par adresse IP, vite saturées quand plusieurs nœuds (et des recherches répétées) partagent la même sortie. Quand l'API répond 401/403/429, le nœud lit désormais la dernière release sur le site web (redirection de `releases/latest`) et télécharge les fichiers par leur adresse publique ; la signature de `SHA256SUMS` reste vérifiée avant toute installation. Les messages d'échec distinguent maintenant réseau injoignable, limite de débit et autre cause.
 

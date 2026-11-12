@@ -198,6 +198,18 @@ const vlanCols = computed(() => [{ key: 'vlan_id', label: 'VLAN ID', kind: 'num'
 const vlanFields = computed(() => [{ key: 'vlan_id', label: 'VLAN ID', type: 'number', required: true }, { key: 'name', label: t('common.name'), type: 'text', required: true }, { key: 'description', label: t('common.description'), type: 'text' }] as any[])
 
 // ---- IP suivante libre (réseau et pool au choix) ----
+// ---- Contrôle d'une adresse : nom DNS + test de présence ----
+const chk = reactive<{ open: boolean; busy: boolean; row: any; res: any; err: string }>({ open: false, busy: false, row: null, res: null, err: '' })
+async function checkAddr(row: any) {
+  Object.assign(chk, { open: true, busy: true, row, res: null, err: '' })
+  try { chk.res = await api.call('POST', `/ipam/addresses/${row.id}/check`, {}) ; await refreshAll() } catch (e: any) { chk.err = e.info?.message ?? t('err.internal') } finally { chk.busy = false }
+}
+const chkName = computed(() => (chk.res?.ptr ?? '').split('.')[0] ?? '')
+async function useDnsName() {
+  chk.busy = true; chk.err = ''
+  try { await api.call('PUT', `/ipam/addresses/${chk.row.id}`, { hostname: chkName.value }); chk.res = { ...chk.res, hostname: chkName.value, hostnameIps: null, hostnameMatchesIp: null }; toast.add({ title: t('common.saved'), color: 'success', icon: 'i-lucide-check' }); await refreshAll() } catch (e: any) { chk.err = e.info?.message ?? t('err.internal') } finally { chk.busy = false }
+}
+async function deleteChecked() { const r = chk.row; chk.open = false; await removeAddr(r) }
 const nextOpen = ref(false), nextState = reactive({ subnet_id: 0, pool_id: 0, hostname: '', status: 'used', dns_zone_id: 0 }), nextErr = ref('')
 const nextPoolOptions = computed(() => [{ label: t('ipam.no_pool'), value: 0 }, ...(pools.value?.items ?? []).filter((p: any) => p.subnet_id === nextState.subnet_id).map((p: any) => ({ label: `${p.name} (${p.start_ip} – ${p.end_ip})`, value: p.id }))])
 function openNext(subnetId = 0, poolId = 0) { nextState.subnet_id = subnetId || addrSubnet.value || (leafOptions.value[0]?.value as number) || 0; nextState.pool_id = poolId; nextErr.value = ''; nextOpen.value = true }
@@ -286,6 +298,7 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
         <UButton icon="i-lucide-download" size="sm" color="neutral" variant="ghost" :label="t('ipam.export')" href="/api/ipam/export/addresses" external />
       </template>
       <template #actions="{ row }">
+        <UButton v-if="canWrite" size="xs" color="neutral" variant="ghost" icon="i-lucide-radar" :aria-label="t('ipam.check')" :title="t('ipam.check')" @click="checkAddr(row)" />
         <UButton v-if="canWrite" size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t('common.edit')" @click="openForm('addr', row)" />
         <UButton v-if="canWrite" size="xs" color="error" variant="ghost" icon="i-lucide-trash-2" :aria-label="t('common.delete')" @click="removeAddr(row)" />
       </template>
@@ -321,6 +334,31 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
 
     <!-- Formulaires -->
     <EntityForm v-model:open="form.open" :title="form.row ? t('common.edit') : formTitle" :fields="formFields" :row="form.row" :submit="submitForm" />
+    <UModal v-model:open="chk.open" :title="t('ipam.check_title', { ip: chk.row?.ip ?? '' })" :description="t('ipam.check_desc')">
+      <template #body>
+        <div v-if="chk.busy && !chk.res" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="animate-spin" />{{ t('ipam.check_running') }}</div>
+        <UAlert v-if="chk.err" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="chk.err" class="mb-3" />
+        <div v-if="chk.res" class="flex flex-col gap-3 text-sm">
+          <UAlert :color="chk.res.verdict === 'alive' ? 'success' : chk.res.verdict === 'dns_only' ? 'warning' : 'neutral'" variant="subtle" :icon="chk.res.verdict === 'alive' ? 'i-lucide-circle-check' : chk.res.verdict === 'dns_only' ? 'i-lucide-triangle-alert' : 'i-lucide-circle-slash'" :title="t(`ipam.check_v.${chk.res.verdict}`)" :description="t(`ipam.check_v.${chk.res.verdict}_hint`)" />
+          <dl class="grid grid-cols-[9rem_1fr] gap-y-1">
+            <dt class="text-muted">{{ t('ipam.check_ptr') }}</dt>
+            <dd class="font-mono">{{ chk.res.ptr ?? t('ipam.check_none') }}<UBadge v-if="chk.res.ptr" class="ms-2" size="sm" variant="subtle" :color="chk.res.ptrMatchesIp ? 'success' : 'warning'" :label="chk.res.ptrMatchesIp ? t('ipam.check_fwd_ok') : t('ipam.check_fwd_ko')" /></dd>
+            <dt class="text-muted">{{ t('ipam.hostname') }}</dt>
+            <dd class="font-mono">{{ chk.res.hostname ?? '—' }}<UBadge v-if="chk.res.hostname" class="ms-2" size="sm" variant="subtle" :color="chk.res.hostnameMatchesIp ? 'success' : 'neutral'" :label="chk.res.hostnameMatchesIp ? t('ipam.check_fwd_ok') : t('ipam.check_no_a')" /></dd>
+            <dt class="text-muted">{{ t('ipam.check_probes') }}</dt>
+            <dd class="font-mono">{{ chk.res.methods.join(', ') }}<template v-if="chk.res.alive"> → {{ chk.res.via.join(', ') }}<template v-if="chk.res.ports.length"> ({{ chk.res.ports.join(', ') }})</template></template></dd>
+            <template v-if="chk.res.mac"><dt class="text-muted">MAC</dt><dd class="font-mono">{{ chk.res.mac }}</dd></template>
+            <template v-if="chk.res.leaseName"><dt class="text-muted">{{ t('ipam.check_lease') }}</dt><dd class="font-mono">{{ chk.res.leaseName }}</dd></template>
+          </dl>
+          <div class="flex flex-wrap justify-end gap-2">
+            <UButton v-if="chkName && chkName !== chk.res.hostname" size="sm" icon="i-lucide-tag" :label="t('ipam.check_use_name', { name: chkName })" :loading="chk.busy" @click="useDnsName" />
+            <UButton v-if="chk.res.verdict === 'absent'" size="sm" color="error" variant="outline" icon="i-lucide-trash-2" :label="t('ipam.check_delete')" @click="deleteChecked" />
+            <UButton size="sm" color="neutral" variant="outline" icon="i-lucide-refresh-cw" :label="t('ipam.check_again')" :loading="chk.busy" @click="checkAddr(chk.row)" />
+            <UButton size="sm" color="neutral" variant="outline" :label="t('common.close')" @click="chk.open = false" />
+          </div>
+        </div>
+      </template>
+    </UModal>
     <UModal v-model:open="nextOpen" :title="t('ipam.next_free')" :description="t('ipam.next_desc')">
       <template #body><form class="flex flex-col gap-3" @submit.prevent="allocate">
         <UAlert v-if="nextErr" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="nextErr" />
