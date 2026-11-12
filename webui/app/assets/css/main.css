@@ -32,6 +32,9 @@
 
 :root { --ui-radius: 0.5rem; }
 
+/* Échelle globale de l'interface : 80 % (polices, cartes, espacements — tout est en rem). Une seule valeur à changer. */
+html { font-size: 80%; }
+
 /* Accessibilité : focus visible partout, curseur sur les éléments cliquables, mouvement réduit */
 :focus-visible { outline: 2px solid var(--color-brand-500); outline-offset: 2px; }
 button, [role="tab"], [role="button"], summary, select { cursor: pointer; }

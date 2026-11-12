@@ -1,5 +1,8 @@
 # Journal des modifications
 
+## 0.9.19 — « Interface plus compacte »
+- Affichage global réduit de 20 % (polices, cartes, tableaux, espacements) : échelle unique `html { font-size: 80% }` dans `main.css`.
+
 ## 0.9.18 — « Création de cluster : etcd redémarré avec la configuration du cluster »
 - Correctif constaté sur un nœud réel : juste après la création, « quorum perdu », base « inconnue », etcd injoignable. Le paquet Debian démarre etcd avec sa configuration par défaut (sans TLS, adresse locale) dès son installation ; l'activation faisait « enable --now », qui ne relance pas un service déjà actif, donc etcd gardait l'ancienne configuration. L'activation **redémarre** désormais etcd (création et rattachement).
 - Pour un nœud déjà dans cet état : `sudo systemctl restart etcd; sleep 5; sudo systemctl restart patroni`.
