@@ -1,5 +1,9 @@
 # Journal des modifications
 
+## 0.9.12 — « Correctif : plus de 409 répétés sur un serveur hors cluster »
+- Actualisation de l'état du cluster : la page n'envoie plus de demande hors cluster (l'unité de relecture de root n'y est pas active : la demande restait sans réponse et la console affichait des 409 toutes les 15 s) ; hors cluster le serveur répond « not_clustered », et une demande déjà en attente n'est plus une erreur.
+- Numérotation : réglages de session communs en 0.9.13 … DHCP multi-espaces en 0.9.18.
+
 ## 0.9.11 — « Cluster : naviguer entre les nœuds, nœud préféré, connexion sur un secondaire »
 - **Icône de l'onglet** : le logo (réseau, indigo) est servi par `/favicon.svg` et annoncé dans l'en-tête de chaque page, connexion comprise.
 - **Sélecteur de nœuds** (en-tête, mode cluster seulement) : nom et rôle de ce nœud en un coup d'œil ; la liste donne, pour chaque nœud, son rôle (principal / secondaire / arbitre), son adresse, ★ pour le nœud préféré, « VIP » pour celui qui porte l'adresse de service ; un clic ouvre la console du nœud choisi (l'arbitre n'a pas de console). État rafraîchi toutes les 15 s, y compris après une bascule.
@@ -10,9 +14,8 @@
 - **Utilisateurs, mots de passe, sessions** : déjà répliqués par PostgreSQL (comptes, hachages PBKDF2, sessions) ; la clé secrète de la console est alignée sur celle du primaire à l'ajout d'un nœud (lot chiffré). Les durées de session communes à tous les nœuds viennent en 0.9.12.
 - **Découverte** : case « Tout sélectionner » (état partiel géré) pour lancer le scan sur l'ensemble des sous-réseaux IPv4 (la limite de 4096 adresses s'applique toujours).
 - `b10` mis à jour : la connexion sur un secondaire est désormais acceptée (session signée, aucune ligne écrite).
-- Actualisation de l'état du cluster : la page n'envoie plus de demande hors cluster (l'unité de relecture de root n'y est pas active : la demande restait sans réponse et la console affichait des 409 toutes les 15 s) ; hors cluster le serveur répond « not_clustered », et une demande déjà en attente n'est plus une erreur.
 - Tests : `unit-iter14` (11), `e2e-iter14` (9), `tests/b25-cluster-preferred-live.sh` (3 vrais etcd + Patroni : publication vue des trois nœuds, refus, valeurs piégées, demandes JSON, quorum perdu, écart puis bascule vers le préféré et retour, nettoyage au retrait).
-- Numérotation : suite en 0.9.12 (réglages de session communs) … DHCP multi-espaces en 0.9.17.
+- Numérotation : suite en 0.9.12 (correctif), réglages de session communs en 0.9.13.
 
 ## 0.9.10 — « Première configuration masquée ; élection du quorum validée »
 - **Connexion** : le lien « Première configuration » n'est proposé que tant qu'aucun administrateur n'existe (`GET /api/setup/status`, un seul booléen public) ; la page `/setup` renvoie vers la connexion une fois l'appliance initialisée.
