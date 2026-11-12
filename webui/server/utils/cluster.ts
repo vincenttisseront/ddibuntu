@@ -302,7 +302,7 @@ export function bundleRefusal(st: ClusterState | null, name: string, ip: string)
 // Composants nécessaires à la création / au rattachement d'un cluster (même liste que le contrôle préalable de root). Recherche dans les dossiers
 // habituels + PATH ; en mode test, jamais d'absence signalée (la machine d'essai n'a pas à les porter).
 export const CLUSTER_TOOLS = ['etcd', 'etcdctl', 'patroni', 'patronictl'] as const
-export const CLUSTER_INSTALL_CMD = 'apt install patroni etcd-server etcd-client python3-psycopg2 gnupg'
+export const CLUSTER_INSTALL_CMD = 'apt install patroni etcd-server etcd-client python3-psycopg2 gnupg keepalived'
 export function missingClusterTools(dirs: string[] = [...(process.env.PATH ?? '').split(':'), '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'], exists: (p: string) => boolean = (p) => existsSync(p)): string[] {
   return CLUSTER_TOOLS.filter((t) => !dirs.some((d) => d && exists(`${d}/${t}`)))
 }

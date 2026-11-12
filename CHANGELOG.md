@@ -1,5 +1,8 @@
 # Journal des modifications
 
+## 0.9.31 — « Adresse de service : keepalived installé au besoin »
+- Constaté sur un nœud réel : cluster créé avec une adresse virtuelle alors que `keepalived` n'était pas installé (unité introuvable) ; l'adresse n'était jamais portée et seule une alerte le signalait. L'activation, le changement d'adresse et la synchronisation périodique tentent maintenant d'installer keepalived (au plus une fois par heure pour la synchronisation) et signalent clairement un échec. La commande d'installation affichée par la console l'inclut.
+
 ## 0.9.30 — « Rattachement : fin d'attente immédiate »
 - Après un rattachement à un cluster, la base du nœud est remplacée : la session de l'administrateur prend fin et la console ne pouvait plus lire le résultat, d'où une attente de 9 minutes puis « Pas de réponse de root » alors que le rattachement avait réussi en quelques secondes. Désormais la fin de session pendant un rattachement est reconnue : la console confirme le rattachement et renvoie vers la connexion.
 

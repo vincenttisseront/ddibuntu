@@ -425,6 +425,15 @@ promote_self() {
 }
 
 sysctl_do() { [ -n "${DDI_TEST:-}" ] || systemctl "$@"; }
+# L'adresse de service exige keepalived ; sur un nœud installé sans lui (constaté : unité introuvable, adresse jamais portée) on tente de l'installer.
+ensure_keepalived() {
+  [ -z "${DDI_TEST:-}" ] && [ -n "${C[VIP]}" ] || return 0
+  command -v keepalived >/dev/null 2>&1 && return 0
+  log "keepalived absent : installation pour porter l'adresse de service"
+  DEBIAN_FRONTEND=noninteractive timeout 240 apt-get install -y -q keepalived >/dev/null 2>&1 || true
+  command -v keepalived >/dev/null 2>&1 || log "AVERTISSEMENT : keepalived n'a pas pu être installé (réseau ?) : l'adresse de service ${C[VIP]} ne sera pas portée. Installer : apt install keepalived"
+  render_keepalived
+}
 activate() {
   ensure_group
   if [ "${C[NODE_ROLE]}" = data ]; then
@@ -451,7 +460,7 @@ activate() {
   sysctl_do enable --now ddibuntu-cluster-sync.timer
   if [ "${C[NODE_ROLE]}" = data ]; then
     sysctl_do enable --now patroni.service; sysctl_do enable --now ddibuntu-cluster-follow.timer; sysctl_do enable --now ddibuntu-cluster-request.path
-    if [ -n "${C[VIP]}" ]; then sysctl_do enable --now keepalived.service; fi
+    if [ -n "${C[VIP]}" ]; then ensure_keepalived; sysctl_do enable --now keepalived.service; fi
   fi
   log "services démarrés (etcd${C[NODE_ROLE]:+, patroni si nœud de données})"
 }
@@ -579,6 +588,13 @@ cmd_sync() {
   if [ -z "${DDI_TEST:-}" ] && [ -f "${DDI_LIBDIR:-/usr/local/lib/ddibuntu}/wal-archive.sh" ] && [ ! -x "${DDI_LIBDIR:-/usr/local/lib/ddibuntu}/wal-archive.sh" ]; then
     chmod 0755 "${DDI_LIBDIR:-/usr/local/lib/ddibuntu}/wal-archive.sh" 2>/dev/null || true; log "sync : droit d'exécution rétabli sur wal-archive.sh"
   fi
+  # adresse de service sans keepalived (nœud créé sans le paquet) : installation tentée, au plus une fois par heure (réseau parfois absent)
+  if [ -z "${DDI_TEST:-}" ] && [ "${C[NODE_ROLE]}" = data ] && [ -n "${C[VIP]}" ] && ! command -v keepalived >/dev/null 2>&1 \
+    && [ -z "$(find "$STATE/keepalived-try" -mmin -60 2>/dev/null)" ]; then
+    install -d -m 0700 "$STATE"; : > "$STATE/keepalived-try"
+    ensure_keepalived
+    if command -v keepalived >/dev/null 2>&1; then systemctl enable --now keepalived.service 2>/dev/null || true; log "sync : keepalived installé, adresse de service activée"; fi
+  fi
   sign_requests || true
   cert_auto || true
   local raw; raw="$(ectl get --prefix "$REG" -w json 2>/dev/null)" || die "registre illisible (quorum etcd indisponible ?)"
@@ -671,7 +687,7 @@ apply_settings() {
   render_patroni; render_keepalived; fw_sync
   if [ "${C[NODE_ROLE]}" = data ]; then
     if [ -n "$vip" ]; then
-      sysctl_do enable --now keepalived.service 2>/dev/null || true; sysctl_do reload keepalived.service 2>/dev/null || true
+      ensure_keepalived; sysctl_do enable --now keepalived.service 2>/dev/null || true; sysctl_do reload keepalived.service 2>/dev/null || true
     elif [ -n "$was_vip" ]; then sysctl_do disable --now keepalived.service 2>/dev/null || true; fi
     [ "$was_net" = "${C[REPL_NET]}" ] || sysctl_do reload patroni.service 2>/dev/null || true
   fi
@@ -715,7 +731,7 @@ cmd_vip_iface() {   # propre à CE nœud : l'interface qui porte l'adresse virtu
   [[ "$vif" =~ ^[a-z][a-z0-9._-]{0,14}$ ]] || die "nom d'interface invalide"
   iface_exists "$vif" || die "l'interface $vif n'existe pas sur ce serveur"
   C[VIP_IFACE]="$vif"; conf_check; conf_write; render_keepalived
-  if [ -n "${C[VIP]}" ]; then sysctl_do enable --now keepalived.service 2>/dev/null || true; sysctl_do reload keepalived.service 2>/dev/null || true; fi
+  if [ -n "${C[VIP]}" ]; then ensure_keepalived; sysctl_do enable --now keepalived.service 2>/dev/null || true; sysctl_do reload keepalived.service 2>/dev/null || true; fi
   log "interface de l'adresse virtuelle de ce nœud : $vif"
 }
 cmd_set_net() {
