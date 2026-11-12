@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.37 — « Fantômes automatiques »
+- Nouveau statut d'adresse **« Fantôme »**. Dans IPAM → Découverte → « Découverte planifiée », un interrupteur **active ou désactive** la bascule automatique et un **délai en jours** (1 à 3650, 30 par défaut) fixe à partir de quand une adresse « utilisée » non vue bascule en « fantôme » ; si elle réapparaît (vue par une découverte), elle redevient « utilisée ». Ne concerne que les adresses déjà vérifiées au moins une fois (sans vérification il n'y a pas de preuve). Migration de schéma 13.
+- Le même délai règle l'alerte « adresses fantômes », et la page des fantômes (IPAM) liste aussi les adresses déjà basculées.
+- Appliquée chaque minute par le nœud principal et à la fin de chaque passage de découverte (manuel ou planifié).
+
 ## 0.9.36 — « Joignabilité des adresses »
 - Chaque adresse de l'IPAM porte maintenant sa **joignabilité observée** : colonne « Joignable » (Joignable / Injoignable / Non vérifié, avec la date de la dernière vérification), puisque le statut « utilisée » ne prouve pas que l'hôte existe encore. Migration de schéma 12.
 - Elle est mise à jour par la découverte planifiée et par l'import d'une découverte manuelle (« mettre à jour les adresses connues ») : une adresse connue qui ne répond à aucune sonde **active** (ping, ARP, TCP) est marquée injoignable. Avec les seules méthodes passives (baux, DNS inverse) l'absence de preuve n'est pas une preuve d'absence : seuls les hôtes qui répondent sont notés.

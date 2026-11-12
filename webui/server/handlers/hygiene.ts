@@ -7,7 +7,7 @@ import { query, tx } from '../utils/db'
 
 export const registered = true
 
-const GHOST_STATUS = ['used', 'dhcp']
+const GHOST_STATUS = ['used', 'dhcp', 'ghost']
 const GHOST_LIMIT = 500
 
 route('GET', '/ipam/ghosts', 'viewer', async (c) => {

@@ -12,12 +12,15 @@ describe('échéance de la découverte planifiée', () => {
   it('pas avant l\'intervalle', () => { expect(isDue(on, last(1e9 - 3600), 1e9)).toBe(false); expect(isDue(on, last(1e9 - 86400), 1e9)).toBe(true) })
 })
 describe('validation du réglage', () => {
-  const ok = { enabled: true, intervalHours: 6, subnetIds: [1], methods: { tcp: false, icmp: true, arp: true, reverse: true, leases: true } }
+  const ok = { enabled: true, intervalHours: 6, subnetIds: [1], methods: { tcp: false, icmp: true, arp: true, reverse: true, leases: true }, autoGhost: true, ghostDays: 30 }
   it('accepte un réglage valide', () => expect(ScheduleBody.safeParse(ok).success).toBe(true))
   it('refuse intervalle hors bornes, champ inconnu, trop de réseaux', () => {
     expect(ScheduleBody.safeParse({ ...ok, intervalHours: 0 }).success).toBe(false)
     expect(ScheduleBody.safeParse({ ...ok, intervalHours: 169 }).success).toBe(false)
     expect(ScheduleBody.safeParse({ ...ok, x: 1 }).success).toBe(false)
+    expect(ScheduleBody.safeParse({ ...ok, ghostDays: 0 }).success).toBe(false)
+    expect(ScheduleBody.safeParse({ ...ok, ghostDays: 3651 }).success).toBe(false)
+    expect(ScheduleBody.safeParse({ ...ok, autoGhost: undefined }).success).toBe(false)
     expect(ScheduleBody.safeParse({ ...ok, subnetIds: Array.from({ length: 51 }, (_, i) => i + 1) }).success).toBe(false)
   })
 })

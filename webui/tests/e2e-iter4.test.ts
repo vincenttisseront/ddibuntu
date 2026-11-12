@@ -90,7 +90,7 @@ const mk = async () => {
   return { vlan, s1, s2, z }
 }
 let W: Awaited<ReturnType<typeof mk>>
-const MIGRATIONS_LAST = 12   // dernière migration du schéma (12 : joignabilité des adresses)
+const MIGRATIONS_LAST = 13   // dernière migration du schéma (13 : statut fantôme)
 
 describe('points de restauration des données', () => {
   it('migration 2 appliquée, version 0.4.0', async () => {

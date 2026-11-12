@@ -164,7 +164,7 @@ route('POST', '/import/ipam-csv/commit', 'operator', async (c) => {
           if (!sub) { out.errors.push({ line, code: 'no_subnet' }); continue }
           const mac = r.mac ? normMac(r.mac) : null
           if (r.mac && !mac) { out.errors.push({ line, code: 'mac' }); continue }
-          const st = ['used', 'reserved', 'dhcp', 'gateway', 'infra'].includes(r.status ?? '') ? r.status : 'used'
+          const st = ['used', 'reserved', 'dhcp', 'gateway', 'infra', 'ghost'].includes(r.status ?? '') ? r.status : 'used'
           const host = r.hostname && isHostname(r.hostname.toLowerCase()) ? r.hostname.toLowerCase() : null
           const res = await cl.query('insert into addresses (subnet_id, ip, status, hostname, mac, description) values ($1,$2,$3,$4,$5,$6) on conflict (subnet_id, ip) do nothing returning id', [sub.id, ip, st, host, mac, r.description || null])
           if (res.rowCount) out.created++; else out.skipped++

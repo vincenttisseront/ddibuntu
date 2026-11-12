@@ -100,7 +100,7 @@ describe('découverte planifiée et alertes d\'hygiène', () => {
   it('réglage : droits, validation, enregistrement', async () => {
     const g = await viewer.get('/api/discovery/schedule'); code(g, 403, 'forbidden')
     const a = await admin.get('/api/discovery/schedule'); expect(a.status).toBe(200); expect(a.json.schedule).toMatchObject({ enabled: false, intervalHours: 24 }); expect(a.json.last).toBeNull()
-    const ok = { enabled: true, intervalHours: 6, subnetIds: [], methods: { tcp: false, icmp: false, arp: true, reverse: false, leases: true } }
+    const ok = { enabled: true, intervalHours: 6, subnetIds: [], methods: { tcp: false, icmp: false, arp: true, reverse: false, leases: true }, autoGhost: false, ghostDays: 30 }
     code(await viewer.put('/api/discovery/schedule', ok), 403, 'forbidden')
     expect((await admin.put('/api/discovery/schedule', { ...ok, intervalHours: 0 })).status).toBe(400)
     expect((await admin.put('/api/discovery/schedule', { ...ok, extra: 1 })).status).toBe(400)
@@ -137,5 +137,28 @@ describe('découverte planifiée et alertes d\'hygiène', () => {
     await admin.post('/api/alerts/evaluate')
     const act = (await admin.get('/api/alerts')).json.active
     expect(act.find((x: any) => x.rule === 'ipam.ghosts')).toMatchObject({ severity: 'info', params: { count: 1, days: 30 } })
+  })
+  it('bascule automatique en « fantôme » (réglable) puis retour en « utilisée » quand l\'adresse réapparaît', async () => {
+    const sch = (await admin.get('/api/discovery/schedule')).json.schedule
+    code(await admin.put('/api/discovery/schedule', { ...sch, autoGhost: true, ghostDays: 0 }), 400, 'validation')
+    expect((await admin.put('/api/discovery/schedule', { ...sch, autoGhost: true, ghostDays: 10 })).status).toBe(200)
+    await db.query("update addresses set last_seen = now() - interval '40 days' where ip in ('10.77.0.2', '10.77.0.5')")
+    const startRun = async () => { const before = (await admin.get('/api/discovery/schedule')).json.last?.at ?? 0; await new Promise((r) => setTimeout(r, 1100)); expect((await admin.post('/api/discovery/schedule/run')).status).toBe(200); await until(async () => { const l = (await admin.get('/api/discovery/schedule')).json; return !l.running && l.last.at > before }, 40000) }
+    await startRun()
+    const st = async () => Object.fromEntries((await db.query("select host(ip) as ip, status from addresses")).rows.map((r) => [r.ip, r.status]))
+    // .2 répond (bail) : marquée vue, reste utilisée ; .5 ne répond pas et n'a pas été vue depuis 40 jours : fantôme
+    expect(await st()).toEqual({ '10.77.0.2': 'used', '10.77.0.5': 'ghost' })
+    // le fantôme figure dans la liste des fantômes et reste filtrable par statut
+    expect((await admin.get('/api/ipam/ghosts?days=10')).json.items.map((i: any) => i.ip)).toEqual(['10.77.0.5'])
+    // elle réapparaît (bail) : retour en « utilisée »
+    await lease('10.77.0.5', 'aa:bb:cc:01:01:05', 'disparu')
+    await startRun()
+    expect(await st()).toEqual({ '10.77.0.2': 'used', '10.77.0.5': 'used' })
+    // désactivé : rien ne bascule
+    expect((await admin.put('/api/discovery/schedule', { ...sch, autoGhost: false, ghostDays: 10 })).status).toBe(200)
+    await db.query("update addresses set last_seen = now() - interval '40 days' where ip = '10.77.0.5'")
+    await db.query('delete from lease4 where address = $1', [ip2n('10.77.0.5')])
+    await startRun()
+    expect((await st())['10.77.0.5']).toBe('used')
   })
 })

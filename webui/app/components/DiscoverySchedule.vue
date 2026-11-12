@@ -4,7 +4,7 @@ const { t } = useT(); const api = useApi(); const toast = useToast()
 const { isAdmin } = useRole()
 const { data, refresh } = await useFetch<any>('/api/discovery/schedule')
 const { data: subnets } = await useFetch<any>('/api/ipam/subnets')
-const f = reactive<any>({ enabled: false, intervalHours: 24, subnetIds: [], methods: { tcp: false, icmp: true, arp: true, reverse: true, leases: true } })
+const f = reactive<any>({ enabled: false, intervalHours: 24, subnetIds: [], methods: { tcp: false, icmp: true, arp: true, reverse: true, leases: true }, autoGhost: false, ghostDays: 30 })
 watch(data, (d) => { if (d?.schedule) Object.assign(f, JSON.parse(JSON.stringify(d.schedule))) }, { immediate: true })
 const options = computed(() => (subnets.value?.items ?? []).filter((s: any) => s.family === 4 && s.kind === 'network').map((s: any) => ({ label: `${s.cidr} — ${s.name}`, value: s.id })))
 const intervals = [1, 6, 12, 24, 48, 168].map((h) => ({ label: h < 24 ? t('dsch.every_h', { n: h }) : h === 24 ? t('dsch.daily') : h === 168 ? t('dsch.weekly') : t('dsch.every_d', { n: h / 24 }), value: h }))
@@ -12,7 +12,7 @@ const saving = ref(false), running = ref(false)
 const fmt = (s: number) => new Date(s * 1000).toLocaleString()
 async function save() {
   saving.value = true
-  try { await api.call('PUT', '/discovery/schedule', { enabled: f.enabled, intervalHours: f.intervalHours, subnetIds: f.subnetIds, methods: f.methods }, { busy: true }); toast.add({ title: t('common.saved'), color: 'success', icon: 'i-lucide-check' }); await refresh() }
+  try { await api.call('PUT', '/discovery/schedule', { enabled: f.enabled, intervalHours: f.intervalHours, subnetIds: f.subnetIds, methods: f.methods, autoGhost: f.autoGhost, ghostDays: Number(f.ghostDays) }, { busy: true }); toast.add({ title: t('common.saved'), color: 'success', icon: 'i-lucide-check' }); await refresh() }
   catch (e: any) { toast.add({ title: e.info?.message ?? t('err.internal'), color: 'error', icon: 'i-lucide-triangle-alert' }) } finally { saving.value = false }
 }
 async function runNow() {
@@ -38,6 +38,10 @@ async function runNow() {
         <USwitch v-model="f.methods.reverse" :label="t('dsch.m_reverse')" :disabled="!isAdmin" />
         <USwitch v-model="f.methods.leases" :label="t('dsch.m_leases')" :disabled="!isAdmin" />
         <USwitch v-model="f.methods.tcp" label="TCP" :disabled="!isAdmin" />
+      </div>
+      <div class="flex flex-col gap-2 border-t border-default pt-3">
+        <USwitch v-model="f.autoGhost" :label="t('dsch.auto_ghost')" :disabled="!isAdmin" data-test="dsch-autoghost" />
+        <UFormField :label="t('dsch.ghost_days')" :hint="t('dsch.ghost_hint')"><UInput v-model.number="f.ghostDays" type="number" min="1" max="3650" class="w-32" :disabled="!isAdmin" data-test="dsch-ghostdays" /></UFormField>
       </div>
       <div class="flex gap-2">
         <UButton v-if="isAdmin" icon="i-lucide-save" :label="t('common.save')" :loading="saving" @click="save" />

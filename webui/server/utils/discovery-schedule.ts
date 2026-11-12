@@ -12,11 +12,12 @@ export const ScheduleBody = z.object({
   enabled: z.boolean(), intervalHours: z.number().int().min(1).max(168),
   subnetIds: z.array(z.number().int().positive()).max(50),   // vide = tous les sous-réseaux IPv4 (dans la limite de 4096 adresses par passage)
   methods: z.object({ tcp: z.boolean(), icmp: z.boolean(), arp: z.boolean(), reverse: z.boolean(), leases: z.boolean() }),
+  autoGhost: z.boolean(), ghostDays: z.number().int().min(1).max(3650),   // bascule automatique « utilisée » ⇄ « fantôme » ; ghostDays sert aussi à l'alerte
 }).strict()
 export type Schedule = z.infer<typeof ScheduleBody>
 export interface LastRun { at: number; ok: boolean; scanned: number; alive: number; known: number; unknown: number; macChanged: number; unreachable: number; error?: string }
 
-export const DEFAULT_SCHEDULE: Schedule = { enabled: false, intervalHours: 24, subnetIds: [], methods: { tcp: false, icmp: true, arp: true, reverse: true, leases: true } }
+export const DEFAULT_SCHEDULE: Schedule = { enabled: false, intervalHours: 24, subnetIds: [], methods: { tcp: false, icmp: true, arp: true, reverse: true, leases: true }, autoGhost: false, ghostDays: 30 }
 export const getSchedule = async (): Promise<Schedule> => ({ ...DEFAULT_SCHEDULE, ...(await getSetting<Partial<Schedule>>('discovery_schedule', {})) })
 export const getLastRun = (): Promise<LastRun | null> => getSetting<LastRun | null>('discovery_schedule_last', null)
 
@@ -59,6 +60,7 @@ export async function runScheduled(sch?: Schedule): Promise<LastRun> {
       : (await query<any>('update addresses set reachable = true, checked_at = now() where subnet_id = any($1) and host(ip) = any($2) returning 1', [subs.map((r) => r.id), alive]), 0)
     const last: LastRun = { at: t0, ok: true, scanned: targets.ips.length, alive: found.filter((h) => h.alive).length, known: knownN, unknown: unknownN, macChanged: macN, unreachable: unreach }
     await setSetting('discovery_schedule_last', last)
+    if (s.autoGhost) await applyGhosting(s.ghostDays)
     return last
   } catch (e: any) {
     const last: LastRun = { at: t0, ok: false, scanned: 0, alive: 0, known: 0, unknown: 0, macChanged: 0, unreachable: 0, error: e instanceof DiscoveryError ? e.code : 'discovery_failed' }
@@ -71,3 +73,12 @@ export async function runScheduled(sch?: Schedule): Promise<LastRun> {
 /** Faut-il lancer un passage maintenant ? (pur, testable) */
 export const isDue = (s: Schedule, last: LastRun | null, nowSec: number): boolean =>
   s.enabled && (!last || nowSec - last.at >= s.intervalHours * 3600)
+
+/** Bascule automatique : « utilisée » non vue depuis `days` jours → « fantôme » ; « fantôme » revue depuis → « utilisée ».
+ *  Une adresse jamais vérifiée n'est pas jugée (pas de preuve) ; sans « vue le », la date de création sert de référence une fois vérifiée. */
+export async function applyGhosting(days: number): Promise<{ ghosted: number; revived: number }> {
+  const ref = 'coalesce(last_seen, created_at)'
+  const g = await query<any>(`update addresses set status = 'ghost', updated_at = now() where status = 'used' and checked_at is not null and ${ref} < now() - make_interval(days => $1) returning 1`, [days])
+  const r = await query<any>(`update addresses set status = 'used', updated_at = now() where status = 'ghost' and last_seen is not null and last_seen >= now() - make_interval(days => $1) returning 1`, [days])
+  return { ghosted: g.length, revived: r.length }
+}

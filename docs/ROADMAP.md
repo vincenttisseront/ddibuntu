@@ -78,7 +78,7 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
     4k. ~~**0.9.14**~~ ✅ fait — Réglages de session communs à tous les nœuds (durée, inactivité) ; composants du cluster vérifiés avant l'assistant. (Reste : contrôle de cohérence des comptes entre nœuds, repris plus tard.)
     6. ~~**0.9.28**~~ ✅ fait — Traçabilité des baux : historique IP / MAC / nom, page de recherche (le nom d’'utilisateur AD reste à corréler avec les rôles par groupe).
     7. ~~**0.9.35**~~ ✅ fait — Découverte planifiée et alertes d'hygiène (fantômes, hôtes inconnus, MAC différente).
-    8. **0.9.38** — API : description OpenAPI et jetons d'API.
-    9. **0.9.39** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
-    10. **0.9.40** — DHCP multi-espaces.
+    8. **0.9.39** — API : description OpenAPI et jetons d'API.
+    9. **0.9.40** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
+    10. **0.9.41** — DHCP multi-espaces.
 5. **1.0** — Consolidation de la série 0.9.x et passage en revue avant usage en production.

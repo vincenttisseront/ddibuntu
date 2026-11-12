@@ -9,7 +9,7 @@ import { checkHostnameRule, patternError, resolveDnsZone, syncReservation } from
 
 const cidrS = z.string().trim().refine((v) => !!parseCidr(v), 'cidr')
 const ipS = z.string().trim().refine((v) => !!normIp(v), 'ip')
-const status = z.enum(['used', 'reserved', 'dhcp', 'gateway', 'infra'])
+const status = z.enum(['used', 'reserved', 'dhcp', 'gateway', 'infra', 'ghost'])
 const host = z.string().trim().toLowerCase().refine(isHostname, 'hostname')
 const mac = z.string().trim().refine((v) => !!normMac(v), 'mac')
 

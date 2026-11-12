@@ -31,7 +31,7 @@ const zoneOptions = computed(() => [{ label: t('ipam.zone_template'), value: 0 }
 const tplZoneOptions = computed(() => [{ label: t('common.none'), value: 0 }, ...primaryZones.value])
 const templateOptions = computed(() => [{ label: t('common.none'), value: 0 }, ...(templates.value?.items ?? []).map((x: any) => ({ label: x.name, value: x.id }))])
 const leafOptions = computed(() => (nets.value?.items ?? []).filter((n: any) => n.kind === 'network').map((n: any) => ({ label: `${n.cidr} — ${n.name}${spaceId.value ? '' : ` (${n.space})`}`, value: n.id })))
-const statusOptions = computed(() => ['used', 'reserved', 'dhcp', 'gateway', 'infra'].map((v) => ({ label: t(`ipam.status.${v}`), value: v })))
+const statusOptions = computed(() => ['used', 'reserved', 'dhcp', 'gateway', 'infra', 'ghost'].map((v) => ({ label: t(`ipam.status.${v}`), value: v })))
 const refreshAll = () => Promise.all([refreshSpaces(), refreshNets(), refreshPools(), refreshAddrs(), refreshTemplates()])
 // après un import (NetBox, découverte) ou son annulation : tout ce qui est affiché peut avoir changé
 const reloadData = () => Promise.all([refreshAll(), refreshVlans()])
