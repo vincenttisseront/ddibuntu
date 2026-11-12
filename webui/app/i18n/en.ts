@@ -754,6 +754,7 @@ const messages: Record<string, string> = {
   "trace.collected": "{n} active lease(s) recorded",
   "trace.skipped": "Collection skipped (replica node or DHCP not installed)",
   "trace.stats": "{n} association(s) recorded, {o} active.",
+  "cluster.w.join.session_gone": "This server has taken over the cluster database: your session has ended. Sign in again with a cluster account.",
   "disc.select_all": "Select all (scan everything)",
   "disc.hosts": "{n} addresses",
   "disc.total": "{n} address(es) to explore (4096 maximum)",

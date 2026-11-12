@@ -38,11 +38,17 @@ function begin(m: Mode) {
 function close() { if (mode.value === 'add' && created.value) api.call('DELETE', `/cluster/bundle/${created.value}`, undefined, { silent: true }).catch(() => {}); mode.value = null; created.value = ''; secret.value = '' }
 
 // root traite en tâche de fond : on attend son résultat (création et rattachement : jusqu'à quelques minutes). La console peut redémarrer pendant ce temps.
+async function sessionGone(): Promise<boolean> {
+  try { const m: any = await $fetch('/api/auth/me'); return !m?.user } catch { return false }   // injoignable (redémarrage) : on réessaie
+}
 async function waitResult(action: string, node: string, before: number, tries = 180): Promise<any> {
   for (let i = 0; i < tries; i++) {
     await new Promise((r) => setTimeout(r, 2000)); emit('reload'); await new Promise((r) => setTimeout(r, 1000))
     const r = props.result
     if (r && r.at > before && r.action === action && (!node || r.candidate === node)) return r
+    // rattachement : la base locale est remplacée par celle du cluster, donc notre session n'existe plus et le résultat ne peut plus être lu.
+    // Session invalidée (ou console arrêtée/redémarrée) = le rattachement a eu lieu : on ne laisse pas attendre le délai complet.
+    if (action === 'join' && i >= 2 && (await sessionGone())) return { ok: true, at: Date.now(), action, message: t('cluster.w.join.session_gone') }
   }
   return null
 }

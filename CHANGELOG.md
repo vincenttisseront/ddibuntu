@@ -1,5 +1,8 @@
 # Journal des modifications
 
+## 0.9.30 — « Rattachement : fin d'attente immédiate »
+- Après un rattachement à un cluster, la base du nœud est remplacée : la session de l'administrateur prend fin et la console ne pouvait plus lire le résultat, d'où une attente de 9 minutes puis « Pas de réponse de root » alors que le rattachement avait réussi en quelques secondes. Désormais la fin de session pendant un rattachement est reconnue : la console confirme le rattachement et renvoie vers la connexion.
+
 ## 0.9.29 — « Journal PostgreSQL plus propre »
 - La sonde de santé (1 fois par minute) et l'initialisation de la base se présentent désormais sous le rôle `postgres` : fini le message `FATAL: role "root" does not exist` dans le journal de Patroni/PostgreSQL à chaque passage.
 

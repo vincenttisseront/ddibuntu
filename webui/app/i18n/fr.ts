@@ -754,6 +754,7 @@ const messages: Record<string, string> = {
   "trace.collected": "{n} bail(s) actif(s) relevé(s)",
   "trace.skipped": "Relevé ignoré (serveur secondaire ou DHCP non installé)",
   "trace.stats": "{n} association(s) enregistrée(s), dont {o} active(s).",
+  "cluster.w.join.session_gone": "Le serveur a repris la base du cluster : votre session a pris fin. Reconnectez-vous avec un compte du cluster.",
   "disc.select_all": "Tout sélectionner (scanner l’ensemble)",
   "disc.hosts": "{n} adresses",
   "disc.total": "{n} adresse(s) à explorer (4096 au maximum)",
