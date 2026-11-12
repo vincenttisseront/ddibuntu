@@ -1,5 +1,8 @@
 # Journal des modifications
 
+## 0.9.38 — « Version affichée toujours à jour »
+- Le logo (en haut à gauche) gardait l'ancienne version tant que l'onglet n'était pas rechargé, alors que la console avait été mise à jour (constaté : v0.9.31 affichée pour une 0.9.36 installée). La version est relue chaque minute, et quand elle change une notification propose de **recharger la page** pour utiliser la nouvelle interface.
+
 ## 0.9.37 — « Fantômes automatiques »
 - Nouveau statut d'adresse **« Fantôme »**. Dans IPAM → Découverte → « Découverte planifiée », un interrupteur **active ou désactive** la bascule automatique et un **délai en jours** (1 à 3650, 30 par défaut) fixe à partir de quand une adresse « utilisée » non vue bascule en « fantôme » ; si elle réapparaît (vue par une découverte), elle redevient « utilisée ». Ne concerne que les adresses déjà vérifiées au moins une fois (sans vérification il n'y a pas de preuve). Migration de schéma 13.
 - Le même délai règle l'alerte « adresses fantômes », et la page des fantômes (IPAM) liste aussi les adresses déjà basculées.

@@ -4,7 +4,7 @@ const user = useState<any>('user')
 const api = useApi()
 const route = useRoute()
 const pwOpen = ref(false)
-const { data: about } = useFetch<any>('/api/about', { server: false, lazy: true, default: () => null })
+const { data: about, refresh: refreshAbout } = useFetch<any>('/api/about', { server: false, lazy: true, default: () => null })
 const { data: clusterInfo, refresh: refreshCluster } = useFetch<any>('/api/cluster/status', { server: false, lazy: true, default: () => null })
 const clusterOn = computed(() => !!clusterInfo.value?.clustered)
 const replicaNode = computed(() => !!clusterInfo.value?.replica)
@@ -12,8 +12,21 @@ const clusterSt = computed(() => clusterInfo.value?.state ?? null)
 const target = computed(() => primaryTarget(clusterSt.value))
 // état du cluster rafraîchi toutes les 15 s tant qu'on est en mode cluster (rôles du sélecteur et bandeau toujours justes, y compris après une bascule)
 let clusterTimer: ReturnType<typeof setInterval> | undefined
-onMounted(() => { clusterTimer = setInterval(() => { if (clusterOn.value && !document.hidden) refreshCluster() }, 15000) })
-onBeforeUnmount(() => { if (clusterTimer) clearInterval(clusterTimer) })
+let aboutTimer: ReturnType<typeof setInterval> | undefined
+onMounted(() => {
+  clusterTimer = setInterval(() => { if (clusterOn.value && !document.hidden) refreshCluster() }, 15000)
+  // version affichée : relue chaque minute (après une mise à jour la console redémarre, l'onglet resterait sinon sur l'ancienne version)
+  aboutTimer = setInterval(() => { if (!document.hidden) refreshAbout() }, 60000)
+})
+onBeforeUnmount(() => { if (clusterTimer) clearInterval(clusterTimer); if (aboutTimer) clearInterval(aboutTimer) })
+// la page chargée est celle de l'ancienne version : on propose de la recharger (interface et serveur doivent concorder)
+const toast = useToast()
+let seenVersion = ''
+watch(() => about.value?.version, (v) => {
+  if (!v) return
+  if (seenVersion && v !== seenVersion) toast.add({ title: t('upd.reload_title', { v }), description: t('upd.reload_desc'), color: 'info', icon: 'i-lucide-refresh-cw', duration: 0, actions: [{ label: t('upd.reload'), onClick: () => { window.location.reload() } }] })
+  seenVersion = v
+})
 const updateAvailable = computed(() => !!about.value?.update?.available)
 const role = computed(() => user.value?.role)
 // Navigation par module : données (IPAM, DNS, DHCP), sécurité, puis exploitation. Les groupes vides n'apparaissent pas.
