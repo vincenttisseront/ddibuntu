@@ -1,5 +1,8 @@
 # Journal des modifications
 
+## 0.9.21 — « Cluster : réplication locale de Patroni et archivage WAL »
+- Correctifs constatés sur un nœud réel (Patroni actif, leader) : (1) `no pg_hba.conf entry for replication connection from 127.0.0.1, user replicator` : Patroni se connecte à sa propre base par la boucle locale ; elle est autorisée (SSL + certificat obligatoires). Les nœuds existants sont mis à niveau par la synchronisation périodique (`ddibuntu-cluster sync`, rechargement de Patroni). (2) `wal-archive.sh: Permission denied` : le script n'avait plus son bit d'exécution (rw-r--r--) ; l'activation et la synchronisation périodique le rétablissent.
+
 ## 0.9.20 — « Création de cluster : droits du dossier de configuration PostgreSQL »
 - Correctif constaté sur un nœud réel : Patroni ne démarrait pas (`PermissionError … /etc/postgresql/16/main/postgresql.conf -> postgresql.base.conf`). L'activation d'un nœud de données remet le dossier de configuration PostgreSQL à `postgres:postgres` (propriétaire d'une installation Debian) avant de démarrer Patroni.
 - Pour un nœud déjà dans cet état : `sudo chown -R postgres:postgres /etc/postgresql/16/main; sudo systemctl reset-failed patroni; sudo systemctl restart patroni`.

@@ -286,6 +286,8 @@ ${cfgdir}
     archive_command: '$arch_cmd'
   pg_hba:
     - hostssl replication replicator ${C[REPL_NET]} cert map=ddicluster
+    - hostssl replication replicator 127.0.0.1/32 cert map=ddicluster
+    - hostssl replication replicator ::1/128 cert map=ddicluster
     - hostssl postgres rewind ${C[REPL_NET]} cert map=ddicluster
     - local replication postgres peer
     - local all postgres peer
@@ -435,6 +437,9 @@ activate() {
       chown -R postgres:postgres "$ROOT${C[PG_CONFIG_DIR]}" 2>/dev/null || log "AVERTISSEMENT : droits de ${C[PG_CONFIG_DIR]} non corrigés"
     fi
   fi
+  # l'archivage des journaux WAL est lancé par PostgreSQL (utilisateur postgres) : le script et son dossier doivent lui être accessibles
+  # (constaté sur un nœud réel : « wal-archive.sh: Permission denied », archivage en échec en boucle)
+  if [ -z "${DDI_TEST:-}" ]; then chmod 0755 "${DDI_LIBDIR:-/usr/local/lib/ddibuntu}" "${DDI_LIBDIR:-/usr/local/lib/ddibuntu}/wal-archive.sh" 2>/dev/null || true; fi
   sysctl_do daemon-reload
   # redémarrage (et non « --now ») : le paquet Debian démarre etcd avec sa configuration par défaut (sans TLS, adresse locale) dès son installation ;
   # un « enable --now » ne relancerait pas ce processus déjà actif et le cluster resterait injoignable
@@ -566,6 +571,14 @@ cmd_sync() {
   moved_apply || log "sync : déplacements annoncés non traités (réessai)"
   moved_cleanup || true
   apply_settings || true
+  # migration de la configuration Patroni : la boucle locale (réplication vers soi-même) manquait aux nœuds créés avant la 0.9.21
+  if [ "${C[NODE_ROLE]}" = data ] && [ -f "$PATRONI_CFG" ] && ! grep -q 'replication replicator 127.0.0.1/32' "$PATRONI_CFG"; then
+    render_patroni && { [ -n "${DDI_TEST:-}" ] || systemctl reload patroni.service 2>/dev/null || true; log "sync : configuration Patroni mise à niveau (réplication locale)"; }
+  fi
+  # script d'archivage WAL : exécutable par PostgreSQL (le bit d'exécution peut manquer après une mise à jour par ISO)
+  if [ -z "${DDI_TEST:-}" ] && [ -f "${DDI_LIBDIR:-/usr/local/lib/ddibuntu}/wal-archive.sh" ] && [ ! -x "${DDI_LIBDIR:-/usr/local/lib/ddibuntu}/wal-archive.sh" ]; then
+    chmod 0755 "${DDI_LIBDIR:-/usr/local/lib/ddibuntu}/wal-archive.sh" 2>/dev/null || true; log "sync : droit d'exécution rétabli sur wal-archive.sh"
+  fi
   sign_requests || true
   cert_auto || true
   local raw; raw="$(ectl get --prefix "$REG" -w json 2>/dev/null)" || die "registre illisible (quorum etcd indisponible ?)"
