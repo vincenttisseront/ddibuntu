@@ -399,6 +399,7 @@ const messages: Record<string, string> = {
   "apply.title": "Valider et déployer",
   "apply.desc": "Génère la configuration BIND et Kea, la vérifie avec les outils officiels (named-checkzone, named-checkconf, kea-dhcp4 -t) et ne la déploie que si tout est valide.",
   "apply.validate": "Valider",
+  "apply.deferred": "Vérification confiée à ddibuntu-reload (root, depuis /etc/kea) au moment de l’application : le profil AppArmor de Kea lui interdit de lire hors de /etc/kea. Ce n’est pas une erreur ; en cas de configuration invalide, rien n’est appliqué et la précédente est conservée.",
   "apply.deploy": "Déployer",
   "apply.deploy_confirm": "Écrire la configuration validée sur l’appliance ?",
   "apply.valid": "Configuration valide",

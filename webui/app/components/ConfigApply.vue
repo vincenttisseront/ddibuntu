@@ -33,7 +33,7 @@ const current = computed(() => files.value?.files?.find((f: any) => f.path === s
       <ul v-if="result" class="flex flex-col gap-2 text-sm" aria-live="polite">
         <li v-for="r in result.results" :key="r.name" class="flex gap-2 items-start">
           <UIcon :name="r.ok === true ? 'i-lucide-circle-check' : r.ok === false ? 'i-lucide-circle-x' : 'i-lucide-circle-help'" :class="r.ok === true ? 'text-success' : r.ok === false ? 'text-error' : 'text-warning'" class="mt-0.5 shrink-0" />
-          <div><span class="font-mono">{{ r.name }}</span><pre v-if="r.output" class="text-xs whitespace-pre-wrap text-muted">{{ r.output }}</pre></div>
+          <div><span class="font-mono">{{ r.name }}</span><pre v-if="r.output" class="text-xs whitespace-pre-wrap text-muted">{{ r.output }}</pre><p v-if="r.note === 'deferred'" class="text-xs text-muted">{{ t('apply.deferred') }}</p></div>
         </li>
         <li v-for="wn in result.warnings" :key="wn" class="text-warning text-xs">⚠ {{ t(`apply.warn.${wn.split(':')[0]}`, { name: wn.split(':')[1] ?? '' }) }}</li>
       </ul>

@@ -1,5 +1,8 @@
 # Journal des modifications
 
+## 0.9.39 — « Validation Kea : message clair »
+- Lors d'une validation/d'un déploiement, la ligne `kea-dhcp4 -t` affichait « Syntax check failed … Unable to open file » alors que ce n'était pas une erreur : le profil AppArmor de Kea interdit de lire hors de `/etc/kea`, la vérification est donc confiée à `ddibuntu-reload` (root) qui la refait au moment de l'application et revient en arrière si la configuration est invalide. La ligne affiche désormais une explication (« vérification confiée à ddibuntu-reload ») au lieu de l'erreur brute.
+
 ## 0.9.38 — « Version affichée toujours à jour »
 - Le logo (en haut à gauche) gardait l'ancienne version tant que l'onglet n'était pas rechargé, alors que la console avait été mise à jour (constaté : v0.9.31 affichée pour une 0.9.36 installée). La version est relue chaque minute, et quand elle change une notification propose de **recharger la page** pour utiliser la nouvelle interface.
 

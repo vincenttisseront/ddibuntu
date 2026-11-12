@@ -186,7 +186,7 @@ export function renderKea(s: KeaSettings, scopes: KeaScope[]): string {
 
 // ---- Fichiers, validation, déploiement ----
 export interface OutFile { path: string; content: string; mode: number; kind: 'zone' | 'named' | 'kea' | 'rpz' }
-export interface CheckResult { name: string; ok: boolean | null; output: string }
+export interface CheckResult { name: string; ok: boolean | null; output: string; note?: 'deferred' }
 
 export function zoneFile(z: ZoneRow, records: RecInfo[]): OutFile {
   return { path: `zones/${zoneBase(z)}`, content: renderZone(z, records), mode: 0o644, kind: 'zone' }
@@ -242,7 +242,7 @@ export async function validateFiles(files: OutFile[]): Promise<CheckResult[]> {
       // Le profil AppArmor d'Ubuntu n'autorise Kea à lire que /etc/kea : hors de là, « -t » échoue sans juger la configuration.
       // Verdict inconnu (null) plutôt que faux : ddibuntu-reload (root) refait la vérification, depuis /etc/kea.
       const blocked = r.code !== 0 && /Unable to open file/.test(r.out)
-      results.push({ name: 'kea-dhcp4 -t', ok: r.missing || blocked ? null : r.code === 0, output: blocked ? `${r.out} (profil AppArmor de Kea : vérification reportée à ddibuntu-reload)` : r.out })
+      results.push({ name: 'kea-dhcp4 -t', ok: r.missing || blocked ? null : r.code === 0, output: blocked ? '' : r.out, ...(blocked ? { note: 'deferred' as const } : {}) })
     }
   } finally {
     await fs.rm(dir, { recursive: true, force: true })
