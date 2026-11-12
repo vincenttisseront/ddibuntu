@@ -1,5 +1,9 @@
 # Journal des modifications
 
+## 0.9.17 — « Création de cluster : base locale démarrée si besoin »
+- Constaté sur un nœud réel : après l'installation des paquets du cluster, PostgreSQL était arrêté (la console répondait 500 partout). La création du cluster **démarre désormais le service PostgreSQL s'il ne répond pas** (30 s d'attente) ; s'il ne démarre pas, elle s'arrête **avant toute modification** avec un message pointant le journal du service.
+- La page Cluster reste lisible quand la base est momentanément indisponible (plus de 500 sur l'état du cluster).
+
 ## 0.9.16 — « Création de cluster : adresse virtuelle saisie sans préfixe »
 - Correctif : le formulaire « Créer le cluster » demande une simple adresse pour l'adresse virtuelle (VIP), mais le script exigeait `adresse/préfixe` (« VIP invalide (attendu : adresse/préfixe) »). Sans préfixe, celui de l'interface choisie est retenu (/24 à défaut), journalisé. Test ajouté à `b10-cluster-live` (186/0).
 - Feuille de route décalée : traçabilité en 0.9.17 … DHCP multi-espaces en 0.9.21.

@@ -379,6 +379,18 @@ render_all() { render_etcd; render_patroni; render_keepalived; fw_sync; }
 
 # ---------------------------------------------------------------- rôles PostgreSQL de réplication (nœud qui porte déjà la base)
 psql_local() { runuser -u postgres -- psql -h "${ROOT}${C[PG_SOCKET_DIR]}" -p "${C[PG_PORT]}" -v ON_ERROR_STOP=1 -q "$@"; }
+# La base locale doit répondre avant la création du cluster. Si le service est arrêté (cela arrive après l'installation des paquets du cluster),
+# on le démarre et on attend ; sinon on s'arrête avec un message clair, sans rien avoir modifié.
+ensure_pg_up() {
+  [ -z "${DDI_TEST:-}" ] || return 0
+  local i
+  psql_local -d postgres -c 'select 1' >/dev/null 2>&1 && return 0
+  log "PostgreSQL ne répond pas : démarrage du service postgresql@${C[PGVER]}-main"
+  systemctl unmask "postgresql@${C[PGVER]}-main.service" >/dev/null 2>&1 || true
+  systemctl start "postgresql@${C[PGVER]}-main.service" >/dev/null 2>&1 || true
+  for i in $(seq 1 30); do psql_local -d postgres -c 'select 1' >/dev/null 2>&1 && return 0; sleep 1; done
+  die "la base PostgreSQL locale ne démarre pas (voir : journalctl -u postgresql@${C[PGVER]}-main) ; rien n'a été modifié"
+}
 db_roles() {
   psql_local -d postgres <<'SQL'
 do $$ begin
@@ -1168,7 +1180,7 @@ print(ipaddress.ip_interface(l).network if l else "")' 2>/dev/null)" || net=""
   [ -z "${DDI_PG_LOCAL_LISTEN+x}" ] || C[PG_LOCAL_LISTEN]="$DDI_PG_LOCAL_LISTEN"; [ -z "${DDI_PG_CONFIG_DIR+x}" ] || C[PG_CONFIG_DIR]="$DDI_PG_CONFIG_DIR"; [ -z "${DDI_PG_SOCKET_DIR:-}" ] || C[PG_SOCKET_DIR]="$DDI_PG_SOCKET_DIR"
   conf_check
   # l'étape qui dépend d'un service externe passe en premier : un échec ne laisse ni autorité ni certificats à moitié créés
-  if [ "$role" = data ]; then log "rôles PostgreSQL de réplication"; db_roles; fi
+  if [ "$role" = data ]; then ensure_pg_up; log "rôles PostgreSQL de réplication"; db_roles; fi
   ca_init
   local t; t="$(mktemp -d)"; issue_cert "$name" "$ip" "$t"; install_pki "$t"; rm -rf "$t"
   ensure_xfr_key
