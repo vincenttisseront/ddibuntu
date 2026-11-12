@@ -1,5 +1,8 @@
 # Journal des modifications
 
+## 0.9.27 — « Sélecteur de fichier bien visible »
+- Le bouton « Choisir un fichier » de tous les sélecteurs de fichier (rejoindre un cluster, import, Active Directory, filtrage) est maintenant un bouton plein aux couleurs de la console, dans une zone en pointillés qui réagit au survol.
+
 ## 0.9.26 — « Quorum : un pair absent d'etcd ne vote plus ; bouton Retirer expliqué »
 - **Correctif** : un nœud encore inscrit au registre du cluster mais **absent de la liste des membres d'etcd** (retiré à la main, ou jamais déclaré) était compté comme votant : « quorum perdu » à tort, bouton « Retirer » grisé. Il n'est plus compté ; « Retirer » nettoie alors le registre, les clés Patroni et le pare-feu.
 - Le bouton « Retirer » inactif (quorum réellement perdu) affiche maintenant une info-bulle qui explique pourquoi.

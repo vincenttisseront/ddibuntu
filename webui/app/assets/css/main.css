@@ -40,3 +40,25 @@ html { font-size: 80%; }
 button, [role="tab"], [role="button"], summary, select { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { *, ::before, ::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; } }
 .num { font-variant-numeric: tabular-nums; }
+
+/* Sélecteur de fichier : bouton « Choisir un fichier » bien visible (couleur de marque, contour, survol) et zone entière cliquable */
+input[type="file"] {
+  cursor: pointer;
+  padding: 0.35rem;
+  border: 1.5px dashed var(--color-brand-500);
+  border-radius: var(--ui-radius);
+  background: color-mix(in srgb, var(--color-brand-500) 6%, transparent);
+}
+input[type="file"]:hover { background: color-mix(in srgb, var(--color-brand-500) 12%, transparent); }
+input[type="file"]:disabled { cursor: not-allowed; opacity: 0.6; }
+input[type="file"]::file-selector-button {
+  margin-right: 0.75rem;
+  padding: 0.45rem 0.9rem;
+  border: 0;
+  border-radius: var(--ui-radius);
+  background: var(--color-brand-600);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+input[type="file"]::file-selector-button:hover { background: var(--color-brand-700); }
