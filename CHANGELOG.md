@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.32 — « Mise à jour du cluster : échecs lisibles »
+- Une cible dépassée par une release plus récente (ordre lancé pendant une publication) n'est plus un « échec » opaque : l'ordre est annulé automatiquement (rien n'est installé) avec le message « version cible dépassée : relancer la recherche ».
+- La ligne d'un nœud en échec affiche la cause réelle (dernière erreur de la mise à jour du nœud) au lieu d'un message générique.
+- Test `b26-cluster-update-live` : cause affichée, annulation d'un ordre dépassé (104/0).
+
 ## 0.9.31 — « Adresse de service : keepalived installé au besoin »
 - Constaté sur un nœud réel : cluster créé avec une adresse virtuelle alors que `keepalived` n'était pas installé (unité introuvable) ; l'adresse n'était jamais portée et seule une alerte le signalait. L'activation, le changement d'adresse et la synchronisation périodique tentent maintenant d'installer keepalived (au plus une fois par heure pour la synchronisation) et signalent clairement un échec. La commande d'installation affichée par la console l'inclut.
 

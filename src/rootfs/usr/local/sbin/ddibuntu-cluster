@@ -1578,6 +1578,13 @@ if st in busy and int(os.environ["NOW"]) - up < 3600: print("busy")
 elif st == "failed" and d.get("target") == os.environ["TARGET"] and up >= int(os.environ["AT"]): print("failed")
 else: print("idle")' 2>/dev/null || echo idle
 }
+update_lasterror() {   # dernier message d'erreur du nœud (court), pour l'afficher sur la ligne du nœud
+  local f="${DDI_UPDATE_STATUS:-$ROOT/var/lib/ddibuntu/update-status.json}"
+  [ -f "$f" ] || return 0
+  head -c 20000 "$f" | python3 -c 'import json,sys
+try: print(" ".join(str(json.load(sys.stdin).get("error") or "").split())[:160])
+except Exception: pass' 2>/dev/null || true
+}
 ustate_put() {   # ustate_put ÉTAT VERSION MESSAGE
   STATE_V="$1" VER="$2" MSG="$3" python3 -c '
 import json, os, time
@@ -1612,7 +1619,15 @@ print("yes" if all(v.get(p.split("=")[0]) == os.environ["T"] for p in os.environ
   st="$(update_selfstate "$target" "$at")"
   case "$st" in
     busy) ustate_put updating "$me" "installation en cours"; return 0 ;;
-    failed) ustate_put failed "$me" "installation échouée : l'ordre est suspendu ici (voir la page Système)"; return 0 ;;
+    failed)
+      local err; err="$(update_lasterror)"
+      case "$err" in
+        *"n'est plus la dernière release"*)
+          # cible dépassée par une release plus récente : rien n'a été installé, l'ordre n'a plus de sens → annulé, à relancer après une nouvelle recherche
+          ectl --command-timeout=5s del "$UPDATE" >/dev/null 2>&1 && log "mise à jour vers $target annulée : une release plus récente existe (relancer la recherche puis la mise à jour)"
+          ustate_put failed "$me" "version cible dépassée : ordre annulé, relancer la recherche"; return 0 ;;
+      esac
+      ustate_put failed "$me" "installation échouée : ${err:-cause inconnue} (l'ordre est suspendu ici ; voir la page Système)"; return 0 ;;
   esac
   local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}"
   if [ -e "$gen/.update-request" ]; then ustate_put requested "$me" "demande déposée"; return 0; fi

@@ -179,9 +179,10 @@ expect_eq "c'est le tour du secondaire n2 ; le primaire n1 attend encore" "yes n
 echo "== 5. Échec sur un nœud : la file s'ARRÊTE =="
 rm -f "$(reqf 2)"
 ORD_AT="$(rq 1 /ddibuntu-cluster/update | python3 -c 'import json,sys; print(json.load(sys.stdin)["at"])')"
-printf '{"state":"failed","target":"0.9.13","updated_at":%s,"message":"x"}' "$((ORD_AT + 5))" > "$(R 2)/var/lib/ddibuntu/update-status.json"
+printf '{"state":"failed","target":"0.9.13","updated_at":%s,"message":"x","error":"disque plein"}' "$((ORD_AT + 5))" > "$(R 2)/var/lib/ddibuntu/update-status.json"
 ticks 2 1
 expect_eq "n2 signale l'échec et ne redemande rien" "failed no" "$(ust 1 'd["states"]["n2"]["state"]') $(has_req 2)"
+expect_eq "la ligne de n2 donne la cause réelle de l'échec" "yes" "$(ust 1 '"yes" if "disque plein" in d["states"]["n2"]["msg"] else "no"')"
 expect_eq "le primaire n1 reste en attente (aucune version qui s'éloigne)" "no waiting" "$(has_req 1) $(ust 1 'd["states"]["n1"]["state"]')"
 expect_eq "versions : n1/n2 inchangés, n3 à jour" "0.9.12 0.9.12 0.9.13" "$(ver 1) $(ver 2) $(ver 3)"
 
@@ -207,6 +208,15 @@ sim 1; ticks 1 2 3
 expect_eq "les trois nœuds sont à la même version" "0.9.13 0.9.13 0.9.13" "$(ust 1 'd["versions"]["n1"]') $(ust 1 'd["versions"]["n2"]') $(ust 1 'd["versions"]["n3"]')"
 expect_eq "l'ordre est soldé (clé supprimée)" "" "$(rq 1 /ddibuntu-cluster/update)"
 check_fail "plus rien à faire vers 0.9.13" cl 1 update-start 0.9.13
+
+echo "== 7b. Cible dépassée par une release plus récente : ordre annulé, rien d'installé =="
+check "ordre 0.9.14" cl 1 update-start 0.9.14
+ORD_AT="$(rq 1 /ddibuntu-cluster/update | python3 -c 'import json,sys; print(json.load(sys.stdin)["at"])')"
+ticks 1 2 3; rm -f "$(reqf 1)" "$(reqf 2)" "$(reqf 3)"
+for k in 1 2 3; do printf '{"state":"failed","target":"0.9.14","updated_at":%s,"error":"la version demandée (0.9.14) n'"'"'est plus la dernière release (0.9.15) : relancer la recherche"}' "$((ORD_AT + 5))" > "$(R $k)/var/lib/ddibuntu/update-status.json"; done
+ticks 1 2 3
+expect_eq "l'ordre dépassé est annulé tout seul" "None" "$(ust 1 'd["order"]')"
+rm -f "$(R 1)/var/lib/ddibuntu/update-status.json" "$(R 2)/var/lib/ddibuntu/update-status.json" "$(R 3)/var/lib/ddibuntu/update-status.json"
 
 echo "== 8. Valeurs piégées dans etcd : aucun effet =="
 for bad in 'pas du json' '[]' '{"target":"latest","at":1,"by":"n1"}' '{"target":"0.9.14","at":1,"by":"n1","x":1}' '{"target":"0.9.14","at":"1","by":"n1"}' '{"target":"0.9.14","at":1,"by":"N1"}'; do

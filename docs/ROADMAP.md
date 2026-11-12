@@ -77,8 +77,8 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
     4j. ~~**0.9.13**~~ ✅ fait — Mise à jour du cluster nœud par nœud (ordre commun, arbitre → secondaires → primaire, un échec arrête la file).
     4k. ~~**0.9.14**~~ ✅ fait — Réglages de session communs à tous les nœuds (durée, inactivité) ; composants du cluster vérifiés avant l'assistant. (Reste : contrôle de cohérence des comptes entre nœuds, repris plus tard.)
     6. ~~**0.9.28**~~ ✅ fait — Traçabilité des baux : historique IP / MAC / nom, page de recherche (le nom d’'utilisateur AD reste à corréler avec les rôles par groupe).
-    7. **0.9.32** — Découverte planifiée et alertes d'hygiène.
-    8. **0.9.33** — API : description OpenAPI et jetons d'API.
-    9. **0.9.34** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
-    10. **0.9.35** — DHCP multi-espaces.
+    7. **0.9.33** — Découverte planifiée et alertes d'hygiène.
+    8. **0.9.34** — API : description OpenAPI et jetons d'API.
+    9. **0.9.35** — Connexion AD / LDAP, rôles par groupe, délégation par périmètre.
+    10. **0.9.36** — DHCP multi-espaces.
 5. **1.0** — Consolidation de la série 0.9.x et passage en revue avant usage en production.
