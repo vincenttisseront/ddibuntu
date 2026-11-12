@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.40 — « Jetons d'API et OpenAPI »
+- **Correctif** : depuis la 0.9.39, la vérification Kea « confiée à ddibuntu-reload » était comptée comme non validée : la console affichait « Configuration invalide » et bloquait le déploiement. Elle est désormais acceptée à la validation (ddibuntu-reload la refait en root et annule tout si la configuration est invalide).
+- **Jetons d'API** (Système → API, administrateur) : jeton `ddi_…` en en-tête `Authorization: Bearer`, rôle lecteur ou opérateur (jamais administrateur), expiration facultative, révocation. Le secret n'est affiché qu'une fois ; seul son empreinte SHA-256 est stockée. Sans cookie ni jeton CSRF ; un jeton ne peut gérer ni jetons, ni comptes, ni session. Actions journalisées sous `token:<nom>`. Migration de schéma 14.
+- **OpenAPI** : `GET /api/openapi.json` (OpenAPI 3.0.3) décrit toutes les routes, générée depuis la table de routes réelle.
+
 ## 0.9.39 — « Validation Kea : message clair »
 - Lors d'une validation/d'un déploiement, la ligne `kea-dhcp4 -t` affichait « Syntax check failed … Unable to open file » alors que ce n'était pas une erreur : le profil AppArmor de Kea interdit de lire hors de `/etc/kea`, la vérification est donc confiée à `ddibuntu-reload` (root) qui la refait au moment de l'application et revient en arrière si la configuration est invalide. La ligne affiche désormais une explication (« vérification confiée à ddibuntu-reload ») au lieu de l'erreur brute.
 

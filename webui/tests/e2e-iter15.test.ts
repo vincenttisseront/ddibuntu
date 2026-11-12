@@ -162,3 +162,57 @@ describe('découverte planifiée et alertes d\'hygiène', () => {
     expect((await st())['10.77.0.5']).toBe('used')
   })
 })
+
+describe('jetons d\'API et OpenAPI', () => {
+  let ro = '', rw = '', rwId = 0
+  const bearer = async (tok: string, method: string, path: string, body?: unknown) => {
+    const r = await fetch(BASE + path, { method, headers: { authorization: `Bearer ${tok}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) })
+    const text = await r.text(); let json: any = null; try { json = JSON.parse(text) } catch { /* HTML */ }
+    return { status: r.status, json, text }
+  }
+  it('gestion réservée à l\'administrateur ; secret montré une seule fois, jamais relisible', async () => {
+    code(await viewer.get('/api/tokens'), 403, 'forbidden'); code(await viewer.post('/api/tokens', { name: 'x', role: 'viewer', expiresDays: 30 }), 403, 'forbidden')
+    expect((await admin.post('/api/tokens', { name: 'bad name', role: 'viewer', expiresDays: 30 })).status).toBe(400)
+    expect((await admin.post('/api/tokens', { name: 'adm', role: 'admin', expiresDays: 30 })).status).toBe(400)        // jamais administrateur
+    expect((await admin.post('/api/tokens', { name: 'x', role: 'viewer', expiresDays: 0 })).status).toBe(400)
+    const a = await admin.post('/api/tokens', { name: 'lecture', role: 'viewer', expiresDays: 30 }); expect(a.status, a.text).toBe(200)
+    expect(a.json.token).toMatch(/^ddi_[A-Za-z0-9_-]{40}$/); ro = a.json.token
+    const b = await admin.post('/api/tokens', { name: 'ecriture', role: 'operator', expiresDays: null }); expect(b.status).toBe(200); rw = b.json.token; rwId = b.json.id
+    code(await admin.post('/api/tokens', { name: 'LECTURE', role: 'viewer', expiresDays: 30 }), 409, 'token_exists')
+    const l = await admin.get('/api/tokens'); expect(l.json.items).toHaveLength(2)
+    expect(JSON.stringify(l.json)).not.toContain(ro); expect(JSON.stringify(l.json)).not.toContain(rw)
+    expect((await db.query('select token_hash from api_tokens')).rows.every((r) => r.token_hash !== ro && /^[0-9a-f]{64}$/.test(r.token_hash))).toBe(true)
+  })
+  it('lecture avec Bearer, sans cookie ni CSRF ; le rôle est respecté', async () => {
+    expect((await bearer(ro, 'GET', '/api/ipam/spaces')).status).toBe(200)
+    expect((await bearer(ro, 'GET', '/api/auth/me')).json.user).toMatchObject({ username: 'token:lecture', role: 'viewer', source: 'token' })
+    code(await bearer(ro, 'POST', '/api/ipam/spaces', { name: 'nope' }), 403, 'forbidden')               // lecteur : pas d'écriture
+    const w = await bearer(rw, 'POST', '/api/ipam/spaces', { name: 'via-jeton' }); expect(w.status, w.text).toBe(200)   // opérateur : écriture sans CSRF
+    expect((await db.query("select username from audit_log where action like '%space%' order by id desc limit 1")).rows[0]?.username).toBe('token:ecriture')
+  })
+  it('un jeton ne gère ni jetons, ni comptes, ni mot de passe', async () => {
+    code(await bearer(rw, 'GET', '/api/tokens'), 403, 'forbidden'); code(await bearer(rw, 'GET', '/api/users'), 403, 'forbidden')
+    code(await bearer(rw, 'POST', '/api/auth/logout', {}), 403, 'forbidden'); code(await bearer(rw, 'POST', '/api/auth/password', { current: 'a', next: 'b' }), 403, 'forbidden')
+  })
+  it('jeton inconnu, mal formé, révoqué, expiré : refusé', async () => {
+    code(await bearer('ddi_' + 'A'.repeat(40), 'GET', '/api/ipam/spaces'), 401, 'invalid_token')
+    expect((await bearer('pas-un-jeton', 'GET', '/api/ipam/spaces')).status).toBe(401)
+    await db.query("update api_tokens set expires_at = now() - interval '1 minute' where name = 'lecture'")
+    code(await bearer(ro, 'GET', '/api/ipam/spaces'), 401, 'invalid_token')
+    expect((await admin.delete(`/api/tokens/${rwId}`)).status).toBe(200)
+    code(await bearer(rw, 'GET', '/api/ipam/spaces'), 401, 'invalid_token')
+    code(await admin.delete(`/api/tokens/${rwId}`), 404, 'not_found')
+    const l = (await admin.get('/api/tokens')).json.items
+    expect(l.map((x: any) => [x.name, x.active])).toEqual([['ecriture', false], ['lecture', false]])
+  })
+  it('OpenAPI : document valide décrivant les routes, accessible avec un jeton', async () => {
+    const t = (await admin.post('/api/tokens', { name: 'doc', role: 'viewer', expiresDays: 1 })).json.token
+    const r = await bearer(t, 'GET', '/api/openapi.json'); expect(r.status).toBe(200)
+    expect(r.json.openapi).toBe('3.0.3'); expect(r.json.servers).toEqual([{ url: '/api' }])
+    expect(r.json.paths['/ipam/subnets/{id}/addresses'].get.parameters[0]).toMatchObject({ name: 'id', in: 'path', required: true })
+    expect(r.json.paths['/tokens'].post['x-required-role']).toBe('admin'); expect(r.json.paths['/health'].get.security).toEqual([])
+    expect(Object.keys(r.json.paths).length).toBeGreaterThan(80)
+    code(await anon.get('/api/openapi.json'), 401, 'unauthenticated')
+  })
+})
+

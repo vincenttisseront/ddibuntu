@@ -106,7 +106,7 @@ export async function applyConfig(opts: { deploy: boolean; username: string | nu
   // le serveur doit se résoudre lui-même : sans vue pour 127.0.0.1 / ::1, contrôles de santé et mises à jour locales échoueraient
   const unc = warnings.filter((w) => w.startsWith('view_local_uncovered:')).map((w) => w.split(':').slice(1).join(':'))
   if (unc.length) results.push({ name: 'vues DNS : couverture locale', ok: false, output: `aucune vue ne répond à ${unc.join(', ')} : ajoutez ces adresses (ou « localhost ») à la liste des clients d'une vue` })
-  const ok = results.length > 0 && results.every((r) => r.ok === true)
+  const ok = results.length > 0 && results.every((r) => r.ok === true || r.note === 'deferred')   // « différé » : ddibuntu-reload (root) tranche à l'application
   let deployed = false
   if (opts.deploy && ok) {
     const sums = await deployFiles(files, cfg().generatedDir, cfg().zonesRuntimeDir || undefined)

@@ -6,6 +6,7 @@ import type { ZodType } from 'zod'
 import { cfg } from './config'
 import { inRecovery, isSchemaReady, query } from './db'
 import { ROLE_RANK, safeEqual, sessionFromToken } from './auth'
+import { userFromApiToken } from './api-tokens'
 import type { Role, SessionUser } from './auth'
 
 export const COOKIE = 'ddi_session'
@@ -29,6 +30,7 @@ export function route(method: string, path: string, role: Role | 'public', handl
   table.push({ method, re, keys, role, handler, path })
 }
 export const routeCount = () => table.length
+export const routeTable = () => table.map((e) => ({ method: e.method, path: e.path, role: e.role }))
 
 export function fail(status: number, code: string, message?: string, data?: Record<string, unknown>): never {
   throw createError({ statusCode: status, statusMessage: code, message: message ?? code, data: { code, ...data } })
@@ -124,12 +126,19 @@ export async function dispatch(event: H3Event): Promise<unknown> {
     let user: SessionUser | null = null
     const token = getCookie(event, COOKIE)
     if (token) user = await sessionFromToken(token)
+    // jeton d'API : « Authorization: Bearer ddi_… » (sans cookie, donc sans CSRF) ; limité à viewer/operator, jamais aux routes d'administration
+    const bearer = !user ? /^Bearer (ddi_[A-Za-z0-9_-]{20,80})$/.exec(getRequestHeader(event, 'authorization') ?? '')?.[1] : undefined
+    if (bearer) {
+      user = await userFromApiToken(bearer)
+      if (!user) fail(401, 'invalid_token')
+    }
     if (entry.role !== 'public') {
       if (!user) fail(401, 'unauthenticated')
-      if (unsafe) {
+      if (unsafe && user.source !== 'token') {
         const sent = getRequestHeader(event, 'x-csrf-token') ?? ''
         if (!safeEqual(sent, user.csrf)) fail(403, 'csrf')
       }
+      if (user.source === 'token' && path.startsWith('/auth/') && path !== '/auth/me') fail(403, 'forbidden')   // mot de passe, sessions… : réservés aux comptes
       if (ROLE_RANK[user.role] < ROLE_RANK[entry.role]) fail(403, 'forbidden')
     }
     const ctx: Ctx = {
