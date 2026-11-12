@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.36 — « Joignabilité des adresses »
+- Chaque adresse de l'IPAM porte maintenant sa **joignabilité observée** : colonne « Joignable » (Joignable / Injoignable / Non vérifié, avec la date de la dernière vérification), puisque le statut « utilisée » ne prouve pas que l'hôte existe encore. Migration de schéma 12.
+- Elle est mise à jour par la découverte planifiée et par l'import d'une découverte manuelle (« mettre à jour les adresses connues ») : une adresse connue qui ne répond à aucune sonde **active** (ping, ARP, TCP) est marquée injoignable. Avec les seules méthodes passives (baux, DNS inverse) l'absence de preuve n'est pas une preuve d'absence : seuls les hôtes qui répondent sont notés.
+- Le résumé du dernier passage planifié indique le nombre d'adresses injoignables.
+
 ## 0.9.35 — « Découverte planifiée, alertes d'hygiène, traçabilité des baux »
 - **Découverte planifiée** (IPAM → Découverte, section « Découverte planifiée ») : scan automatique des réseaux choisis (tous les réseaux IPv4 par défaut) toutes les 1 h à 7 j, exécuté par le nœud principal. Aucune adresse n'est créée : les adresses connues sont marquées « vues » (ce qui nourrit la détection des fantômes) et le passage compte les hôtes inconnus de l'IPAM et les adresses répondant avec une MAC différente. Bouton « Lancer maintenant ».
 - **Alertes d'hygiène** : `ipam.ghosts` (information : adresses silencieuses depuis 30 jours), `ipam.unknown_hosts` et `ipam.mac_changed` (avertissements issus du dernier passage, valables 7 jours), avec notifications webhook/courriel comme les autres alertes.

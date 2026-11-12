@@ -103,7 +103,7 @@ export type HostStatus = 'new' | 'known' | 'mac_changed'
 export interface KnownAddr { id: number; subnet_id: number; ip: string; hostname: string | null; mac: string | null; status: string }
 export interface ResultHost extends Host { subnetId: number; status: HostStatus; known: KnownAddr | null }
 export interface JobResult { hosts: ResultHost[]; stale: Array<{ ip: string; hostname: string | null }> }
-export interface Job { id: string; user: string; state: 'running' | 'done' | 'cancelled' | 'error'; startedAt: number; total: number; done: number; alive: number; warnings: string[]; error?: string; stop: boolean; result?: JobResult }
+export interface Job { id: string; user: string; state: 'running' | 'done' | 'cancelled' | 'error'; startedAt: number; total: number; done: number; alive: number; warnings: string[]; error?: string; stop: boolean; probing?: boolean; result?: JobResult }
 export const jobs = new Map<string, Job>()
 export const runningJob = () => [...jobs.values()].find((j) => j.state === 'running')
 export function sweepJobs() { const lim = Date.now() - 3600_000; for (const [k, j] of jobs) if (j.state !== 'running' && j.startedAt < lim) jobs.delete(k); while (jobs.size > 3) { const k = [...jobs.entries()].find(([, j]) => j.state !== 'running')?.[0]; if (!k) break; jobs.delete(k) } }

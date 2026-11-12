@@ -14,7 +14,7 @@ export const ScheduleBody = z.object({
   methods: z.object({ tcp: z.boolean(), icmp: z.boolean(), arp: z.boolean(), reverse: z.boolean(), leases: z.boolean() }),
 }).strict()
 export type Schedule = z.infer<typeof ScheduleBody>
-export interface LastRun { at: number; ok: boolean; scanned: number; alive: number; known: number; unknown: number; macChanged: number; error?: string }
+export interface LastRun { at: number; ok: boolean; scanned: number; alive: number; known: number; unknown: number; macChanged: number; unreachable: number; error?: string }
 
 export const DEFAULT_SCHEDULE: Schedule = { enabled: false, intervalHours: 24, subnetIds: [], methods: { tcp: false, icmp: true, arp: true, reverse: true, leases: true } }
 export const getSchedule = async (): Promise<Schedule> => ({ ...DEFAULT_SCHEDULE, ...(await getSetting<Partial<Schedule>>('discovery_schedule', {})) })
@@ -50,11 +50,18 @@ export async function runScheduled(sch?: Schedule): Promise<LastRun> {
       await query('update addresses set last_seen = now(), mac = coalesce(mac, $2::macaddr), hostname = coalesce(hostname, $3) where id = $1',
         [h.known.id, h.mac && normMac(h.mac), nm && isValidDnsName(nm, false) ? nm : null])
     }
-    const last: LastRun = { at: t0, ok: true, scanned: targets.ips.length, alive: found.filter((h) => h.alive).length, known: knownN, unknown: unknownN, macChanged: macN }
+    // joignabilité : une adresse connue qui ne répond à aucune sonde ACTIVE est « injoignable » ; avec les seules méthodes passives (baux, DNS inverse)
+    // l'absence de preuve n'est pas une preuve d'absence : on ne note alors que les hôtes qui répondent
+    const alive = found.filter((h) => h.alive).map((h) => h.ip)
+    const probing = methods.tcp || methods.icmp || methods.arp
+    const unreach = probing
+      ? (await query<any>('update addresses set reachable = (host(ip) = any($2)), checked_at = now() where subnet_id = any($1) returning reachable', [subs.map((r) => r.id), alive])).filter((r) => !r.reachable).length
+      : (await query<any>('update addresses set reachable = true, checked_at = now() where subnet_id = any($1) and host(ip) = any($2) returning 1', [subs.map((r) => r.id), alive]), 0)
+    const last: LastRun = { at: t0, ok: true, scanned: targets.ips.length, alive: found.filter((h) => h.alive).length, known: knownN, unknown: unknownN, macChanged: macN, unreachable: unreach }
     await setSetting('discovery_schedule_last', last)
     return last
   } catch (e: any) {
-    const last: LastRun = { at: t0, ok: false, scanned: 0, alive: 0, known: 0, unknown: 0, macChanged: 0, error: e instanceof DiscoveryError ? e.code : 'discovery_failed' }
+    const last: LastRun = { at: t0, ok: false, scanned: 0, alive: 0, known: 0, unknown: 0, macChanged: 0, unreachable: 0, error: e instanceof DiscoveryError ? e.code : 'discovery_failed' }
     if (!(e instanceof DiscoveryError)) console.error('[discovery-schedule]', e?.message ?? e)
     await setSetting('discovery_schedule_last', last)
     return last

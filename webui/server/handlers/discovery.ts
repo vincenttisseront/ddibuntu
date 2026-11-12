@@ -31,7 +31,7 @@ route('POST', '/discovery/start', 'operator', async (c) => {
   if (!targets.ips.length) fail(400, 'discovery_empty')
   const subnetByCidr = new Map<string, number>(subs.map((s) => [s.c as string, s.id as number]))
   const ports = Array.isArray(b.ports) ? b.ports : PORT_PRESETS[b.ports]!
-  const job: Job = { id: randomUUID(), user: c.user!.username, state: 'running', startedAt: Date.now(), total: targets.ips.length, done: 0, alive: 0, warnings: targets.skipped, stop: false }
+  const job: Job = { id: randomUUID(), user: c.user!.username, state: 'running', startedAt: Date.now(), total: targets.ips.length, done: 0, alive: 0, warnings: targets.skipped, stop: false, probing: b.methods.tcp || b.methods.icmp || b.methods.arp }
   if (b.methods.icmp && !(await pingWorks())) { b.methods.icmp = false; job.warnings.push('icmp_unavailable') }
   jobs.set(job.id, job)
   await audit(c, 'discovery_start', 'discovery', job.id, { subnets: subs.map((s) => s.c), methods: b.methods, ports: b.methods.tcp ? ports : [] })
@@ -89,12 +89,17 @@ route('POST', '/discovery/:id/commit', 'operator', async (c) => {
         if (r.rowCount) out.created++; else out.skipped++
       } else if (h.known && b.updateKnown) {
         // adresses connues : on note qu'elles répondent, et on complète sans jamais remplacer ce qui est déjà saisi
-        const r = await cl.query('update addresses set last_seen = now(), mac = coalesce(mac, $2::macaddr), hostname = coalesce(hostname, $3), updated_at = now() where id = $1',
+        const r = await cl.query('update addresses set reachable = true, checked_at = now(), last_seen = now(), mac = coalesce(mac, $2::macaddr), hostname = coalesce(hostname, $3), updated_at = now() where id = $1',
           [h.known.id, h.mac && normMac(h.mac), (h.ptr ?? h.leaseName) && isValidDnsName((h.ptr ?? h.leaseName)!.toLowerCase(), false) ? (h.ptr ?? h.leaseName)!.toLowerCase() : null])
         out.updated += r.rowCount ?? 0
       }
     }
   })
+  // hôtes connus qui n'ont répondu à aucune sonde active : marqués injoignables (jamais pour des méthodes seulement passives)
+  if (b.updateKnown && j.probing && j.state === 'done') {
+    const gone = (j.result?.stale ?? []).map((x) => x.ip)
+    if (gone.length) await query('update addresses set reachable = false, checked_at = now() where host(ip) = any($1)', [gone])
+  }
   await record(c, 'discovery', undefined, out, snapshotId)
   await audit(c, 'discovery_import', 'discovery', j.id, out)
   return out

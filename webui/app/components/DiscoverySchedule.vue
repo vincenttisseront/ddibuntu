@@ -44,7 +44,7 @@ async function runNow() {
         <UButton icon="i-lucide-play" color="neutral" variant="outline" :label="t('dsch.run_now')" :loading="running || data?.running" @click="runNow" />
       </div>
       <UAlert v-if="data?.last" :color="data.last.ok ? 'success' : 'error'" variant="subtle" :icon="data.last.ok ? 'i-lucide-circle-check' : 'i-lucide-circle-x'" data-test="dsch-last"
-        :title="t('dsch.last', { at: fmt(data.last.at) })" :description="data.last.ok ? t('dsch.last_ok', { scanned: data.last.scanned, alive: data.last.alive, known: data.last.known, unknown: data.last.unknown, mac: data.last.macChanged }) : t(`err.${data.last.error}`)" />
+        :title="t('dsch.last', { at: fmt(data.last.at) })" :description="data.last.ok ? t('dsch.last_ok', { scanned: data.last.scanned, alive: data.last.alive, known: data.last.known, unknown: data.last.unknown, mac: data.last.macChanged, down: data.last.unreachable ?? 0 }) : t(`err.${data.last.error}`)" />
       <p v-else class="text-xs text-muted">{{ t('dsch.never') }}</p>
     </div>
   </UCard>

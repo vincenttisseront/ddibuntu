@@ -123,6 +123,7 @@ function pickCell(c: { ip: string; state: string; item: unknown }) {
 watch([spaceId, fam, addrSubnet, addrQ, addrStatus], () => { addrOffset.value = 0 })
 const addrCols = computed<DCol[]>(() => [
   { key: 'ip', label: 'IP', kind: 'mono' }, { key: 'status', label: t('common.status'), kind: 'badge', trans: 'ipam.status' }, { key: 'hostname', label: t('ipam.hostname') }, { key: 'mac', label: 'MAC', kind: 'mono' },
+  { key: 'reachable', label: t('ipam.reach.col'), fmt: (v: boolean | null, r: any) => (v === null || v === undefined ? t('ipam.reach.unknown') : `${v ? t('ipam.reach.up') : t('ipam.reach.down')} · ${new Date(r.checked_at).toLocaleDateString()}`) },
   { key: 'description', label: t('common.description') }, { key: 'owner', label: t('ipam.owner') }, { key: 'cidr', label: t('ipam.network'), kind: 'mono' }, { key: 'space', label: t('ipam.space'), hidden: !!spaceId.value },
 ])
 const addrPrefill = ref('')

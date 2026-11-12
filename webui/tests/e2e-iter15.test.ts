@@ -100,7 +100,7 @@ describe('découverte planifiée et alertes d\'hygiène', () => {
   it('réglage : droits, validation, enregistrement', async () => {
     const g = await viewer.get('/api/discovery/schedule'); code(g, 403, 'forbidden')
     const a = await admin.get('/api/discovery/schedule'); expect(a.status).toBe(200); expect(a.json.schedule).toMatchObject({ enabled: false, intervalHours: 24 }); expect(a.json.last).toBeNull()
-    const ok = { enabled: true, intervalHours: 6, subnetIds: [], methods: { tcp: false, icmp: false, arp: false, reverse: false, leases: true } }
+    const ok = { enabled: true, intervalHours: 6, subnetIds: [], methods: { tcp: false, icmp: false, arp: true, reverse: false, leases: true } }
     code(await viewer.put('/api/discovery/schedule', ok), 403, 'forbidden')
     expect((await admin.put('/api/discovery/schedule', { ...ok, intervalHours: 0 })).status).toBe(400)
     expect((await admin.put('/api/discovery/schedule', { ...ok, extra: 1 })).status).toBe(400)
@@ -112,7 +112,7 @@ describe('découverte planifiée et alertes d\'hygiène', () => {
   it('passage à la demande : marque les connues, compte les inconnues, ne crée rien ; l\'alerte d\'hygiène apparaît puis se résout', async () => {
     await db.query('delete from addresses; delete from subnets')
     const s = (await db.query("insert into subnets (cidr, name) values ('10.77.0.0/29', 'labo') returning id")).rows[0].id
-    await db.query("insert into addresses (subnet_id, ip, status, hostname) values ($1, '10.77.0.2', 'used', 'connu')", [s])
+    await db.query("insert into addresses (subnet_id, ip, status, hostname) values ($1, '10.77.0.2', 'used', 'connu'), ($1, '10.77.0.5', 'used', 'disparu')", [s])
     await db.query('delete from lease4')
     await lease('10.77.0.2', 'aa:bb:cc:01:01:01', 'connu'); await lease('10.77.0.3', 'aa:bb:cc:01:01:02', 'inconnu')
     code(await viewer.post('/api/discovery/schedule/run'), 403, 'forbidden')
@@ -121,7 +121,13 @@ describe('découverte planifiée et alertes d\'hygiène', () => {
     const last = (await admin.get('/api/discovery/schedule')).json.last
     expect(last, JSON.stringify(last)).toMatchObject({ ok: true, known: 1, unknown: 1, macChanged: 0 })
     const n = (await db.query('select count(*)::int as n, count(last_seen)::int as seen from addresses')).rows[0]
-    expect(n).toEqual({ n: 1, seen: 1 })      // aucune adresse créée, la connue est marquée vue
+    expect(n).toEqual({ n: 2, seen: 1 })      // aucune adresse créée, la connue qui répond est marquée vue
+    // joignabilité : celle qui répond (bail) est joignable, celle qui ne répond à aucune sonde active est injoignable
+    const rc = (await db.query("select host(ip) as ip, reachable, checked_at is not null as chk from addresses order by ip")).rows
+    expect(rc).toEqual([{ ip: '10.77.0.2', reachable: true, chk: true }, { ip: '10.77.0.5', reachable: false, chk: true }])
+    expect(last.unreachable).toBe(1)
+    const list = (await admin.get(`/api/ipam/subnets/${s}/addresses`)).json.items
+    expect(list.map((a: any) => [a.ip, a.reachable])).toEqual([['10.77.0.2', true], ['10.77.0.5', false]])
     const ev = await admin.post('/api/alerts/evaluate'); expect(ev.status).toBe(200)
     const act = (await admin.get('/api/alerts')).json.active
     expect(act.find((x: any) => x.rule === 'ipam.unknown_hosts')).toMatchObject({ severity: 'warning', params: { count: 1 } })

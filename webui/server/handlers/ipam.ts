@@ -156,7 +156,7 @@ route('DELETE', '/ipam/subnets/:id', 'operator', async (c) => {
 // ---- Adresses ----
 route('GET', '/ipam/subnets/:id/addresses', 'viewer', async (c) => {
   const id = intParam(c, 'id'), q = qstr(c, 'q'), st = qstr(c, 'status')
-  const items = await query(`select id, host(ip) as ip, status, hostname, mac::text as mac, description, owner from addresses
+  const items = await query(`select id, host(ip) as ip, status, hostname, mac::text as mac, description, owner, reachable, checked_at from addresses
     where subnet_id = $1 and ($2::text is null or hostname ilike $2 or host(ip) like $2 or mac::text ilike $2 or description ilike $2)
       and ($3::text is null or status = $3) order by ip`, [id, q ? `%${q}%` : null, st ?? null])
   return { items }
@@ -299,7 +299,7 @@ route('GET', '/ipam/addresses', 'viewer', async (c) => {
   const where = `where ($1::int = 0 or s.space_id = $1) and ($2::int = 0 or a.subnet_id = $2) and ($3::int = 0 or family(a.ip) = $3)
     and ($4::text is null or a.hostname ilike $4 or host(a.ip) like $4 or a.mac::text ilike $4 or a.description ilike $4 or a.owner ilike $4) and ($5::text is null or a.status = $5)`
   const total = (await one<any>(`select count(*)::int as n from addresses a join subnets s on s.id = a.subnet_id ${where}`, args)).n
-  const items = await query(`select a.id, a.subnet_id, host(a.ip) as ip, a.status, a.hostname, a.mac::text as mac, a.description, a.owner, text(s.cidr) as cidr, s.name as network, sp.name as space
+  const items = await query(`select a.id, a.subnet_id, host(a.ip) as ip, a.status, a.hostname, a.mac::text as mac, a.description, a.owner, a.reachable, a.checked_at, text(s.cidr) as cidr, s.name as network, sp.name as space
     from addresses a join subnets s on s.id = a.subnet_id join ipam_spaces sp on sp.id = s.space_id ${where} order by s.space_id, a.ip limit ${limit} offset ${offset}`, args)
   return { items, total }
 })
