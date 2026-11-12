@@ -74,7 +74,7 @@ describe('quorum en direct', () => {
     clear(); publish()
     code(await viewer.post('/api/cluster/refresh', {}), 403, 'forbidden'); code(await anon.post('/api/cluster/refresh', {}), 401, 'unauthenticated')
     expect((await admin.post('/api/cluster/refresh', {})).json).toEqual({ accepted: true }); expect(sent()).toEqual({ action: 'refresh' })
-    code(await admin.post('/api/cluster/refresh', {}), 409, 'action_pending')   // la précédente n'est pas encore consommée par root
+    expect((await admin.post('/api/cluster/refresh', {})).json).toEqual({ accepted: true, pending: true })   // la précédente n'est pas encore consommée par root : pas une erreur
     clear()
   })
 })

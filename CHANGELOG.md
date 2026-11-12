@@ -10,6 +10,7 @@
 - **Utilisateurs, mots de passe, sessions** : déjà répliqués par PostgreSQL (comptes, hachages PBKDF2, sessions) ; la clé secrète de la console est alignée sur celle du primaire à l'ajout d'un nœud (lot chiffré). Les durées de session communes à tous les nœuds viennent en 0.9.12.
 - **Découverte** : case « Tout sélectionner » (état partiel géré) pour lancer le scan sur l'ensemble des sous-réseaux IPv4 (la limite de 4096 adresses s'applique toujours).
 - `b10` mis à jour : la connexion sur un secondaire est désormais acceptée (session signée, aucune ligne écrite).
+- Actualisation de l'état du cluster : une demande déjà en attente n'est plus une erreur 409 (plus de bruit dans la console du navigateur).
 - Tests : `unit-iter14` (11), `e2e-iter14` (9), `tests/b25-cluster-preferred-live.sh` (3 vrais etcd + Patroni : publication vue des trois nœuds, refus, valeurs piégées, demandes JSON, quorum perdu, écart puis bascule vers le préféré et retour, nettoyage au retrait).
 - Numérotation : suite en 0.9.12 (réglages de session communs) … DHCP multi-espaces en 0.9.17.
 
