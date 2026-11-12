@@ -2,7 +2,7 @@
 
 ## 0.9.16 — « Création de cluster : adresse virtuelle saisie sans préfixe »
 - Correctif : le formulaire « Créer le cluster » demande une simple adresse pour l'adresse virtuelle (VIP), mais le script exigeait `adresse/préfixe` (« VIP invalide (attendu : adresse/préfixe) »). Sans préfixe, celui de l'interface choisie est retenu (/24 à défaut), journalisé. Test ajouté à `b10-cluster-live` (186/0).
-- Feuille de route décalée : traçabilité en 0.9.17 … DHCP multi-espaces en 0.9.20.
+- Feuille de route décalée : traçabilité en 0.9.17 … DHCP multi-espaces en 0.9.21.
 
 ## 0.9.15 — « Création de cluster : réseau dédié facultatif vraiment facultatif »
 - Correctif : l'assistant « Créer le cluster » laisse le champ **réseau dédié** facultatif, mais le script exigeait une valeur (« REPL_NET invalide »). Sans valeur, le **sous-réseau de l'interface qui porte l'adresse du nœud** est retenu (journalisé), /24 à défaut. Test ajouté à `b10-cluster-live` (185/0).
