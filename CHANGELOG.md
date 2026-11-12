@@ -1,5 +1,9 @@
 # Journal des modifications
 
+## 0.9.18 — « Création de cluster : etcd redémarré avec la configuration du cluster »
+- Correctif constaté sur un nœud réel : juste après la création, « quorum perdu », base « inconnue », etcd injoignable. Le paquet Debian démarre etcd avec sa configuration par défaut (sans TLS, adresse locale) dès son installation ; l'activation faisait « enable --now », qui ne relance pas un service déjà actif, donc etcd gardait l'ancienne configuration. L'activation **redémarre** désormais etcd (création et rattachement).
+- Pour un nœud déjà dans cet état : `sudo systemctl restart etcd; sleep 5; sudo systemctl restart patroni`.
+
 ## 0.9.17 — « Création de cluster : base locale démarrée si besoin »
 - Constaté sur un nœud réel : après l'installation des paquets du cluster, PostgreSQL était arrêté (la console répondait 500 partout). La création du cluster **démarre désormais le service PostgreSQL s'il ne répond pas** (30 s d'attente) ; s'il ne démarre pas, elle s'arrête **avant toute modification** avec un message pointant le journal du service.
 - La page Cluster reste lisible quand la base est momentanément indisponible (plus de 500 sur l'état du cluster).

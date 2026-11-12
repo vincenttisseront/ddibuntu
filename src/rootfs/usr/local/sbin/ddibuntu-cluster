@@ -431,7 +431,10 @@ activate() {
     sysctl_do mask "postgresql@${C[PGVER]}-main.service" 2>/dev/null || true
   fi
   sysctl_do daemon-reload
-  sysctl_do enable --now etcd.service
+  # redémarrage (et non « --now ») : le paquet Debian démarre etcd avec sa configuration par défaut (sans TLS, adresse locale) dès son installation ;
+  # un « enable --now » ne relancerait pas ce processus déjà actif et le cluster resterait injoignable
+  sysctl_do enable etcd.service
+  sysctl_do restart etcd.service
   [ -n "${DDI_TEST_NO_PROMOTE:-}" ] || promote_self
   [ -n "${DDI_TEST:-}" ] || register_node "${C[NODE_NAME]}" "${C[NODE_IP]}" "${C[NODE_ROLE]}" 30 \
     || log "AVERTISSEMENT : inscription de ce nœud au registre impossible pour l'instant ; la synchronisation périodique réessaiera"
