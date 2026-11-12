@@ -83,6 +83,12 @@ check "init n1" cl 1 init --name n1 --ip "$(ip 1)" --net 127.0.0.0/8 --no-activa
 check_fail "init refusé si le nœud est déjà dans un cluster" cl 1 init --name n1 --ip "$(ip 1)" --net 127.0.0.0/8
 check_fail "init refuse un nom invalide" cl 9 init --name 'N 1;rm' --ip 127.0.1.9 --net 127.0.0.0/8
 check_fail "init refuse une adresse invalide" cl 9 init --name n9 --ip 127.0.1.999 --net 127.0.0.0/8
+# réseau dédié facultatif : sans --net, le sous-réseau du nœud est retenu (régression : « REPL_NET invalide » à la création depuis la console)
+mknode 8
+out8="$(cl 8 init --name n8 --ip 127.0.1.8 --no-activate 2>&1)"   # pas de PostgreSQL sur ce nœud d'essai : il échoue plus loin, après le choix du réseau
+case "$out8" in *"sous-réseau de 127.0.1.8 retenu (127.0.1.0/24)"*) pass_=1 ;; *) pass_=0 ;; esac
+case "$out8" in *"REPL_NET invalide"*) pass_=0 ;; esac
+expect_eq "sans --net : le sous-réseau du nœud est retenu (pas de « REPL_NET invalide »)" 1 "$pass_"
 C1="$(R 1)/etc/ddibuntu-cluster"
 expect_eq "la clé de l'autorité ne quitte pas le nœud 1" "yes" "$([ -f "$(R 1)/var/lib/ddibuntu/cluster/ca/ca.key" ] && echo yes || echo no)"
 expect_eq "clé privée du nœud : 0640 groupe ddicluster" "640 ddicluster" "$(stat -c '%a %G' "$C1/pki/node.key")"

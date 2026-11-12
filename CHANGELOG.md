@@ -1,5 +1,8 @@
 # Journal des modifications
 
+## 0.9.15 — « Création de cluster : réseau dédié facultatif vraiment facultatif »
+- Correctif : l'assistant « Créer le cluster » laisse le champ **réseau dédié** facultatif, mais le script exigeait une valeur (« REPL_NET invalide »). Sans valeur, le **sous-réseau de l'interface qui porte l'adresse du nœud** est retenu (journalisé), /24 à défaut. Test ajouté à `b10-cluster-live` (185/0).
+
 ## 0.9.14 — « Réglages de session communs au cluster, composants du cluster vérifiés »
 - **Système → Utilisateurs : carte « Sessions de connexion »** (administrateur) : durée maximale d'une session (1 à 72 h) et déconnexion après inactivité (5 à 1440 min). Les valeurs sont **enregistrées en base** (clé `session`), donc **répliquées et identiques sur tous les nœuds** ; sans valeur enregistrée, chaque nœud garde ses valeurs par défaut (`DDI_SESSION_HOURS`, `DDI_IDLE_MINUTES`). L'inactivité s'applique aussitôt à toutes les sessions, la durée aux nouvelles connexions (jeton signé d'un secondaire : plafonné à 4 h). Valeur corrompue en base : retour au défaut du nœud, jamais de session illimitée. Bouton « Revenir aux valeurs par défaut » (boîte de confirmation maison), action auditée.
 - **Création / rattachement de cluster : composants vérifiés d'avance.** Si `etcd`, `etcdctl`, `patroni` ou `patronictl` manquent, l'assistant l'affiche avec la commande d'installation (`apt install patroni etcd-server etcd-client python3-psycopg2 gnupg`) et désactive le bouton, au lieu d'une erreur après coup.

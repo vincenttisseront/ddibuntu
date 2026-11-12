@@ -1139,6 +1139,14 @@ cmd_init() {
   [ ! -f "$CONF" ] || die "ce nœud appartient déjà à un cluster ($CONF)"
   preflight
   conf_defaults
+  # réseau dédié facultatif : par défaut, le sous-réseau de l'interface qui porte l'adresse du nœud (/24 si on ne peut pas le lire)
+  if [ -z "$net" ] && valid_ip "$ip"; then
+    net="$(ip -o -4 addr show 2>/dev/null | awk -v ip="$ip" '{ split($4, a, "/"); if (a[1] == ip) print $4 }' | head -n1 | python3 -c 'import ipaddress,sys
+l = sys.stdin.read().strip()
+print(ipaddress.ip_interface(l).network if l else "")' 2>/dev/null)" || net=""
+    [ -n "$net" ] || net="$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_network(sys.argv[1] + "/24", strict=False))' "$ip" 2>/dev/null)" || net=""
+    [ -z "$net" ] || log "réseau dédié non précisé : sous-réseau de $ip retenu ($net)"
+  fi
   C[CLUSTER_NAME]="${DDI_CLUSTER_NAME:-ddibuntu}"; C[NODE_NAME]="$name"; C[NODE_ROLE]="$role"; C[NODE_IP]="$ip"; C[REPL_NET]="$net"; C[CA_NODE]=1
   C[PEERS]="$name=$ip:$role"
   # l'adresse du nœud doit être portée par CE serveur (la console ne peut pas toujours lister les adresses : la vérification de référence est ici)
