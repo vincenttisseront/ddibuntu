@@ -24,6 +24,9 @@ const T: Record<string, [(p: P, n: string, s: string) => string, (p: P, n: strin
   'backup.too_old': [(p, n) => `Dernière sauvegarde de ${n} vieille de ${p.hours} h (maximum toléré : ${p.maxHours} h).`, (p, n) => `Last backup on ${n} is ${p.hours} h old (maximum allowed: ${p.maxHours} h).`],
   'backup.archiver_failing': [(p, n) => `L’archivage des journaux WAL échoue sur ${n} (${p.failed} échec(s), dernier : ${p.wal}) : la restauration à un instant donné est compromise.`, (p, n) => `WAL archiving is failing on ${n} (${p.failed} failure(s), last: ${p.wal}): point-in-time recovery is at risk.`],
   'backup.run_failed': [(p, n) => `La dernière sauvegarde a échoué sur ${n} : ${p.message}`, (p, n) => `The last backup failed on ${n}: ${p.message}`],
+  'ipam.ghosts': [(p) => `${p.count} adresse(s) de l’IPAM n’ont plus répondu depuis ${p.days} jours (adresses fantômes) : à vérifier et libérer.`, (p) => `${p.count} IPAM address(es) have been silent for ${p.days} days (ghost addresses): review and release.`],
+  'ipam.unknown_hosts': [(p) => `La dernière découverte planifiée a trouvé ${p.count} hôte(s) actif(s) absent(s) de l’IPAM.`, (p) => `The last scheduled discovery found ${p.count} active host(s) missing from IPAM.`],
+  'ipam.mac_changed': [(p) => `La dernière découverte planifiée a vu ${p.count} adresse(s) répondre avec une MAC différente de l’IPAM (conflit ou changement de matériel).`, (p) => `The last scheduled discovery saw ${p.count} address(es) answering with a MAC different from IPAM (conflict or hardware change).`],
   'ipam.subnet_full': [(p, _n, s) => `Le sous-réseau ${s}${p.name ? ` (${p.name})` : ''} est utilisé à ${p.percent} % (${p.used}/${p.capacity}).`, (p, _n, s) => `Subnet ${s}${p.name ? ` (${p.name})` : ''} is ${p.percent}% used (${p.used}/${p.capacity}).`],
 }
 export function describe(rule: string, node: string, subject: string, params: P, lang: Lang): string {

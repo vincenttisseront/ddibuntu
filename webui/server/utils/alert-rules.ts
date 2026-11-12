@@ -24,7 +24,9 @@ export interface Snapshot {
   backup: BackupStatus | null
   backupResult: BackupResult | null
   subnets: SubnetUsage[]
+  hygiene?: Hygiene                              // absent = non évalué (ex. nœud secondaire)
 }
+export interface Hygiene { ghosts: number; ghostDays: number; scanAt: number | null; unknown: number; macChanged: number }
 export interface Memory { leader: string | null; leaderChangedAt: number | null }
 export interface Finding { key: string; rule: string; severity: Severity; node: string; subject: string; params: Record<string, string | number> }
 
@@ -35,7 +37,7 @@ export const RULES: Record<string, Severity> = {
   'node.health_stale': 'critical', 'node.service_down': 'critical', 'node.postgres_down': 'critical', 'node.disk_low': 'warning', 'node.cert_expiry': 'warning',
   'node.time_unsynced': 'warning', 'node.memory_low': 'warning',
   'backup.state_stale': 'warning', 'backup.none': 'warning', 'backup.too_old': 'warning', 'backup.archiver_failing': 'critical', 'backup.run_failed': 'warning',
-  'ipam.subnet_full': 'warning',
+  'ipam.subnet_full': 'warning', 'ipam.ghosts': 'info', 'ipam.unknown_hosts': 'warning', 'ipam.mac_changed': 'warning',
 }
 export const RULE_IDS = Object.keys(RULES)
 
@@ -134,6 +136,16 @@ export function evaluate(s: Snapshot, th: Thresholds, memory: Memory): { finding
   for (const u of s.subnets) {
     if (u.capacity < 16 || u.percent < th.subnetWarn) continue
     out.push(f('ipam.subnet_full', u.percent >= th.subnetCrit ? 'critical' : 'warning', '', u.cidr, { percent: u.percent, used: u.used, capacity: u.capacity, name: u.name }))
+  }
+
+  // ------------------------------------------------------------ IPAM : hygiène (adresses fantômes, hôtes inconnus, MAC changée) ; les deux derniers viennent de la découverte planifiée
+  const hy = s.hygiene
+  if (hy) {
+    if (hy.ghosts > 0) out.push(f('ipam.ghosts', 'info', '', '', { count: hy.ghosts, days: hy.ghostDays }))
+    if (hy.scanAt && s.now - hy.scanAt < 7 * 86400) {
+      if (hy.unknown > 0) out.push(f('ipam.unknown_hosts', 'warning', '', '', { count: hy.unknown }))
+      if (hy.macChanged > 0) out.push(f('ipam.mac_changed', 'warning', '', '', { count: hy.macChanged }))
+    }
   }
 
   // un seul constat par clé (la première occurrence gagne)

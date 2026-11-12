@@ -7,7 +7,7 @@ const rowH = 26
 
 <template>
   <div>
-    <svg role="img" :aria-label="label" :viewBox="`0 0 400 ${Math.max(items.length, 1) * rowH}`" class="w-full" preserveAspectRatio="xMinYMin meet">
+    <svg role="img" :aria-label="label" :viewBox="`0 0 400 ${Math.max(items.length, 1) * rowH}`" class="w-full max-w-[400px]" preserveAspectRatio="xMinYMin meet">
       <g v-for="(it, i) in items" :key="it.label" :transform="`translate(0 ${i * rowH})`">
         <title>{{ it.label }} : {{ it.display ?? it.value }}</title>
         <text x="0" y="16" class="fill-current text-xs font-mono" style="font-size: 11px">{{ it.label.length > 17 ? it.label.slice(0, 16) + '…' : it.label }}</text>

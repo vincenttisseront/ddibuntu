@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.9.35 — « Découverte planifiée, alertes d'hygiène, traçabilité des baux »
+- **Découverte planifiée** (IPAM → Découverte, section « Découverte planifiée ») : scan automatique des réseaux choisis (tous les réseaux IPv4 par défaut) toutes les 1 h à 7 j, exécuté par le nœud principal. Aucune adresse n'est créée : les adresses connues sont marquées « vues » (ce qui nourrit la détection des fantômes) et le passage compte les hôtes inconnus de l'IPAM et les adresses répondant avec une MAC différente. Bouton « Lancer maintenant ».
+- **Alertes d'hygiène** : `ipam.ghosts` (information : adresses silencieuses depuis 30 jours), `ipam.unknown_hosts` et `ipam.mac_changed` (avertissements issus du dernier passage, valables 7 jours), avec notifications webhook/courriel comme les autres alertes.
+- **Correctif d'affichage** : « Occupation des sous-réseaux » n'agrandit plus ses polices dans une grande carte (le graphique ne s'étire plus au-delà de sa taille nominale).
+- Tests : unitaires 288, e2e (planification, alertes, traçabilité).
+
 ## 0.9.34 — « Déployer depuis le tableau de bord »
 - Quand la configuration est « à déployer », la carte Système du tableau de bord affiche (administrateur) un bouton « Valider et déployer » qui mène directement à l'onglet Déploiement de la page DNS ; la pastille seule ne menait nulle part.
 

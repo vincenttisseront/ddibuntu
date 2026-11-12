@@ -306,7 +306,7 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
 
     <ResourceTable v-else-if="tab === 'vlans'" endpoint="/ipam/vlans" :columns="vlanCols" :fields="vlanFields" :can-write="canWrite" create-url="/ipam/vlans" :update-url="(r: any) => `/ipam/vlans/${r.id}`" :delete-url="(r: any) => `/ipam/vlans/${r.id}`" :delete-name="(r: any) => r.name" @changed="refreshVlans" />
     <GhostAddresses v-else-if="tab === 'ghosts'" />
-    <DiscoveryWizard v-else-if="tab === 'discovery' && canWrite" @changed="reloadData" />
+    <div v-else-if="tab === 'discovery' && canWrite" class="flex flex-col gap-4"><DiscoveryWizard @changed="reloadData" /><DiscoverySchedule /></div>
     <NetboxWizard v-else-if="tab === 'sources' && isAdmin" @changed="reloadData" />
     <div v-else-if="tab === 'search'" class="flex flex-col gap-3">
       <UInput v-model="sq" icon="i-lucide-search" :placeholder="t('ipam.search_ph')" :aria-label="t('common.search')" class="w-96" autofocus />

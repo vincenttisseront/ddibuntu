@@ -2,23 +2,14 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { audit, fail, route } from '../utils/router'
-import { one, query, tx } from '../utils/db'
+import { one, query, setSetting, tx } from '../utils/db'
 import { cfg } from '../utils/config'
 import { isValidDnsName, normMac } from '../utils/net'
 import { DiscoveryError, PORT_PRESETS, classify, discoverHosts, enumerateTargets, jobs, pingWorks, realDeps, runningJob, sweepJobs } from '../utils/discovery'
 import type { Job, KnownAddr } from '../utils/discovery'
 import { preImportSnapshot, record } from './importer'
-
-const leaseMap = async () => {
-  const out = new Map<string, { mac: string; hostname: string | null }>()
-  const t = await one<any>("select to_regclass('public.lease4') is not null as ok")
-  if (!t?.ok) return out
-  try {
-    for (const r of await query<any>(`select ((address >> 24) & 255) || '.' || ((address >> 16) & 255) || '.' || ((address >> 8) & 255) || '.' || (address & 255) as ip, encode(hwaddr, 'hex') as mac, hostname from lease4 where expire > now()`))
-      out.set(r.ip, { mac: (r.mac as string).match(/.{2}/g)?.join(':') ?? '', hostname: r.hostname || null })
-  } catch { /* table de baux indisponible */ }
-  return out
-}
+import { leaseMap } from '../utils/leasemap'
+import { ScheduleBody, getLastRun, getSchedule, runScheduled, scheduleRunning } from '../utils/discovery-schedule'
 
 route('GET', '/discovery/capabilities', 'operator', async () => ({ icmp: await pingWorks(), maxTargets: 4096, presets: PORT_PRESETS }))
 
@@ -55,6 +46,24 @@ route('POST', '/discovery/start', 'operator', async (c) => {
     } catch (e: any) { job.state = 'error'; job.error = 'discovery_failed'; console.error('[discovery]', e?.message) }
   })()
   return { id: job.id, total: job.total, warnings: job.warnings }
+})
+
+// ---- Découverte planifiée (réglage unique pour le cluster ; seul le primaire exécute)
+route('GET', '/discovery/schedule', 'operator', async () => ({ schedule: await getSchedule(), last: await getLastRun(), running: scheduleRunning() }))
+route('PUT', '/discovery/schedule', 'admin', async (c) => {
+  const b = await c.body(ScheduleBody)
+  if (b.subnetIds.length) { const n = (await query<any>('select count(*)::int as n from subnets where id = any($1)', [[...new Set(b.subnetIds)]]))[0]!.n; if (n !== new Set(b.subnetIds).size) fail(404, 'not_found') }
+  if (!b.methods.tcp && !b.methods.icmp && !b.methods.arp && !b.methods.reverse && !b.methods.leases) fail(400, 'discovery_no_method')
+  await setSetting('discovery_schedule', b)
+  await audit(c, 'discovery_schedule', 'discovery', undefined, { enabled: b.enabled, intervalHours: b.intervalHours, subnets: b.subnetIds.length })
+  return { schedule: b }
+})
+route('POST', '/discovery/schedule/run', 'operator', async (c) => {
+  if (scheduleRunning() || runningJob()) fail(409, 'discovery_running')
+  const sch = await getSchedule()
+  await audit(c, 'discovery_schedule_run', 'discovery')
+  void runScheduled(sch)   // en arrière-plan : l'interface relit l'état
+  return { started: true }
 })
 
 const getJob = (id: string): Job => { const j = jobs.get(id); if (!j) fail(404, 'not_found'); return j }

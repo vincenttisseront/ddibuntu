@@ -6,6 +6,7 @@ import { getSetting, inRecovery, one, query, setSetting, tx } from './db'
 import { readLocalHealth } from './health'
 import { readBackupResult, readBackupStatus } from './backup'
 import { subnetUsage } from './ipam-usage'
+import { getLastRun } from './discovery-schedule'
 import { evaluate, SEVERITY_RANK } from './alert-rules'
 import type { Finding, Memory, Severity, Snapshot } from './alert-rules'
 import { loadConfig } from './alert-config'
@@ -14,7 +15,16 @@ import type { Delivery, Kind, NotifyEvent } from './alert-notify'
 
 export async function gatherSnapshot(nowSec = Math.floor(Date.now() / 1000)): Promise<Snapshot> {
   const [cluster, localHealth, backup, backupResult, subnets] = await Promise.all([readClusterState(), readLocalHealth(), readBackupStatus(), readBackupResult(), subnetUsage().catch(() => [])])
-  return { now: nowSec, cluster, localHealth, backup, backupResult, subnets }
+  const hygiene = await gatherHygiene().catch(() => undefined)
+  return { now: nowSec, cluster, localHealth, backup, backupResult, subnets, hygiene }
+}
+
+const GHOST_DAYS = 30
+async function gatherHygiene() {
+  if (await inRecovery()) return undefined
+  const g = (await query<any>("select count(*)::int as n from addresses where status in ('used','dhcp') and last_seen is not null and last_seen < now() - make_interval(days => $1)", [GHOST_DAYS]))[0]!.n
+  const last = await getLastRun()
+  return { ghosts: g, ghostDays: GHOST_DAYS, scanAt: last?.ok ? last.at : null, unknown: last?.unknown ?? 0, macChanged: last?.macChanged ?? 0 }
 }
 
 export interface RunInfo { at: number; ok: boolean; findings: number; opened: number; resolved: number; notified: number; error?: string }

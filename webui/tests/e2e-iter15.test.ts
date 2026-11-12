@@ -95,3 +95,41 @@ describe('traçabilité des baux', () => {
     expect(r.json.items[0].ipam_hostname).toBe('bob-ipam')
   })
 })
+
+describe('découverte planifiée et alertes d\'hygiène', () => {
+  it('réglage : droits, validation, enregistrement', async () => {
+    const g = await viewer.get('/api/discovery/schedule'); code(g, 403, 'forbidden')
+    const a = await admin.get('/api/discovery/schedule'); expect(a.status).toBe(200); expect(a.json.schedule).toMatchObject({ enabled: false, intervalHours: 24 }); expect(a.json.last).toBeNull()
+    const ok = { enabled: true, intervalHours: 6, subnetIds: [], methods: { tcp: false, icmp: false, arp: false, reverse: false, leases: true } }
+    code(await viewer.put('/api/discovery/schedule', ok), 403, 'forbidden')
+    expect((await admin.put('/api/discovery/schedule', { ...ok, intervalHours: 0 })).status).toBe(400)
+    expect((await admin.put('/api/discovery/schedule', { ...ok, extra: 1 })).status).toBe(400)
+    code(await admin.put('/api/discovery/schedule', { ...ok, methods: { tcp: false, icmp: false, arp: false, reverse: false, leases: false } }), 400, 'discovery_no_method')
+    code(await admin.put('/api/discovery/schedule', { ...ok, subnetIds: [999999] }), 404, 'not_found')
+    expect((await admin.put('/api/discovery/schedule', ok)).status).toBe(200)
+    expect((await admin.get('/api/discovery/schedule')).json.schedule).toMatchObject({ enabled: true, intervalHours: 6, methods: { leases: true, icmp: false } })
+  })
+  it('passage à la demande : marque les connues, compte les inconnues, ne crée rien ; l\'alerte d\'hygiène apparaît puis se résout', async () => {
+    await db.query('delete from addresses; delete from subnets')
+    const s = (await db.query("insert into subnets (cidr, name) values ('10.77.0.0/29', 'labo') returning id")).rows[0].id
+    await db.query("insert into addresses (subnet_id, ip, status, hostname) values ($1, '10.77.0.2', 'used', 'connu')", [s])
+    await db.query('delete from lease4')
+    await lease('10.77.0.2', 'aa:bb:cc:01:01:01', 'connu'); await lease('10.77.0.3', 'aa:bb:cc:01:01:02', 'inconnu')
+    code(await viewer.post('/api/discovery/schedule/run'), 403, 'forbidden')
+    expect((await admin.post('/api/discovery/schedule/run')).status).toBe(200)
+    await until(async () => (await admin.get('/api/discovery/schedule')).json.last !== null, 40000)
+    const last = (await admin.get('/api/discovery/schedule')).json.last
+    expect(last, JSON.stringify(last)).toMatchObject({ ok: true, known: 1, unknown: 1, macChanged: 0 })
+    const n = (await db.query('select count(*)::int as n, count(last_seen)::int as seen from addresses')).rows[0]
+    expect(n).toEqual({ n: 1, seen: 1 })      // aucune adresse créée, la connue est marquée vue
+    const ev = await admin.post('/api/alerts/evaluate'); expect(ev.status).toBe(200)
+    const act = (await admin.get('/api/alerts')).json.active
+    expect(act.find((x: any) => x.rule === 'ipam.unknown_hosts')).toMatchObject({ severity: 'warning', params: { count: 1 } })
+  })
+  it('fantômes : adresse silencieuse depuis longtemps → alerte d\'information', async () => {
+    await db.query("update addresses set last_seen = now() - interval '40 days' where ip = '10.77.0.2'")
+    await admin.post('/api/alerts/evaluate')
+    const act = (await admin.get('/api/alerts')).json.active
+    expect(act.find((x: any) => x.rule === 'ipam.ghosts')).toMatchObject({ severity: 'info', params: { count: 1, days: 30 } })
+  })
+})
