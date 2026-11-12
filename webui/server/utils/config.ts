@@ -38,6 +38,8 @@ export function cfg() {
     // journal des requêtes BIND lu par la console (le dossier est lisible par le groupe ddiconsole)
     queryLogFile: e.DDI_QUERY_LOG ?? '/var/log/named/query.log',
     queryLogIntervalMs: num(e.DDI_QUERYLOG_INTERVAL_MS, 3000),
+    leaseTraceIntervalMs: num(e.DDI_LEASETRACE_INTERVAL_MS, 60000),
+    leaseTraceRetentionDays: num(e.DDI_LEASETRACE_RETENTION_DAYS, 400),
     namedCheckzone: e.DDI_NAMED_CHECKZONE ?? 'named-checkzone',
     namedCheckconf: e.DDI_NAMED_CHECKCONF ?? 'named-checkconf',
     keaDhcp4: e.DDI_KEA_DHCP4 ?? 'kea-dhcp4',

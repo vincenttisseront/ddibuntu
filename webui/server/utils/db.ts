@@ -406,7 +406,22 @@ create trigger cfg_gen_zones after insert or delete or update of name, type, mas
   soa_refresh, soa_retry, soa_expire, soa_minimum, default_ttl, ad_integrated, disabled, view_id on dns_zones for each statement execute function bump_config_generation();
 `
 
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }]
+// Itération 0.9.28 (traçabilité) : qui avait quelle adresse, quand. Une ligne = une association (IP, MAC, nom) observée sur un bail Kea ;
+// elle reste « ouverte » tant que le bail est actif et se referme quand l'association change ou que le bail disparaît.
+const SCHEMA_11 = String.raw`
+create table lease_history (
+  id bigserial primary key,
+  ip inet not null, mac macaddr not null, hostname text, subnet_id int,
+  first_seen timestamptz not null default now(), last_seen timestamptz not null default now(),
+  open boolean not null default true
+);
+create index lease_history_ip on lease_history (ip, last_seen desc);
+create index lease_history_mac on lease_history (mac, last_seen desc);
+create index lease_history_name on lease_history (lower(hostname));
+create index lease_history_open on lease_history (open) where open;
+`
+
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

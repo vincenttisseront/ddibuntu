@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.9.28 — « Traçabilité des baux »
+- Nouvelle page **Traçabilité** (menu DDI) : retrouvez qui (MAC, nom) détenait une adresse IP et quand. Recherche par IP ou début d'IP, MAC (tout format, début accepté) ou fragment de nom ; corrélation avec le nom saisi dans l'IPAM.
+- La console relève chaque minute les baux actifs de Kea (primaire uniquement) dans un historique : une ligne par association IP/MAC/nom, ouverte tant que le bail vit, fermée quand il disparaît ou change de poste. Rétention 400 jours (`DDI_LEASETRACE_RETENTION_DAYS`), intervalle `DDI_LEASETRACE_INTERVAL_MS` (0 = désactivé).
+- Bouton « Relever maintenant » (opérateur) et API `GET /api/trace?q=`, `POST /api/trace/collect`. Migration de schéma 11.
+- Limite connue : le nom d'utilisateur AD n'est pas encore corrélé (le nom de poste l'est via le nom d'hôte du bail) ; prévu avec les rôles par groupe AD.
+
 ## 0.9.27 — « Sélecteur de fichier bien visible »
 - Le bouton « Choisir un fichier » de tous les sélecteurs de fichier (rejoindre un cluster, import, Active Directory, filtrage) est maintenant un bouton plein aux couleurs de la console, dans une zone en pointillés qui réagit au survol.
 

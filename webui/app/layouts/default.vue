@@ -24,6 +24,7 @@ const navGroups = computed(() => {
       { label: t('nav.ipam'), icon: 'i-lucide-network', to: '/ipam' },
       { label: t('nav.dns'), icon: 'i-lucide-globe', to: '/dns' },
       { label: t('nav.dhcp'), icon: 'i-lucide-server', to: '/dhcp' },
+      { label: t('nav.trace'), icon: 'i-lucide-history', to: '/trace' },
     ] },
     { label: t('nav.grp_security'), items: [{ label: t('nav.filtering'), icon: 'i-lucide-shield-ban', to: '/filtering' }] },
     { label: t('nav.grp_ops'), items: [
