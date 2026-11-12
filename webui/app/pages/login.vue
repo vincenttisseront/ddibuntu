@@ -2,6 +2,7 @@
 definePageMeta({ layout: 'blank' })
 const { t, lang, setLang } = useT()
 const api = useApi()
+const { data: setup } = await useFetch<{ needed: boolean }>('/api/setup/status')
 const username = ref(''), password = ref(''), error = ref(''), busy = ref(false)
 async function submit() {
   busy.value = true; error.value = ''
@@ -25,7 +26,7 @@ async function submit() {
       <UFormField :label="t('login.username')" required><UInput v-model="username" autocomplete="username" autofocus class="w-full" /></UFormField>
       <UFormField :label="t('login.password')" required><UInput v-model="password" type="password" autocomplete="current-password" class="w-full" /></UFormField>
       <UButton type="submit" block :loading="busy" :label="t('login.submit')" :disabled="!username || !password" />
-      <NuxtLink to="/setup" class="text-xs text-muted text-center underline">{{ t('login.first_setup') }}</NuxtLink>
+      <NuxtLink v-if="setup?.needed" to="/setup" class="text-xs text-muted text-center underline">{{ t('login.first_setup') }}</NuxtLink>
     </form>
   </UCard>
 </template>

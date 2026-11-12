@@ -44,8 +44,10 @@ beforeAll(async () => {
     DDI_SECRET_KEY: 'cle-secrete-de-test-0123456789abcdefghij', DDI_SETUP_TOKEN: SETUP_TOKEN, DDI_PBKDF2_ITERATIONS: '2000', DDI_GENERATED_DIR: GEN, DDI_QUERY_LOG: LOG, DDI_QUERYLOG_INTERVAL_MS: '300' } })
   srv.stdout!.on('data', (d) => { srvLog += d }); srv.stderr!.on('data', (d) => { srvLog += d })
   await until(async () => (await fetch(BASE + '/api/health')).status === 200)
+  expect((await anon.get('/api/setup/status')).json).toEqual({ needed: true })   // appliance vierge : le lien « Première configuration » est proposé
   const su = await anon.post('/api/setup/admin', { token: SETUP_TOKEN, username: 'admin', password: PW })
   expect(su.status, `setup : ${su.text}\n${srvLog.slice(-1500)}`).toBe(200)
+  expect((await anon.get('/api/setup/status')).json).toEqual({ needed: false })   // initialisée : le lien disparaît (et /setup renvoie vers /login)
   expect((await admin.login('admin', PW)).status).toBe(200)
   await admin.post('/api/users', { username: 'oper', role: 'operator', password: PW }); await admin.post('/api/users', { username: 'lect', role: 'viewer', password: PW })
   expect((await operator.login('oper', PW)).status).toBe(200); expect((await viewer.login('lect', PW)).status).toBe(200)

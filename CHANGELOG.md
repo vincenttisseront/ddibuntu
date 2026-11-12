@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.10 — « Première configuration masquée ; élection du quorum validée »
+- **Connexion** : le lien « Première configuration » n'est proposé que tant qu'aucun administrateur n'existe (`GET /api/setup/status`, un seul booléen public) ; la page `/setup` renvoie vers la connexion une fois l'appliance initialisée.
+- **Validation réelle de l'élection du quorum à la création du cluster** (`tests/b24-cluster-quorum-live.sh`, 71 contrôles, 3 vrais etcd + Patroni/PostgreSQL). À chaque étape (nœud seul, jonction de n2, jonction de l'arbitre n3) : nombre de votants et majorité requise, un chef raft élu reconnu par tous au même terme, écriture validée par la majorité et lecture linéarisable identique depuis chaque membre, bail de chef Patroni unique dans etcd. Puis épreuves : perte de l'arbitre (quorum 2/3 conservé, aucune nouvelle élection), perte du chef raft (nouvelle élection, terme supérieur, retour de l'ancien chef en suiveur), perte de la majorité (plus aucune écriture ni lecture servie, retour du quorum sans perte de donnée, un seul primaire).
+- Numérotation : suite en 0.9.11 (traçabilité) … DHCP multi-espaces en 0.9.15.
+
 ## 0.9.9 — « Correctif : l'IPAM se rafraîchit après un import »
 - Après un import NetBox (ou une découverte réseau, ou l'annulation d'un import), seuls les VLAN apparaissaient dans l'IPAM : les onglets Réseaux, Adresses, Pools et Espaces gardaient l'état d'avant l'import jusqu'au rechargement de la page. Les assistants préviennent maintenant la page, qui recharge toutes ses listes.
 - Numérotation : suite en 0.9.10 (traçabilité) … DHCP multi-espaces en 0.9.14.

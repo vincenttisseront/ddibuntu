@@ -1,6 +1,9 @@
 <script setup lang="ts">
 definePageMeta({ layout: 'blank' })
 const { t } = useT(); const api = useApi()
+// appliance déjà initialisée : plus rien à faire ici
+const { data: status } = await useFetch<{ needed: boolean }>('/api/setup/status')
+if (!status.value?.needed) await navigateTo('/login', { replace: true })
 const token = ref(''), username = ref('admin'), password = ref(''), error = ref(''), done = ref(false)
 async function submit() {
   error.value = ''

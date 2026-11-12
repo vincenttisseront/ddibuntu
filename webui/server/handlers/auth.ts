@@ -78,6 +78,8 @@ route('POST', '/auth/password', 'viewer', async (c) => {
 })
 
 // Première configuration : seulement tant qu'aucun utilisateur n'existe, et avec le jeton d'installation
+// La page de connexion n'en propose le lien que tant que c'est possible (un seul booléen est révélé).
+route('GET', '/setup/status', 'public', async () => ({ needed: !!cfg().setupToken && Number((await one<{ n: string }>('select count(*) n from users'))?.n ?? 0) === 0 }))
 route('POST', '/setup/admin', 'public', async (c) => {
   const b = await c.body(z.object({ token: z.string().min(1).max(200), username, password: z.string().min(1).max(512) }))
   const expected = cfg().setupToken
