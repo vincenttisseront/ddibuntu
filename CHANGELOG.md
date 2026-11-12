@@ -1,5 +1,8 @@
 # Journal des modifications
 
+## 0.9.22 — « Cluster : la nouvelle version est annoncée aussitôt après une mise à jour »
+- Constaté : juste après une mise à jour, la page Cluster affichait encore l'ancienne version du nœud (« versions homogènes 0.9.16 » alors que le nœud était en 0.9.21) jusqu'au prochain passage de la synchronisation (≤ 1 min). Une mise à jour réussie publie désormais la version du nœud dans etcd immédiatement.
+
 ## 0.9.21 — « Cluster : réplication locale de Patroni et archivage WAL »
 - Correctifs constatés sur un nœud réel (Patroni actif, leader) : (1) `no pg_hba.conf entry for replication connection from 127.0.0.1, user replicator` : Patroni se connecte à sa propre base par la boucle locale ; elle est autorisée (SSL + certificat obligatoires). Les nœuds existants sont mis à niveau par la synchronisation périodique (`ddibuntu-cluster sync`, rechargement de Patroni). (2) `wal-archive.sh: Permission denied` : le script n'avait plus son bit d'exécution (rw-r--r--) ; l'activation et la synchronisation périodique le rétablissent.
 

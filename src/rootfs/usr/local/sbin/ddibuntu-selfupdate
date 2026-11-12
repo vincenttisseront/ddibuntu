@@ -278,6 +278,8 @@ cmd_apply() {
   [ "$ok" = 1 ] || die "la console ne répond pas après la mise à jour"
   rollback_needed=0
   trap 'rm -f -- "${DDI_SU_COPY:-}"' EXIT
+  # nœud de cluster : annonce tout de suite la nouvelle version (sinon la page Cluster affiche l'ancienne jusqu'au prochain passage de « follow », ≤ 1 min)
+  [ "$TEST" = 1 ] || timeout 10 "$DDI_ROOT/usr/local/sbin/ddibuntu-cluster" _putver "$LATEST" >/dev/null 2>&1 || true
   rm -rf "$OLD_CONSOLE"
   printf '%s -> %s le %s (en ligne)\n' "$cur" "$LATEST" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$DDI_STATEDIR/update-history"
   find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | tail -n +4 | while IFS= read -r f; do rm -rf "$f"; done
