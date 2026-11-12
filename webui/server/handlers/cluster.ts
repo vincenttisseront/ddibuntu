@@ -16,7 +16,7 @@ route('GET', '/cluster/role', 'public', async () => ({ replica: await inRecovery
 route('GET', '/cluster/status', 'viewer', async () => {
   const state = await readClusterState()
   return {
-    clustered: state !== null, replica: await inRecovery(), state, candidates: switchoverCandidates(state), result: await readSwitchoverResult(),
+    clustered: state !== null, replica: await inRecovery().catch(() => false), state, candidates: switchoverCandidates(state), result: await readSwitchoverResult(),
     // hors cluster : de quoi remplir l'assistant de création (adresses réelles du serveur, nom de la machine)
     ...(state === null ? { setup: { hostname: shortHostname(), addresses: localAddresses(cfg().testMode), missing: cfg().testMode ? [] : missingClusterTools(), install: CLUSTER_INSTALL_CMD } } : {}),
     // dans un cluster : interfaces et adresses de CE serveur (formulaires de réglages) — liste vide si le service durci ne peut pas les lire
