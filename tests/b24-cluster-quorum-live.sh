@@ -106,6 +106,8 @@ lease_holder() { local k; k="$(ectl 1 get --prefix /ddibuntu/ --keys-only 2>/dev
 expect_eq "bail de chef Patroni tenu dans etcd par n1 (une seule clé de chef)" "n1 1" "$(lease_holder) $(ectl 1 get --prefix /ddibuntu/ --keys-only 2>/dev/null | grep -c '/leader$')"
 bundle() { cl 1 bundle --name "$1" --ip "$2" --role "$3" --out "$B/$1.bundle" 2>"$B/bundle-$1.err"; }
 P2="$(bundle n2 "$(ip 2)" data)"; [ -n "$P2" ] && ok "lot n2" || ko "lot n2" "$(cat "$B/bundle-n2.err")"
+# membre déclaré mais pas encore démarré (sans nom dans etcd) : il reste « learner », le quorum de n1 ne change pas (régression : il comptait comme votant)
+expect_eq "n2 déclaré, pas démarré : 1 votant, majorité 1, quorum présent" "1 1 True" "$(quorum 1 | rep 'str(d["voters"])+" "+str(d["needed"])+" "+str(d["hasQuorum"])')"
 mknode 2; initdb_local 2
 check "join n2" clp "$P2" 2 join "$B/n2.bundle" --wipe-local-db --no-activate
 start_etcd 2; wait_for 30 "etcd n2" ectl 2 endpoint status

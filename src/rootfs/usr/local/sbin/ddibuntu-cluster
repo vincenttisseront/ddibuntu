@@ -1320,10 +1320,15 @@ def load(name):
 peers = []
 for p in os.environ["PEERS"].split():
     name, rest = p.split("=", 1); ip, role = rest.rsplit(":", 1); peers.append((name, ip, role))
-ml = load("members.json"); mem = {}
+ml = load("members.json"); mem = {}; mem_ip = {}
 if isinstance(ml, dict):
     for m in ml.get("members", []):
-        if isinstance(m, dict) and m.get("name"): mem[m["name"]] = m
+        if not isinstance(m, dict): continue
+        if m.get("name"): mem[m["name"]] = m
+        # un membre déclaré mais pas encore démarré n'a PAS de nom dans etcd : on le reconnaît à son adresse de pair (sinon un « learner » compterait comme votant)
+        for u in (m.get("peerURLs") or []):
+            h = str(u).split("://", 1)[-1].rsplit(":", 1)[0]
+            if h: mem_ip.setdefault(h, m)
 rows = []; leader_id = None
 for name, ip, role in peers:
     st = (load(name + ".status") or [{}])[0].get("Status") or {}
@@ -1333,13 +1338,14 @@ for name, ip, role in peers:
     except Exception: pass
     reach = bool(st)
     if reach and st.get("leader"): leader_id = st["leader"]
-    mid = (st.get("header") or {}).get("member_id") or (mem.get(name) or {}).get("ID")
+    em = mem.get(name) or mem_ip.get(ip) or {}
+    mid = (st.get("header") or {}).get("member_id") or em.get("ID")
     rows.append({"name": name, "ip": ip, "role": role, "reachable": reach, "healthy": h.get("health") is True,
-                 "learner": bool(st.get("isLearner")) if reach else bool((mem.get(name) or {}).get("isLearner")),
+                 "learner": bool(st.get("isLearner")) if reach else bool(em.get("isLearner")),
                  "memberId": ("%x" % mid) if isinstance(mid, int) else None, "version": st.get("version") if reach else None,
                  "raftIndex": st.get("raftIndex") if reach else None, "raftTerm": st.get("raftTerm") if reach else None,
                  "dbSize": st.get("dbSize") if reach else None, "latencyMs": ms if reach else None,
-                 "inEtcd": (name in mem) if mem else None, "errors": [str(e)[:120] for e in (st.get("errors") or [])][:3]})
+                 "inEtcd": (name in mem or ip in mem_ip) if (mem or mem_ip) else None, "errors": [str(e)[:120] for e in (st.get("errors") or [])][:3]})
 for r in rows:
     r["isLeader"] = bool(leader_id) and r["memberId"] is not None and int(r["memberId"], 16) == leader_id
 voters = [r for r in rows if not r["learner"]]

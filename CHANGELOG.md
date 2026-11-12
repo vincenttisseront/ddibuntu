@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.25 — « Quorum : un nœud déclaré mais pas encore démarré ne compte plus comme votant »
+- **Correctif important** : après « Ajouter un nœud », le membre etcd est déclaré en « learner » (sans voix) mais n'a **pas de nom** tant que le nouveau serveur n'a pas démarré. La console ne le reconnaissait donc pas comme learner et le comptait comme votant : la page affichait « quorum perdu » (1 sain sur 2, majorité 2) alors que le quorum réel était intact, et des actions comme « Retirer » étaient refusées. Le membre est maintenant reconnu à son adresse de pair.
+- Test `b24-cluster-quorum-live` : étape « nœud déclaré, pas démarré » (72/0 ; échoue sur l'ancien code).
+- Sur un nœud affecté : installer cette version, puis « Retirer » le nœud non démarré fonctionne (ou, sans attendre : `sudo etcdctl … member remove <ID>`). Inutile de reconstruire le cluster.
+
 ## 0.9.24 — « Demandes du cluster : plus de demande perdue »
 - **Cause d'un blocage constaté** (« Créer le lot » qui tourne sans fin, puis « Une opération est déjà en cours ») : une demande déposée pendant qu'une autre était en cours de traitement (l'actualisation automatique, toutes les 5 s) n'était jamais traitée : l'unité de surveillance ne se réarmait pas. Corrigé en 0.9.23 (`PathExists`) ; la mise à jour **redémarre** désormais ces unités pour que la règle s'applique tout de suite.
 - Un fichier de demande de création de cluster resté d'une tentative précédente est retiré automatiquement dès que le nœud est en cluster (il bloquait les assistants).
