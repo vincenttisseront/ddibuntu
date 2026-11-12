@@ -1,5 +1,8 @@
 # Journal des modifications
 
+## 0.9.34 — « Déployer depuis le tableau de bord »
+- Quand la configuration est « à déployer », la carte Système du tableau de bord affiche (administrateur) un bouton « Valider et déployer » qui mène directement à l'onglet Déploiement de la page DNS ; la pastille seule ne menait nulle part.
+
 ## 0.9.33 — « Sonde de santé activée sur les nœuds mis à jour »
 - Sur un nœud mis à jour par la console, la minuterie `ddibuntu-health.timer` n'était pas activée : « Services de ce nœud » restait sur « Collecte de l'état » indéfiniment. La mise à jour l'active et la démarre désormais.
 

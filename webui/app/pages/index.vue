@@ -162,7 +162,7 @@ const quorumOk = computed(() => cl.value?.quorum?.hasQuorum === true)
           <dt class="text-muted">{{ t('dash.host') }}</dt><dd class="font-mono truncate" :title="sys.host.hostname">{{ sys.host.hostname }}</dd>
           <dt class="text-muted">{{ t('dash.uptime') }}</dt><dd>{{ uptime(sys.host.uptimeSeconds) }}</dd>
           <template v-if="cfgState"><dt class="text-muted">{{ t('dash.config_gen') }}</dt>
-            <dd class="flex items-center gap-2"><span class="font-mono">#{{ cfgState.generation }}</span><UBadge size="sm" variant="subtle" :color="cfgState.pending ? 'warning' : 'success'" :label="cfgState.pending ? t('dash.config_pending') : t('dash.config_applied')" /></dd></template>
+            <dd class="flex items-center gap-2"><span class="font-mono">#{{ cfgState.generation }}</span><UBadge size="sm" variant="subtle" :color="cfgState.pending ? 'warning' : 'success'" :label="cfgState.pending ? t('dash.config_pending') : t('dash.config_applied')" /><UButton v-if="cfgState.pending && isAdmin" to="/dns#deploy" size="xs" color="warning" variant="outline" icon="i-lucide-rocket" :label="t('dash.deploy_now')" data-test="dash-deploy" /></dd></template>
         </dl>
         <BarChart v-if="resources.length" :items="resources" :max="100" :label="t('dash.system')" />
         <div v-if="sys?.lastApply" class="mt-3 flex items-start gap-2 text-sm">
