@@ -54,6 +54,7 @@ await load()
         <MigrationDns v-if="s.id === 'dns' && canWrite" @done="load" />
         <MigrationLeases v-if="s.id === 'dhcp' && canWrite" :push="st.leasePush" @done="load" />
         <MigrationAssess v-if="s.id === 'assess' && canWrite" @done="load" />
+        <MigrationCutover v-if="s.id === 'cutover'" @done="load" />
         <MigrationVerify v-if="s.id === 'review' && canWrite" :admin="isAdmin" @done="load" />
         <div v-if="s.id === 'scripts'" class="flex flex-col gap-2">
           <div class="flex flex-wrap gap-2"><UButton v-for="(sc, k) in SCRIPTS" :key="k" size="xs" :color="shown === k ? 'primary' : 'neutral'" variant="outline" icon="i-lucide-file-code" :label="sc.title" @click="shown = shown === k ? '' : String(k)" /></div>

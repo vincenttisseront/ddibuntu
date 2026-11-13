@@ -39,3 +39,22 @@ $csv = (Get-DhcpServerv4Scope | ForEach-Object { Get-DhcpServerv4Lease -ScopeId 
   Select-Object IPAddress, ClientId, HostName, AddressState, @{ n = 'ExpiryUtc'; e = { $_.LeaseExpiryTime.ToUniversalTime().ToString('s') } } |
   ConvertTo-Csv -NoTypeInformation) -join "\`n"
 Invoke-RestMethod -Method Post -Uri "$console/api/migration/leases/commit" -Headers @{ Authorization = "Bearer $token" } -ContentType 'application/json' -Body (@{ content = $csv; refresh = $true } | ConvertTo-Json)`
+
+// Scripts de bascule : CONTRAIREMENT aux précédents, ils MODIFIENT le serveur Windows. Ils ne sont affichés que dans le plan de bascule.
+export const PS_CUTOVER_TTL = `# J-1 : abaisser le TTL des enregistrements A / AAAA / CNAME à 300 s pour que la bascule se propage vite (exécuter sur le serveur Windows)
+$ttl = [timespan]::FromSeconds(300)
+Get-DnsServerZone | Where-Object { -not $_.IsAutoCreated -and $_.ZoneType -eq 'Primary' -and -not $_.IsReverseLookupZone -and $_.ZoneName -ne 'TrustAnchors' } | ForEach-Object {
+  $z = $_.ZoneName
+  Get-DnsServerResourceRecord -ZoneName $z | Where-Object { $_.RecordType -in 'A','AAAA','CNAME' -and $_.TimeToLive -gt $ttl } | ForEach-Object {
+    $new = [ciminstance]::new($_); $new.TimeToLive = $ttl
+    Set-DnsServerResourceRecord -ZoneName $z -OldInputObject $_ -NewInputObject $new
+  }
+}`
+export const PS_CUTOVER_STOP = `# Bascule : désactiver les étendues DHCP Windows (les clients renouvellent alors auprès de la console). Garder la liste pour le retour arrière.
+$ids = Get-DhcpServerv4Scope | Where-Object State -eq 'Active' | Select-Object -ExpandProperty ScopeId
+$ids | ForEach-Object { $_.IPAddressToString } | Out-File "$env:TEMP\\scopes-actives.txt"
+$ids | ForEach-Object { Set-DhcpServerv4Scope -ScopeId $_ -State InActive }
+Write-Host "Étendues désactivées : $($ids.Count) (liste dans $env:TEMP\\scopes-actives.txt)"`
+export const PS_CUTOVER_ROLLBACK = `# Retour arrière : réactiver les étendues désactivées par le script de bascule
+Get-Content "$env:TEMP\\scopes-actives.txt" | ForEach-Object { Set-DhcpServerv4Scope -ScopeId $_ -State Active }
+Write-Host "Étendues réactivées. Repointer ensuite les relais DHCP (ip helper-address) et les DNS des clients vers Windows."`

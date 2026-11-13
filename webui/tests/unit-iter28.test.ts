@@ -23,3 +23,23 @@ describe('vérification avant bascule', () => {
     expect(out.checked).toBe(3); expect(out.diffs.map((d) => d.name)).toEqual(['y', 'z']); expect(out.diffs[1]).toMatchObject({ windows: null, ddi: [] })
   })
 })
+
+import { cutoverItems, parseCutover } from '../server/utils/cutover'
+import { PS_CUTOVER_ROLLBACK, PS_CUTOVER_STOP, PS_CUTOVER_TTL } from '../app/utils/migration-scripts'
+describe('plan de bascule (logique)', () => {
+  const now = Date.parse('2026-11-13T12:00:00Z')
+  it('points automatiques déduits ; baux périmés ou zones encore secondaires = pas fait', () => {
+    const f = (o: any) => Object.fromEntries(cutoverItems({ ttl: true }, { reviewDone: true, leasePushAt: '2026-11-13T11:50:00Z', secondaryLeft: 0, now, ...o }).map((i) => [i.id, i.done]))
+    expect(f({})).toMatchObject({ ttl: true, verify: true, leases: true, promote: true, relay: false })
+    expect(f({ leasePushAt: '2026-11-13T11:00:00Z' }).leases).toBe(false); expect(f({ leasePushAt: null }).leases).toBe(false)
+    expect(f({ secondaryLeft: 2 }).promote).toBe(false); expect(f({ reviewDone: false }).verify).toBe(false)
+  })
+  it('lecture tolérante de l\'état enregistré', () => {
+    expect(parseCutover(null)).toMatchObject({ started: null, finishedAt: null }); expect(parseCutover({ started: { snapshotId: 'x' } }).started).toBeNull()
+    expect(parseCutover({ started: { snapshotId: 4, at: 'a' }, manual: { ttl: true, zzz: true } }).manual).toMatchObject({ ttl: true, relay: false })
+  })
+  it('scripts de bascule : jamais de secret, et seuls ceux-ci modifient Windows', () => {
+    expect(PS_CUTOVER_STOP).toContain('InActive'); expect(PS_CUTOVER_ROLLBACK).toContain('-State Active'); expect(PS_CUTOVER_TTL).toContain('Set-DnsServerResourceRecord')
+    for (const s of [PS_CUTOVER_STOP, PS_CUTOVER_ROLLBACK, PS_CUTOVER_TTL]) expect(s).not.toMatch(/ddi_[A-Za-z0-9_-]{20,}|password|jeton/i)
+  })
+})

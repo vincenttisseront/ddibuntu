@@ -1,5 +1,13 @@
 # Journal des modifications
 
+## 0.12.6 — « Migration Windows : plan de bascule et retour arrière »
+
+- Check-list ordonnée de bascule : TTL abaissés (J-1), vérification sans écart, baux récents, relais DHCP, étendues Windows désactivées, zones basculées en primaires, clients et redirecteurs repointés. Les points vérifiables se cochent seuls.
+- Démarrage (administrateur) : point de restauration pris avant toute action ; fin de bascule refusée tant que la check-list n'est pas complète, puis étape « Bascule » du parcours cochée.
+- Retour arrière (administrateur) : les données de la console reviennent au point de départ (un point « avant restauration » est pris), la bascule repart de zéro.
+- Scripts PowerShell de bascule (TTL, désactivation et réactivation des étendues) affichés uniquement dans ce plan.
+- Tests : unit-iter28, e2e-iter28.
+
 ## 0.12.5 — « Migration Windows : vérification avant bascule »
 
 - DHCP : comparaison de l'export Windows avec les étendues de la console — étendues absentes ou en trop, plages, réservations, durée de bail, état, options (routeurs, DNS, domaine, NTP, TFTP…). Lecture seule.

@@ -220,3 +220,68 @@ route('POST', '/migration/verify/dns', 'admin', async (c) => {
   await audit(c, 'migration_verify', 'settings', undefined, { kind: 'dns', checked: out.checked, diffs: out.diffs.length })
   return { ...out, truncated: recs.length > PROBE_MAX }
 })
+
+// ---- Plan de bascule et retour arrière (0.12.6) ----
+import { CUTOVER_ITEMS, cutoverItems, parseCutover } from '../utils/cutover'
+import { restoreSnapshot } from '../utils/snapshots'
+
+async function cutoverState() {
+  const cur = parseCutover(await getSetting<unknown>('migration_cutover', null).catch(() => null))
+  const mig = parseMigration(await getSetting<unknown>('migration', null).catch(() => null))
+  const push = await getSetting<any>('migration_leases', null).catch(() => null)
+  const sec = await one<any>("select count(*)::int n from dns_zones where type = 'secondary' and cardinality(masters) > 0")
+  const items = cutoverItems(cur.manual, { reviewDone: mig.review, leasePushAt: push?.at ?? null, secondaryLeft: sec?.n ?? 0, now: Date.now() })
+  return { started: cur.started, finishedAt: cur.finishedAt, items, pending: items.filter((i) => !i.done).map((i) => i.id) }
+}
+const saveCutover = (v: unknown) => setSetting('migration_cutover', v)
+async function setMigrationStep(step: Step, done: boolean) {
+  const cur = parseMigration(await getSetting<unknown>('migration', null).catch(() => null)); cur[step] = done
+  await setSetting('migration', { done: cur })
+}
+
+route('GET', '/migration/cutover', 'viewer', async () => cutoverState())
+
+route('PUT', '/migration/cutover/item', 'operator', async (c) => {
+  const b = await c.body(z.object({ id: z.enum(CUTOVER_ITEMS.map((i) => i.id) as [string, ...string[]]), done: z.boolean() }))
+  if (CUTOVER_ITEMS.find((i) => i.id === b.id)!.auto) fail(400, 'cutover_item_auto')
+  const cur = parseCutover(await getSetting<unknown>('migration_cutover', null).catch(() => null))
+  if (cur.finishedAt) fail(409, 'cutover_done')
+  cur.manual[b.id] = b.done
+  await saveCutover(cur)
+  await audit(c, 'migration_cutover_item', 'settings', undefined, b)
+  return cutoverState()
+})
+
+// Démarrage : point de restauration pris AVANT toute action de bascule ; il sert au retour arrière.
+route('POST', '/migration/cutover/start', 'admin', async (c) => {
+  const cur = parseCutover(await getSetting<unknown>('migration_cutover', null).catch(() => null))
+  if (cur.started) fail(409, 'cutover_started')
+  const snapshotId = await captureSnapshot('manual', 'avant la bascule Windows → DDI', c.user?.username ?? null)
+  await saveCutover({ ...cur, started: { at: new Date().toISOString(), by: c.user?.username ?? null, snapshotId }, finishedAt: null })
+  await audit(c, 'migration_cutover_start', 'settings', undefined, { snapshotId })
+  return cutoverState()
+})
+
+route('POST', '/migration/cutover/finish', 'admin', async (c) => {
+  const cur = parseCutover(await getSetting<unknown>('migration_cutover', null).catch(() => null))
+  if (!cur.started) fail(409, 'cutover_not_started')
+  if (cur.finishedAt) fail(409, 'cutover_done')
+  const st = await cutoverState()
+  if (st.pending.length) fail(409, 'cutover_incomplete', undefined, { pending: st.pending })
+  await saveCutover({ ...cur, finishedAt: new Date().toISOString() })
+  await setMigrationStep('cutover', true)
+  await audit(c, 'migration_cutover_finish', 'settings', undefined, { snapshotId: cur.started.snapshotId })
+  return cutoverState()
+})
+
+// Retour arrière : les données de la console reviennent au point pris au démarrage (un point « avant restauration » est pris à son tour) ;
+// côté Windows, il suffit de réactiver les étendues et de repointer les relais (étapes inverses, rappelées par l'écran).
+route('POST', '/migration/cutover/rollback', 'admin', async (c) => {
+  const cur = parseCutover(await getSetting<unknown>('migration_cutover', null).catch(() => null))
+  if (!cur.started) fail(409, 'cutover_not_started')
+  const r = await restoreSnapshot(cur.started.snapshotId, c.user?.username ?? null)
+  await saveCutover({ started: null, manual: {}, finishedAt: null })
+  await setMigrationStep('cutover', false)
+  await audit(c, 'migration_cutover_rollback', 'settings', undefined, { snapshotId: cur.started.snapshotId, preSnapshot: r.preSnapshot })
+  return { ...(await cutoverState()), restored: r.counts, preSnapshot: r.preSnapshot }
+})
