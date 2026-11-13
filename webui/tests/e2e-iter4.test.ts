@@ -90,7 +90,7 @@ const mk = async () => {
   return { vlan, s1, s2, z }
 }
 let W: Awaited<ReturnType<typeof mk>>
-const MIGRATIONS_LAST = 18   // dernière migration du schéma (18 : source des enregistrements DNS)
+const MIGRATIONS_LAST = 19   // dernière migration du schéma (19 : classes de clients DHCP)
 
 describe('points de restauration des données', () => {
   it('migration 2 appliquée, version 0.4.0', async () => {
@@ -113,7 +113,7 @@ describe('points de restauration des données', () => {
     expect(meta.counts).toMatchObject({ vlans: 1, subnets: 2, addresses: 1, dns_zones: 1, dns_records: 3 })
     const raw = JSON.stringify((await rows('select data from config_snapshots where id = $1', [snapA]))[0].data)
     expect(raw).not.toMatch(/password_hash|token_hash|csrf|session/i)
-    expect(Object.keys((await rows('select data from config_snapshots where id = $1', [snapA]))[0].data).sort()).toEqual(['addresses', 'dhcp_pools', 'dhcp_reservations', 'dhcp_scopes', 'dns_records', 'dns_views', 'dns_zones', 'filter_rules', 'ipam_pools', 'ipam_spaces', 'network_templates', 'settings', 'subnets', 'vlans'])
+    expect(Object.keys((await rows('select data from config_snapshots where id = $1', [snapA]))[0].data).sort()).toEqual(['addresses', 'dhcp_classes', 'dhcp_pools', 'dhcp_reservations', 'dhcp_scopes', 'dns_records', 'dns_views', 'dns_zones', 'filter_rules', 'ipam_pools', 'ipam_spaces', 'network_templates', 'settings', 'subnets', 'vlans'])
   })
   it('diff : annonce ce que fera la restauration (supprimé / rétabli / modifié)', async () => {
     await admin.del(`/api/ipam/subnets/${W.s2.id}`)                                  // sera rétabli

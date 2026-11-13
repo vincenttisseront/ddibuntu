@@ -472,7 +472,22 @@ alter table dns_records add column source text not null default 'manual' check (
 create index dns_records_source on dns_records (zone_id) where source <> 'manual';
 `
 
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }]
+// 0.12.8 : classes de clients DHCP (fabricant, utilisateur, MAC), option 43, rejet par MAC.
+const SCHEMA_19 = String.raw`
+create table dhcp_classes (
+  id serial primary key,
+  name text not null unique check (name ~ '^[a-z][a-z0-9-]{0,40}$' and name <> 'drop'),
+  kind text not null check (kind in ('vendor','user','mac')),
+  match text not null check (length(match) between 1 and 64),
+  action text not null default 'assign' check (action in ('assign','drop')),
+  option43 text check (option43 is null or option43 ~ '^([0-9a-f]{2}){1,255}$'),
+  tftp_server text, boot_file text,
+  enabled boolean not null default true,
+  comment text,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+`
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }, { version: 19, sql: SCHEMA_19 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

@@ -2,8 +2,8 @@
 import { prune } from '~/composables/useRole'
 const { t } = useT(); const api = useApi(); const toast = useToast()
 const { canWrite, isAdmin } = useRole()
-const tab = useHashTab('scopes', ['scopes', 'ranges', 'leases', 'settings', 'deploy'])
-const tabs = computed(() => [{ label: t('dhcp.scopes'), value: 'scopes', icon: 'i-lucide-server' }, { label: t('dhcp.ranges'), value: 'ranges', icon: 'i-lucide-bookmark' }, { label: t('dhcp.leases'), value: 'leases', icon: 'i-lucide-clock' }, { label: t('dhcp.settings'), value: 'settings', icon: 'i-lucide-sliders-horizontal' }, { label: t('apply.title'), value: 'deploy', icon: 'i-lucide-rocket' }])
+const tab = useHashTab('scopes', ['scopes', 'ranges', 'classes', 'leases', 'settings', 'deploy'])
+const tabs = computed(() => [{ label: t('dhcp.scopes'), value: 'scopes', icon: 'i-lucide-server' }, { label: t('dhcp.ranges'), value: 'ranges', icon: 'i-lucide-bookmark' }, { label: t('dhcp.classes'), value: 'classes', icon: 'i-lucide-filter' }, { label: t('dhcp.leases'), value: 'leases', icon: 'i-lucide-clock' }, { label: t('dhcp.settings'), value: 'settings', icon: 'i-lucide-sliders-horizontal' }, { label: t('apply.title'), value: 'deploy', icon: 'i-lucide-rocket' }])
 const { data: scopes, refresh: refreshScopes } = await useFetch<any>('/api/dhcp/scopes')
 const { data: subnets } = await useFetch<any>('/api/ipam/subnets')
 const free = computed(() => (subnets.value?.items ?? []).filter((s: any) => s.family === 4 && !s.has_dhcp).map((s: any) => ({ label: `${s.cidr} — ${s.name}${s.space_id !== 1 ? ' (' + s.space + ')' : ''}`, value: s.id })))
@@ -27,6 +27,18 @@ const poolCols = computed(() => [{ key: 'start_ip', label: t('dhcp.start'), kind
 const poolFields = computed(() => [{ key: 'start', label: t('dhcp.start'), type: 'text', required: true, mono: true }, { key: 'end', label: t('dhcp.end'), type: 'text', required: true, mono: true }] as any[])
 const resCols = computed(() => [{ key: 'mac', label: 'MAC', kind: 'mono' }, { key: 'ip', label: 'IP', kind: 'mono' }, { key: 'hostname', label: t('ipam.hostname') }, { key: 'description', label: t('common.description') }])
 const resFields = computed(() => [{ key: 'mac', label: 'MAC', type: 'text', required: true, mono: true, placeholder: 'aa:bb:cc:dd:ee:ff' }, { key: 'ip', label: 'IP', type: 'text', required: true, mono: true }, { key: 'hostname', label: t('ipam.hostname'), type: 'text' }, { key: 'description', label: t('common.description'), type: 'text' }] as any[])
+
+const classCols = computed(() => [{ key: 'name', label: t('common.name'), kind: 'mono' }, { key: 'kind', label: t('dhcp.cl_kind') }, { key: 'match', label: t('dhcp.cl_match'), kind: 'mono' }, { key: 'action', label: t('dhcp.cl_action') }, { key: 'option43', label: t('dhcp.cl_opt43'), kind: 'mono' }, { key: 'enabled', label: t('common.enabled'), kind: 'bool' }])
+const classFields = computed(() => [
+  { key: 'name', label: t('common.name'), type: 'text', required: true, mono: true, hint: t('dhcp.cl_name_hint') },
+  { key: 'kind', label: t('dhcp.cl_kind'), type: 'select', required: true, options: [{ label: t('dhcp.cl_vendor'), value: 'vendor' }, { label: t('dhcp.cl_user'), value: 'user' }, { label: t('dhcp.cl_mac'), value: 'mac' }], default: 'vendor' },
+  { key: 'match', label: t('dhcp.cl_match'), type: 'text', required: true, mono: true, hint: t('dhcp.cl_match_hint') },
+  { key: 'action', label: t('dhcp.cl_action'), type: 'select', options: [{ label: t('dhcp.cl_assign'), value: 'assign' }, { label: t('dhcp.cl_drop'), value: 'drop' }], default: 'assign', hint: t('dhcp.cl_action_hint') },
+  { key: 'option43', label: t('dhcp.cl_opt43'), type: 'text', mono: true, hint: t('dhcp.cl_opt43_hint') },
+  { key: 'tftp_server', label: t('dhcp.tftp'), type: 'text' }, { key: 'boot_file', label: t('dhcp.boot_file'), type: 'text' },
+  { key: 'enabled', label: t('common.enabled'), type: 'switch', default: true }, { key: 'comment', label: t('common.description'), type: 'text' },
+] as any[])
+const classBody = (b: any) => ({ ...b, option43: b.option43 || null, tftp_server: b.tftp_server || null, boot_file: b.boot_file || null, comment: b.comment || null })
 
 const { data: leases } = await useFetch<any>('/api/dhcp/leases')
 const leaseCols = computed(() => [{ key: 'ip', label: 'IP', kind: 'mono' }, { key: 'mac', label: 'MAC', kind: 'mono' }, { key: 'hostname', label: t('ipam.hostname') }, { key: 'expire', label: t('dhcp.expires'), kind: 'date' }])
@@ -59,6 +71,10 @@ async function saveSettings() {
           <ResourceTable :endpoint="`/dhcp/scopes/${sel}`" items-key="reservations" :columns="resCols" :fields="resFields" :can-write="canWrite" :create-url="`/dhcp/scopes/${sel}/reservations`" :delete-url="(r: any) => `/dhcp/reservations/${r.id}`" :delete-name="(r: any) => `${r.mac} → ${r.ip}`" :create-label="t('dhcp.add_reservation')" @changed="refreshScopes" /></UCard>
       </div>
       <p v-else class="text-sm text-muted">{{ t('dhcp.no_scope') }}</p>
+    </div>
+    <div v-else-if="tab === 'classes'" class="flex flex-col gap-3">
+      <p class="text-sm text-muted">{{ t('dhcp.cl_help') }}</p>
+      <ResourceTable endpoint="/dhcp/classes" :columns="classCols" :fields="classFields" :can-write="canWrite" create-url="/dhcp/classes" :update-url="(r: any) => `/dhcp/classes/${r.id}`" :delete-url="(r: any) => `/dhcp/classes/${r.id}`" :delete-name="(r: any) => r.name" :create-label="t('dhcp.cl_add')" :transform="classBody" />
     </div>
     <div v-else-if="tab === 'leases'" class="flex flex-col gap-3">
       <UAlert v-if="!leases?.available" color="neutral" variant="subtle" icon="i-lucide-info" :title="t('dhcp.leases_unavailable')" />

@@ -1,5 +1,13 @@
 # Journal des modifications
 
+## 0.12.8 — « Classes de clients DHCP »
+
+- Nouvelle table `dhcp_classes` (migration 19) et onglet DHCP › Classes de clients : classes fabricant (option 60), utilisateur (option 77) ou adresse MAC (préfixe de 3 octets ou adresse complète).
+- Chaque classe peut donner l'option 43 (hexadécimal), un serveur et un fichier de démarrage, ou **rejeter** la demande ; les rejets sont réunis dans la classe spéciale `DROP` de Kea. Les classes sont générées dans `client-classes` au déploiement et font partie des points de restauration.
+- Import depuis l'export Windows : classes fabricant / utilisateur et filtres MAC « refuser » ; les listes « autoriser » et les valeurs illisibles sont signalées et ignorées. Point de restauration pris avant l'import.
+- Les points de restauration pris avant cette version ne sont plus restaurables (le format des données a changé, comme à chaque migration du schéma).
+- Tests : unit-iter30, e2e-iter30.
+
 ## 0.12.7 — « Migration Windows : après la migration »
 
 - Localisation des contrôleurs de domaine : vérification des SRV attendus (LDAP, Kerberos, kpasswd, catalogue global, `_msdcs`) dans la zone du domaine — présence, format et cible résolue par la console.

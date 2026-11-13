@@ -310,3 +310,29 @@ route('GET', '/migration/post', 'viewer', async () => {
   const cur = parseCutover(await getSetting<unknown>('migration_cutover', null).catch(() => null))
   return { cutoverFinished: !!cur.finishedAt, finishedAt: cur.finishedAt }
 })
+
+// ---- Classes et filtres MAC depuis l'export Windows (0.12.8) ----
+import { planWindowsClasses } from '../utils/dhcp-classes'
+
+const classesBody = z.object({ content: z.string().min(1).max(25_000_000), filename: z.string().max(200).optional() })
+async function classesPlan(content: string) {
+  const ex = new Set((await query<any>('select name from dhcp_classes')).map((r) => r.name as string))
+  const p = planWindowsClasses(content, ex)
+  if (p.errors.length) fail(400, p.errors[0]!)
+  const n = (st: string) => p.items.filter((i) => i.status === st).length
+  return { ...p, toCreate: n('create'), exists: n('exists'), skipped: n('skip') }
+}
+route('POST', '/migration/classes/preview', 'operator', async (c) => classesPlan((await c.body(classesBody)).content))
+route('POST', '/migration/classes/commit', 'operator', async (c) => {
+  const b = await c.body(classesBody)
+  const p = await classesPlan(b.content)
+  const todo = p.items.filter((i) => i.status === 'create')
+  if (!todo.length) return { created: 0, snapshotId: null }
+  const snapshotId = await captureSnapshot('pre-import', 'avant l\'import des classes DHCP Windows', c.user?.username ?? null)
+  await tx(async (cl) => {
+    for (const i of todo) await cl.query("insert into dhcp_classes (name, kind, match, action, comment) values ($1,$2,$3,$4,'Importé depuis Windows') on conflict (name) do nothing", [i.name, i.kind, i.match, i.action])
+  })
+  await record(c, 'dhcp-classes', b.filename, { created: todo.length, skipped: p.skipped, exists: p.exists }, snapshotId)
+  await audit(c, 'migration_classes', 'settings', undefined, { created: todo.length })
+  return { created: todo.length, snapshotId }
+})

@@ -52,6 +52,7 @@ await load()
         </div>
         <p class="text-sm text-muted">{{ META[s.id]!.desc }}</p>
         <MigrationDns v-if="s.id === 'dns' && canWrite" @done="load" />
+        <MigrationClasses v-if="s.id === 'dhcp' && canWrite" @done="load" />
         <MigrationLeases v-if="s.id === 'dhcp' && canWrite" :push="st.leasePush" @done="load" />
         <MigrationAssess v-if="s.id === 'assess' && canWrite" @done="load" />
         <MigrationCutover v-if="s.id === 'cutover'" @done="load" />

@@ -8,7 +8,7 @@ import { byCodeUnit } from './text'
 
 // Ordre = dépendances (parents d'abord). Les listes de blocage (volumineuses, retéléchargeables), les utilisateurs,
 // sessions, journaux, statistiques et baux Kea n'en font pas partie.
-export const SNAPSHOT_TABLES = ['vlans', 'ipam_spaces', 'dns_views', 'dns_zones', 'dns_records', 'network_templates', 'subnets', 'ipam_pools', 'addresses', 'dhcp_scopes', 'dhcp_pools', 'dhcp_reservations', 'filter_rules'] as const
+export const SNAPSHOT_TABLES = ['vlans', 'ipam_spaces', 'dns_views', 'dns_zones', 'dns_records', 'network_templates', 'subnets', 'ipam_pools', 'addresses', 'dhcp_scopes', 'dhcp_pools', 'dhcp_reservations', 'dhcp_classes', 'filter_rules'] as const
 const SETTING_KEYS = ['dns', 'dhcp']
 export type SnapshotKind = 'manual' | 'deploy' | 'pre-import' | 'pre-restore'
 const KEEP = 40, KEEP_DEPLOY = 20
@@ -42,7 +42,7 @@ const LABELS: Record<string, (x: any) => string> = {
   vlans: (x) => `VLAN ${x.vlan_id} ${x.name}`, ipam_spaces: (x) => String(x.name), network_templates: (x) => String(x.name), ipam_pools: (x) => `${x.name} ${x.start_ip} – ${x.end_ip}`, subnets: (x) => String(x.cidr), addresses: (x) => String(x.ip), dns_zones: (x) => String(x.name),
   dns_views: (x) => String(x.name),
   dns_records: (x) => `${x.name} ${x.type} ${x.rdata}`, dhcp_scopes: (x) => `scope #${x.id}`, dhcp_pools: (x) => `${x.start_ip} – ${x.end_ip}`,
-  dhcp_reservations: (x) => `${x.mac} → ${x.ip}`, filter_rules: (x) => `${x.action} ${x.domain}`,
+  dhcp_reservations: (x) => `${x.mac} → ${x.ip}`, dhcp_classes: (x) => String(x.name), filter_rules: (x) => `${x.action} ${x.domain}`,
 }
 // sérialisation stable (clés triées à tous les niveaux) pour comparer deux lignes ; les horodatages ne comptent pas comme un changement
 const stable = (v: any): string => (v && typeof v === 'object' ? (Array.isArray(v) ? `[${v.map(stable).join(',')}]` : `{${Object.keys(v).sort(byCodeUnit).map((k) => `${JSON.stringify(k)}:${stable(v[k])}`).join(',')}}`) : JSON.stringify(v))
@@ -82,7 +82,7 @@ export async function restoreSnapshot(id: number, username: string | null): Prom
     for (const t of [...SNAPSHOT_TABLES].reverse()) await cl.query(`delete from ${t}`)
     const data = snap.data as Record<string, any>, counts: Record<string, number> = {}
     for (const t of SNAPSHOT_TABLES) {
-      const rows = data[t] as any[]; counts[t] = rows.length
+      const rows = (data[t] ?? []) as any[]; counts[t] = rows.length
       if (rows.length) await cl.query(`insert into ${t} select * from jsonb_populate_recordset(null::${t}, $1::jsonb)`, [JSON.stringify(rows)])
       await cl.query(`select setval(pg_get_serial_sequence('${t}', 'id'), greatest((select coalesce(max(id), 0) from ${t}), 1), (select count(*) > 0 from ${t}))`)
     }

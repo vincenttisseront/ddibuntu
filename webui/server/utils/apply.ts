@@ -12,6 +12,7 @@ import { resetPending } from './filterstate'
 import { fail } from './router'
 import { uncoveredLocal } from './views'
 import type { ViewInfo } from './views'
+import { keaClasses } from './dhcp-classes'
 import { DNS_DEFAULTS, KEA_DEFAULTS, deployFiles, renderKea, renderNamedOptions, renderNamedZones, renderRpz, rpzBase, validateFiles, zoneFile } from './render'
 import type { CheckResult, DnsSettings, KeaScope, KeaSettings, OutFile, ZoneRow } from './render'
 
@@ -66,7 +67,7 @@ export async function buildConfig(): Promise<{ files: OutFile[]; bumps: Array<{ 
     if (sc.enabled && !pools.length) warnings.push(`scope_without_pool:${sc.cidr}`)
     kscopes.push({ id: sc.id, cidr: sc.cidr, enabled: sc.enabled, leaseTime: sc.lease_time, options: sc.options, pools, reservations: res })
   }
-  files.push({ path: 'kea-dhcp4.conf', content: renderKea({ ...ks, lease }, kscopes), mode: 0o640, kind: 'kea' })
+  files.push({ path: 'kea-dhcp4.conf', content: renderKea({ ...ks, lease }, kscopes, keaClasses(await query<any>('select name, kind, match, action, option43, tftp_server, boot_file, enabled from dhcp_classes order by name'))), mode: 0o640, kind: 'kea' })
   return { files, bumps, warnings }
 }
 

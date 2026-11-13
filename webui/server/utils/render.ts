@@ -145,7 +145,7 @@ export interface KeaScope {
 export interface KeaSettings { interfaces: string[]; ddns: boolean; socket: string; lease: { type: 'memfile' | 'postgresql'; name: string; user?: string; password?: string; host?: string }; globalOptions: KeaScope['options'] }
 export const KEA_DEFAULTS: KeaSettings = { interfaces: ['*'], ddns: false, socket: '/run/kea/kea4-ctrl-socket', lease: { type: 'postgresql', name: 'ddibuntu', user: 'kea', host: '127.0.0.1' }, globalOptions: {} }
 
-export function renderKea(s: KeaSettings, scopes: KeaScope[]): string {
+export function renderKea(s: KeaSettings, scopes: KeaScope[], classes: any[] = []): string {
   const defs: any[] = []
   const subnets = scopes.filter((x) => x.enabled).map((sc) => {
     const o = { ...s.globalOptions, ...Object.fromEntries(Object.entries(sc.options).filter(([, v]) => v !== undefined && v !== '' && !(Array.isArray(v) && !v.length))) } as KeaScope['options']
@@ -177,6 +177,7 @@ export function renderKea(s: KeaSettings, scopes: KeaScope[]): string {
       authoritative: true,
       ...(s.ddns ? { 'dhcp-ddns': { 'enable-updates': true } } : {}),
       ...(defs.length ? { 'option-def': defs } : {}),
+      ...(classes.length ? { 'client-classes': classes } : {}),
       subnet4: subnets,
       loggers: [{ name: 'kea-dhcp4', output_options: [{ output: 'stdout' }], severity: 'INFO' }],
     },
