@@ -179,3 +179,44 @@ route('POST', '/migration/coexist/promote', 'admin', async (c) => {
     throw e
   }
 })
+
+// ---- Vérification avant bascule (0.12.5) : Windows ↔ console, lecture seule ----
+import { parseDhcpExport } from '../utils/ad'
+import { compareDhcp, compareDns } from '../utils/migration-verify'
+
+async function markReview(ok: boolean) {
+  if (!ok) return
+  const cur = parseMigration(await getSetting<unknown>('migration', null).catch(() => null)); cur.review = true
+  await setSetting('migration', { done: cur })
+}
+
+route('POST', '/migration/verify/dhcp', 'operator', async (c) => {
+  const b = await c.body(z.object({ content: z.string().min(1).max(25_000_000) }))
+  const plan = parseDhcpExport(b.content)
+  if (!plan.scopes.length) fail(400, plan.warnings.some((w) => w.code === 'xml_invalid') ? 'dhcp_xml_invalid' : 'dhcp_no_scopes')
+  const scopes = await query<any>(`select d.id, text(s.cidr) as cidr, d.lease_time, d.enabled, d.options,
+    coalesce((select json_agg(json_build_object('start', host(p.start_ip), 'end', host(p.end_ip))) from dhcp_pools p where p.scope_id = d.id), '[]') as pools,
+    coalesce((select json_agg(json_build_object('mac', r.mac::text, 'ip', host(r.ip), 'hostname', r.hostname)) from dhcp_reservations r where r.scope_id = d.id), '[]') as reservations
+    from dhcp_scopes d join subnets s on s.id = d.subnet_id`)
+  const findings = compareDhcp(plan, scopes.map((s) => ({ cidr: s.cidr, lease_time: s.lease_time, enabled: s.enabled, options: s.options ?? {}, pools: s.pools, reservations: s.reservations })))
+  await markReview(findings.length === 0)
+  await audit(c, 'migration_verify', 'settings', undefined, { kind: 'dhcp', scopes: plan.scopes.length, findings: findings.length })
+  return { scopes: plan.scopes.length, findings }
+})
+
+const PROBE_TYPES = ['A', 'AAAA', 'CNAME', 'PTR', 'MX', 'SRV', 'TXT']
+const PROBE_MAX = 1000
+route('POST', '/migration/verify/dns', 'admin', async (c) => {
+  const b = await c.body(z.object({ server: z.string().min(1).max(253), ddi: z.string().max(253).default('127.0.0.1'), zone_id: z.number().int().optional() }))
+  if (!validServer(b.server) || !validServer(b.ddi)) fail(400, 'axfr_server_invalid')
+  const recs = await query<any>(`select z.name as zone, r.name, r.type from dns_records r join dns_zones z on z.id = r.zone_id
+    where z.type = 'primary' and not z.disabled and not r.disabled and r.type = any($1) and ($2::int is null or z.id = $2) order by z.name, r.name limit $3`, [PROBE_TYPES, b.zone_id ?? null, PROBE_MAX + 1])
+  const probes = [...new Map(recs.slice(0, PROBE_MAX).map((r) => {
+    const fq = r.name === '@' ? r.zone : r.name.endsWith('.') ? r.name : `${r.name}.${r.zone}`
+    return [`${fq}/${r.type}`, { name: fq, type: r.type as string }] as const
+  })).values()]
+  const out = await compareDns(probes, b.server, b.ddi)
+  await markReview(out.diffs.length === 0 && out.checked > 0)
+  await audit(c, 'migration_verify', 'settings', undefined, { kind: 'dns', checked: out.checked, diffs: out.diffs.length })
+  return { ...out, truncated: recs.length > PROBE_MAX }
+})

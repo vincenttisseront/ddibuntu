@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.12.5 — « Migration Windows : vérification avant bascule »
+
+- DHCP : comparaison de l'export Windows avec les étendues de la console — étendues absentes ou en trop, plages, réservations, durée de bail, état, options (routeurs, DNS, domaine, NTP, TFTP…). Lecture seule.
+- DNS : chaque enregistrement des zones primaires est demandé au serveur Windows et à notre BIND (dig, ordre des réponses ignoré) ; écarts et silences listés (administrateur).
+- L'étape « Contrôler le résultat » se coche seule quand une vérification ne montre aucun écart.
+- Tests : unit-iter28, e2e-iter27.
+
 ## 0.12.4 — « Migration Windows : coexistence »
 
 - Zones : option « coexistence » à la création — les zones primaires Windows sont créées en **secondaires** de BIND, derrière le serveur Windows (transfert périodique).

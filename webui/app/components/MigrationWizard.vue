@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Assistant « Migration Windows » (0.12.0) : parcours guidé depuis DNS / DHCP Windows Server vers cette console.
 const { t } = useT(); const api = useApi(); const toast = useToast()
-const { canWrite } = useRole()
+const { canWrite, isAdmin } = useRole()
 const emit = defineEmits<{ goto: [tab: string] }>()
 const st = ref<any>(null), busy = ref(''), err = ref(''), shown = ref('')
 const SCRIPTS = computed<Record<string, { title: string; code: string }>>(() => ({
@@ -54,6 +54,7 @@ await load()
         <MigrationDns v-if="s.id === 'dns' && canWrite" @done="load" />
         <MigrationLeases v-if="s.id === 'dhcp' && canWrite" :push="st.leasePush" @done="load" />
         <MigrationAssess v-if="s.id === 'assess' && canWrite" @done="load" />
+        <MigrationVerify v-if="s.id === 'review' && canWrite" :admin="isAdmin" @done="load" />
         <div v-if="s.id === 'scripts'" class="flex flex-col gap-2">
           <div class="flex flex-wrap gap-2"><UButton v-for="(sc, k) in SCRIPTS" :key="k" size="xs" :color="shown === k ? 'primary' : 'neutral'" variant="outline" icon="i-lucide-file-code" :label="sc.title" @click="shown = shown === k ? '' : String(k)" /></div>
           <div v-if="shown" class="flex flex-col gap-2">

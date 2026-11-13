@@ -64,7 +64,7 @@ Traitée **avant** le reste des séries 0.10.x et 0.11.x. Déjà en place : impo
 | 3 | 0.12.2 | Reprise des baux actifs (continuité des clients) ; le failover Windows se remplace par Kea HA du cluster | ✅ 0.12.2 |
 | 4 | 0.12.3 | Zones DNS depuis Windows : création d'après l'inventaire (primaires, secondaires, redirecteurs conditionnels), transfert AXFR direct, enregistrements AD critiques protégés | ✅ 0.12.3 |
 | 5 | 0.12.4 | Coexistence : notre BIND secondaire des zones Windows (synchronisation périodique), baux Windows lus en continu avant bascule | ✅ 0.12.4 |
-| 6 | 0.12.5 | Vérification avant bascule : comparaison automatique Windows ↔ DDI (réponses DNS de chaque enregistrement, étendues / plages / réservations / options DHCP), rapport d'écarts | ⬜ |
+| 6 | 0.12.5 | Vérification avant bascule : comparaison automatique Windows ↔ DDI (réponses DNS de chaque enregistrement, étendues / plages / réservations / options DHCP), rapport d'écarts | ✅ 0.12.5 |
 | 7 | 0.12.6 | Plan de bascule et retour arrière : check-list ordonnée (TTL, relais DHCP, redirecteurs AD, arrêt des étendues Windows), exécution assistée, instantané et rollback | ⬜ |
 | 8 | 0.12.7 | Après migration : localisation des contrôleurs de domaine (SRV), mises à jour dynamiques sécurisées (GSS-TSIG), retrait des rôles Windows | ⬜ |
 | 9 | 0.12.8 | Classes de clients Kea dans la console : stratégies, classes fabricant / utilisateur, filtres MAC (autoriser / refuser), option 43 ; import correspondant depuis Windows | ⬜ |
