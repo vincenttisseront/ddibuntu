@@ -2140,5 +2140,17 @@ const messages: Record<string, string> = {
   "err.cname_self": "An alias cannot point to itself.",
   "err.cname_loop": "CNAME loop: the target already leads to this alias.",
   "err.cname_chain_too_long": "CNAME chain too long (8 at most).",
+  "leasedns.title": "DHCP lease → DNS sync",
+  "leasedns.hint": "For each active lease whose client supplies a hostname, creates the A record and its PTR in the DNS zone of the network template, and removes them when the lease expires. Touched zones become “to deploy”.",
+  "leasedns.scope": "A manually entered record is never changed or overwritten: on a name conflict the lease is ignored. IPAM addresses that already have a name are ignored. Disabling removes the dynamic records.",
+  "leasedns.enabled": "Enabled",
+  "leasedns.disabled": "Disabled",
+  "leasedns.count": "{n} dynamic record(s) in {z} zone(s)",
+  "leasedns.run": "Sync now",
+  "leasedns.on": "Sync enabled",
+  "leasedns.off": "Sync disabled",
+  "leasedns.ran": "{a} added, {d} removed",
+  "leasedns.col": "Dynamic",
+  "err.record_dynamic": "Record created by a DHCP lease: it follows the lease and cannot be edited by hand.",
 }
 export default messages

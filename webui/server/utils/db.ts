@@ -466,7 +466,13 @@ alter table users drop constraint users_source_check;
 alter table users add constraint users_source_check check (source in ('local','ad','oidc','ldap'));
 `
 
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }]
+// 0.10.0 : enregistrements créés par la synchronisation bail DHCP → DNS (source « dhcp »), jamais confondus avec les enregistrements saisis.
+const SCHEMA_18 = String.raw`
+alter table dns_records add column source text not null default 'manual' check (source in ('manual','dhcp'));
+create index dns_records_source on dns_records (zone_id) where source <> 'manual';
+`
+
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

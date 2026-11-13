@@ -2140,5 +2140,17 @@ const messages: Record<string, string> = {
   "err.cname_self": "Un alias ne peut pas pointer vers lui-même.",
   "err.cname_loop": "Boucle de CNAME : la cible mène déjà à cet alias.",
   "err.cname_chain_too_long": "Chaîne de CNAME trop longue (8 au plus).",
+  "leasedns.title": "Synchronisation bail DHCP → DNS",
+  "leasedns.hint": "Pour chaque bail actif dont le client donne un nom d'hôte, crée l'enregistrement A et son PTR dans la zone DNS du gabarit du réseau, et les retire à l'expiration du bail. Les zones touchées passent à « à déployer ».",
+  "leasedns.scope": "Un enregistrement saisi à la main n'est jamais modifié ni écrasé : en cas de conflit de nom, le bail est ignoré. Les adresses IPAM déjà nommées sont ignorées. Désactiver la fonction retire les enregistrements dynamiques.",
+  "leasedns.enabled": "Activée",
+  "leasedns.disabled": "Désactivée",
+  "leasedns.count": "{n} enregistrement(s) dynamique(s) dans {z} zone(s)",
+  "leasedns.run": "Synchroniser maintenant",
+  "leasedns.on": "Synchronisation activée",
+  "leasedns.off": "Synchronisation désactivée",
+  "leasedns.ran": "{a} ajouté(s), {d} retiré(s)",
+  "leasedns.col": "Dynamique",
+  "err.record_dynamic": "Enregistrement créé par un bail DHCP : il suit le bail et ne se modifie pas à la main.",
 }
 export default messages

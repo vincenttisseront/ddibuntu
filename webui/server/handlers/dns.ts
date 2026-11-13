@@ -107,7 +107,7 @@ route('GET', '/dns/records', 'viewer', async (c) => {
   const where = ['($1::int = 0 or r.zone_id = $1)', '($2::text is null or r.type = $2)', "($3::text is null or r.name ilike $3 or r.rdata ilike $3 or coalesce(r.comment,'') ilike $3)"]
   const args = [zone, type ? type.toUpperCase() : null, q ? `%${q}%` : null]
   const total = await one<any>(`select count(*)::int n from dns_records r where ${where.join(' and ')}`, args)
-  const items = await query(`select r.id, r.zone_id, z.name as zone, v.name as view, r.name, r.type, r.ttl, r.rdata, r.comment, r.protected, r.disabled from dns_records r join dns_zones z on z.id = r.zone_id left join dns_views v on v.id = z.view_id
+  const items = await query(`select r.id, r.zone_id, z.name as zone, v.name as view, r.name, r.type, r.ttl, r.rdata, r.comment, r.protected, r.disabled, (r.source = 'dhcp') as dynamic from dns_records r join dns_zones z on z.id = r.zone_id left join dns_views v on v.id = z.view_id
     where ${where.join(' and ')} order by z.name, v.position, r.name, r.type limit $4 offset $5`, [...args, limit, offset])
   return { items, total: total.n }
 })
@@ -142,8 +142,9 @@ route('POST', '/dns/records', 'operator', async (c) => {
 route('PUT', '/dns/records/:id', 'operator', async (c) => {
   const id = intParam(c, 'id')
   const b = await c.body(recBody)
-  const cur = await one<any>('select zone_id, protected from dns_records where id = $1', [id])
+  const cur = await one<any>('select zone_id, protected, source from dns_records where id = $1', [id])
   if (!cur) fail(404, 'not_found')
+  if (cur.source === 'dhcp') fail(409, 'record_dynamic')
   if (cur.protected && c.user!.role !== 'admin') fail(403, 'protected_record')
   if (cur.zone_id !== b.zone_id) fail(400, 'zone_immutable')
   const v = await validateRecord(b.zone_id, b, id)
@@ -157,8 +158,9 @@ route('PUT', '/dns/records/:id', 'operator', async (c) => {
 })
 route('DELETE', '/dns/records/:id', 'operator', async (c) => {
   const id = intParam(c, 'id')
-  const cur = await one<any>('select zone_id, protected from dns_records where id = $1', [id])
+  const cur = await one<any>('select zone_id, protected, source from dns_records where id = $1', [id])
   if (!cur) fail(404, 'not_found')
+  if (cur.source === 'dhcp') fail(409, 'record_dynamic')
   if (cur.protected && c.user!.role !== 'admin') fail(403, 'protected_record')
   await tx(async (cl) => {
     await cl.query('delete from dns_records where id = $1', [id])

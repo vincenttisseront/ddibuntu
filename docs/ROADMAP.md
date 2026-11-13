@@ -59,7 +59,7 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
 Dix évolutions, une version chacune, chacune testée (unitaires, e2e, batteries réelles) avant publication. Ordre retenu : les deux plus rentables d'abord, puis celles qui s'appuient dessus.
 | # | Version | Évolution | État |
 |---|---|---|---|
-| 1 | 0.10.0 | Synchronisation bail DHCP → DNS (DDNS maîtrisé) : A/PTR créés et retirés avec le bail, enregistrements marqués « dynamiques », jamais d'écrasement d'un statique | ⬜ |
+| 1 | 0.10.0 | Synchronisation bail DHCP → DNS (DDNS maîtrisé) : A/PTR créés et retirés avec le bail, enregistrements marqués « dynamiques », jamais d'écrasement d'un statique | ✅ 0.10.0 |
 | 2 | 0.10.1 | Contrôle de cohérence continu (« DNS health ») : PTR orphelins, A sans fiche IPAM, IP sans nom, conflits DHCP/DNS, CNAME pendants ; correction en un clic, score par zone | ⬜ |
 | 3 | 0.10.2 | Cycle de vie d'une adresse en un geste (réserver / libérer : fiche, réservation, A, PTR, alias, en tout-ou-rien, avec récapitulatif) | ⬜ |
 | 4 | 0.10.3 | Historique et retour arrière par enregistrement ; diff avant déploiement de zone, validation `named-checkzone` | ⬜ |

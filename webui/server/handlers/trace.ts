@@ -1,6 +1,7 @@
 // Traçabilité : historique des associations IP / MAC / nom observées sur les baux DHCP.
 import { audit, qint, route } from '../utils/router'
 import { query } from '../utils/db'
+import { reconcileLeaseDns } from '../utils/lease-dns'
 import { searchTrace, snapshotLeases } from '../utils/leasetrace'
 
 export const registered = true
@@ -14,7 +15,7 @@ route('GET', '/trace', 'viewer', async (c) => {
 
 // Passage immédiat (sans attendre le prochain tick) : utile après un changement DHCP et pour les tests.
 route('POST', '/trace/collect', 'operator', async (c) => {
-  const r = await snapshotLeases()
+  const r = { ...(await snapshotLeases()), dns: await reconcileLeaseDns() }
   await audit(c, 'trace_collect', 'lease_history', undefined, r)
   return r
 })

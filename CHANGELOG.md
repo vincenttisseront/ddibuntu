@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.10.0 — « Synchronisation bail DHCP → DNS »
+- **Nouveau** (DNS › Paramètres, administrateur) : pour chaque bail Kea actif dont le client donne un nom d'hôte, la console crée l'enregistrement **A** et son **PTR** dans la zone DNS du gabarit du réseau, et les retire quand le bail expire ou change. Désactivée par défaut ; la désactiver retire les enregistrements dynamiques.
+- **Réconciliation idempotente** à chaque relevé des baux (et au bouton « Synchroniser maintenant ») : l'écart entre ce que les baux imposent et ce qui existe est appliqué, donc rien n'est perdu après un redémarrage ou une bascule du cluster. Primaire uniquement ; zones touchées marquées « à déployer ».
+- **Jamais d'écrasement** : un enregistrement saisi à la main, une adresse IPAM déjà nommée, un nom déjà pris par un autre bail ou une adresse hors réseau à zone sont ignorés (comptés dans le rapport). Un enregistrement manuel créé après coup reprend la main sur le dynamique.
+- Les enregistrements dynamiques sont marqués (colonne « Dynamique », base : `dns_records.source`) et ne se modifient ni ne se suppriment à la main (409 `record_dynamic`) : ils suivent le bail.
+- Limite connue : IPv4 seulement (table `lease4`) ; le déploiement de la zone reste une action explicite.
+
 ## 0.9.55 — « Qualité : deuxième passe SonarQube (lot 5) »
 - **Défauts réels corrigés** : tri sans comparateur (`typescript:S2871`, politique MFA), clé de traduction `backup.verify` en double (le bouton « Vérifier l’intégrité » utilise désormais `backup.verify_btn`, l'étiquette « Dernier contrôle » n'est plus écrasée), deux expressions régulières à retour arrière coûteux (`S8786`, enregistrements CAA), rôles ARIA incohérents (liste de recherche globale : `option` porté par le bouton ; grille d'occupation), `openssl` appelé par chemin absolu dans l'outillage de test (`S4036`).
 - Restent, par choix : les ~450 occurrences `shell:S7688` des tests et de `src/iso`, `S1313` et `Web:S6853`, déjà exclues dans `sonar-project.properties` mais appliquées seulement par l'analyse CI (secret `SONAR_TOKEN` + désactivation de l'analyse automatique) ; points sensibles à revoir dans l'interface SonarQube Cloud.

@@ -50,7 +50,7 @@ function showRecords(z: any) { zoneFilter.value = z.id; tab.value = 'records' }
 
 const recCols = computed(() => [
   { key: 'zone', label: t('dns.zone'), kind: 'mono' }, ...(hasViews.value ? [{ key: 'view', label: t('dnsv.view'), kind: 'mono' }] : []), { key: 'name', label: t('common.name'), kind: 'mono' }, { key: 'type', label: t('common.type'), kind: 'badge' }, { key: 'ttl', label: 'TTL', kind: 'num' },
-  { key: 'rdata', label: t('dns.rdata'), kind: 'mono' }, { key: 'protected', label: t('dns.protected'), kind: 'bool' }, { key: 'disabled', label: t('common.disabled'), kind: 'bool' },
+  { key: 'rdata', label: t('dns.rdata'), kind: 'mono' }, { key: 'protected', label: t('dns.protected'), kind: 'bool' }, { key: 'dynamic', label: t('leasedns.col'), kind: 'bool' }, { key: 'disabled', label: t('common.disabled'), kind: 'bool' },
 ])
 const recFields = computed(() => [
   { key: 'zone_id', label: t('dns.zone'), type: 'select', required: true, options: primary.value, default: zoneFilter.value || primary.value[0]?.value },
@@ -94,7 +94,8 @@ async function saveSettings() {
       <div class="flex gap-2 flex-wrap"><USelect v-model="zoneFilter" :items="zoneFilterOptions" class="w-64" :aria-label="t('dns.zone')" /><USelect v-model="typeFilter" :items="typeFilterOptions" class="w-36" :aria-label="t('common.type')" /></div>
       <ResourceTable :key="`${zoneFilter}-${typeFilter}`" endpoint="/dns/records" :query="recQuery" :columns="recCols" :fields="recFields" :can-write="canWrite" create-url="/dns/records" :update-url="(r: any) => `/dns/records/${r.id}`" :delete-url="(r: any) => `/dns/records/${r.id}`" :delete-name="(r: any) => `${r.name} ${r.type}`" :create-label="t('dns.add_record')" searchable @changed="refreshZones" />
     </div>
-    <UCard v-else-if="tab === 'settings'" class="max-w-3xl">
+    <div v-else-if="tab === 'settings'" class="flex flex-col gap-4 max-w-3xl">
+    <UCard>
       <form class="grid gap-3 md:grid-cols-2" @submit.prevent="saveSettings">
         <UAlert v-if="sErr" class="md:col-span-2" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="sErr" />
         <UFormField :label="t('dns.forwarders')" :help="t('dns.global_forwarders_hint')"><UInput v-model="sf.forwarders" class="w-full font-mono" :disabled="!isAdmin" /></UFormField>
@@ -117,6 +118,8 @@ async function saveSettings() {
         <div class="md:col-span-2 flex justify-end"><UButton v-if="isAdmin" type="submit" :label="t('common.save')" /></div>
       </form>
     </UCard>
+    <LeaseDnsSync />
+    </div>
     <ConfigApply v-else />
     <UModal v-model:open="copyOpen" :title="t('dnsv.copy')" :description="t('dnsv.copy_desc', { z: copyZone?.name ?? '', v: copyZone?.view ?? '' })">
       <template #body>
