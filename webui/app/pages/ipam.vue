@@ -4,11 +4,11 @@ import type { DCol } from '~/components/DenseTable.vue'
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm()
 const { canWrite, isAdmin } = useRole()
 // « subnets » reste l'identifiant de l'onglet Réseaux : les liens existants (#subnets) continuent de fonctionner.
-const tab = useHashTab('subnets', ['spaces', 'subnets', 'pools', 'addresses', 'templates', 'vlans', 'ghosts', 'search', 'discovery', 'sources'])
+const tab = useHashTab('subnets', ['spaces', 'subnets', 'pools', 'addresses', 'templates', 'vlans', 'naming', 'ghosts', 'search', 'discovery', 'sources'])
 const baseTabs = computed(() => [
   { label: t('ipam.spaces'), value: 'spaces', icon: 'i-lucide-layers' }, { label: t('ipam.networks'), value: 'subnets', icon: 'i-lucide-network' },
   { label: t('ipam.pools'), value: 'pools', icon: 'i-lucide-brackets' }, { label: t('ipam.addresses'), value: 'addresses', icon: 'i-lucide-list-ordered' },
-  { label: t('ipam.templates'), value: 'templates', icon: 'i-lucide-file-sliders' }, { label: t('ipam.vlans'), value: 'vlans', icon: 'i-lucide-tags' }, { label: t('ghost.title'), value: 'ghosts', icon: 'i-lucide-ghost' }, { label: t('common.search'), value: 'search', icon: 'i-lucide-search' }])
+  { label: t('ipam.templates'), value: 'templates', icon: 'i-lucide-file-sliders' }, { label: t('nam.title'), value: 'naming', icon: 'i-lucide-spell-check' }, { label: t('ipam.vlans'), value: 'vlans', icon: 'i-lucide-tags' }, { label: t('ghost.title'), value: 'ghosts', icon: 'i-lucide-ghost' }, { label: t('common.search'), value: 'search', icon: 'i-lucide-search' }])
 const tabs = computed(() => [...baseTabs.value, ...(canWrite.value ? [{ label: t('disc.title'), value: 'discovery', icon: 'i-lucide-radar' }] : []), ...(isAdmin.value ? [{ label: t('nbw.title'), value: 'sources', icon: 'i-lucide-database-zap' }] : [])])
 
 // ---- Contexte partagé : espace et famille d'adresses (comme les boutons V4/V6 d'une console IPAM) ----
@@ -163,13 +163,14 @@ const tplFields = computed(() => [
   { key: 'opt_ntp', label: t('ipam.tpl_ntp'), type: 'list', hint: t('common.list_hint') },
   { key: 'dns_zone_id', label: t('ipam.tpl_zone'), type: 'select', options: tplZoneOptions.value, default: 0, hint: t('ipam.tpl_zone_hint') },
   { key: 'hostname_pattern', label: t('ipam.tpl_pattern'), type: 'text', mono: true, placeholder: 'srv-###', hint: t('ipam.tpl_pattern_hint') },
+  { key: 'name_format', label: t('nam.format'), type: 'text', mono: true, placeholder: 'srv-{o4:3}', hint: t('nam.format_hint') },
 ] as any[])
 const tplBody = (b: any) => {
   const o: Record<string, any> = {}
   if (b.opt_dns?.length) o.dnsServers = b.opt_dns
   if (b.opt_domain) o.domainName = b.opt_domain
   if (b.opt_ntp?.length) o.ntpServers = b.opt_ntp
-  return { name: b.name, description: b.description, create_scope: !!b.create_scope, lease_time: b.lease_time || 86400, dhcp_options: o, dns_zone_id: b.dns_zone_id || null, hostname_pattern: b.hostname_pattern || null }
+  return { name: b.name, description: b.description, create_scope: !!b.create_scope, lease_time: b.lease_time || 86400, dhcp_options: o, dns_zone_id: b.dns_zone_id || null, hostname_pattern: b.hostname_pattern || null, name_format: b.name_format || null }
 }
 const tplRow = (r: any) => ({ ...r, dns_zone_id: r.dns_zone_id ?? 0, opt_dns: r.dhcp_options?.dnsServers ?? [], opt_domain: r.dhcp_options?.domainName ?? '', opt_ntp: r.dhcp_options?.ntpServers ?? [] })
 async function removeTemplate(row: any) {
@@ -202,8 +203,9 @@ const formFields = computed(() => ({ tpl: tplFields.value, space: spaceFields.va
 const formTitle = computed(() => ({ tpl: t('ipam.add_template'), space: t('ipam.add_space'), net: t('ipam.add_subnet'), container: t('ipam.add_container'), pool: t('ipam.add_pool'), addr: t('common.add'), vlan: t('common.add') } as Record<string, string>)[form.kind] ?? '')
 
 // ---- VLAN ----
-const vlanCols = computed(() => [{ key: 'vlan_id', label: 'VLAN ID', kind: 'num' }, { key: 'name', label: t('common.name') }, { key: 'description', label: t('common.description') }, { key: 'subnets', label: t('ipam.subnets'), kind: 'num' }])
-const vlanFields = computed(() => [{ key: 'vlan_id', label: 'VLAN ID', type: 'number', required: true }, { key: 'name', label: t('common.name'), type: 'text', required: true }, { key: 'description', label: t('common.description'), type: 'text' }] as any[])
+const vlanCols = computed(() => [{ key: 'vlan_id', label: 'VLAN ID', kind: 'num' }, { key: 'name', label: t('common.name') }, { key: 'description', label: t('common.description') }, { key: 'hostname_pattern', label: t('ipam.tpl_pattern'), kind: 'mono' }, { key: 'name_format', label: t('nam.format'), kind: 'mono' }, { key: 'subnets', label: t('ipam.subnets'), kind: 'num' }])
+const vlanFields = computed(() => [{ key: 'vlan_id', label: 'VLAN ID', type: 'number', required: true }, { key: 'name', label: t('common.name'), type: 'text', required: true }, { key: 'description', label: t('common.description'), type: 'text' },
+  { key: 'hostname_pattern', label: t('ipam.tpl_pattern'), type: 'text', mono: true, placeholder: 'srv-###', hint: t('nam.vlan_pattern_hint') }, { key: 'name_format', label: t('nam.format'), type: 'text', mono: true, placeholder: 'v{vlan}-{o4:3}', hint: t('nam.format_hint') }] as any[])
 
 // ---- IP suivante libre (réseau et pool au choix) ----
 // ---- Contrôle d'une adresse : nom DNS + test de présence ----
@@ -329,6 +331,7 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
       </template>
     </DenseTable>
 
+    <NamingAudit v-else-if="tab === 'naming'" />
     <ResourceTable v-else-if="tab === 'vlans'" endpoint="/ipam/vlans" :columns="vlanCols" :fields="vlanFields" :can-write="canWrite" create-url="/ipam/vlans" :update-url="(r: any) => `/ipam/vlans/${r.id}`" :delete-url="(r: any) => `/ipam/vlans/${r.id}`" :delete-name="(r: any) => r.name" @changed="refreshVlans" />
     <GhostAddresses v-else-if="tab === 'ghosts'" />
     <div v-else-if="tab === 'discovery' && canWrite" class="flex flex-col gap-4"><DiscoveryWizard @changed="reloadData" /><DiscoverySchedule /></div>

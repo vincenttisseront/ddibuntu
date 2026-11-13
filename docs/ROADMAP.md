@@ -78,7 +78,7 @@ Dix évolutions, une version chacune, chacune testée (unitaires, e2e, batteries
 | 3 | 0.10.2 | Cycle de vie d'une adresse en un geste (réserver / libérer : fiche, réservation, A, PTR, alias, en tout-ou-rien, avec récapitulatif) | ✅ 0.10.2 |
 | 4 | 0.10.3 | Historique et retour arrière par enregistrement ; diff avant déploiement de zone, validation `named-checkzone` | ✅ 0.12.9 |
 | 5 | 0.10.4 | Zones inverses automatiques par sous-réseau, délégations CIDR (RFC 2317) | ✅ 0.12.10 |
-| 6 | 0.10.5 | Modèles de nommage et d'enregistrements par sous-réseau / VLAN, contrôle de convention | ⬜ |
+| 6 | 0.10.5 | Modèles de nommage et d'enregistrements par sous-réseau / VLAN, contrôle de convention | ✅ 0.12.11 |
 | 7 | 0.10.6 | Import / export et opérations en masse (CSV, AXFR, édition multiple avec prévisualisation) | ⬜ |
 | 8 | 0.10.7 | Vues DNS (split-horizon) liées à l'IPAM : nom interne / externe, comparaison des réponses, alerte de mauvaise vue | ⬜ |
 | 9 | 0.10.8 | Supervision corrélée par IP (baux, requêtes DNS, RPZ) et alertes (pools presque pleins, TTL incohérents, zones non transférées) | ⬜ |

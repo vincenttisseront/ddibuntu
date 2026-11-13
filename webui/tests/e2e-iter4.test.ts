@@ -90,7 +90,7 @@ const mk = async () => {
   return { vlan, s1, s2, z }
 }
 let W: Awaited<ReturnType<typeof mk>>
-const MIGRATIONS_LAST = 20   // dernière migration du schéma (20 : historique des enregistrements DNS)
+const MIGRATIONS_LAST = 21   // dernière migration du schéma (21 : nommage par VLAN)
 
 describe('points de restauration des données', () => {
   it('migration 2 appliquée, version 0.4.0', async () => {

@@ -1,5 +1,13 @@
 # Journal des modifications
 
+## 0.12.11 — « Modèles de nommage et contrôle de convention » (ex-0.10.5)
+
+- Règle de nom d'hôte et format de génération de noms au niveau du **VLAN** (prioritaires sur le gabarit du réseau, champ par champ) ; le gabarit gagne lui aussi un format (migration 21).
+- Format à jetons : `{ip}`, `{o1}`…`{o4}` (`{o4:3}` = sur 3 chiffres), `{vlan}`, `{site}` ; jamais d'expression régulière saisie.
+- « Prochaine adresse libre » : `auto_name` attribue le nom généré (refusé s'il n'est pas valide ou contredit la règle) ; suggestion par adresse via l'API.
+- Onglet IPAM › Nommage : contrôle de convention — noms hors règle listés par réseau ou globalement, avec le nombre d'adresses utilisées sans nom.
+- Tests : unit-iter32, e2e-iter33.
+
 ## 0.12.10 — « Zones inverses automatiques et RFC 2317 » (ex-0.10.4)
 
 - Nouvel onglet DNS › Zones inverses : liste des sous-réseaux sans zone inverse et création en un clic (zone modèle optionnelle dont NS et SOA sont repris). Un /22 est servi par la zone de son /16 ; IPv6 au quartet.

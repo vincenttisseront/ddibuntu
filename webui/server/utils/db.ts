@@ -501,7 +501,12 @@ create table dns_record_history (
 create index dns_record_history_zone on dns_record_history (zone_id, id desc);
 create index dns_record_history_record on dns_record_history (record_id, id desc);
 `
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }, { version: 19, sql: SCHEMA_19 }, { version: 20, sql: SCHEMA_20 }]
+// 0.10.5 : règle de nom d'hôte et format de génération de noms au niveau du VLAN (prioritaires sur le gabarit du réseau).
+const SCHEMA_21 = String.raw`
+alter table vlans add column hostname_pattern text, add column name_format text;
+alter table network_templates add column name_format text;
+`
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }, { version: 19, sql: SCHEMA_19 }, { version: 20, sql: SCHEMA_20 }, { version: 21, sql: SCHEMA_21 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

@@ -1,12 +1,14 @@
 import { z } from 'zod'
 import { setResponseHeader } from 'h3'
 import { audit, fail, intParam, qint, qstr, route } from '../utils/router'
-import { one, query, tx } from '../utils/db'
+import { getPool, one, query, tx } from '../utils/db'
 import { classlessRange } from '../utils/reverse'
 import { capacity, nextFree, nextFreeInRange, isHostname, normIp, normMac, parseCidr, cidrToString, cidrContainsIp, parseIp, ptrName } from '../utils/net'
 import type { PoolClient } from 'pg'
 import { cleanOptions, optionsS } from '../utils/dhcpopts'
 import { aliasNames } from '../utils/alias-db'
+import { formatError, formatName } from '../utils/naming'
+import { namingOfSubnet, hostnameMatches } from '../utils/smartddi'
 import { checkHostnameRule, patternError, resolveDnsZone, syncReservation } from '../utils/smartddi'
 
 const cidrS = z.string().trim().refine((v) => !!parseCidr(v), 'cidr')
@@ -238,7 +240,7 @@ route('POST', '/ipam/subnets/:id/addresses', 'operator', async (c) => {
 route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
   await allowSubnet(c, Number(c.params.id))
   const sid = intParam(c, 'id')
-  const b = await c.body(z.object({ status: status.default('used'), hostname: host.nullable().optional(), description: z.string().max(500).nullable().optional(), dns_zone_id: z.number().int().nullable().optional(), pool_id: z.number().int().optional() }))
+  const b = await c.body(z.object({ status: status.default('used'), hostname: host.nullable().optional(), description: z.string().max(500).nullable().optional(), dns_zone_id: z.number().int().nullable().optional(), pool_id: z.number().int().optional(), auto_name: z.boolean().default(false) }))
   const out = await tx(async (cl) => {
     await cl.query('select 1 from subnets where id = $1 for update', [sid])
     const s = (await cl.query('select text(cidr) as cidr, kind from subnets where id = $1', [sid])).rows[0]
@@ -260,10 +262,17 @@ route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
       ip = nextFree(cidr, taken, excl)
       if (!ip) fail(409, 'subnet_full')
     }
-    const id = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, description) values ($1,$2,$3,$4,$5) returning id', [sid, ip, b.status, b.hostname ?? null, b.description ?? null])).rows[0].id
-    const zone = b.hostname ? await resolveDnsZone(cl, sid, b.dns_zone_id) : null
-    if (zone && b.hostname) await syncDns(cl, ip, b.hostname, zone)
-    return { id: id as number, ip, dhcp: await syncReservation(cl, id as number), dns: !!zone }
+    let hostname = b.hostname ?? null   // nom attribué d'après le format du VLAN / du gabarit si demandé et non saisi
+    if (!hostname && b.auto_name) {
+      const n = await namingOfSubnet(cl, sid), g = n?.format ? formatName(n.format, { ip: ip!, vlan: n.vlan, site: n.site }) : null
+      if (!g) fail(400, 'name_not_generated')
+      if (n!.pattern && !hostnameMatches(n!.pattern, g)) fail(400, 'hostname_rule', 'hostname_rule', { pattern: n!.pattern })
+      hostname = g
+    }
+    const id = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, description) values ($1,$2,$3,$4,$5) returning id', [sid, ip, b.status, hostname, b.description ?? null])).rows[0].id
+    const zone = hostname ? await resolveDnsZone(cl, sid, b.dns_zone_id) : null
+    if (zone && hostname) await syncDns(cl, ip!, hostname, zone)
+    return { id: id as number, ip, hostname, dhcp: await syncReservation(cl, id as number), dns: !!zone }
   })
   await audit(c, 'address_allocate', 'address', out.id, { ip: out.ip })
   return out
@@ -354,20 +363,21 @@ const templateBody = z.object({
   name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional(),
   create_scope: z.boolean().default(true), lease_time: z.number().int().min(60).max(31536000).default(86400),
   dhcp_options: optionsS.default({}), dns_zone_id: z.number().int().nullable().optional(),
-  hostname_pattern: z.string().trim().nullable().optional(),
+  hostname_pattern: z.string().trim().nullable().optional(), name_format: z.string().trim().nullable().optional(),
 })
 async function checkTemplate(b: z.infer<typeof templateBody> | Partial<z.infer<typeof templateBody>>) {
   if (b.hostname_pattern) { const e = patternError(b.hostname_pattern); if (e) fail(400, e) }
+  if (b.name_format) { const e = formatError(b.name_format); if (e) fail(400, e) }
   if (b.dns_zone_id && !(await one("select 1 from dns_zones where id = $1 and type = 'primary'", [b.dns_zone_id]))) fail(400, 'zone_not_primary')
 }
-route('GET', '/ipam/templates', 'viewer', async () => ({ items: await query(`select t.id, t.name, t.description, t.create_scope, t.lease_time, t.dhcp_options, t.dns_zone_id, z.name as dns_zone, t.hostname_pattern,
+route('GET', '/ipam/templates', 'viewer', async () => ({ items: await query(`select t.id, t.name, t.description, t.create_scope, t.lease_time, t.dhcp_options, t.dns_zone_id, z.name as dns_zone, t.hostname_pattern, t.name_format,
   (select count(*)::int from subnets s where s.template_id = t.id) as subnets from network_templates t left join dns_zones z on z.id = t.dns_zone_id order by lower(t.name)`) }))
 route('POST', '/ipam/templates', 'operator', async (c) => {
   denyScoped(c)
   const b = await c.body(templateBody)
   await checkTemplate(b)
-  const r = await one<any>('insert into network_templates (name, description, create_scope, lease_time, dhcp_options, dns_zone_id, hostname_pattern) values ($1,$2,$3,$4,$5::jsonb,$6,$7) returning id',
-    [b.name, b.description ?? null, b.create_scope, b.lease_time, JSON.stringify(cleanOptions(b.dhcp_options)), b.dns_zone_id ?? null, b.hostname_pattern || null])
+  const r = await one<any>('insert into network_templates (name, description, create_scope, lease_time, dhcp_options, dns_zone_id, hostname_pattern, name_format) values ($1,$2,$3,$4,$5::jsonb,$6,$7,$8) returning id',
+    [b.name, b.description ?? null, b.create_scope, b.lease_time, JSON.stringify(cleanOptions(b.dhcp_options)), b.dns_zone_id ?? null, b.hostname_pattern || null, b.name_format || null])
   await audit(c, 'template_create', 'template', r.id, { name: b.name })
   return { id: r.id }
 })
@@ -376,8 +386,8 @@ route('PUT', '/ipam/templates/:id', 'operator', async (c) => {
   const id = intParam(c, 'id')
   const b = await c.body(templateBody)
   await checkTemplate(b)
-  const r = await query('update network_templates set name = $2, description = $3, create_scope = $4, lease_time = $5, dhcp_options = $6::jsonb, dns_zone_id = $7, hostname_pattern = $8, updated_at = now() where id = $1 returning id',
-    [id, b.name, b.description ?? null, b.create_scope, b.lease_time, JSON.stringify(cleanOptions(b.dhcp_options)), b.dns_zone_id ?? null, b.hostname_pattern || null])
+  const r = await query('update network_templates set name = $2, description = $3, create_scope = $4, lease_time = $5, dhcp_options = $6::jsonb, dns_zone_id = $7, hostname_pattern = $8, name_format = $9, updated_at = now() where id = $1 returning id',
+    [id, b.name, b.description ?? null, b.create_scope, b.lease_time, JSON.stringify(cleanOptions(b.dhcp_options)), b.dns_zone_id ?? null, b.hostname_pattern || null, b.name_format || null])
   if (!r.length) fail(404, 'not_found')
   await audit(c, 'template_update', 'template', id)
   return { ok: true }
@@ -391,12 +401,17 @@ route('DELETE', '/ipam/templates/:id', 'operator', async (c) => {
 })
 
 // ---- VLAN ----
-const vlanBody = z.object({ vlan_id: z.number().int().min(1).max(4094), name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional() })
-route('GET', '/ipam/vlans', 'viewer', async () => ({ items: await query('select v.id, v.vlan_id, v.name, v.description, (select count(*)::int from subnets s where s.vlan_id = v.id) as subnets from vlans v order by v.vlan_id') }))
+const vlanBody = z.object({ vlan_id: z.number().int().min(1).max(4094), name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional(), hostname_pattern: z.string().trim().nullable().optional(), name_format: z.string().trim().nullable().optional() })
+function checkNaming(b: { hostname_pattern?: string | null; name_format?: string | null }) {
+  if (b.hostname_pattern) { const e = patternError(b.hostname_pattern); if (e) fail(400, e) }
+  if (b.name_format) { const e = formatError(b.name_format); if (e) fail(400, e) }
+}
+route('GET', '/ipam/vlans', 'viewer', async () => ({ items: await query('select v.id, v.vlan_id, v.name, v.description, v.hostname_pattern, v.name_format, (select count(*)::int from subnets s where s.vlan_id = v.id) as subnets from vlans v order by v.vlan_id') }))
 route('POST', '/ipam/vlans', 'operator', async (c) => {
   denyScoped(c)
   const b = await c.body(vlanBody)
-  const r = await one<any>('insert into vlans (vlan_id, name, description) values ($1,$2,$3) returning id', [b.vlan_id, b.name, b.description ?? null])
+  checkNaming(b)
+  const r = await one<any>('insert into vlans (vlan_id, name, description, hostname_pattern, name_format) values ($1,$2,$3,$4,$5) returning id', [b.vlan_id, b.name, b.description ?? null, b.hostname_pattern || null, b.name_format || null])
   await audit(c, 'vlan_create', 'vlan', r.id)
   return { id: r.id }
 })
@@ -404,7 +419,10 @@ route('PUT', '/ipam/vlans/:id', 'operator', async (c) => {
   denyScoped(c)
   const id = intParam(c, 'id')
   const b = await c.body(vlanBody.partial())
+  checkNaming(b)
   await query('update vlans set vlan_id = coalesce($2, vlan_id), name = coalesce($3, name), description = coalesce($4, description) where id = $1', [id, b.vlan_id ?? null, b.name ?? null, b.description ?? null])
+  if (b.hostname_pattern !== undefined) await query('update vlans set hostname_pattern = $2 where id = $1', [id, b.hostname_pattern || null])
+  if (b.name_format !== undefined) await query('update vlans set name_format = $2 where id = $1', [id, b.name_format || null])
   await audit(c, 'vlan_update', 'vlan', id)
   return { ok: true }
 })
@@ -436,3 +454,27 @@ route('GET', '/ipam/export/addresses', 'viewer', async (c) => {
 
 // Valeur exportée et lue par le point d'entrée : empêche l'élimination du module par l'optimiseur
 export const registered = true
+
+// ---- Nommage : suggestion et contrôle de convention (0.10.5) ----
+route('GET', '/ipam/naming/suggest', 'viewer', async (c) => {
+  const sid = qint(c, 'subnet_id', 0), ip = normIp(qstr(c, 'ip', 64) ?? '')
+  if (!sid || !ip || parseIp(ip)?.v !== 4) fail(400, 'invalid_query')
+  await allowSubnet(c, sid)
+  const n = await namingOfSubnet({ query: (q: string, p?: unknown[]) => getPool().query(q, p) } as any, sid)
+  if (!n) fail(404, 'not_found')
+  const name = n.format ? formatName(n.format, { ip, vlan: n.vlan, site: n.site }) : null
+  return { name, format: n.format, pattern: n.pattern, source: n.source, valid: name !== null && (!n.pattern || hostnameMatches(n.pattern, name)) }
+})
+
+// Adresses nommées qui ne respectent pas la règle de leur réseau (un réseau, ou tous pour un compte non restreint)
+route('GET', '/ipam/naming/audit', 'viewer', async (c) => {
+  const sid = qint(c, 'subnet_id', 0)
+  if (sid) await allowSubnet(c, sid); else denyScoped(c)
+  const rows = await query<any>(`select a.id, a.subnet_id, text(s.cidr) as cidr, host(a.ip) as ip, a.hostname, coalesce(v.hostname_pattern, t.hostname_pattern) as pattern
+    from addresses a join subnets s on s.id = a.subnet_id left join vlans v on v.id = s.vlan_id left join network_templates t on t.id = s.template_id
+    where a.hostname is not null and a.hostname <> '' and coalesce(v.hostname_pattern, t.hostname_pattern) is not null and ($1::int = 0 or a.subnet_id = $1) order by s.cidr, a.ip limit 20000`, [sid])
+  const bad = rows.filter((r) => !hostnameMatches(r.pattern, r.hostname))
+  const unnamed = await one<any>(`select count(*)::int n from addresses a join subnets s on s.id = a.subnet_id left join vlans v on v.id = s.vlan_id left join network_templates t on t.id = s.template_id
+    where (a.hostname is null or a.hostname = '') and a.status in ('used','dhcp') and coalesce(v.hostname_pattern, t.hostname_pattern) is not null and ($1::int = 0 or a.subnet_id = $1)`, [sid])
+  return { checked: rows.length, violations: bad.length, unnamed: unnamed?.n ?? 0, items: bad.slice(0, 500) }
+})

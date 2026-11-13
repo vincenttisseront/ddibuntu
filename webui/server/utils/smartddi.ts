@@ -26,11 +26,21 @@ export async function templateOfSubnet(q: Q, subnetId: number): Promise<Template
   return (await q.query('select t.id, t.name, t.create_scope, t.lease_time, t.dhcp_options, t.dns_zone_id, t.hostname_pattern from network_templates t join subnets s on s.template_id = t.id where s.id = $1', [subnetId])).rows[0] ?? null
 }
 
-/** Refuse un nom d'hôte qui ne respecte pas la règle du gabarit du réseau. */
+export interface Naming { pattern: string | null; format: string | null; source: 'vlan' | 'template' | null; vlan: number | null; site: string | null; cidr: string }
+/** Règle et format de nommage d'un réseau : le VLAN du réseau l'emporte sur le gabarit, champ par champ. */
+export async function namingOfSubnet(q: Q, subnetId: number): Promise<Naming | null> {
+  const r = (await q.query(`select text(s.cidr) as cidr, s.site, v.vlan_id as vlan, v.hostname_pattern as vp, v.name_format as vf, t.hostname_pattern as tp, t.name_format as tf
+    from subnets s left join vlans v on v.id = s.vlan_id left join network_templates t on t.id = s.template_id where s.id = $1`, [subnetId])).rows[0]
+  if (!r) return null
+  const pattern = r.vp || r.tp || null, format = r.vf || r.tf || null
+  return { pattern, format, source: r.vp || r.vf ? 'vlan' : r.tp || r.tf ? 'template' : null, vlan: r.vlan ?? null, site: r.site ?? null, cidr: r.cidr }
+}
+
+/** Refuse un nom d'hôte qui ne respecte pas la règle du réseau (VLAN, sinon gabarit). */
 export async function checkHostnameRule(q: Q, subnetId: number, hostname: string | null | undefined): Promise<void> {
   if (!hostname) return
-  const t = await templateOfSubnet(q, subnetId)
-  if (t?.hostname_pattern && !hostnameMatches(t.hostname_pattern, hostname)) fail(400, 'hostname_rule', 'hostname_rule', { pattern: t.hostname_pattern })
+  const n = await namingOfSubnet(q, subnetId)
+  if (n?.pattern && !hostnameMatches(n.pattern, hostname)) fail(400, 'hostname_rule', 'hostname_rule', { pattern: n.pattern })
 }
 
 /** Zone DNS à alimenter : choix explicite (null = aucune), sinon celle du gabarit du réseau, sinon aucune. */
