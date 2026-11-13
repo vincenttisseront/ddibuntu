@@ -66,6 +66,16 @@ route('POST', '/system/apply', 'admin', async (c) => {
 })
 route('GET', '/system/deployments', 'admin', async () => { await reconcileDeployments(); return { items: await query('select id, at, username, ok, applied, apply_message, snapshot_id, files, results from deployments order by id desc limit 30') } })
 
+// Empreinte SHA-256 du certificat TLS de la console (public) : sert à épingler un certificat autosigné dans les scripts Windows
+route('GET', '/system/tls-fingerprint', 'operator', async () => {
+  const pem = process.env.NITRO_SSL_CERT || process.env.DDI_TLS_CERT_PEM || ''
+  try {
+    const { X509Certificate } = await import('node:crypto')
+    const x = new X509Certificate(pem)
+    return { sha256: x.fingerprint256.replace(/:/g, ''), subject: x.subject.replace(/\n/g, ', ').slice(0, 200), validTo: x.validTo }
+  } catch { return { sha256: null } }
+})
+
 // Mises à jour en ligne (détection + installation depuis les releases GitHub signées, faites par root)
 route('GET', '/system/update', 'admin', async () => { const st = await readUpdateStatus(); return { status: st, version: installedVersion(), busy: isBusy(st) } })
 route('POST', '/system/update/check', 'admin', async (c) => {

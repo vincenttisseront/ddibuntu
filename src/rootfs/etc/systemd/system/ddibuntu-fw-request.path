@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for a firewall (admin networks) request from the DDI-Buntu console
+
+[Path]
+PathChanged=/var/lib/ddibuntu/generated/.fw-request
+Unit=ddibuntu-fw-request.service
+
+[Install]
+WantedBy=multi-user.target

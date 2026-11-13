@@ -1,5 +1,14 @@
 # Journal des modifications
 
+## 0.12.14 — « Réseaux autorisés (pare-feu) depuis la console, certificat autosigné »
+
+- Nouvel onglet **Système › Pare-feu** : l'administrateur modifie les réseaux autorisés à joindre la console (HTTPS) et SSH, par exemple pour y ajouter les serveurs Windows DHCP/DNS. IPv4 et IPv6, adresse seule ou CIDR, `/0` refusé.
+- La console reste sans privilège : elle dépose une demande que root (`ddibuntu-fw request`, déclenchée par `ddibuntu-fw-request.path`) revalide entièrement, applique avec **retour arrière automatique à 90 s**, puis la page demande de **confirmer** depuis un poste qui a encore accès (ou d'annuler). `firewall.conf` est restauré avec les règles en cas de retour arrière.
+- Garde-fou : une confirmation explicite est demandée si le poste qui administre n'est plus couvert par les réseaux saisis.
+- Réglage propre à chaque nœud (en cluster, à répéter sur chacun).
+- Script d'envoi des baux : **épinglage de l'empreinte SHA-256** du certificat de la console (`/api/system/tls-fingerprint`) pour un certificat autosigné ; la validation TLS n'est jamais désactivée.
+- Tests : unit-iter33, unit-iter24 (complété), e2e-iter34, b27-fw-request.sh.
+
 ## 0.12.13 — « Adresse de la console préremplie dans le script des baux »
 
 - Le script d'envoi des baux affiché par l'assistant de migration reprend l'adresse de la console telle que le navigateur la voit (par exemple `https://ddi.corp.local`) au lieu de `https://CONSOLE-DDI`. Le jeton d'API reste à coller par l'utilisateur : il n'est jamais préinséré.

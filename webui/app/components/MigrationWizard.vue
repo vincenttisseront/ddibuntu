@@ -5,9 +5,10 @@ const { canWrite, isAdmin } = useRole()
 const emit = defineEmits<{ goto: [tab: string] }>()
 const st = ref<any>(null), busy = ref(''), err = ref(''), shown = ref('')
 const origin = ref('')   // adresse de la console vue par le navigateur, connue seulement côté client
-onMounted(() => { origin.value = window.location.origin })
+const pin = ref('')   // empreinte SHA-256 du certificat de la console (épinglage pour un certificat autosigné)
+onMounted(async () => { origin.value = window.location.origin; try { pin.value = (await api.call('GET', '/system/tls-fingerprint', undefined, { silent: true }))?.sha256 ?? '' } catch { /* script sans épinglage */ } })
 const SCRIPTS = computed<Record<string, { title: string; code: string }>>(() => ({
-  inventory: { title: t('mig.s_inventory'), code: PS_INVENTORY }, leases: { title: t('mig.s_leases'), code: PS_LEASES }, push: { title: t('mig.s_push'), code: withConsoleUrl(PS_PUSH, origin.value) }, dhcp: { title: t('mig.s_dhcp'), code: PS_DHCP }, dns: { title: t('mig.s_dns'), code: PS_DNS },
+  inventory: { title: t('mig.s_inventory'), code: PS_INVENTORY }, leases: { title: t('mig.s_leases'), code: PS_LEASES }, push: { title: t('mig.s_push'), code: withConsoleUrl(PS_PUSH, origin.value, pin.value) }, dhcp: { title: t('mig.s_dhcp'), code: PS_DHCP }, dns: { title: t('mig.s_dns'), code: PS_DNS },
 }))
 const META = computed<Record<string, { label: string; desc: string; icon: string; tab?: string; link?: string }>>(() => ({
   scripts: { label: t('mig.st.scripts'), desc: t('mig.st.scripts_d'), icon: 'i-lucide-terminal' },

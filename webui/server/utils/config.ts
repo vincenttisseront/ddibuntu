@@ -22,6 +22,10 @@ export function cfg() {
     updateStatusFile: e.DDI_UPDATE_STATUS ?? '/var/lib/ddibuntu/update-status.json',
     versionFile: e.DDI_VERSION_FILE ?? '/usr/local/lib/ddibuntu/VERSION',
     clusterStatusFile: e.DDI_CLUSTER_STATUS ?? '/run/ddibuntu/cluster-status.json',
+    // pare-feu (ddibuntu-fw, root) : configuration lue directement (0644), résultat de la dernière demande et délai de confirmation publiés dans /run
+    fwConfFile: e.DDI_FW_CONF ?? '/etc/ddibuntu/firewall.conf',
+    fwResultFile: e.DDI_FW_RESULT ?? '/run/ddibuntu/fw-result.json',
+    fwPendingFile: e.DDI_FW_PENDING ?? '/run/ddibuntu/fw-pending.json',
     adStatusFile: e.DDI_AD_STATUS ?? '/run/ddibuntu/ad-status.json',
     // sauvegardes de la base (ddibuntu-backup, root) : état, résultat de la dernière demande, phase d'une restauration en cours
     backupStatusFile: e.DDI_BACKUP_STATUS ?? '/run/ddibuntu/backup-status.json',

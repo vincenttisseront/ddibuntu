@@ -1,0 +1,11 @@
+[Unit]
+Description=DDI-Buntu : demande de pare-feu de la console (validée par root)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-fw request
+TimeoutStartSec=60
+# le minuteur de retour arrière (lancé par « apply --confirm ») doit survivre à la fin de ce service
+KillMode=process
+PrivateTmp=yes
+ProtectHome=yes

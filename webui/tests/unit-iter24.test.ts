@@ -9,7 +9,7 @@ describe('migration Windows : état et scripts', () => {
     expect(Object.keys(parseMigration({ done: { x: true } }))).toEqual([...MIGRATION_STEPS])
   })
   it('scripts : lecture seule (aucune commande de modification) et fichiers attendus par les imports', () => {
-    for (const s of [PS_INVENTORY, PS_DHCP, PS_DNS, PS_LEASES, PS_PUSH]) expect(s).not.toMatch(/\b(Set|Add|Remove|New-DhcpServer|Restart|Stop|Uninstall)-/i)
+    for (const s of [PS_INVENTORY, PS_DHCP, PS_DNS, PS_LEASES, PS_PUSH]) expect(s).not.toMatch(/\b(Set|Add(?!-Type)|Remove|New-DhcpServer|Restart|Stop|Uninstall)-/i)
     expect(PS_DHCP).toContain('Export-DhcpServer'); expect(PS_DNS).toContain('/ZoneExport'); expect(PS_INVENTORY).toContain('Get-DhcpServerv4Failover')
   })
   it('envoi planifié : jeton jamais fourni, rafraîchissement demandé', () => {
@@ -39,5 +39,16 @@ describe('adresse de la console dans le script', () => {
   it('remplace l\'adresse d\'exemple par celle du navigateur ; jamais de jeton ; origine douteuse ignorée', () => {
     const c = withConsoleUrl(PUSH, 'https://ddi.corp.local'); expect(c).toContain("$console = 'https://ddi.corp.local'"); expect(c).toContain('COLLER-LE-JETON-ICI')
     for (const bad of ['', "https://x'; Remove-Item *; '", 'javascript:alert(1)', 'https://a b']) expect(withConsoleUrl(PUSH, bad)).toBe(PUSH)
+  })
+})
+
+describe('certificat autosigné : épinglage de l\'empreinte', () => {
+  const fp = 'AB'.repeat(32)
+  it('injecte l\'empreinte valide (hex ou avec « : »), refuse le reste ; la validation n\'est jamais désactivée', () => {
+    expect(withConsoleUrl(PUSH, 'https://ddi', fp)).toContain(`$pin = '${fp}'`)
+    expect(withConsoleUrl(PUSH, 'https://ddi', fp.match(/../g)!.join(':').toLowerCase())).toContain(`$pin = '${fp}'`)
+    for (const bad of ['', 'zz', "A'; Remove-Item *; '", fp + 'AA']) expect(withConsoleUrl(PUSH, 'https://ddi', bad)).toContain("$pin = ''")
+    expect(PUSH).not.toMatch(/ServerCertificateValidationCallback\s*=\s*\{\s*\$true/i)
+    expect(PUSH).toContain('SslPolicyErrors.None')
   })
 })

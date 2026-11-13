@@ -287,13 +287,13 @@ cmd_apply() {
   chmod 0755 "$DDI_STATEDIR" 2>/dev/null || true   # répare les droits changés par ddibuntu-reload (≤ 0.9.41) : la console doit traverser ce dossier
   svc daemon-reload
   # unités « demande » éventuellement modifiées par cette version : redémarrées pour prendre en compte leurs nouvelles règles (sans effet si elles sont inactives)
-  svc restart ddibuntu-cluster-request.path ddibuntu-cluster-setup.path ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-backup-request.path >/dev/null 2>&1 || true
+  svc restart ddibuntu-cluster-request.path ddibuntu-cluster-setup.path ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-fw-request.path ddibuntu-backup-request.path >/dev/null 2>&1 || true
   "$DDI_ROOT/usr/local/sbin/ddibuntu-fw" write >/dev/null 2>&1 || log "avertissement : règles du pare-feu non re-rendues"
   svc enable ddibuntu-update-check.timer ddibuntu-selfupdate.path >/dev/null 2>&1 || true
   svc start ddibuntu-update-check.timer ddibuntu-selfupdate.path >/dev/null 2>&1 || true
   # unités « demande de la console » ajoutées après l'installation initiale (ex. création de cluster) : activées aussi sur les nœuds mis à jour
-  svc enable ddibuntu-cluster-setup.path ddibuntu-ad-request.path ddibuntu-backup-request.path ddibuntu-reload.path ddibuntu-health.timer ddibuntu-backup.timer >/dev/null 2>&1 || true
-  svc start ddibuntu-cluster-setup.path ddibuntu-ad-request.path ddibuntu-backup-request.path ddibuntu-reload.path ddibuntu-health.timer ddibuntu-backup.timer >/dev/null 2>&1 || true
+  svc enable ddibuntu-cluster-setup.path ddibuntu-ad-request.path ddibuntu-fw-request.path ddibuntu-backup-request.path ddibuntu-reload.path ddibuntu-health.timer ddibuntu-backup.timer >/dev/null 2>&1 || true
+  svc start ddibuntu-cluster-setup.path ddibuntu-ad-request.path ddibuntu-fw-request.path ddibuntu-backup-request.path ddibuntu-reload.path ddibuntu-health.timer ddibuntu-backup.timer >/dev/null 2>&1 || true
   st state=restarting "message=Redémarrage de la console"
   svc start ddibuntu-console.service
   local ok=0

@@ -46,8 +46,26 @@ export const PS_PUSH = `# Envoi planifié des baux vers la console, TANT QUE Win
 $console = 'https://CONSOLE-DDI'
 $token = 'COLLER-LE-JETON-ICI'
 if ($console -like '*CONSOLE-DDI*' -or $token -like 'COLLER-*') { Write-Warning "Renseignez d'abord \$console (adresse réelle de la console, ex. https://ddi.corp.local) et \$token (jeton d'API)."; return }
-# Windows PowerShell 5.1 : TLS 1.2 ; le certificat de la console doit être approuvé par ce serveur (autorité interne ou certificat installé).
+# Windows PowerShell 5.1 : TLS 1.2.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+# Certificat AUTOSIGNÉ de la console : on n'accepte que CE certificat, identifié par son empreinte SHA-256 (épinglage ; la validation n'est pas désactivée).
+# Vide = le certificat doit être approuvé par Windows (autorité interne ou certificat installé).
+$pin = ''
+if ($pin) {
+  Add-Type @"
+using System; using System.Net.Security; using System.Security.Cryptography; using System.Security.Cryptography.X509Certificates;
+public static class DdiPin {
+  public static string Pin = "";
+  public static bool Check(object s, X509Certificate c, X509Chain ch, SslPolicyErrors e) {
+    if (e == SslPolicyErrors.None) return true;
+    using (var h = SHA256.Create()) return BitConverter.ToString(h.ComputeHash(c.GetRawCertData())).Replace("-", "").Equals(Pin, StringComparison.OrdinalIgnoreCase);
+  }
+  public static RemoteCertificateValidationCallback Callback { get { return new RemoteCertificateValidationCallback(Check); } }
+}
+"@
+  [DdiPin]::Pin = ($pin -replace '[^0-9A-Fa-f]', '')
+  [Net.ServicePointManager]::ServerCertificateValidationCallback = [DdiPin]::Callback
+}
 $csv = (Get-DhcpServerv4Scope | ForEach-Object { Get-DhcpServerv4Lease -ScopeId $_.ScopeId } |
   Select-Object IPAddress, ClientId, HostName, AddressState, @{ n = 'ExpiryUtc'; e = { $_.LeaseExpiryTime.ToUniversalTime().ToString('s') } } |
   ConvertTo-Csv -NoTypeInformation) -join "\`n"
@@ -85,4 +103,9 @@ Stop-Service DHCPServer; Set-Service DHCPServer -StartupType Disabled
 # Uninstall-WindowsFeature DHCP -IncludeManagementTools`
 
 /** Remplace l'adresse d'exemple par celle de la console telle que le navigateur la voit (jamais le jeton : il se crée dans Profil › Jetons d'API). */
-export const withConsoleUrl = (code: string, origin: string): string => (/^https?:\/\/[^\s'"`$]+$/.test(origin) ? code.replace("'https://CONSOLE-DDI'", `'${origin}'`) : code)
+export const withConsoleUrl = (code: string, origin: string, pin = ''): string => {
+  let out = /^https?:\/\/[^\s'"`$]+$/.test(origin) ? code.replace("'https://CONSOLE-DDI'", `'${origin}'`) : code
+  // empreinte SHA-256 du certificat de la console (64 chiffres hexadécimaux, éventuellement séparés par « : »)
+  if (/^[0-9A-Fa-f]{2}(:?[0-9A-Fa-f]{2}){31}$/.test(pin)) out = out.replace("$pin = ''", `$pin = '${pin.replace(/:/g, '').toUpperCase()}'`)
+  return out
+}

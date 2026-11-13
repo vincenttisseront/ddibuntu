@@ -14,6 +14,10 @@ STATE="${DDI_FW_STATE:-$DDI_STATEDIR}"
 PIDFILE="$STATE/fw-rollback.pid"
 PREV="$STATE/fw-previous.nft"
 PREV_FILE="$STATE/nftables.nft.prev"
+CONF_PREV="$STATE/fw-conf.prev"     # firewall.conf d'avant une demande de la console : restauré avec le retour arrière
+GEN="${DDI_GENERATED_DIR:-/var/lib/ddibuntu/generated}"
+RUN="${DDI_RUN_DIR:-/run/ddibuntu}"
+CONFIRM_SECONDS="${DDI_FW_CONFIRM:-90}"
 
 usage() {
   cat <<'USAGE'
@@ -25,6 +29,8 @@ Usage : ddibuntu-fw <commande>
   confirm              valide une application en attente
   rollback             revient immédiatement aux règles précédentes
   set CLE VALEUR       modifie ADMIN_NETS, OPEN_TCP, OPEN_UDP, ADMIN_TCP ou CLUSTER_PEERS
+  request              traite la demande déposée par la console (.fw-request) : réseaux d'administration,
+                       application avec retour arrière automatique, confirmation ou retour arrière
   status               affiche les règles actives
 USAGE
 }
@@ -169,6 +175,20 @@ fw_disarm() {
     kill "$(cat "$PIDFILE")" 2>/dev/null || true   # le minuteur a pu se terminer entre-temps
     rm -f "$PIDFILE"
   fi
+  rm -f "$RUN/fw-pending.json"
+}
+
+# Publie (sans secret, lisible par la console) la fin du délai de confirmation, et le résultat de la dernière demande
+fw_publish_json() {   # $1 = nom de fichier, $2 = JSON
+  install -d -m 0755 "$RUN" 2>/dev/null || return 0
+  local t; t="$(mktemp "$RUN/.fw.XXXXXX")" || return 0
+  printf '%s\n' "$2" > "$t"; chmod 0644 "$t"; mv -f "$t" "$RUN/$1"
+}
+fw_publish_pending() {   # $1 = secondes avant le retour arrière
+  fw_publish_json fw-pending.json "$(S="$1" python3 -c 'import json,os,time; print(json.dumps({"at": int(time.time()), "until": int(time.time()) + int(os.environ["S"])}))')"
+}
+fw_publish_result() {    # $1 = action, $2 = ok (true|false), $3 = message
+  fw_publish_json fw-result.json "$(A="$1" O="$2" M="$3" python3 -c 'import json,os,time; print(json.dumps({"at": int(time.time()), "action": os.environ["A"], "ok": os.environ["O"] == "true", "message": os.environ["M"][:240]}, ensure_ascii=False))')"
 }
 
 fw_arm() {
@@ -201,6 +221,7 @@ fw_apply() {
   nft -f "$NFT_FILE"
   if [ "$confirm" -gt 0 ]; then
     fw_arm "$confirm"
+    fw_publish_pending "$confirm"
     printf 'Retour arrière automatique dans %s s ; lancer « ddibuntu-fw confirm » pour conserver.\n' "$confirm"
   fi
 }
@@ -217,6 +238,9 @@ fw_rollback() {
     ddi_die "aucune sauvegarde de règles précédentes"
   fi
   if [ -f "$PREV_FILE" ]; then cp -p "$PREV_FILE" "$NFT_FILE"; fi
+  # une demande de la console a aussi modifié firewall.conf : on le ramène à l'état d'avant, sinon le prochain rendu réappliquerait les réseaux refusés
+  if [ -f "$CONF_PREV" ]; then cp -p "$CONF_PREV" "$FW_CONF"; rm -f "$CONF_PREV"; fi
+  rm -f "$RUN/fw-pending.json"
   printf 'Règles précédentes restaurées.\n'
 }
 
@@ -246,6 +270,57 @@ fw_set() {
   if [ -n "$bak" ]; then rm -f "$bak"; fi
 }
 
+# ---- Demandes de la console (sans privilège) : revalidées ici en totalité ----
+# Format : {"action":"set","nets":["10.0.0.0/24",…]} | {"action":"confirm"} | {"action":"rollback"}
+fw_request() {
+  local rq="$GEN/.fw-request" raw="" parsed action nets rc=0 out="" ok=false
+  [ -e "$rq" ] || [ -L "$rq" ] || return 0
+  if [ -f "$rq" ] && [ ! -L "$rq" ]; then raw="$(head -c 8192 "$rq")"; fi
+  rm -f "$rq"
+  parsed="$(RAW="$raw" python3 - <<'PY' 2>/dev/null || true
+import json, os
+try: d = json.loads(os.environ["RAW"])
+except Exception: raise SystemExit(0)
+if not isinstance(d, dict): raise SystemExit(0)
+a = d.get("action")
+if a not in ("set", "confirm", "rollback"): raise SystemExit(0)
+nets = d.get("nets", []) if a == "set" else []
+if not isinstance(nets, list) or len(nets) > 32 or not all(isinstance(n, str) and len(n) <= 64 for n in nets): raise SystemExit(0)
+print(a); print(",".join(nets))
+PY
+)"
+  action="$(sed -n 1p <<<"$parsed")"; nets="$(sed -n 2p <<<"$parsed")"
+  case "$action" in
+    set)
+      out="$( ( fw_request_set "$nets" ) 2>&1)" || rc=$? ;;
+    confirm)
+      if [ -f "$PIDFILE" ]; then fw_disarm; rm -f "$CONF_PREV"; out="Règles conservées."; else out="Aucune application en attente."; rc=1; fi ;;
+    rollback)
+      if [ -f "$PIDFILE" ]; then fw_disarm; out="$( ( fw_rollback ) 2>&1)" || rc=$?; else out="Aucune application en attente."; rc=1; fi ;;
+    *) out="demande invalide"; rc=1 ;;
+  esac
+  [ "$rc" -eq 0 ] && ok=true
+  out="$(printf '%s' "$out" | tr '\n\r' '  ' | sed 's/ddibuntu-fw: //g')"
+  fw_publish_result "${action:-invalide}" "$ok" "$out"
+  [ "$ok" = true ]
+}
+fw_request_set() {   # $1 = réseaux séparés par des virgules ; applique avec retour arrière automatique
+  local n norm list="" count=0
+  [ ! -f "$PIDFILE" ] || ddi_die "une application est déjà en attente de confirmation"
+  while IFS= read -r n || [ -n "$n" ]; do
+    norm="$(ddi_norm_net "$n")" || ddi_die "réseau invalide : $n"
+    list="${list:+$list,}$norm"; count=$((count + 1))
+  done < <(ddi_split_list "$1")
+  [ "$count" -ge 1 ] || ddi_die "au moins un réseau d'administration est requis"
+  mkdir -p "$STATE"
+  if [ -f "$FW_CONF" ]; then cp -p "$FW_CONF" "$CONF_PREV"; else rm -f "$CONF_PREV"; : > "$CONF_PREV"; fi
+  if ! fw_set ADMIN_NETS "$list"; then rm -f "$CONF_PREV"; return 1; fi
+  if ! fw_apply --confirm "$CONFIRM_SECONDS"; then
+    cp -p "$CONF_PREV" "$FW_CONF"; rm -f "$CONF_PREV"; return 1
+  fi
+  printf 'Appliqué : %s. Confirmer dans les %s s, sinon retour arrière automatique.' "$list" "$CONFIRM_SECONDS"
+}
+
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
   render)   fw_render ;;
@@ -255,6 +330,7 @@ case "$cmd" in
   confirm)  if [ -f "$PIDFILE" ]; then fw_disarm; printf 'Règles conservées.\n'; else printf 'Aucune application en attente.\n'; fi ;;
   rollback) fw_rollback ;;
   set)      fw_set "$@" ;;
+  request)  fw_request ;;
   status)   nft list table inet ddibuntu ;;
   _timer)   # interne : retour arrière différé
     echo "$$" > "$PIDFILE"

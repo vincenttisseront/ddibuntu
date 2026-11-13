@@ -3,9 +3,9 @@ const { t } = useT()
 const fmt = useFmt()
 const { isAdmin } = useRole()
 if (!isAdmin.value) await navigateTo('/')
-const tab = useHashTab('users', ['users', 'audit', 'alerts', 'backup', 'restore', 'updates', 'api', 'sso', 'ldap', 'about'])
+const tab = useHashTab('users', ['users', 'audit', 'alerts', 'backup', 'restore', 'updates', 'api', 'sso', 'ldap', 'firewall', 'about'])
 const baseTabs = computed(() => [{ label: t('system.users'), value: 'users', icon: 'i-lucide-users' }, { label: t('system.audit'), value: 'audit', icon: 'i-lucide-scroll-text' }, { label: t('system.about'), value: 'about', icon: 'i-lucide-info' }])
-const tabs = computed(() => { const b = baseTabs.value; return [...b.slice(0, 2), { label: t('alerts.tab'), value: 'alerts', icon: 'i-lucide-bell-ring' }, { label: t('backup.tab'), value: 'backup', icon: 'i-lucide-database-backup' }, { label: t('restore.tab'), value: 'restore', icon: 'i-lucide-history' }, { label: t('update.tab'), value: 'updates', icon: 'i-lucide-download' }, { label: t('tok.tab'), value: 'api', icon: 'i-lucide-key-round' }, { label: t('sso.tab'), value: 'sso', icon: 'i-lucide-log-in' }, { label: t('ldap.tab'), value: 'ldap', icon: 'i-lucide-book-user' }, ...b.slice(2)] })
+const tabs = computed(() => { const b = baseTabs.value; return [...b.slice(0, 2), { label: t('alerts.tab'), value: 'alerts', icon: 'i-lucide-bell-ring' }, { label: t('backup.tab'), value: 'backup', icon: 'i-lucide-database-backup' }, { label: t('restore.tab'), value: 'restore', icon: 'i-lucide-history' }, { label: t('update.tab'), value: 'updates', icon: 'i-lucide-download' }, { label: t('tok.tab'), value: 'api', icon: 'i-lucide-key-round' }, { label: t('sso.tab'), value: 'sso', icon: 'i-lucide-log-in' }, { label: t('ldap.tab'), value: 'ldap', icon: 'i-lucide-book-user' }, { label: t('fw.tab'), value: 'firewall', icon: 'i-lucide-shield' }, ...b.slice(2)] })
 const roleOptions = computed(() => ['admin', 'operator', 'viewer'].map((v) => ({ label: t(`system.role.${v}`), value: v })))
 const userCols = computed(() => [{ key: 'username', label: t('system.user'), kind: 'mono' }, { key: 'display_name', label: t('common.name') }, { key: 'role', label: t('system.role_label'), kind: 'badge', trans: 'system.role' }, { key: 'source', label: t('system.source'), kind: 'badge', trans: 'system.src' }, { key: 'totp_enabled', label: t('mfa.col'), kind: 'bool' }, { key: 'space_ids', label: t('system.scope'), kind: 'mono', fmt: (v: any) => (v?.length ? v.join(', ') : t('system.scope_all')) }, { key: 'disabled', label: t('common.disabled'), kind: 'bool' }, { key: 'last_login', label: t('system.last_login'), kind: 'date' }])
 const userFields = computed(() => [
@@ -38,6 +38,7 @@ const { data: deps } = await useFetch<any>('/api/system/deployments')
     <ApiTokens v-else-if="tab === 'api'" />
     <SsoSettings v-else-if="tab === 'sso'" />
     <LdapSettings v-else-if="tab === 'ldap'" />
+    <FirewallPanel v-else-if="tab === 'firewall'" />
     <RestorePanel v-else-if="tab === 'restore'" />
     <UpdatePanel v-else-if="tab === 'updates'" />
     <div v-else class="grid gap-4 lg:grid-cols-2">
