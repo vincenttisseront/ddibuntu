@@ -15,7 +15,7 @@ const body = z.object({
   bindPassword: z.string().max(200).optional(), clearPassword: z.boolean().optional(),
   userFilter: z.string().trim().max(500), userAttr: ATTR, displayAttr: ATTR, groupMode: z.enum(['memberOf', 'search']), groupBaseDn: z.string().trim().max(500), groupFilter: z.string().trim().max(500),
   groupMap: z.array(z.object({ groupDn: z.string().trim().min(3).max(500), role: z.enum(['admin', 'operator', 'viewer']), spaceIds: z.array(z.number().int().positive()).max(50).optional() })).max(30),
-  tlsRejectUnauthorized: z.boolean(), caPem: z.string().max(20000).regex(/^(|-----BEGIN CERTIFICATE-----[\s\S]*-----END CERTIFICATE-----\s*)$/).optional(),
+  tlsRejectUnauthorized: z.boolean(), caPem: z.string().max(20000).regex(/^(?:-----BEGIN CERTIFICATE-----[\s\S]*-----END CERTIFICATE-----\s*)?$/).optional(),
 })
 const load = async (): Promise<LdapSettings> => ({ ...LDAP_DEFAULTS, ...(await getSetting<LdapSettings>('ldap', LDAP_DEFAULTS)) })
 

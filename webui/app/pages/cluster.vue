@@ -13,11 +13,11 @@ async function load(silent = false) {
 let ticks = 0
 const { canWrite } = useRole()
 onMounted(() => {
-  load()
+  void load()
   timer = setInterval(() => {
     if (document.hidden) return
     if (canWrite.value && data.value?.clustered && !data.value?.replica && ticks++ % 3 === 0) api.call('POST', '/cluster/refresh', undefined, { silent: true }).catch(() => {})
-    nowS.value = Math.floor(Date.now() / 1000); load(true)
+    nowS.value = Math.floor(Date.now() / 1000); void load(true)
   }, 5000)
 })
 onBeforeUnmount(() => { if (timer) clearInterval(timer) })
@@ -66,7 +66,7 @@ async function switchover(node: string) {
       }
     }
   } catch (e: any) { error.value = e.info?.message ?? t('err.internal') }
-  finally { switching.value = ''; load(true) }
+  finally { switching.value = ''; void load(true) }
 }
 </script>
 

@@ -7,7 +7,7 @@ const lang = useCookie<string>('ddi_lang')
 async function load() { try { data.value = await api.call('GET', '/alerts', undefined, { silent: true }); loadError.value = false } catch { loadError.value = true } }
 async function loadConf() { conf.value = await api.call('GET', '/alerts/config', undefined, { silent: true }); fillForm(); await nextTick(); dirty.value = false }
 let poll: ReturnType<typeof setInterval> | undefined
-onMounted(() => { load(); loadConf().catch(() => {}); poll = setInterval(load, 15000) })
+onMounted(() => { void load(); loadConf().catch(() => {}); poll = setInterval(load, 15000) })
 onBeforeUnmount(() => { if (poll) clearInterval(poll) })
 
 const fmt = useFmt()

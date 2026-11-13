@@ -4,6 +4,7 @@
 import { delegatedSpaces, escapeFilter } from './ad'
 import type { LdapLike } from './ad'
 import type { Role } from './auth'
+import { normDn } from './text'
 
 export interface LdapSettings {
   enabled: boolean; urls: string[]; baseDn: string; bindDn: string; bindPasswordEnc?: string
@@ -20,7 +21,7 @@ export const LDAP_DEFAULTS: LdapSettings = {
 }
 const RANK: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 }
 const arr = (x: any): any[] => (x === undefined || x === null || x === '' ? [] : Array.isArray(x) ? x : [x])
-const dnNorm = (s: string) => s.replace(/\s*,\s*/g, ',').replace(/\s*=\s*/g, '=').toLowerCase()
+const dnNorm = normDn
 /** Un filtre LDAP valide pour nous : parenthèses équilibrées, commence par « ( », et contient les marqueurs exigés. */
 export function validFilter(f: string, markers: string[]): boolean {
   if (!/^\(.*\)$/.test(f) || f.length > 500 || /[\0\n\r]/.test(f)) return false

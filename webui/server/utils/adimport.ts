@@ -2,6 +2,7 @@
 import { execFile } from 'node:child_process'
 import { cfg } from './config'
 import { cidrToString, parseCidr } from './net'
+import { byCodeUnit } from './text'
 import type { AdSettings, LdapLike } from './ad'
 
 export interface AdSubnet { cidr: string; site: string; description: string; name: string }
@@ -42,7 +43,7 @@ export async function adDiscover(s: AdSettings, bindPassword: string, factory: (
         subnets.push({ cidr, site, description: (first(e.description) || first(e.location)).slice(0, 500), name: site ? `${site} — ${cidr}` : cidr })
       }
       subnets.sort((a, b) => a.cidr.localeCompare(b.cidr, 'en', { numeric: true }))
-      return { server: url, configNc, sites: sitesRes.searchEntries.map((e) => first(e.cn)).filter(Boolean).sort(), subnets }
+      return { server: url, configNc, sites: sitesRes.searchEntries.map((e) => first(e.cn)).filter(Boolean).sort(byCodeUnit), subnets }
     } catch (e) {
       if (e instanceof AdImportError) throw e
       /* serveur suivant */

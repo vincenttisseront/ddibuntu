@@ -11,8 +11,8 @@ const versions = computed<Record<string, string>>(() => upd.value?.versions ?? {
 const spread = computed(() => { const vs = (props.st?.nodes ?? []).map((n: any) => versions.value[n.name] ?? ''); const set = [...new Set(vs.filter(Boolean))].sort((a: any, b: any) => a.localeCompare(b, undefined, { numeric: true })); return { ok: set.length === 1 && vs.every(Boolean), set: set as string[] } })
 const local = ref<any>(null), busy = ref(false), checking = ref(false), err = ref('')
 async function loadLocal() { try { local.value = await api.call('GET', '/system/update', undefined, { silent: true }) } catch { local.value = null } }
-onMounted(() => { if (isAdmin.value) loadLocal() })
-watch(() => props.st?.at, () => { if (isAdmin.value && !busy.value) loadLocal() })
+onMounted(() => { if (isAdmin.value) void loadLocal() })
+watch(() => props.st?.at, () => { if (isAdmin.value && !busy.value) void loadLocal() })
 const latest = computed<string>(() => local.value?.status?.available ? local.value.status.latest : '')
 const canAct = computed(() => isAdmin.value && props.st?.nodeRole === 'data' && !props.replica && !props.st?.stale)
 const canStart = computed(() => canAct.value && !order.value && !!latest.value && versionsBelow(latest.value))

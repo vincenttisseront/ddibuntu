@@ -8,7 +8,7 @@ const step = ref<'home' | 'password' | 'scan' | 'codes' | 'disable' | 'regen'>('
 const password = ref(''), code = ref(''), error = ref(''), busy = ref(false)
 const secret = ref(''), qr = ref(''), codes = ref<string[]>([])
 async function load() { try { st.value = await api.call('GET', '/auth/mfa') } catch { st.value = null } }
-watch(open, (o) => { if (o) { step.value = 'home'; password.value = code.value = error.value = ''; codes.value = []; load() } })
+watch(open, (o) => { if (o) { step.value = 'home'; password.value = code.value = error.value = ''; codes.value = []; void load() } })
 async function run(fn: () => Promise<void>) { busy.value = true; error.value = ''; try { await fn() } catch (e: any) { error.value = e.info?.message ?? t('err.internal') } finally { busy.value = false } }
 const start = () => run(async () => {
   const r: any = await api.call('POST', '/auth/mfa/setup', { password: password.value }, { silent: true })

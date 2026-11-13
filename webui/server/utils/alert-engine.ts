@@ -36,7 +36,7 @@ const MAX_ATTEMPTS = 5
 
 // Règle d'or : une évaluation à la fois (le minuteur et le bouton « évaluer » se partagent le même passage).
 export function runEvaluation(): Promise<RunInfo | { skipped: string }> {
-  if (running) return running
+  if (running !== null) return running
   running = doRun().finally(() => { running = null })
   return running
 }

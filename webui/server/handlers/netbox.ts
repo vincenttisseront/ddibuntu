@@ -9,7 +9,7 @@ import type { NbData, NetboxSettings, PlanOpts } from '../utils/netbox'
 import { preImportSnapshot, record } from './importer'
 
 const nbErr = (e: unknown): never => { if (e instanceof NetboxError) fail(e.status, e.code, undefined, e.upstream ? { upstream: e.upstream } : undefined); throw e }
-const CA = z.string().max(20000).regex(/^(|-----BEGIN CERTIFICATE-----[\s\S]*-----END CERTIFICATE-----\s*)$/)
+const CA = z.string().max(20000).regex(/^(?:-----BEGIN CERTIFICATE-----[\s\S]*-----END CERTIFICATE-----\s*)?$/)
 const include = z.object({ vlans: z.boolean(), prefixes: z.boolean(), addresses: z.boolean() })
 const common = { url: z.string().min(8).max(500), tlsVerify: z.boolean(), caPem: CA.optional(), include, mode: z.enum(['add', 'sync', 'sync_overwrite']), prune: z.boolean(), includeContainers: z.boolean() }
 

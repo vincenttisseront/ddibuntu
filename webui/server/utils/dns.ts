@@ -97,7 +97,7 @@ export function normalizeRdata(type: RecordType, input: string): R {
       return a.every((x) => x !== null) && t ? ok(`${a[0]} ${a[1]} ${a[2]} ${t}`) : bad(type)
     }
     case 'CAA': {
-      const m = s.match(/^(\d+)\s+([A-Za-z0-9]{1,15})\s+(.+)$/s)
+      const m = s.match(/^(\d+)[ \t]+([A-Za-z0-9]{1,15})[ \t]+([\s\S]+)$/)
       if (!m) return bad(type)
       const flags = int(m[1], 0, 255)
       let value = m[3]!.trim()
@@ -161,7 +161,7 @@ export function renderRdata(type: string, rdata: string): string {
     return chunks.join(' ')
   }
   if (type === 'CAA') {
-    const m = rdata.match(/^(\d+)\s+(\S+)\s+(.*)$/s)!
+    const m = rdata.match(/^(\d+)[ \t]+(\S+)[ \t]+([\s\S]*)$/)!
     return `${m[1]} ${m[2]} ${quote(m[3]!)}`
   }
   return rdata
@@ -221,7 +221,7 @@ export function parseTtl(s: string): number | null {
   if (!/^(\d+[smhdw])+$/i.test(s)) return null
   const mult: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 }
   let t = 0
-  for (const m of s.matchAll(/(\d+)([smhdw])/gi)) t += Number(m[1]) * mult[m[2]!.toLowerCase()]!
+  for (const m of s.matchAll(/(\d{1,9})([smhdw])/gi)) t += Number(m[1]) * mult[m[2]!.toLowerCase()]!
   return t
 }
 

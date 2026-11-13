@@ -11,7 +11,7 @@ async function loadView() {
   try { view.value = await api.call('GET', '/cluster/drills', undefined, { silent: true }) } catch { /* le nœud change de rôle pendant le test : on réessaie au prochain tour */ }
 }
 let timer: ReturnType<typeof setInterval> | undefined
-onMounted(() => { loadView(); timer = setInterval(() => { if (!document.hidden) loadView() }, 5000) })
+onMounted(() => { void loadView(); timer = setInterval(() => { if (!document.hidden) void loadView() }, 5000) })
 onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 
 const reports = computed<any[]>(() => view.value?.drills?.reports ?? [])
@@ -61,7 +61,7 @@ async function runCheck() {
 function begin() {
   if (busyAny.value) return
   candidate.value = ''; back.value = true; typed.value = ''; open.value = true
-  runCheck()
+  void runCheck()
 }
 function close() { open.value = false }
 
@@ -86,7 +86,7 @@ async function start() {
       }
     }
     err.value = t('cluster.drill.timeout')
-  } finally { running.value = false; stopClock(); emit('reload'); loadView() }
+  } finally { running.value = false; stopClock(); emit('reload'); void loadView() }
 }
 
 // ---------------------------------------------------------------- rapport

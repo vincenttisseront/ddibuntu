@@ -48,7 +48,7 @@ async function undo() {
 const finished = computed(() => job.value && job.value.state !== 'running')
 const canNext = computed(() => [ids.value.length > 0 && total.value <= 4096, (m.tcp || m.icmp || m.arp || m.leases) && customOk.value && total.value <= 4096, !!finished.value, true, !done.value][step.value] ?? false)
 // l'étape « méthodes » lance la découverte : son bouton « suivant » est remplacé par « lancer »
-const onNext = () => { if (step.value === 1) start(); else step.value++ }
+const onNext = () => { if (step.value === 1) void start(); else step.value++ }
 </script>
 
 <template>

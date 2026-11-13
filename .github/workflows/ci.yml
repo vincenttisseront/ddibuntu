@@ -29,3 +29,21 @@ jobs:
       - run: tools/build-console.sh
       - run: ./build-ddibuntu.sh --stage /tmp/stage && tools/make-single.sh
       - run: ./build-ddibuntu.sh --bundle --out /tmp/bundle && tar -tzf /tmp/bundle/ddibuntu-update-*.tar.gz
+  # Qualité du code (SonarQube Cloud) : analyse + couverture des tests unitaires. Nécessite le secret SONAR_TOKEN (sans lui, l'étape d'analyse est sautée : forks, premier démarrage).
+  # Penser à désactiver « Automatic Analysis » dans SonarQube Cloud (Administration → Analysis Method), sinon les deux analyses se contredisent.
+  sonar:
+    runs-on: ubuntu-24.04
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }                  # l'historique complet permet d'attribuer le « nouveau code »
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: webui/package-lock.json }
+      - run: sudo apt-get update && sudo apt-get install -y bind9-utils kea-dhcp4-server
+      - run: tools/build-console.sh
+      - run: cd webui && npx vitest run tests/unit-*.test.ts --coverage
+      - name: Analyse SonarQube Cloud
+        if: ${{ env.SONAR_TOKEN != '' }}
+        uses: SonarSource/sonarqube-scan-action@v5
+        env: { SONAR_TOKEN: '${{ secrets.SONAR_TOKEN }}' }

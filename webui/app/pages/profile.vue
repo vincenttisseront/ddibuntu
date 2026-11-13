@@ -8,7 +8,7 @@ async function load() {
   sess.value = await api.call('GET', '/auth/sessions', undefined, { silent: true }).catch(() => null)
 }
 onMounted(load)
-watch(secOpen, (o) => { if (!o) load() })
+watch(secOpen, (o) => { if (!o) void load() })
 const src = computed(() => prof.value?.source ?? me.value?.source ?? 'local')
 const local = computed(() => src.value === 'local')
 const when = (v: any) => (v ? fmt.dateTime(v) : '—')

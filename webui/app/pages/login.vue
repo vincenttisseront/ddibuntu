@@ -28,7 +28,7 @@ async function submitCode() {
   } finally { busy.value = false }
 }
 const digits = computed({ get: () => code.value.split('').slice(0, 6), set: (v: string[]) => { code.value = v.join('') } })
-watch(code, (c) => { if (!recovery.value && /^\d{6}$/.test(c) && !busy.value) submitCode() })
+watch(code, (c) => { if (!recovery.value && /^\d{6}$/.test(c) && !busy.value) void submitCode() })
 function back() { challenge.value = ''; code.value = ''; error.value = ''; recovery.value = false }
 const onKey = (e: KeyboardEvent) => { caps.value = e.getModifierState?.('CapsLock') ?? false }
 </script>

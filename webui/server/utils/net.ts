@@ -10,7 +10,7 @@ const BITS: Record<IpVersion, number> = { 4: 32, 6: 128 }
 function parseV6(t: string): bigint | null {
   if (t.includes('%')) return null
   let s = t
-  const m = s.match(/(\d+\.\d+\.\d+\.\d+)$/)
+  const m = s.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
   if (m) {
     const v4 = parseIp(m[1]!)
     if (!v4 || v4.v !== 4) return null
@@ -26,7 +26,7 @@ function parseV6(t: string): bigint | null {
   let n = 0n
   for (const g of groups) {
     if (!/^[0-9a-fA-F]{1,4}$/.test(g)) return null
-    n = (n << 16n) | BigInt(parseInt(g, 16))
+    n = (n << 16n) | BigInt(Number.parseInt(g, 16))
   }
   return n
 }

@@ -4,6 +4,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { createRemoteJWKSet, jwtVerify } from 'jose'
 import { delegatedSpaces } from './ad'
 import type { Role } from './auth'
+import { trimTrailingSlashes } from './text'
 
 export interface OidcSettings {
   enabled: boolean; issuer: string; clientId: string; clientSecretEnc?: string; publicUrl: string
@@ -25,13 +26,13 @@ const dcache = new Map<string, { at: number; d: Discovery }>()
 const okUrl = (u: unknown): u is string => { try { const x = new URL(String(u)); return x.protocol === 'https:' || (allowHttp() && x.protocol === 'http:') } catch { return false } }
 
 export async function discover(issuer: string, fetcher: typeof fetch = fetch): Promise<Discovery> {
-  const key = issuer.replace(/\/+$/, '')
+  const key = trimTrailingSlashes(issuer)
   const hit = dcache.get(key); if (hit && Date.now() - hit.at < 600_000) return hit.d
   if (!okUrl(key)) throw new Error('issuer_invalid')
   const r = await fetcher(`${key}/.well-known/openid-configuration`, { signal: AbortSignal.timeout(8000), headers: { accept: 'application/json' } })
   if (!r.ok) throw new Error('discovery_failed')
   const d = await r.json() as Discovery
-  if (String(d.issuer ?? '').replace(/\/+$/, '') !== key) throw new Error('issuer_mismatch')           // l'émetteur annoncé doit être celui demandé
+  if (trimTrailingSlashes(String(d.issuer ?? '')) !== key) throw new Error('issuer_mismatch')           // l'émetteur annoncé doit être celui demandé
   for (const k of ['authorization_endpoint', 'token_endpoint', 'jwks_uri'] as const) if (!okUrl(d[k])) throw new Error('discovery_invalid')
   if (d.userinfo_endpoint !== undefined && !okUrl(d.userinfo_endpoint)) delete d.userinfo_endpoint
   dcache.set(key, { at: Date.now(), d }); return d

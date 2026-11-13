@@ -4,6 +4,7 @@
 import type { PoolClient } from 'pg'
 import { getPool, tx } from './db'
 import { fail } from './router'
+import { byCodeUnit } from './text'
 
 // Ordre = dépendances (parents d'abord). Les listes de blocage (volumineuses, retéléchargeables), les utilisateurs,
 // sessions, journaux, statistiques et baux Kea n'en font pas partie.
@@ -44,7 +45,7 @@ const LABELS: Record<string, (x: any) => string> = {
   dhcp_reservations: (x) => `${x.mac} → ${x.ip}`, filter_rules: (x) => `${x.action} ${x.domain}`,
 }
 // sérialisation stable (clés triées à tous les niveaux) pour comparer deux lignes ; les horodatages ne comptent pas comme un changement
-const stable = (v: any): string => (v && typeof v === 'object' ? (Array.isArray(v) ? `[${v.map(stable).join(',')}]` : `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stable(v[k])}`).join(',')}}`) : JSON.stringify(v))
+const stable = (v: any): string => (v && typeof v === 'object' ? (Array.isArray(v) ? `[${v.map(stable).join(',')}]` : `{${Object.keys(v).sort(byCodeUnit).map((k) => `${JSON.stringify(k)}:${stable(v[k])}`).join(',')}}`) : JSON.stringify(v))
 const strip = (o: any) => { const { updated_at, created_at, ...rest } = o ?? {}; void updated_at; void created_at; return stable(rest) }
 
 export interface TableDiff { removed: number; restored: number; changed: number; samples: { removed: string[]; restored: string[]; changed: string[] } }

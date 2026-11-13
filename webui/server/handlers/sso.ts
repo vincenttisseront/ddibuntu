@@ -5,6 +5,7 @@ import { getCookie, getQuery, getRequestURL, sendRedirect, setCookie, deleteCook
 import { audit, fail, route, setSessionCookie } from '../utils/router'
 import { getSetting, inRecovery, one, query, setSetting } from '../utils/db'
 import { cfg } from '../utils/config'
+import { trimTrailingSlashes } from '../utils/text'
 import { createSession, decryptSecret, encryptSecret, safeEqual } from '../utils/auth'
 import { sessionSettings } from '../utils/session-settings'
 import { OIDC_DEFAULTS, discover, exchangeCode, fetchUserinfo, mapClaims, newPkce, randomToken, verifyIdToken, clearDiscoveryCache } from '../utils/oidc'
@@ -15,11 +16,11 @@ const CK = 'ddi_oidc', CK_PATH = '/api/auth/oidc'
 
 const body = z.object({
   enabled: z.boolean(), issuer: z.string().trim().max(300), clientId: z.string().trim().max(200), clientSecret: z.string().max(500).optional(), clearSecret: z.boolean().optional(),
-  publicUrl: z.string().trim().max(200).regex(/^(|https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?)$/, 'url'), scopes: z.string().trim().min(1).max(200).regex(/^[\w.:/ -]+$/), usernameClaim: z.string().trim().min(1).max(60), groupsClaim: z.string().trim().min(1).max(60),
+  publicUrl: z.string().trim().max(200).regex(/^(?:https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?)?$/, 'url'), scopes: z.string().trim().min(1).max(200).regex(/^[\w.:/ -]+$/), usernameClaim: z.string().trim().min(1).max(60), groupsClaim: z.string().trim().min(1).max(60),
   groupMap: z.array(z.object({ group: z.string().trim().min(1).max(300), role: z.enum(['admin', 'operator', 'viewer']), spaceIds: z.array(z.number().int().positive()).max(50).optional() })).max(50),
   defaultRole: z.enum(['operator', 'viewer']).nullable(), buttonLabel: z.string().trim().max(60),
 })
-const redirectBase = (s: OidcSettings, c: any) => (s.publicUrl || getRequestURL(c.event).origin).replace(/\/+$/, '')
+const redirectBase = (s: OidcSettings, c: any) => trimTrailingSlashes(s.publicUrl || getRequestURL(c.event).origin)
 const callbackUrl = (s: OidcSettings, c: any) => `${redirectBase(s, c)}/api/auth/oidc/callback`
 const fin = (c: any, code: string) => sendRedirect(c.event, `/login?sso_error=${encodeURIComponent(code)}`, 302)
 

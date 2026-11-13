@@ -16,3 +16,4 @@ tests/logs/
 *.log
 .env
 .DS_Store
+webui/coverage/

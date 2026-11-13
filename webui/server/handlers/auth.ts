@@ -3,6 +3,7 @@ import { audit, clearSessionCookie, fail, intParam, route, setSessionCookie, COO
 import { one, query, tx, getSetting, isSchemaReady, inRecovery } from '../utils/db'
 import { cfg } from '../utils/config'
 import { createSession, destroySession, signMfaChallenge, REPLICA_TOKEN_PREFIX, replicaLoginBlocked, replicaRecordAttempt, signReplicaSession, destroyUserSessions, dummyVerify, hashPassword, loginBlocked, passwordPolicyError, recordAttempt, safeEqual, verifyPassword, decryptSecret } from '../utils/auth'
+import { trimTrailingSlashes } from '../utils/text'
 import { installedVersion } from '../utils/selfupdate'
 import { sessionSettings } from '../utils/session-settings'
 import { AD_DEFAULTS, authenticateAd, defaultLdapFactory } from '../utils/ad'
@@ -26,7 +27,7 @@ route('GET', '/health', 'public', async () => {
 // Ce que la page de connexion doit proposer (public : avant toute authentification)
 route('GET', '/auth/providers', 'public', async (c) => {
   const o = await getSetting<any>('oidc', { enabled: false })
-  const base = o.publicUrl ? String(o.publicUrl).replace(/\/+$/, '') : ''
+  const base = o.publicUrl ? trimTrailingSlashes(String(o.publicUrl)) : ''
   return { version: installedVersion() || null, local: true, oidc: o.enabled ? { label: o.buttonLabel || null, url: `${base}/api/auth/oidc/start` } : null }
 })
 

@@ -15,7 +15,7 @@ async function run(deploy: boolean) {
 }
 const reload = ref<any>(null)
 async function loadReload() { try { reload.value = (await api.call<any>('GET', '/system/reload-status', undefined, { silent: true })).status } catch { /* droits insuffisants */ } }
-onMounted(() => { loadFiles(); loadReload() })
+onMounted(() => { void loadFiles(); void loadReload() })
 const current = computed(() => files.value?.files?.find((f: any) => f.path === sel.value))
 </script>
 

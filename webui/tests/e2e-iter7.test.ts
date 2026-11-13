@@ -128,6 +128,7 @@ describe('détection de tunnels DNS', () => {
     for (let i = 0; i < 30; i++) rows.push(['10.50.0.6', `www${i % 3}.example.org`, 'A'], ['10.50.0.6', `mail.example.org`, 'A'])
     for (let i = 0; i < 80; i++) rows.push(['10.50.0.7', `${rnd(36)}.cdn-legit.net`, 'A'])
     for (const [client, domain, qtype] of rows) await db.query("insert into dns_queries (at, client, domain, qtype, status) values (now() - interval '10 minutes', $1, $2, $3, 'allowed')", [client, domain, qtype])
+    expect((await db.query("select count(*)::int n from dns_queries where client in ('10.50.0.5','10.50.0.6','10.50.0.7')")).rows[0].n).toBe(rows.length)
   })
   it('le tunnel ressort en gravité élevée avec ses indices ; le client normal non', async () => {
     const r = await viewer.get('/api/filter/tunnel?hours=24')

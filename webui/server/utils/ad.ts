@@ -4,6 +4,7 @@ import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { Client } from 'ldapts'
 import { cidrToString, ipToString, normMac, parseCidr, parseIp } from './net'
 import type { Role } from './auth'
+import { normDn } from './text'
 
 // ---------------------------------------------------------------------------------------------
 // CSV (RFC 4180 simplifié)
@@ -122,7 +123,7 @@ export function parseDhcpExport(xml: string): DhcpPlan {
     for (const r of arr(sc.reservations?.reservation)) {
       const rip = parseIp(str(r.ipaddress)), mac = normMac(str(r.clientid))
       if (!rip || rip.v !== 4 || !mac) { plan.warnings.push({ scope: label, code: 'reservation_invalid', detail: str(r.clientid) }); continue }
-      reservations.push({ mac, ip: ipToString(rip), hostname: str(r.name).toLowerCase().replace(/\..*$/, '').replace(/[^a-z0-9-]/g, '') || null, description: str(r.description) || null })
+      reservations.push({ mac, ip: ipToString(rip), hostname: str(r.name).toLowerCase().split('.')[0]!.replace(/[^a-z0-9-]/g, '') || null, description: str(r.description) || null })
     }
     plan.scopes.push({
       cidr: cidrToString(net), name: str(sc.name) || label, leaseTime: parseWindowsLease(str(sc.leaseduration)) ?? 86400,
@@ -162,7 +163,7 @@ export interface LdapLike {
 export const escapeFilter = (v: string) => v.replace(/[\\*()\0]/g, (c) => '\\' + c.charCodeAt(0).toString(16).padStart(2, '0'))
 const RANK: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 }
 const NESTED = '1.2.840.113556.1.4.1941'
-const dnNorm = (s: string) => s.replace(/\s*,\s*/g, ',').toLowerCase()
+const dnNorm = normDn
 
 export function defaultLdapFactory(s: AdSettings): (url: string) => LdapLike {
   return (url) => new Client({ url, timeout: 8000, connectTimeout: 5000, tlsOptions: { rejectUnauthorized: s.tlsRejectUnauthorized, ...(s.caPem ? { ca: s.caPem } : {}) } }) as unknown as LdapLike

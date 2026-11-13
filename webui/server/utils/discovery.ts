@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 // Découverte réseau des adresses des sous-réseaux DÉJÀ déclarés dans l'IPAM. Sans privilège : sondes TCP, ping (si disponible),
 // table ARP lue dans /proc/net/arp (le service n'a pas le droit d'ouvrir une socket netlink), baux DHCP et DNS inverse locaux.
 import net from 'node:net'
@@ -5,6 +6,8 @@ import { execFile } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { Resolver } from 'node:dns/promises'
 import { cidrRange, ipToString, normMac, parseCidr } from './net'
+// chemin absolu (pas de recherche dans PATH) ; « ping » seul si aucun des deux emplacements usuels n'existe (environnement de test)
+const PING = ['/usr/bin/ping', '/bin/ping'].find((p) => existsSync(p)) ?? 'ping'
 
 export const MAX_TARGETS = 4096
 export const PORT_PRESETS: Record<string, number[]> = { basic: [22, 80, 443, 445, 3389], windows: [135, 139, 445, 3389, 5985], web: [80, 443, 8080, 8443], infra: [22, 53, 161, 389, 636, 3306, 5432] }
@@ -73,7 +76,7 @@ export const realDeps = (leases: ProbeDeps['leases']): ProbeDeps => ({
     s.setTimeout(timeoutMs, () => end('none')); s.once('connect', () => end('open'))
     s.once('error', (e: any) => end(e?.code === 'ECONNREFUSED' || e?.code === 'ECONNRESET' ? 'closed' : 'none'))
   }),
-  ping: (ip, timeoutMs) => new Promise((resolve) => { execFile('ping', ['-c', '1', '-W', String(Math.max(1, Math.ceil(timeoutMs / 1000))), ip], { timeout: timeoutMs + 2000 }, (err) => resolve(!err)) }),
+  ping: (ip, timeoutMs) => new Promise((resolve) => { execFile(PING, ['-c', '1', '-W', String(Math.max(1, Math.ceil(timeoutMs / 1000))), ip], { timeout: timeoutMs + 2000 }, (err) => resolve(!err)) }),
   arp: async () => {
     const out = new Map<string, string>()
     try {
@@ -93,7 +96,7 @@ export const realDeps = (leases: ProbeDeps['leases']): ProbeDeps => ({
 let pingCache: { at: number; ok: boolean } | null = null
 export async function pingWorks(): Promise<boolean> {
   if (pingCache && Date.now() - pingCache.at < 300_000) return pingCache.ok
-  const ok = await new Promise<boolean>((res) => execFile('ping', ['-c', '1', '-W', '1', '127.0.0.1'], { timeout: 4000 }, (e) => res(!e)))
+  const ok = await new Promise<boolean>((res) => execFile(PING, ['-c', '1', '-W', '1', '127.0.0.1'], { timeout: 4000 }, (e) => res(!e)))
   pingCache = { at: Date.now(), ok }
   return ok
 }

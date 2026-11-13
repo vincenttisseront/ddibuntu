@@ -11,7 +11,7 @@ on:
     paths: ['src/VERSION', '.github/workflows/release.yml']
 concurrency: { group: release, cancel-in-progress: false }
 permissions:
-  contents: write
+  contents: read          # le droit d'écriture n'est donné qu'au travail « release » (publication)
 jobs:
   gate:
     runs-on: ubuntu-24.04
@@ -30,6 +30,8 @@ jobs:
           if gh release view "v$v" >/dev/null 2>&1; then echo "release v$v déjà publiée : rien à faire"; echo skip=true >> "$GITHUB_OUTPUT"; else echo skip=false >> "$GITHUB_OUTPUT"; fi
   release:
     needs: gate
+    permissions:
+      contents: write
     if: needs.gate.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     steps:

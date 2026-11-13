@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.51 — « Qualité : SonarQube dans la CI et premier lot de remédiation »
+- **SonarQube Cloud intégré à la CI** : nouveau job `sonar` (tests unitaires avec couverture, analyse du code, séparation code de production / code de test), `sonar-project.properties`, plan de remédiation dans `docs/QUALITE.md`. Nécessite le secret GitHub `SONAR_TOKEN` (sans lui l'analyse est simplement sautée).
+- **Corrections issues de l'analyse (656 problèmes, dont 549 de style shell)** : expressions régulières à retour arrière (risque de déni de service) remplacées par des analyses linéaires, promesses non attendues rendues explicites, tris sans comparateur, alternatives vides dans les validations, chemin absolu pour `ping`, outil Python d'import des traductions durci, test sans assertion complété, permissions du workflow de release réduites au strict nécessaire, `npx --no-install` dans les outils. Aucun changement de comportement attendu.
+- Accessibilité : portée (`scope`) des en-têtes de tableau, étiquette du champ fichier de l'assistant de cluster.
+
 ## 0.9.50 — « Sauvegardes : rétention et contrôle d'intégrité »
 - **Rétention en jours** (nouveau réglage « Conserver au moins (jours) ») en plus du nombre de sauvegardes : les N plus récentes sont toujours gardées, et au-delà une sauvegarde n'est supprimée que si elle a plus de X jours (0 = comportement précédent). Les journaux WAL inutiles sont purgés en conséquence.
 - **Contrôle d'intégrité automatique** après chaque sauvegarde planifiée (empreintes, archives, journaux WAL), désactivable. Le résultat du dernier contrôle (manuel ou automatique) est affiché dans la page Sauvegardes et une **alerte critique** « contrôle d'intégrité en échec » est levée si une copie est corrompue (jusqu'au prochain contrôle réussi) : on le découvre le jour même, pas le jour de la restauration.

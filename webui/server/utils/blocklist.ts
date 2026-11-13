@@ -1,5 +1,6 @@
 // Listes de blocage : analyse des formats usuels, domaines normalisés, téléchargement protégé (SSRF).
 import http from 'node:http'
+import { stripTrailingComment } from './text'
 import https from 'node:https'
 import dns from 'node:dns'
 import { createHash } from 'node:crypto'
@@ -19,7 +20,7 @@ export function parseBlocklist(text: string, format: ListFormat, max = 5_000_000
     if (!line || line.startsWith('#') || line.startsWith('!') || line.startsWith('[')) continue
     let cand: string | null = null
     if (format === 'hosts') {
-      line = line.replace(/\s+#.*$/, '')
+      line = stripTrailingComment(line)
       const p = line.split(/\s+/)
       if (p.length < 2 || !['0.0.0.0', '127.0.0.1', '::', '::1'].includes(p[0]!)) { skipped++; continue }
       for (const h of p.slice(1)) { if (HOSTS_SKIP.has(h)) continue; const d = normDomain(h); if (d) out.add(d); else skipped++ }

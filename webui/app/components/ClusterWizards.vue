@@ -100,7 +100,7 @@ defineExpose({ begin })
       <div v-else-if="mode === 'join'" class="flex flex-col gap-3">
         <UAlert v-if="missing.length" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('cluster.w.missing', { list: missing.join(', ') })" :description="installCmd" />
         <UAlert color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="t('cluster.w.join.warn_title')" :description="t('cluster.w.join.warn_desc')" />
-        <UFormField :label="t('cluster.w.join.file')"><input type="file" class="block w-full text-sm" :disabled="busy" @change="pick"></UFormField>
+        <UFormField :label="t('cluster.w.join.file')"><input type="file" class="block w-full text-sm" :aria-label="t('cluster.w.join.file')" :disabled="busy" @change="pick"></UFormField>
         <UFormField :label="t('cluster.w.join.pass')"><UInput v-model="jn.pass" class="w-full" type="password" autocomplete="off" :disabled="busy" /></UFormField>
         <label class="text-sm">{{ t('cluster.op.type', { v: hostname }) }}<UInput v-model="jn.confirm" class="w-full mt-1" autocomplete="off" :disabled="busy" /></label>
       </div>

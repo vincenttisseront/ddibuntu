@@ -4,7 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if command -v node >/dev/null 2>&1 && [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 22 ]; then
-  cd "$ROOT/webui" && npm ci && npx nuxt build
+  cd "$ROOT/webui" && npm ci && npx --no-install nuxt build
 elif command -v docker >/dev/null 2>&1; then
   docker run --rm -v "$ROOT/webui:/w" -w /w node:22-bookworm sh -c 'npm ci && npx nuxt build'
 else

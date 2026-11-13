@@ -30,7 +30,7 @@ async function request(kind: string, call: () => Promise<any>, okMsg: string) {
     else toast.add({ title: res.ok ? okMsg : t('ad.krb.failed'), description: res.ok ? undefined : res.message, color: res.ok ? 'success' : 'error', icon: res.ok ? 'i-lucide-check' : 'i-lucide-triangle-alert' })
     return !!res?.ok
   } catch (e: any) { error.value = e.info?.message ?? t('err.internal'); return false }
-  finally { working.value = ''; load(true) }
+  finally { working.value = ''; void load(true) }
 }
 
 // Domaine Kerberos

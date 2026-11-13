@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Ajoute des clés aux deux catalogues (fr = source, en) ; refuse un doublon. Usage : i18n-add.py WEBUI fichier.json  ({clé: [fr, en]})"""
 import json, sys, os
-root, src = sys.argv[1], sys.argv[2]
+if len(sys.argv) != 3: sys.exit('usage : i18n-add.py WEBUI fichier.json')
+# arguments de la ligne de commande : le dossier doit être une console (app/i18n présent) et la source un fichier .json ordinaire
+root, src = os.path.realpath(sys.argv[1]), os.path.realpath(sys.argv[2])
+if not os.path.isdir(os.path.join(root, 'app', 'i18n')): sys.exit('dossier de console invalide : ' + root)
+if not src.endswith('.json') or not os.path.isfile(src): sys.exit('fichier de clés invalide : ' + src)
 add = json.load(open(src, encoding='utf-8'))
 for i, lang in enumerate(('fr', 'en')):
     p = os.path.join(root, 'app/i18n', lang + '.ts'); s = open(p, encoding='utf-8').read()

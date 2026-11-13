@@ -102,10 +102,10 @@ const pctColor = (v: number) => (v >= 90 ? 'bg-error' : v >= 75 ? 'bg-warning' :
           </tr>
           <tr class="border-b border-default">
             <th v-if="selectable" />
-            <th v-for="c in cols" :key="c.key + '-f'" class="px-1 pb-1.5">
+            <th v-for="c in cols" :key="c.key + '-f'" scope="col" class="px-1 pb-1.5">
               <input v-if="!c.nofilter" v-model="filters[c.key]" type="search" :aria-label="`${t('ipam.filter')} ${c.label}`" class="w-full min-w-14 rounded border border-default bg-default px-1.5 py-0.5 text-xs font-normal">
             </th>
-            <th v-if="$slots.actions" />
+            <th v-if="$slots.actions" scope="col" />
           </tr>
         </thead>
         <tbody>

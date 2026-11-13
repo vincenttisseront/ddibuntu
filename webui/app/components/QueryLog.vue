@@ -25,7 +25,7 @@ async function poll() {
   } catch { /* nouvelle tentative au prochain passage */ }
 }
 let timer: ReturnType<typeof setInterval> | undefined
-onMounted(() => { load(); timer = setInterval(poll, 3000) })
+onMounted(() => { void load(); timer = setInterval(poll, 3000) })
 onBeforeUnmount(() => clearInterval(timer))
 let deb: ReturnType<typeof setTimeout> | undefined
 watch(f, () => { clearTimeout(deb); deb = setTimeout(() => load(), 350) })
