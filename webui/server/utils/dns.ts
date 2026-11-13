@@ -97,7 +97,7 @@ export function normalizeRdata(type: RecordType, input: string): R {
       return a.every((x) => x !== null) && t ? ok(`${a[0]} ${a[1]} ${a[2]} ${t}`) : bad(type)
     }
     case 'CAA': {
-      const m = s.match(/^(\d+)[ \t]+([A-Za-z0-9]{1,15})[ \t]+([\s\S]+)$/)
+      const m = s.match(/^(\d+)[ \t]+([A-Za-z0-9]{1,15})[ \t]+(\S[\s\S]*)$/)
       if (!m) return bad(type)
       const flags = int(m[1], 0, 255)
       let value = m[3]!.trim()
@@ -161,7 +161,7 @@ export function renderRdata(type: string, rdata: string): string {
     return chunks.join(' ')
   }
   if (type === 'CAA') {
-    const m = rdata.match(/^(\d+)[ \t]+(\S+)[ \t]+([\s\S]*)$/)!
+    const m = rdata.match(/^(\d+)[ \t]+(\S+)[ \t]+((?:\S[\s\S]*)?)$/)!
     return `${m[1]} ${m[2]} ${quote(m[3]!)}`
   }
   return rdata

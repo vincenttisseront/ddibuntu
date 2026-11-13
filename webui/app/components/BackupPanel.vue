@@ -151,7 +151,7 @@ async function goRestore() {
           <UButton v-if="!st.enabled" icon="i-lucide-shield-check" :label="t('backup.enable')" :loading="working === 'enable'" :disabled="busy" @click="enable" />
           <template v-else>
             <UButton icon="i-lucide-hard-drive-download" :label="t('backup.run')" :loading="working === 'run'" :disabled="busy || !isPrimary" @click="act('run', {}, t('backup.done.run'))" />
-            <UButton color="neutral" variant="outline" icon="i-lucide-badge-check" :label="t('backup.verify')" :loading="working === 'verify'" :disabled="busy" @click="act('verify')" />
+            <UButton color="neutral" variant="outline" icon="i-lucide-badge-check" :label="t('backup.verify_btn')" :loading="working === 'verify'" :disabled="busy" @click="act('verify')" />
             <UButton color="neutral" variant="outline" icon="i-lucide-eraser" :label="t('backup.prune')" :loading="working === 'prune'" :disabled="busy" @click="act('prune')" />
             <UButton color="neutral" variant="outline" icon="i-lucide-settings" :label="t('backup.settings')" :disabled="busy" @click="openCfg" />
             <UButton color="error" variant="ghost" icon="i-lucide-shield-off" :label="t('backup.disable')" :disabled="busy" @click="disable" />

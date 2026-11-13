@@ -1629,7 +1629,7 @@ const messages: Record<string, string> = {
   "backup.enable": "Activer les sauvegardes",
   "backup.disable": "Désactiver",
   "backup.run": "Sauvegarder maintenant",
-  "backup.verify": "Vérifier l’intégrité",
+  "backup.verify_btn": "Vérifier l’intégrité",
   "backup.verify_one": "Vérifier",
   "backup.prune": "Appliquer la rétention",
   "backup.settings": "Réglages",

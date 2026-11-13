@@ -4,7 +4,7 @@ const { t } = useT(); const api = useApi(); const toast = useToast(); const { as
 const data = ref<any>(null), busy = ref(false), err = ref('')
 const sel = ref<string[]>([])
 const roleLabel: Record<string, string> = { admin: t('system.role.admin'), operator: t('system.role.operator'), viewer: t('system.role.viewer') }
-const dirty = computed(() => !!data.value && [...sel.value].sort().join() !== [...data.value.roles].sort().join())
+const dirty = computed(() => !!data.value && [...sel.value].sort((a, b) => a.localeCompare(b)).join() !== [...data.value.roles].sort((a, b) => a.localeCompare(b)).join())
 function apply(d: any) { data.value = d; sel.value = [...d.roles] }
 async function load() { try { apply(await api.call('GET', '/mfa/policy', undefined, { silent: true })) } catch (e: any) { err.value = e?.info?.message ?? '' } }
 const toggle = (r: string, on: boolean) => { sel.value = on ? [...new Set([...sel.value, r])] : sel.value.filter((x) => x !== r) }

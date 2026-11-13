@@ -1,5 +1,9 @@
 # Journal des modifications
 
+## 0.9.55 — « Qualité : deuxième passe SonarQube (lot 5) »
+- **Défauts réels corrigés** : tri sans comparateur (`typescript:S2871`, politique MFA), clé de traduction `backup.verify` en double (le bouton « Vérifier l’intégrité » utilise désormais `backup.verify_btn`, l'étiquette « Dernier contrôle » n'est plus écrasée), deux expressions régulières à retour arrière coûteux (`S8786`, enregistrements CAA), rôles ARIA incohérents (liste de recherche globale : `option` porté par le bouton ; grille d'occupation), `openssl` appelé par chemin absolu dans l'outillage de test (`S4036`).
+- Restent, par choix : les ~450 occurrences `shell:S7688` des tests et de `src/iso`, `S1313` et `Web:S6853`, déjà exclues dans `sonar-project.properties` mais appliquées seulement par l'analyse CI (secret `SONAR_TOKEN` + désactivation de l'analyse automatique) ; points sensibles à revoir dans l'interface SonarQube Cloud.
+
 ## 0.9.54 — « Qualité : première passe de correction SonarQube (lot 4) »
 - **Scripts bash** : les 85 tests `[ … ]` de `build-ddibuntu.sh`, `src/rootfs/usr/local/lib/ddibuntu/*.sh` et `tools/*.sh` passent en `[[ … ]]` (règle `shell:S7688`), sans changement de comportement : `shellcheck`, `bash -n` et les batteries b01, b03, b05, b08, b18 donnent les mêmes résultats qu'avant.
 - `sonar-project.properties` : les batteries de tests (`tests/**`) sont exclues de cette règle (code de test non livré), comme les scripts POSIX de l'installateur.

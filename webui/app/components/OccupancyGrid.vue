@@ -99,7 +99,7 @@ const summary = computed(() => (map.value ? t('grid.summary', { cidr: map.value.
     <UAlert v-if="err" color="neutral" variant="subtle" icon="i-lucide-info" :title="err" />
     <div v-else-if="map && open" class="flex flex-col gap-2">
       <div class="overflow-auto max-h-[28rem]">
-        <canvas ref="canvas" role="img" :aria-label="summary" class="cursor-pointer" @mousemove="hover = offsetOf($event)" @mouseleave="hover = -1" @click="click" />
+        <canvas ref="canvas" role="application" :aria-label="summary" class="cursor-pointer" @mousemove="hover = offsetOf($event)" @mouseleave="hover = -1" @click="click" />
       </div>
       <div class="min-h-5 text-xs font-mono" aria-live="polite">
         <template v-if="info">{{ info.ip }} — {{ t(`grid.state.${info.state}`) }}<template v-if="info.hostname"> · {{ info.hostname }}</template><template v-if="info.mac"> · {{ info.mac }}</template></template>

@@ -43,8 +43,8 @@ const idx = (kind: string, id: number) => flat.value.findIndex((f) => f.kind ===
           <section v-for="g in groups" :key="g.kind">
             <h3 class="text-xs font-medium uppercase tracking-wide text-muted mb-1">{{ t(`search.kind.${g.kind}`) }}<span v-if="g.more"> · {{ t('search.more') }}</span></h3>
             <ul class="flex flex-col">
-              <li v-for="i in g.items" :id="idx(g.kind, i.id) === active ? 'gs-active' : undefined" :key="g.kind + i.id" role="option" :aria-selected="idx(g.kind, i.id) === active">
-                <button type="button" class="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-elevated" :class="idx(g.kind, i.id) === active ? 'bg-elevated' : ''" @mousemove="active = idx(g.kind, i.id)" @click="go(i)">
+              <li v-for="i in g.items" :key="g.kind + i.id" role="presentation">
+                <button type="button" :id="idx(g.kind, i.id) === active ? 'gs-active' : undefined" role="option" :aria-selected="idx(g.kind, i.id) === active" class="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-elevated" :class="idx(g.kind, i.id) === active ? 'bg-elevated' : ''" @mousemove="active = idx(g.kind, i.id)" @click="go(i)">
                   <UIcon :name="ICON[g.kind] ?? 'i-lucide-search'" class="size-4 shrink-0 text-muted" />
                   <span class="font-mono truncate">{{ i.title }}</span>
                   <span class="text-xs text-muted truncate">{{ i.subtitle }}</span>

@@ -1629,7 +1629,7 @@ const messages: Record<string, string> = {
   "backup.enable": "Enable backups",
   "backup.disable": "Disable",
   "backup.run": "Back up now",
-  "backup.verify": "Check integrity",
+  "backup.verify_btn": "Check integrity",
   "backup.verify_one": "Check",
   "backup.prune": "Apply retention",
   "backup.settings": "Settings",

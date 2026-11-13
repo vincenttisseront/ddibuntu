@@ -13,7 +13,7 @@ let pem: { key: string; cert: string } | null = null
 export function selfSigned(): { key: string; cert: string } {
   if (pem) return pem
   const d = mkdtempSync(join(tmpdir(), 'ddi-smtp-'))
-  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(d, 'k.pem'), '-out', join(d, 'c.pem'), '-days', '2', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'], { stdio: 'ignore' })
+  execFileSync('/usr/bin/openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(d, 'k.pem'), '-out', join(d, 'c.pem'), '-days', '2', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'], { stdio: 'ignore' })
   return (pem = { key: readFileSync(join(d, 'k.pem'), 'utf8'), cert: readFileSync(join(d, 'c.pem'), 'utf8') })
 }
 
