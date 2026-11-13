@@ -22,13 +22,14 @@ import * as tokens from '../handlers/tokens'
 import * as addrcheck from '../handlers/addrcheck'
 import * as aliases from '../handlers/aliases'
 import * as leasedns from '../handlers/leasedns'
+import * as dnshealth from '../handlers/dnshealth'
 import * as mfa from '../handlers/mfa'
 import * as sso from '../handlers/sso'
 import * as ldap from '../handlers/ldap'
 import { dispatch, routeCount } from '../utils/router'
 
 // Chaque module enregistre ses routes à l'évaluation ; on vérifie ici qu'ils ont tous été inclus.
-const modules = [auth, ipam, dns, dhcp, filtering, importer, system, snapshots, adimport, netbox, discovery, cockpit, cluster, adkrb, search, hygiene, tunnel, backup, alerts, trace, tokens, addrcheck, mfa, sso, ldap, aliases, leasedns]
+const modules = [auth, ipam, dns, dhcp, filtering, importer, system, snapshots, adimport, netbox, discovery, cockpit, cluster, adkrb, search, hygiene, tunnel, backup, alerts, trace, tokens, addrcheck, mfa, sso, ldap, aliases, leasedns, dnshealth]
 if (!modules.every((m) => m.registered) || routeCount() < 50) throw new Error(`[api] routes non enregistrées (${routeCount()})`)
 
 export default defineEventHandler((event) => dispatch(event))

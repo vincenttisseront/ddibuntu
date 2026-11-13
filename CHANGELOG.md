@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.10.1 — « Contrôle de cohérence DNS ↔ IPAM »
+- **Nouvel onglet DNS › Cohérence** : analyse en lecture seule qui croise zones, enregistrements et fiches IPAM et signale cinq types d'écarts — **PTR orphelin** (aucun A ne porte l'adresse), **A sans PTR** (zone inverse présente), **A sans fiche IPAM** (adresse dans un réseau géré), **IP nommée non publiée** (hostname IPAM absent du DNS) et **CNAME pendant** (cible inexistante dans une zone gérée de la même vue).
+- **Score de 0 à 100** global et par zone ; filtre par type.
+- **Correction en un clic** (opérateur), après un récapitulatif dans une modale : supprimer le PTR orphelin, créer le PTR, créer la fiche IPAM, créer A + PTR, désactiver le CNAME (jamais de suppression). Le constat est recalculé au moment de l'application (un constat déjà résolu est ignoré), les zones touchées passent « à déployer », l'action est auditée (`dns_health_fix`).
+- Ignorés : enregistrements dynamiques (bail DHCP), désactivés, zones secondaires ou désactivées ; un enregistrement protégé est signalé mais non corrigeable. IPv4 seulement pour les PTR.
+
 ## 0.10.0 — « Synchronisation bail DHCP → DNS »
 - **Nouveau** (DNS › Paramètres, administrateur) : pour chaque bail Kea actif dont le client donne un nom d'hôte, la console crée l'enregistrement **A** et son **PTR** dans la zone DNS du gabarit du réseau, et les retire quand le bail expire ou change. Désactivée par défaut ; la désactiver retire les enregistrements dynamiques.
 - **Réconciliation idempotente** à chaque relevé des baux (et au bouton « Synchroniser maintenant ») : l'écart entre ce que les baux imposent et ce qui existe est appliqué, donc rien n'est perdu après un redémarrage ou une bascule du cluster. Primaire uniquement ; zones touchées marquées « à déployer ».
