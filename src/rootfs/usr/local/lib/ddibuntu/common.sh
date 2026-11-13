@@ -14,7 +14,7 @@ ddi_version() { tr -d '\n' < "${DDI_LIBDIR}/VERSION" 2>/dev/null || printf 'inco
 ddi_log() { logger -t ddibuntu -- "$*" 2>/dev/null || true; }   # jamais de secret dans $*
 ddi_die() { printf 'ddibuntu: %s\n' "$*" >&2; exit 2; }
 ddi_warn() { printf 'ddibuntu: %s\n' "$*" >&2; }
-ddi_offline() { [ -n "$DDI_ROOT" ]; }
+ddi_offline() { [[ -n "$DDI_ROOT" ]]; }
 
 ddi_load_lang() {
   local l="${1:-fr}"
@@ -63,11 +63,11 @@ print(n)' "$1"
 ddi_valid_tz() {
   [[ "$1" =~ ^[A-Za-z0-9_+/-]+$ ]] || return 1
   case "$1" in *..*) return 1 ;; esac
-  [ -f "${DDI_ZONEINFO:-/usr/share/zoneinfo}/$1" ]
+  [[ -f "${DDI_ZONEINFO:-/usr/share/zoneinfo}/$1" ]]
 }
 ddi_valid_keyboard() { case "$1" in fr|us|gb|de|es|it|be|ch) return 0 ;; *) return 1 ;; esac; }
 ddi_valid_password() {  # $1 = mot de passe, $2 = identifiant ; 12 caractères minimum
-  [ "${#1}" -ge 12 ] || return 1
+  [[ "${#1}" -ge 12 ]] || return 1
   case "$1" in *"$2"*) return 1 ;; esac
   [[ "$1" != *[[:cntrl:]]* ]]
 }
@@ -78,7 +78,7 @@ ddi_split_list() { printf '%s\n' "$1" | tr -s '[:space:],' '\n' | sed '/^$/d'; }
 # ---- Lecture sûre d'un fichier CLE='valeur' (jamais de source/eval) ----
 ddi_cfg_read() {
   local f="$1" line k v
-  while IFS= read -r line || [ -n "$line" ]; do
+  while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in ''|'#'*) continue ;; esac
     k="${line%%=*}"; v="${line#*=}"
     case " $DDI_KEYS " in *" $k "*) ;; *) ddi_die "clé inconnue dans la configuration : $k" ;; esac
@@ -108,15 +108,15 @@ ddi_kbd_write() {   # $1 = disposition : fichier lu au démarrage par console-se
 # $1 = disposition, $2 = « save » pour rendre persistant le cache de console-setup. Échec = non appliquée à la console.
 # DDI_KBD_FORCE : exécute les commandes même en mode hors-ligne (tests avec de fausses commandes).
 ddi_kbd_apply_now() {
-  if ddi_offline && [ -z "${DDI_KBD_FORCE:-}" ]; then return 0; fi
+  if ddi_offline && [[ -z "${DDI_KBD_FORCE:-}" ]]; then return 0; fi
   if command -v setupcon >/dev/null 2>&1; then
-    if [ "${2:-}" = save ]; then setupcon -k --save >/dev/null 2>&1 && return 0; else setupcon -k >/dev/null 2>&1 && return 0; fi
+    if [[ "${2:-}" = save ]]; then setupcon -k --save >/dev/null 2>&1 && return 0; else setupcon -k >/dev/null 2>&1 && return 0; fi
   fi
   if command -v loadkeys >/dev/null 2>&1 && loadkeys "$(ddi_kbd_loadkeys_map "$1")" >/dev/null 2>&1; then return 0; fi
   return 1
 }
 # Le test de saisie n'a de sens que sur la console (écran/clavier de la VM), pas dans une session SSH.
 ddi_kbd_on_console() {
-  [ -z "${DDI_KBD_TEST:-}" ] || return 0
+  [[ -z "${DDI_KBD_TEST:-}" ]] || return 0
   case "$(tty 2>/dev/null)" in /dev/tty[0-9]*|/dev/hvc*|/dev/console) return 0 ;; *) return 1 ;; esac
 }

@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.54 — « Qualité : première passe de correction SonarQube (lot 4) »
+- **Scripts bash** : les 85 tests `[ … ]` de `build-ddibuntu.sh`, `src/rootfs/usr/local/lib/ddibuntu/*.sh` et `tools/*.sh` passent en `[[ … ]]` (règle `shell:S7688`), sans changement de comportement : `shellcheck`, `bash -n` et les batteries b01, b03, b05, b08, b18 donnent les mêmes résultats qu'avant.
+- `sonar-project.properties` : les batteries de tests (`tests/**`) sont exclues de cette règle (code de test non livré), comme les scripts POSIX de l'installateur.
+- Plan de remédiation mis à jour (`docs/QUALITE.md`) : restent la revue des points sensibles dans l'interface SonarQube Cloud, l'attente de la porte qualité et la couverture, qui demandent le secret `SONAR_TOKEN` côté GitHub.
+
 ## 0.9.53 — « Alias (CNAME) gérés depuis l'adresse IP »
 - **Vue unifiée d'une adresse** (IPAM › Adresses, bouton « Noms DNS et alias ») : les noms qui portent l'adresse (A/AAAA), son PTR et tous ses **alias CNAME**, avec ajout, modification (cible, TTL, commentaire, désactivation) et suppression sans quitter l'IP. Nouvelle colonne **Alias** dans les listes d'adresses.
 - Aucun lien stocké : les alias sont **recalculés à la lecture** (CNAME de la même vue DNS qui pointent, directement ou en chaîne, vers un nom de l'adresse), donc rien à resynchroniser quand le DNS évolue. Alias d'alias affichés en arborescence (8 niveaux au plus).

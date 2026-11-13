@@ -5,7 +5,7 @@ SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"   # absolu : on change de
 cd "$(dirname "$SELF")/../webui"
 case "${1:-unit}" in
   unit) npx --no-install tsc -p tsconfig.server-check.json; npx --no-install vitest run tests/unit-*.test.ts ;;
-  e2e)  [ -f .output/server/index.mjs ] || { echo "console non construite : lancer tools/build-console.sh" >&2; exit 1; }
+  e2e)  [[ -f .output/server/index.mjs ]] || { echo "console non construite : lancer tools/build-console.sh" >&2; exit 1; }
         for f in tests/e2e*.test.ts; do npx --no-install vitest run "$f"; done ;;   # un fichier à la fois : même base de données
   all)  "$SELF" unit; "$SELF" e2e ;;
   *) echo "usage : $0 [unit|e2e|all]" >&2; exit 2 ;;

@@ -44,9 +44,9 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # ---- Mode dépôt : pas de charge utile embarquée, mais src/ à côté du script ----
 SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 REPO_MODE=0
-if [ -d "$SELF_DIR/src/rootfs" ] && [ -f "$SELF_DIR/src/VERSION" ] && ! grep -q -x -F -- "$PAYLOAD_MARK" "$SELF" 2>/dev/null; then REPO_MODE=1; fi
-if [ "$DDI_VERSION" = "@@VERSION@@" ]; then
-  [ "$REPO_MODE" = 1 ] || die "version non renseignée et aucun dépôt (src/) à côté du script"
+if [[ -d "$SELF_DIR/src/rootfs" ]] && [[ -f "$SELF_DIR/src/VERSION" ]] && ! grep -q -x -F -- "$PAYLOAD_MARK" "$SELF" 2>/dev/null; then REPO_MODE=1; fi
+if [[ "$DDI_VERSION" = "@@VERSION@@" ]]; then
+  [[ "$REPO_MODE" = 1 ]] || die "version non renseignée et aucun dépôt (src/) à côté du script"
   DDI_VERSION="$(tr -d '\n' < "$SELF_DIR/src/VERSION")"
 fi
 
@@ -77,7 +77,7 @@ USAGE
 
 # Tous les téléchargements passent par dlcurl : --insecure-tls n'enlève que la vérification du certificat du SERVEUR ;
 # l'ISO Ubuntu, Node et les clés restent vérifiés par signature et empreinte, indépendamment du TLS.
-dlcurl() { if [ "$INSECURE_TLS" = 1 ]; then curl -k "$@"; else curl "$@"; fi; }
+dlcurl() { if [[ "$INSECURE_TLS" = 1 ]]; then curl -k "$@"; else curl "$@"; fi; }
 tls_hint() {
   cat >&2 <<'HINT'
 
@@ -90,10 +90,10 @@ dont l'autorité de certification est inconnue du conteneur de construction, ou 
 HINT
 }
 # dldie CODE_CURL MESSAGE : aide TLS si le code curl est une erreur de certificat (60) ou de négociation (35), puis arrêt
-dldie() { local rc="$1"; shift; if [ "$rc" = 60 ] || [ "$rc" = 35 ]; then tls_hint; fi; die "$*"; }
+dldie() { local rc="$1"; shift; if [[ "$rc" = 60 ]] || [[ "$rc" = 35 ]]; then tls_hint; fi; die "$*"; }
 # Ajoute une autorité de certification au magasin du conteneur (jamais sur un poste : uniquement avec --in-container)
 install_extra_ca() {   # $1 = fichier PEM
-  [ -f "$1" ] || die "autorité de certification introuvable : $1"
+  [[ -f "$1" ]] || die "autorité de certification introuvable : $1"
   grep -q 'BEGIN CERTIFICATE' "$1" || die "$1 n'est pas un certificat PEM"
   local dir="${DDI_CA_DIR:-/usr/local/share/ca-certificates}"
   mkdir -p "$dir"
@@ -105,15 +105,15 @@ install_extra_ca() {   # $1 = fichier PEM
 stage_ca() {   # $1 = dossier de sortie absolu
   CA_STAGED=""
   local dst="$1/.ddibuntu-ca.pem" n
-  if [ "$CA_KEYCHAIN" = 1 ]; then
+  if [[ "$CA_KEYCHAIN" = 1 ]]; then
     have security || die "--ca-from-keychain n'existe que sous macOS (commande « security » absente)"
     # certificats seulement (jamais de clé privée) ; un trousseau absent ne doit pas empêcher d'exporter l'autre
     security find-certificate -a -p /Library/Keychains/System.keychain "$HOME/Library/Keychains/login.keychain-db" > "$dst" 2>/dev/null || true
     grep -q 'BEGIN CERTIFICATE' "$dst" 2>/dev/null || { rm -f "$dst"; die "aucun certificat exporté du trousseau macOS"; }
     n="$(grep -c 'BEGIN CERTIFICATE' "$dst")"
     say "Trousseau macOS : $n certificats ajoutés comme autorités de confiance du conteneur de construction (jetable)"
-  elif [ -n "$CA_CERT" ]; then
-    [ -f "$CA_CERT" ] || die "fichier introuvable : $CA_CERT"
+  elif [[ -n "$CA_CERT" ]]; then
+    [[ -f "$CA_CERT" ]] || die "fichier introuvable : $CA_CERT"
     grep -q 'BEGIN CERTIFICATE' "$CA_CERT" || die "$CA_CERT n'est pas un certificat PEM"
     cp "$CA_CERT" "$dst"
   else
@@ -139,8 +139,8 @@ b64_decode() { if base64 -d </dev/null >/dev/null 2>&1; then base64 -d; else bas
 # EXACTEMENT ce que le mode dépôt lit (un seul chemin de code, vérifié par un test).
 repo_stage() {   # $1 = dossier de destination (vide ou inexistant)
   local d="$1" src="$SELF_DIR/src" out="${DDI_CONSOLE_OUTPUT:-$SELF_DIR/webui/.output}"
-  [ "$REPO_MODE" = 1 ] || die "cette opération ne s'utilise que depuis un dépôt (dossier src/ à côté du script, sans contenu embarqué)"
-  [ -f "$out/server/index.mjs" ] || die "console web non construite ($out) : lancer tools/build-console.sh"
+  [[ "$REPO_MODE" = 1 ]] || die "cette opération ne s'utilise que depuis un dépôt (dossier src/ à côté du script, sans contenu embarqué)"
+  [[ -f "$out/server/index.mjs" ]] || die "console web non construite ($out) : lancer tools/build-console.sh"
   mkdir -p "$d/console"
   cp -a "$src/rootfs" "$src/iso" "$src/ps1" "$d/"; cp "$src/VERSION" "$d/"
   # Console web construite (nuxt build) : embarquée telle quelle, sous le nom « app »
@@ -158,9 +158,9 @@ repo_stage() {   # $1 = dossier de destination (vide ou inexistant)
 
 payload_extract() {   # $1 = dossier de destination
   local n
-  if [ "$REPO_MODE" = 1 ]; then repo_stage "$1"; return 0; fi
+  if [[ "$REPO_MODE" = 1 ]]; then repo_stage "$1"; return 0; fi
   n="$(grep -c -x -F -- "$PAYLOAD_MARK" "$SELF" || true)"
-  [ "$n" = "1" ] || die "le marqueur de contenu embarqué doit apparaître une fois (trouvé : $n)"
+  [[ "$n" = "1" ]] || die "le marqueur de contenu embarqué doit apparaître une fois (trouvé : $n)"
   mkdir -p "$1"
   awk -v m="$PAYLOAD_MARK" 'f { print } $0 == m { f = 1 }' "$SELF" | b64_decode | tar -xzf - -C "$1"
 }
@@ -170,17 +170,17 @@ payload_extract() {   # $1 = dossier de destination
 # ---------------------------------------------------------------------------------
 make_ps1() {
   local work tpl out sha b64
-  [ "$REPO_MODE" = 0 ] || die "--makeps1 s'applique au fichier unique : lancer tools/make-single.sh puis dist/build-ddibuntu.sh --makeps1"
+  [[ "$REPO_MODE" = 0 ]] || die "--makeps1 s'applique au fichier unique : lancer tools/make-single.sh puis dist/build-ddibuntu.sh --makeps1"
   work="$(mktemp -d "${TMPDIR:-/tmp}/ddibuntu-ps1.XXXXXX")"
   payload_extract "$work"
   tpl="$work/ps1/launcher.ps1.in"
-  [ -f "$tpl" ] || die "modèle PowerShell absent du contenu embarqué"
+  [[ -f "$tpl" ]] || die "modèle PowerShell absent du contenu embarqué"
   sha="$(sha256_of "$SELF")"
   b64="$(gzip -9 -n -c "$SELF" | base64 | tr -d '\n' | fold -w 100)"
   out="$OUT_DIR/build-ddibuntu.ps1"
   mkdir -p "$OUT_DIR"
   : > "$out"
-  while IFS= read -r line || [ -n "$line" ]; do
+  while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
       "@@B64@@") printf '%s\n' "$b64" >> "$out" ;;
       *) line="${line//@@SHA256@@/$sha}"; line="${line//@@VERSION@@/$DDI_VERSION}"; printf '%s\n' "$line" >> "$out" ;;
@@ -200,15 +200,15 @@ run_in_docker() {
   local self_dir self_name out_abs extra=""
   self_dir="$(cd "$(dirname "$SELF")" && pwd)"; self_name="$(basename "$SELF")"
   mkdir -p "$OUT_DIR"; out_abs="$(cd "$OUT_DIR" && pwd)"
-  [ -z "$ISO_SHA" ] || extra="$extra --sha256 $ISO_SHA"
-  [ "$ALLOW_UNVERIFIED" = 0 ] || extra="$extra --allow-unverified"
-  [ "$SKIP_DEBS" = 0 ] || extra="$extra --skip-debs"
-  [ "$SKIP_NODE" = 0 ] || extra="$extra --skip-node"
-  [ "$INSECURE_TLS" = 0 ] || extra="$extra --insecure-tls"
+  [[ -z "$ISO_SHA" ]] || extra="$extra --sha256 $ISO_SHA"
+  [[ "$ALLOW_UNVERIFIED" = 0 ]] || extra="$extra --allow-unverified"
+  [[ "$SKIP_DEBS" = 0 ]] || extra="$extra --skip-debs"
+  [[ "$SKIP_NODE" = 0 ]] || extra="$extra --skip-node"
+  [[ "$INSECURE_TLS" = 0 ]] || extra="$extra --insecure-tls"
   stage_ca "$out_abs"
-  [ -z "$CA_STAGED" ] || extra="$extra --ca-cert /ddi-out/.ddibuntu-ca.pem"
+  [[ -z "$CA_STAGED" ]] || extra="$extra --ca-cert /ddi-out/.ddibuntu-ca.pem"
   say "Construction dans Docker ($DOCKER_IMAGE, plateforme linux/amd64 ; émulée, donc plus lente, sur un Mac Apple Silicon)"
-  if [ -n "$ISO_IN" ]; then
+  if [[ -n "$ISO_IN" ]]; then
     # shellcheck disable=SC2086  # $extra : options sans espaces, découpées volontairement
     docker run --rm --platform linux/amd64 -e DDI_HOST_UID="$(id -u)" -e DDI_HOST_GID="$(id -g)" \
       -v "$self_dir:/ddi-src:ro" -v "$out_abs:/ddi-out" -v "$(cd "$(dirname "$ISO_IN")" && pwd):/ddi-iso:ro" \
@@ -229,12 +229,12 @@ run_in_docker() {
 # ou faite par une autre clé que celle de Canonical attendue.
 verify_sums_signature() {
   local out fpr ok=0
-  [ -f "$KEYRING" ] || die "trousseau Ubuntu introuvable : $KEYRING (paquet ubuntu-keyring)"
+  [[ -f "$KEYRING" ]] || die "trousseau Ubuntu introuvable : $KEYRING (paquet ubuntu-keyring)"
   out="$(gpgv --keyring "$KEYRING" --status-fd 1 "$2" "$1" 2>/dev/null)" || die "signature de SHA256SUMS INVALIDE : l'ISO ne sera pas utilisée"
   for fpr in $CD_KEY_FPRS; do
     if printf '%s\n' "$out" | grep -q "^\[GNUPG:\] VALIDSIG .* $fpr\$"; then ok=1; fi
   done
-  [ "$ok" = 1 ] || die "SHA256SUMS signé par une clé inattendue (attendu : $CD_KEY_FPRS)"
+  [[ "$ok" = 1 ]] || die "SHA256SUMS signé par une clé inattendue (attendu : $CD_KEY_FPRS)"
   say "Signature Canonical valide (clé $CD_KEY_FPRS)"
 }
 
@@ -246,8 +246,8 @@ select_iso_name() {
   local names n best
   names="$(awk -v pat="$2" '{ f = $2; sub(/^\*/, "", f); if (f ~ pat) print f }' "$1")"
   n="$(printf '%s\n' "$names" | grep -c . || true)"
-  [ "$n" != "0" ] || die "SHA256SUMS : aucun fichier ne correspond à « $2 »"
-  if [ "$n" = "1" ]; then printf '%s\n' "$names"; return 0; fi
+  [[ "$n" != "0" ]] || die "SHA256SUMS : aucun fichier ne correspond à « $2 »"
+  if [[ "$n" = "1" ]]; then printf '%s\n' "$names"; return 0; fi
   best="$(printf '%s\n' "$names" | awk '
     function newer(a, b,   x, y, i, m) {
       m = split(a, x, "."); i = split(b, y, "."); if (i > m) m = i
@@ -279,14 +279,14 @@ fetch_iso() {         # $1 = dossier de cache ; écrit le chemin de l'ISO vérif
   verify_sums_signature "$sums" "$sig"
   name="${DDI_ISO_NAME:-$(select_iso_name "$sums" 'live-server-amd64[.]iso$')}"
   want="$(sums_hash_for "$sums" "$name")"
-  [ -n "$want" ] || die "$name absent de SHA256SUMS"
-  if [ -f "$cache/$name" ] && [ "$(sha256_of "$cache/$name")" = "$want" ]; then
+  [[ -n "$want" ]] || die "$name absent de SHA256SUMS"
+  if [[ -f "$cache/$name" ]] && [[ "$(sha256_of "$cache/$name")" = "$want" ]]; then
     say "ISO déjà présente et vérifiée : $name"
   else
     say "Téléchargement de $name"
     dlcurl -fL --retry 3 -C - -o "$cache/$name" "$UBUNTU_BASE_URL/$name" || dldie $? "téléchargement de l'ISO impossible"
     got="$(sha256_of "$cache/$name")"
-    [ "$got" = "$want" ] || { rm -f "$cache/$name"; die "somme SHA-256 de $name incorrecte (attendu $want, obtenu $got)"; }
+    [[ "$got" = "$want" ]] || { rm -f "$cache/$name"; die "somme SHA-256 de $name incorrecte (attendu $want, obtenu $got)"; }
   fi
   ISO_PATH="$cache/$name"; ISO_NAME="$name"; ISO_HASH="$want"
 }
@@ -297,9 +297,9 @@ fetch_iso() {         # $1 = dossier de cache ; écrit le chemin de l'ISO vérif
 ensure_tools() {
   local missing="" t
   for t in xorriso gpgv gpg curl openssl tar gzip awk base64 sha256sum apt-get; do have "$t" || missing="$missing $t"; done
-  [ -f "$KEYRING" ] || missing="$missing ubuntu-keyring"
-  [ -z "$missing" ] && return 0
-  if [ "$IN_CONTAINER" = 1 ] && have apt-get; then
+  [[ -f "$KEYRING" ]] || missing="$missing ubuntu-keyring"
+  [[ -z "$missing" ]] && return 0
+  if [[ "$IN_CONTAINER" = 1 ]] && have apt-get; then
     say "Installation des outils de construction dans le conteneur"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
@@ -316,7 +316,7 @@ build_node_keyring() {   # $1 = dossier de travail ; positionne NODE_GNUPGHOME
   for fpr in $NODE_KEY_FPRS; do
     dlcurl -fsSL --retry 3 -o "$d/$fpr.asc" "$NODE_KEYS_URL/$fpr.asc" || dldie $? "clé de publication Node introuvable : $fpr"
     got="$(gpg --homedir "$NODE_GNUPGHOME" --batch --show-keys --with-colons "$d/$fpr.asc" 2>/dev/null | awk -F: '$1=="pub"{p=1;next} $1=="fpr"&&p{print $10; p=0}')"
-    [ "$got" = "$fpr" ] || die "la clé téléchargée pour $fpr porte l'empreinte « $got » : refus"
+    [[ "$got" = "$fpr" ]] || die "la clé téléchargée pour $fpr porte l'empreinte « $got » : refus"
     gpg --homedir "$NODE_GNUPGHOME" --batch --quiet --import "$d/$fpr.asc" 2>/dev/null || die "import de la clé $fpr impossible"
   done
 }
@@ -327,7 +327,7 @@ verify_node_sums() {
   for fpr in $NODE_KEY_FPRS; do
     if printf '%s\n' "$st" | grep -q "^\[GNUPG:\] VALIDSIG .* $fpr\$"; then ok=1; fi
   done
-  [ "$ok" = 1 ] || { rm -f "$2"; die "SHASUMS256.txt (Node) signé par une clé hors de la liste épinglée"; }
+  [[ "$ok" = 1 ]] || { rm -f "$2"; die "SHASUMS256.txt (Node) signé par une clé hors de la liste épinglée"; }
   say "Signature Node valide (clé épinglée)"
 }
 fetch_node() {           # $1 = dossier de cache ; positionne NODE_TGZ NODE_NAME NODE_HASH
@@ -340,15 +340,15 @@ fetch_node() {           # $1 = dossier de cache ; positionne NODE_TGZ NODE_NAME
   verify_node_sums "$w/SHASUMS256.txt.asc" "$sums"
   name="$(select_iso_name "$sums" 'node-v[0-9.]+-linux-x64[.]tar[.]gz$')"
   want="$(sums_hash_for "$sums" "$name")"
-  [ -n "$want" ] || die "$name absent de SHASUMS256.txt"
+  [[ -n "$want" ]] || die "$name absent de SHASUMS256.txt"
   mkdir -p "$cache"
-  if [ -f "$cache/$name" ] && [ "$(sha256_of "$cache/$name")" = "$want" ]; then
+  if [[ -f "$cache/$name" ]] && [[ "$(sha256_of "$cache/$name")" = "$want" ]]; then
     say "Node déjà présent et vérifié : $name"
   else
     say "Téléchargement de $name"
     dlcurl -fL --retry 3 -o "$cache/$name" "$NODE_BASE_URL/$name" || dldie $? "téléchargement de Node impossible"
     got="$(sha256_of "$cache/$name")"
-    [ "$got" = "$want" ] || { rm -f "$cache/$name"; die "somme SHA-256 de $name incorrecte (attendu $want, obtenu $got)"; }
+    [[ "$got" = "$want" ]] || { rm -f "$cache/$name"; die "somme SHA-256 de $name incorrecte (attendu $want, obtenu $got)"; }
   fi
   NODE_TGZ="$cache/$name"; NODE_NAME="$name"; NODE_HASH="$want"
   rm -rf "$w"
@@ -368,7 +368,7 @@ fetch_debs() {        # $1 = dossier de destination. Résolution relative à l'i
       -o APT::Sandbox::User=root -o Dir::Cache::archives="$d" -o APT::Keep-Downloaded-Packages=1 $DDI_PACKAGES >/dev/null; then
       break
     fi
-    [ "$try" -lt 4 ] || die "téléchargement des paquets impossible après $try essais (miroir Ubuntu incohérent : réessayez plus tard)"
+    [[ "$try" -lt 4 ]] || die "téléchargement des paquets impossible après $try essais (miroir Ubuntu incohérent : réessayez plus tard)"
     warn "téléchargement des paquets échoué (essai $try/4) ; nouvel essai dans 30 s avec un index rafraîchi"
     try=$((try + 1)); sleep 30; rm -rf /var/lib/apt/lists/*
   done
@@ -378,40 +378,40 @@ fetch_debs() {        # $1 = dossier de destination. Résolution relative à l'i
 }
 
 build_native() {
-  if have dpkg && [ "$(dpkg --print-architecture)" != "amd64" ]; then
+  if have dpkg && [[ "$(dpkg --print-architecture)" != "amd64" ]]; then
     die "la construction doit tourner en amd64 (ici : $(dpkg --print-architecture)) : les paquets embarqués seraient inutilisables. Avec Docker, utiliser --platform linux/amd64 (fait automatiquement par ce script)."
   fi
   # Les paquets de l'appliance sont résolus AVANT l'installation des outils de construction, dans le conteneur encore
   # « propre » : sinon les bibliothèques tirées par curl, xorriso… (libldap2, etc.) manqueraient à la fermeture de
   # dépendances alors qu'un Ubuntu Server minimal ne les a pas forcément (défaut constaté sur un système cible réel).
   EARLY_DEBS=""
-  if [ "$IN_CONTAINER" = 1 ] && [ "$SKIP_DEBS" = 0 ]; then
+  if [[ "$IN_CONTAINER" = 1 ]] && [[ "$SKIP_DEBS" = 0 ]]; then
     EARLY_DEBS="$(mktemp -d "${TMPDIR:-/tmp}/ddibuntu-debs.XXXXXX")"
     say "Paquets embarqués : $DDI_PACKAGES (résolution dans le conteneur propre)"
     fetch_debs "$EARLY_DEBS"
   fi
   ensure_tools
   have openssl || die "openssl est requis"
-  if [ "$IN_CONTAINER" = 1 ] && [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then die "le magasin de certificats du conteneur est vide (ca-certificates)"; fi
-  if [ -n "$CA_CERT" ]; then
-    [ "$IN_CONTAINER" = 1 ] || die "--ca-cert n'est géré que dans le conteneur Docker (le magasin de votre poste n'est jamais modifié)"
+  if [[ "$IN_CONTAINER" = 1 ]] && [[ ! -s /etc/ssl/certs/ca-certificates.crt ]]; then die "le magasin de certificats du conteneur est vide (ca-certificates)"; fi
+  if [[ -n "$CA_CERT" ]]; then
+    [[ "$IN_CONTAINER" = 1 ]] || die "--ca-cert n'est géré que dans le conteneur Docker (le magasin de votre poste n'est jamais modifié)"
     install_extra_ca "$CA_CERT"
   fi
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/ddibuntu-build.XXXXXX")"
   mkdir -p "$OUT_DIR"
   # un échec ne laisse jamais d'ISO au nom définitif : écriture dans un fichier temporaire
-  trap 'rm -f "$OUT_DIR"/.ddibuntu-*.partial; if [ "$KEEP_WORK" = 0 ]; then rm -rf "$WORK"; fi' EXIT
+  trap 'rm -f "$OUT_DIR"/.ddibuntu-*.partial; if [[ "$KEEP_WORK" = 0 ]]; then rm -rf "$WORK"; fi' EXIT
   local cache="$OUT_DIR/.ddibuntu-cache" payload="$WORK/payload" iso="$WORK/iso/ddibuntu" hash tmpl content f
 
   say "DDI-Buntu $DDI_VERSION — dossier de travail : $WORK"
   payload_extract "$payload"
 
   # --- ISO Ubuntu de départ : vérifiée avant toute utilisation ---
-  if [ -n "$ISO_IN" ]; then
-    [ -f "$ISO_IN" ] || die "ISO introuvable : $ISO_IN"
-    if [ -n "$ISO_SHA" ]; then
-      [ "$(sha256_of "$ISO_IN")" = "$ISO_SHA" ] || die "somme SHA-256 de l'ISO fournie incorrecte"
-    elif [ "$ALLOW_UNVERIFIED" = 1 ]; then
+  if [[ -n "$ISO_IN" ]]; then
+    [[ -f "$ISO_IN" ]] || die "ISO introuvable : $ISO_IN"
+    if [[ -n "$ISO_SHA" ]]; then
+      [[ "$(sha256_of "$ISO_IN")" = "$ISO_SHA" ]] || die "somme SHA-256 de l'ISO fournie incorrecte"
+    elif [[ "$ALLOW_UNVERIFIED" = 1 ]]; then
       warn "ISO locale NON vérifiée (--allow-unverified) : ne pas diffuser le résultat"
     else
       die "--iso exige --sha256 (ou --allow-unverified pour des tests)"
@@ -439,8 +439,8 @@ build_native() {
   cp "$payload/iso/meta-data" "$iso/update/meta-data"
   tmpl="$(cat "$payload/iso/user-data-update.tmpl")"
   printf '%s\n' "${tmpl//@@VERSION@@/$DDI_VERSION}" > "$iso/update/user-data"
-  if [ "$SKIP_DEBS" = 0 ]; then
-    if [ -n "$EARLY_DEBS" ]; then
+  if [[ "$SKIP_DEBS" = 0 ]]; then
+    if [[ -n "$EARLY_DEBS" ]]; then
       mkdir -p "$iso/debs"; cp -a "$EARLY_DEBS"/. "$iso/debs"/; rm -rf "$EARLY_DEBS"
     else
       warn "résolution des paquets relative à CET hôte, pas à un système propre : utiliser Docker pour une ISO reproductible"
@@ -451,7 +451,7 @@ build_native() {
   # console web (construite, embarquée dans ce script) et Node.js vérifié
   cp "$payload/console/console.tar.gz" "$iso/console.tar.gz"
   local sumfiles="console.tar.gz"
-  if [ "$SKIP_NODE" = 0 ]; then
+  if [[ "$SKIP_NODE" = 0 ]]; then
     fetch_node "$cache"
     cp "$NODE_TGZ" "$iso/node-linux-x64.tar.gz"; sumfiles="$sumfiles node-linux-x64.tar.gz"
   else
@@ -461,8 +461,8 @@ build_native() {
   ( cd "$iso" && sha256sum $sumfiles > payloads.sha256 )
   {
     printf 'DDI-Buntu %s\nconstruit le %s\nISO de base : %s\nSHA-256 base : %s\n' "$DDI_VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ISO_NAME" "$ISO_HASH"
-    if [ "$SKIP_NODE" = 0 ]; then printf 'Node.js : %s (SHA-256 %s, signature vérifiée)\n' "$NODE_NAME" "$NODE_HASH"; fi
-    if [ -d "$iso/debs" ]; then
+    if [[ "$SKIP_NODE" = 0 ]]; then printf 'Node.js : %s (SHA-256 %s, signature vérifiée)\n' "$NODE_NAME" "$NODE_HASH"; fi
+    if [[ -d "$iso/debs" ]]; then
       printf 'paquets embarqués :\n'
       for f in "$iso"/debs/*.deb; do printf '  %s\n' "${f##*/}"; done
     fi
@@ -489,7 +489,7 @@ build_native() {
   rm -f "$out" "$out.sha256"
   mv -f "$part" "$out"
   ( cd "$OUT_DIR" && sha256_of "$out" | awk -v f="$(basename "$out")" '{print $1 "  " f}' > "$out.sha256" )
-  if [ -n "${DDI_HOST_UID:-}" ]; then chown -R "$DDI_HOST_UID:${DDI_HOST_GID:-$DDI_HOST_UID}" "$OUT_DIR" 2>/dev/null || warn "droits du dossier de sortie non ajustés"; fi
+  if [[ -n "${DDI_HOST_UID:-}" ]]; then chown -R "$DDI_HOST_UID:${DDI_HOST_GID:-$DDI_HOST_UID}" "$OUT_DIR" 2>/dev/null || warn "droits du dossier de sortie non ajustés"; fi
   say "ISO prête : $out"
   say "SHA-256  : $(cut -d' ' -f1 "$out.sha256")"
 }
@@ -551,7 +551,7 @@ verify_iso() {        # $1 = ISO produite, $2 = dossier /ddibuntu source
   xorriso -osirrox on -indev "$iso" -extract /ddibuntu "$tmp/ddibuntu" -extract /boot/grub/grub.cfg "$tmp/grub.cfg" >/dev/null 2>&1 || die "contrôle : extraction impossible"
   local f
   for f in rootfs.tar rootfs.tar.sha256 late.sh update.sh user-data meta-data update/user-data update/meta-data VERSION MANIFEST.txt console.tar.gz payloads.sha256; do
-    [ -f "$tmp/ddibuntu/$f" ] || die "contrôle : /ddibuntu/$f absent de l'ISO"
+    [[ -f "$tmp/ddibuntu/$f" ]] || die "contrôle : /ddibuntu/$f absent de l'ISO"
     cmp -s "$tmp/ddibuntu/$f" "$src/$f" || die "contrôle : /ddibuntu/$f différent de la source"
   done
   grep -q 'ds=nocloud\\;s=/cdrom/ddibuntu/ ---' "$tmp/grub.cfg" || die "contrôle : l'entrée automatique est absente de grub.cfg"
@@ -563,7 +563,7 @@ verify_iso() {        # $1 = ISO produite, $2 = dossier /ddibuntu source
 
 # ---------------------------------------------------------------------------------
 main() {
-  while [ $# -gt 0 ]; do
+  while [[ $# -gt 0 ]]; do
     case "$1" in
       --out) OUT_DIR="${2:?--out attend un dossier}"; shift ;;
       --timeout) TIMEOUT="${2:?--timeout attend un nombre}"; shift ;;
@@ -590,25 +590,25 @@ main() {
   done
   case "$TIMEOUT" in -1|[0-9]|[0-9][0-9]|[0-9][0-9][0-9]) ;; *) die "--timeout attend -1 ou un nombre de secondes (0 à 999)" ;; esac
 
-  if [ "$MAKEPS1" = 1 ]; then make_ps1; exit 0; fi
-  if [ -n "$STAGE_DIR" ]; then repo_stage "$STAGE_DIR"; say "Charge utile préparée : $STAGE_DIR"; exit 0; fi
-  if [ "$BUNDLE" = 1 ]; then make_bundle; exit 0; fi
+  if [[ "$MAKEPS1" = 1 ]]; then make_ps1; exit 0; fi
+  if [[ -n "$STAGE_DIR" ]]; then repo_stage "$STAGE_DIR"; say "Charge utile préparée : $STAGE_DIR"; exit 0; fi
+  if [[ "$BUNDLE" = 1 ]]; then make_bundle; exit 0; fi
 
   local os
   os="$(uname -s)"
-  if [ "$IN_CONTAINER" = 1 ] || [ "$NO_DOCKER" = 1 ]; then
-    [ "$(id -u)" = 0 ] || die "la construction native demande les droits root (sudo)"
+  if [[ "$IN_CONTAINER" = 1 ]] || [[ "$NO_DOCKER" = 1 ]]; then
+    [[ "$(id -u)" = 0 ]] || die "la construction native demande les droits root (sudo)"
     build_native
-  elif [ "$FORCE_DOCKER" = 1 ] || [ "$os" != "Linux" ]; then
+  elif [[ "$FORCE_DOCKER" = 1 ]] || [[ "$os" != "Linux" ]]; then
     run_in_docker
-  elif [ "$(id -u)" = 0 ] && [ -f /etc/os-release ] && grep -qiE '^ID(_LIKE)?=.*(ubuntu|debian)' /etc/os-release; then
+  elif [[ "$(id -u)" = 0 ]] && [[ -f /etc/os-release ]] && grep -qiE '^ID(_LIKE)?=.*(ubuntu|debian)' /etc/os-release; then
     build_native
   else
     run_in_docker
   fi
 }
 
-if [ "${DDI_BUILD_SOURCE_ONLY:-0}" != 1 ]; then
+if [[ "${DDI_BUILD_SOURCE_ONLY:-0}" != 1 ]]; then
   main "$@"
   exit 0
 fi

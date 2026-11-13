@@ -19,7 +19,7 @@ OUT="$DIST/build-ddibuntu.sh"
 # Seules la ligne DDI_VERSION et le commentaire d'en-tête portent le marqueur : une substitution globale
 # détruirait le code qui remplace ce même marqueur dans le modèle user-data à l'exécution.
 sed -e "s/^DDI_VERSION=\"@@VERSION@@\"\$/DDI_VERSION=\"$VERSION\"/" -e "2s/@@VERSION@@/$VERSION/" "$ROOT/build-ddibuntu.sh" > "$OUT"
-if [ "$(grep -c '^DDI_VERSION="'"$VERSION"'"$' "$OUT")" != 1 ]; then echo "ERREUR : DDI_VERSION non renseigné" >&2; exit 1; fi
+if [[ "$(grep -c '^DDI_VERSION="'"$VERSION"'"$' "$OUT")" != 1 ]]; then echo "ERREUR : DDI_VERSION non renseigné" >&2; exit 1; fi
 # Le marqueur ne doit jamais apparaître dans le script : l'alphabet base64 ne contient ni « # » ni « _ »
 if grep -q -x -F -- "$MARK" "$OUT"; then echo "ERREUR : marqueur déjà présent dans le modèle" >&2; exit 1; fi
 {
@@ -29,6 +29,6 @@ if grep -q -x -F -- "$MARK" "$OUT"; then echo "ERREUR : marqueur déjà présent
 chmod 0755 "$OUT"
 
 n="$(grep -c -x -F -- "$MARK" "$OUT")"
-[ "$n" = 1 ] || { echo "ERREUR : marqueur présent $n fois" >&2; exit 1; }
+[[ "$n" = 1 ]] || { echo "ERREUR : marqueur présent $n fois" >&2; exit 1; }
 bash -n "$OUT"
 echo "OK : $OUT ($(wc -c < "$OUT") octets, version $VERSION)"

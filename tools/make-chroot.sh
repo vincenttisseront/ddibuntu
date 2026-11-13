@@ -4,7 +4,7 @@
 # Usage : tools/make-chroot.sh [DOSSIER]   (défaut : /home/claude/cache/noble-min)
 set -euo pipefail
 DEST="${1:-/home/claude/cache/noble-min}"
-if [ -f "$DEST/.ddibuntu-chroot-ok" ]; then echo "chroot déjà prêt : $DEST"; exit 0; fi
+if [[ -f "$DEST/.ddibuntu-chroot-ok" ]]; then echo "chroot déjà prêt : $DEST"; exit 0; fi
 export DEBIAN_FRONTEND=noninteractive
 command -v debootstrap >/dev/null 2>&1 || apt-get install -y -qq --no-install-recommends debootstrap >/dev/null
 rm -rf "$DEST"; mkdir -p "$(dirname "$DEST")"

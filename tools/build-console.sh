@@ -3,7 +3,7 @@
 # Node.js 22 local si disponible ; sinon Docker (image node:22). Les dépendances sont celles de package-lock.json.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-if command -v node >/dev/null 2>&1 && [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 22 ]; then
+if command -v node >/dev/null 2>&1 && [[ "$(node -p 'process.versions.node.split(".")[0]')" -ge 22 ]]; then
   cd "$ROOT/webui" && npm ci && npx --no-install nuxt build
 elif command -v docker >/dev/null 2>&1; then
   docker run --rm -v "$ROOT/webui:/w" -w /w node:22-bookworm sh -c 'npm ci && npx nuxt build'

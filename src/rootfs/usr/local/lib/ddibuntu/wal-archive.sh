@@ -6,20 +6,20 @@
 set -u
 ROOT="${DDI_ROOT:-}"; CONF="${DDI_BACKUP_CONF:-$ROOT/etc/ddibuntu/backup.conf}"
 enabled=0; dir=/var/lib/ddibuntu/backup
-if [ -f "$CONF" ]; then
-  while IFS= read -r line || [ -n "$line" ]; do
+if [[ -f "$CONF" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ ^(ENABLED|DIR)=([A-Za-z0-9._/@:+-]*)$ ]] || continue
     case "${BASH_REMATCH[1]}" in ENABLED) enabled="${BASH_REMATCH[2]}" ;; DIR) dir="${BASH_REMATCH[2]}" ;; esac
   done < "$CONF"
 fi
-[ "$enabled" = 1 ] || exit 0
+[[ "$enabled" = 1 ]] || exit 0
 src="${1:-}"; name="${2:-}"
 [[ "$name" =~ ^([0-9A-F]{24}(\.partial|\.[0-9A-F]{8}\.backup)?|[0-9A-F]{8}\.history)$ ]] || { echo "nom de fichier WAL invalide : $name" >&2; exit 1; }
-[ -f "$src" ] || { echo "fichier source absent : $src" >&2; exit 1; }
+[[ -f "$src" ]] || { echo "fichier source absent : $src" >&2; exit 1; }
 [[ "$dir" = /* && "$dir" != *..* ]] || { echo "dépôt invalide : $dir" >&2; exit 1; }
 wal="$ROOT$dir/wal"; dest="$wal/$name.gz"
 mkdir -p -- "$wal" || exit 1
-if [ -e "$dest" ]; then
+if [[ -e "$dest" ]]; then
   gzip -dc -- "$dest" 2>/dev/null | cmp -s - "$src" && exit 0
   echo "$name est déjà archivé avec un contenu différent : refus d'écraser" >&2; exit 1
 fi
