@@ -60,12 +60,12 @@ export interface DhcpPlanScope {
 export interface DhcpPlan { scopes: DhcpPlanScope[]; warnings: Array<{ scope?: string; code: string; detail?: string }> }
 
 const ARR = new Set(['scope', 'reservation', 'optionvalue', 'iprange', 'value', 'filter'])
-const lc = (o: any): any => {
+export const lc = (o: any): any => {
   if (Array.isArray(o)) return o.map(lc)
   if (o && typeof o === 'object') return Object.fromEntries(Object.entries(o).map(([k, v]) => [k.toLowerCase(), lc(v)]))
   return o
 }
-const arr = (x: any): any[] => (x === undefined || x === null || x === '' ? [] : Array.isArray(x) ? x : [x])
+export const arr = (x: any): any[] => (x === undefined || x === null || x === '' ? [] : Array.isArray(x) ? x : [x])
 const str = (x: any): string => (x === undefined || x === null ? '' : String(x).trim())
 
 export function parseWindowsLease(s: string): number | null {

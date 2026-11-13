@@ -9,6 +9,7 @@ const SCRIPTS = computed<Record<string, { title: string; code: string }>>(() => 
 }))
 const META = computed<Record<string, { label: string; desc: string; icon: string; tab?: string; link?: string }>>(() => ({
   scripts: { label: t('mig.st.scripts'), desc: t('mig.st.scripts_d'), icon: 'i-lucide-terminal' },
+  assess: { label: t('mig.st.assess'), desc: t('mig.st.assess_d'), icon: 'i-lucide-clipboard-check' },
   subnets: { label: t('mig.st.subnets'), desc: t('mig.st.subnets_d'), icon: 'i-lucide-network', tab: 'wizard' },
   dhcp: { label: t('mig.st.dhcp'), desc: t('mig.st.dhcp_d'), icon: 'i-lucide-server', tab: 'dhcp' },
   dns: { label: t('mig.st.dns'), desc: t('mig.st.dns_d'), icon: 'i-lucide-globe', tab: 'dns' },
@@ -50,6 +51,7 @@ await load()
           </div>
         </div>
         <p class="text-sm text-muted">{{ META[s.id]!.desc }}</p>
+        <MigrationAssess v-if="s.id === 'assess' && canWrite" @done="load" />
         <div v-if="s.id === 'scripts'" class="flex flex-col gap-2">
           <div class="flex flex-wrap gap-2"><UButton v-for="(sc, k) in SCRIPTS" :key="k" size="xs" :color="shown === k ? 'primary' : 'neutral'" variant="outline" icon="i-lucide-file-code" :label="sc.title" @click="shown = shown === k ? '' : String(k)" /></div>
           <div v-if="shown" class="flex flex-col gap-2">

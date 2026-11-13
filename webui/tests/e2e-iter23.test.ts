@@ -57,7 +57,7 @@ describe('assistant de migration Windows', () => {
   it('état initial : sept étapes, rien de fait ; lecture pour tous les connectés, anonyme refusé', async () => {
     code(await anon.get('/api/migration'), 401, 'unauthenticated')
     const r = await viewer.get('/api/migration'); expect(r.status).toBe(200)
-    expect(r.json.steps.map((s: any) => s.id)).toEqual(['scripts', 'subnets', 'dhcp', 'dns', 'review', 'cutover', 'retire'])
+    expect(r.json.steps.map((s: any) => s.id)).toEqual(['scripts', 'assess', 'subnets', 'dhcp', 'dns', 'review', 'cutover', 'retire'])
     expect(r.json.steps.every((s: any) => !s.manual && !s.auto)).toBe(true)
     expect(step(r, 'dhcp').detectable).toBe(true); expect(step(r, 'cutover').detectable).toBe(false)
   })
@@ -70,6 +70,16 @@ describe('assistant de migration Windows', () => {
     expect(step(await admin.get('/api/migration'), 'scripts').manual).toBe(true)
     expect((await rows("select 1 from audit_log where action = 'migration_step'")).length).toBe(1)
     expect(step(await admin.put('/api/migration', { step: 'scripts', done: false }), 'scripts').manual).toBe(false)
+  })
+  it('évaluation : opérateur seulement, rapport sans effet de bord, étape cochée seule', async () => {
+    code(await viewer.post('/api/migration/assess', { zones: 'x' }), 403, 'forbidden')
+    const z = '"ZoneName","ZoneType","IsDsIntegrated"\n"a.test","Primary","True"\n"s.test","Stub","False"'
+    const r = await oper.post('/api/migration/assess', { dhcp: DHCP_XML, zones: z }); expect(r.status, r.text).toBe(200)
+    expect(r.json.verdict).toBe('review'); expect(r.json.findings.map((f: any) => f.code)).toEqual(expect.arrayContaining(['dhcp_scopes', 'dns_ds', 'dns_stub']))
+    expect((await rows('select count(*)::int n from dhcp_scopes'))[0].n).toBe(0)   // rien d’importé
+    expect(step(await admin.get('/api/migration'), 'assess').manual).toBe(true)
+    expect((await oper.post('/api/migration/assess', { dhcp: 'pas du xml' })).json).toMatchObject({ verdict: 'blocked', errors: ['dhcp_xml_invalid'] })
+    expect((await admin.post('/api/migration/assess', { dhcp: 5 })).status).toBe(400)
   })
   it('un import DHCP réussi est détecté tout seul ; les totaux suivent', async () => {
     expect((await admin.post('/api/import/dhcp/commit', { content: DHCP_XML, filename: 'dhcp-export.xml' })).status).toBe(200)

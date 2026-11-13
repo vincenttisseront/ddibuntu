@@ -3,10 +3,11 @@
 import { z } from 'zod'
 import { audit, route } from '../utils/router'
 import { getSetting, one, query, setSetting } from '../utils/db'
+import { assess } from '../utils/migration-assess'
 
 export const registered = true
 
-export const MIGRATION_STEPS = ['scripts', 'subnets', 'dhcp', 'dns', 'review', 'cutover', 'retire'] as const
+export const MIGRATION_STEPS = ['scripts', 'assess', 'subnets', 'dhcp', 'dns', 'review', 'cutover', 'retire'] as const
 type Step = (typeof MIGRATION_STEPS)[number]
 /** Étapes dont l'accomplissement se déduit de l'historique des imports. */
 const AUTO: Partial<Record<Step, string[]>> = { subnets: ['ad-subnets', 'ad-live-subnets'], dhcp: ['dhcp'], dns: ['dns'] }
@@ -37,4 +38,13 @@ route('PUT', '/migration', 'operator', async (c) => {
   await setSetting('migration', { done: cur })
   await audit(c, 'migration_step', 'settings', undefined, b)
   return state()
+})
+
+// ---- Évaluation de compatibilité (0.12.1) : lecture seule, rien n'est importé ni enregistré ----
+route('POST', '/migration/assess', 'operator', async (c) => {
+  const b = await c.body(z.object({ dhcp: z.string().max(25_000_000).optional(), zones: z.string().max(5_000_000).optional() }))
+  const r = assess(b)
+  if (r.findings.length) { const cur = parseMigration(await getSetting<unknown>('migration', null).catch(() => null)); cur.assess = true; await setSetting('migration', { done: cur }) }
+  await audit(c, 'migration_assess', 'settings', undefined, { verdict: r.verdict, ...r.summary })
+  return r
 })

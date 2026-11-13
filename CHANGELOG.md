@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.12.1 — « Migration Windows : évaluation de compatibilité »
+- **Nouvelle étape « Évaluer la compatibilité »** dans l'assistant (Import › Migration Windows) : on dépose l'export DHCP (`Export-DhcpServer`, XML) et/ou l'inventaire des zones (CSV du script d'inventaire) ; le rapport classe chaque fonction en **repris**, **à adapter** ou **non pris en charge**, avec la marche à suivre. **Rien n'est importé ni modifié.**
+- **DHCP** : étendues et réservations (repris) ; stratégies, classes fabricant / utilisateur, filtres MAC, relation de basculement (→ Kea HA), superscopes, options non reconnues (à adapter) ; DHCPv6 et baux actifs (non pris en charge pour l'instant).
+- **DNS** : zones primaires et inverses (reprises) ; zones intégrées à AD, secondaires, redirecteurs conditionnels, mises à jour dynamiques sécurisées, zones `_msdcs` (à adapter) ; zones stub et zones signées DNSSEC (non prises en charge).
+- Verdict global (prêt / à examiner / fichier inexploitable) ; l'étape se coche seule après un rapport. API : `POST /migration/assess` (opérateur, audité `migration_assess`).
+
 ## 0.12.0 — « Assistant de migration Windows »
 - **Nouvel onglet Import › Migration Windows** (premier onglet) : parcours guidé en sept étapes pour reprendre un DNS / DHCP Windows Server — préparer les exports, sites et sous-réseaux AD, DHCP, DNS, contrôle, bascule, retrait des rôles Windows. Barre d'avancement et totaux déjà repris (réseaux, étendues, zones).
 - **Scripts PowerShell prêts à l'emploi**, en lecture seule, à copier ou télécharger : inventaire (zones, redirecteurs, étendues, failover, politiques, classes, filtres MAC), export DHCP (`Export-DhcpServer`) et export des zones (`dnscmd /ZoneExport`).
