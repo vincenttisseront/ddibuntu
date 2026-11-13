@@ -146,7 +146,11 @@ describe('cycle de vie : ouverture, aggravation, résolution', () => {
   it('nœud silencieux (santé périmée relayée par etcd) : critique ; l’arbitre : avertissement', async () => {
     publish({ health: { n1: hlth('n1'), n2: hlth('n2', { at: now() - 700 }), n3: hlth('n3', { role: 'witness', at: now() - 700, services: [], postgres: null }) } }); await evaluate()
     const a = (await alerts()).active.filter((x: any) => x.rule === 'node.health_stale'); expect(a.map((x: any) => [x.node, x.severity]).sort()).toEqual([['n2', 'critical'], ['n3', 'warning']])
-    publish(); await evaluate(); expect(await keys()).toEqual([])
+    publish(); await evaluate()
+    expect(await keys()).toEqual(['cluster.node_recovered|n2|', 'cluster.node_recovered|n3|'])       // retour à la normale signalé (information)
+    expect((await alerts()).active.find((x: any) => x.rule === 'cluster.node_recovered' && x.node === 'n2')).toMatchObject({ severity: 'info' })
+    await db.query("delete from alert_events where rule = 'cluster.node_recovered'"); await db.query("update settings set value = value - 'recovered' - 'down' where key = 'alert_memory'")
+    await evaluate(); expect(await keys()).toEqual([])
   })
   it('santé locale illisible ou hostile : ignorée, aucune erreur', async () => {
     writeFileSync(HL, '{pas du json'); const r = await evaluate(); expect(r.ok).toBe(true)

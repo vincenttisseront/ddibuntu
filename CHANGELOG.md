@@ -1,5 +1,9 @@
 # Journal des modifications
 
+## 0.9.47 — « Retour à la normale après une panne »
+- **Le moteur d'alertes suit les pannes de nœuds** (membre injoignable ou nœud qui ne publie plus sa santé) et en garde la durée. Au retour, trois informations apparaissent dans Système → Alertes et dans les notifications : « **Nœud revenu** après X min d'indisponibilité (base synchronisée) », « **Resynchronisation en cours** » tant que le secondaire n'est pas en réplication ou garde un retard (état et retard en Mio), et « **Retour au nœud préféré possible** » quand le nœud préféré est revenu, rattrapé et que le primaire est ailleurs (la bascule reste toujours manuelle et contrôlée).
+- « Nœud revenu » reste affiché une heure puis se résout ; un état de cluster périmé ne modifie jamais ce suivi (rien n'est déduit d'une donnée non fraîche). Aucune migration de schéma.
+
 ## 0.9.46 — « Connexion unique (SSO OpenID Connect) »
 - **SSO OpenID Connect** (Microsoft Entra ID, Keycloak, Okta, Google, Authentik…) : Système → onglet « SSO ». L'administrateur renseigne l'émetteur (découverte automatique), l'identifiant et le secret client, les claims identifiant/groupes et la **correspondance groupe → rôle** (avec périmètre IPAM optionnel) ; bouton « Tester » (découverte + clés). L'adresse de rappel à déclarer chez le fournisseur est affichée.
 - **Page de connexion** : bouton « Se connecter avec <libellé> » affiché seulement quand le SSO est actif ; erreurs explicites (refus, aucun groupe autorisé, compte en conflit/désactivé…).

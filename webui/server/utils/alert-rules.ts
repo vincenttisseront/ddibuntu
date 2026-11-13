@@ -27,13 +27,15 @@ export interface Snapshot {
   hygiene?: Hygiene                              // absent = non évalué (ex. nœud secondaire)
 }
 export interface Hygiene { ghosts: number; ghostDays: number; scanAt: number | null; unknown: number; macChanged: number }
-export interface Memory { leader: string | null; leaderChangedAt: number | null }
+// Mémoire entre deux évaluations : leader connu, et suivi des pannes de nœuds (depuis quand, retour constaté) pour gérer le retour à la normale.
+export interface Memory { leader: string | null; leaderChangedAt: number | null; down?: Record<string, number>; recovered?: Record<string, { at: number; downFor: number }> }
 export interface Finding { key: string; rule: string; severity: Severity; node: string; subject: string; params: Record<string, string | number> }
 
 // Catalogue : identifiant → gravité par défaut (la gravité réelle d'un constat peut en différer : service secondaire, seuil critique…).
 export const RULES: Record<string, Severity> = {
   'cluster.state_stale': 'critical', 'cluster.quorum_lost': 'critical', 'cluster.quorum_margin': 'warning', 'cluster.member_down': 'critical', 'cluster.no_leader': 'critical',
   'cluster.etcd_unhealthy': 'critical', 'cluster.replica_lag': 'warning', 'cluster.replica_unhealthy': 'warning', 'cluster.leader_changed': 'info', 'cluster.vip_not_held': 'warning',
+  'cluster.node_recovered': 'info', 'cluster.resync_in_progress': 'info', 'cluster.failback_ready': 'info',
   'node.health_stale': 'critical', 'node.service_down': 'critical', 'node.postgres_down': 'critical', 'node.disk_low': 'warning', 'node.cert_expiry': 'warning',
   'node.time_unsynced': 'warning', 'node.memory_low': 'warning',
   'backup.state_stale': 'warning', 'backup.none': 'warning', 'backup.too_old': 'warning', 'backup.archiver_failing': 'critical', 'backup.run_failed': 'warning',
@@ -45,6 +47,8 @@ export const RULE_IDS = Object.keys(RULES)
 const CRITICAL_SERVICES = new Set(['console', 'dns', 'dhcp', 'postgresql', 'patroni', 'etcd'])
 const TRANSIENT = new Set(['activating', 'reloading', 'deactivating'])
 const LEADER_CHANGED_WINDOW_S = 3600
+const RECOVERED_WINDOW_S = 3600            // « nœud revenu » reste affiché une heure
+const SYNC_LAG_BYTES = 1024 * 1024         // en dessous : réplique considérée comme rattrapée
 
 const f = (rule: string, severity: Severity, node = '', subject = '', params: Record<string, string | number> = {}): Finding => ({ key: `${rule}|${node}|${subject}`, rule, severity, node, subject, params })
 
@@ -111,6 +115,32 @@ export function evaluate(s: Snapshot, th: Thresholds, memory: Memory): { finding
     }
     if (h.timeSynced === false) out.push(f('node.time_unsynced', 'warning', name))
     if (h.memory.totalKb > 0 && h.memory.availKb / h.memory.totalKb < 0.05) out.push(f('node.memory_low', 'warning', name, '', { percent: Math.round((1 - h.memory.availKb / h.memory.totalKb) * 1000) / 10 }))
+  }
+
+  // ------------------------------------------------------------ retour à la normale : nœud revenu, resynchronisation, bascule de retour possible
+  // Seulement sur un état de cluster frais : un état périmé ne prouve ni la panne ni le retour.
+  if (cl && !cl.stale) {
+    const downNow = new Set<string>()
+    for (const x of out) if (x.rule === 'cluster.member_down' || x.rule === 'node.health_stale') downNow.add(x.node)
+    const down = { ...(mem.down ?? {}) }, rec = { ...(mem.recovered ?? {}) }
+    for (const n of downNow) { if (!(n in down)) down[n] = s.now; delete rec[n] }
+    for (const n of Object.keys(down)) if (!downNow.has(n)) { rec[n] = { at: s.now, downFor: Math.max(0, s.now - down[n]!) }; delete down[n] }
+    for (const [n, r] of Object.entries(rec)) if (s.now - r.at >= RECOVERED_WINDOW_S) delete rec[n]
+    if (Object.keys(down).length) mem.down = down; else delete mem.down
+    if (Object.keys(rec).length) mem.recovered = rec; else delete mem.recovered
+    const byName = new Map(cl.nodes.map((n) => [n.name, n]))
+    const syncing = (n?: { patroniRole?: string; state?: string; lagBytes?: number | null }) => !!n && n.patroniRole !== undefined && n.patroniRole !== 'leader' && (!['running', 'streaming'].includes(n.state ?? '') || (typeof n.lagBytes === 'number' && n.lagBytes > SYNC_LAG_BYTES))
+    for (const [n, r] of Object.entries(rec)) {
+      const node = byName.get(n)
+      if (syncing(node)) out.push(f('cluster.resync_in_progress', 'info', n, '', { state: node!.state ?? '', lagMiB: Math.round((node!.lagBytes ?? 0) / 1048576) }))
+      else out.push(f('cluster.node_recovered', 'info', n, '', { downSeconds: r.downFor, min: Math.max(1, Math.round(r.downFor / 60)), synced: node && node.patroniRole !== undefined ? 1 : 0 }))
+    }
+    // le nœud préféré est revenu, sain et rattrapé alors que le primaire est ailleurs : on le dit (jamais de bascule automatique)
+    const pref = cl.preferred?.node, q = cl.etcd.quorum
+    if (pref && cl.leader && pref !== cl.leader && !downNow.has(pref) && !rec[pref] && (!q || q.hasQuorum)) {
+      const pn = byName.get(pref)
+      if (pn && pn.patroniRole !== undefined && !syncing(pn) && ['running', 'streaming'].includes(pn.state ?? '')) out.push(f('cluster.failback_ready', 'info', pref, '', { leader: cl.leader }))
+    }
   }
 
   // ------------------------------------------------------------ sauvegardes (nœuds porteurs d'une base ; l'état d'un arbitre ne compte pas)

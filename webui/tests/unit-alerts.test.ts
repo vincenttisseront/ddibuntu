@@ -211,3 +211,32 @@ describe('adresses locales (service durci sans AF_NETLINK)', () => {
     try { expect(localAddresses(true)).toEqual([]); expect(localAddresses(false)).toEqual([]) } finally { osState.fail = false }
   })
 })
+
+describe('règles : retour à la normale', () => {
+  const down = () => { const c = clusterRaw(); (c.etcd.quorum as any).members[1].healthy = false; return c }
+  it('panne mémorisée, puis « resynchronisation en cours », puis « nœud revenu » (une heure), puis plus rien', () => {
+    const r1 = run(snap({ cluster: down() }), { leader: 'n1', leaderChangedAt: null })
+    expect(r1.memory.down).toEqual({ n2: NOW }); expect(rules(snap({ cluster: down() }), r1.memory)).not.toContain('cluster.node_recovered|n2|')
+    // à l'instant t (secondes après NOW) : cluster et santés tous frais ; lag du secondaire n2
+    const at = (t: number, lag: number) => ({ ...snap({ cluster: clusterRaw({ at: NOW + t, patroni: { members: [{ name: 'n1', role: 'leader', state: 'running' }, { name: 'n2', role: 'replica', state: 'streaming', lag }] },
+      health: { n1: health('n1', { at: NOW + t - 5 }), n2: health('n2', { at: NOW + t - 5 }), n3: health('n3', { at: NOW + t - 5, role: 'witness', services: [{ name: 'etcd', state: 'active', expected: true }], postgres: null }) } }) }), now: NOW + t })
+    const r2 = run(at(100, 50 * 1048576), r1.memory)
+    expect(r2.findings.find((x) => x.rule === 'cluster.resync_in_progress')).toMatchObject({ node: 'n2', severity: 'info', params: { lagMiB: 50 } })
+    expect(r2.memory.down).toBeUndefined(); expect(r2.memory.recovered).toEqual({ n2: { at: NOW + 100, downFor: 100 } })
+    const r3 = run(at(150, 0), r2.memory)
+    expect(r3.findings.find((x) => x.rule === 'cluster.node_recovered')).toMatchObject({ node: 'n2', params: { min: 2, synced: 1 } }); expect(r3.findings.some((x) => x.rule === 'cluster.resync_in_progress')).toBe(false)
+    const r4 = run(at(4300, 0), r3.memory)
+    expect(r4.memory.recovered).toBeUndefined(); expect(r4.findings.some((x) => x.rule === 'cluster.node_recovered')).toBe(false)
+  })
+  it('état du cluster périmé : la mémoire des pannes n’est pas modifiée', () => {
+    const c = clusterRaw({ at: NOW - 900 }); const mem = { leader: 'n1', leaderChangedAt: null, down: { n2: NOW - 1000 } }
+    expect(run(snap({ cluster: c }), mem).memory.down).toEqual({ n2: NOW - 1000 })
+  })
+  it('retour au nœud préféré : proposé seulement s’il est revenu, rattrapé et que le primaire est ailleurs', () => {
+    const mk = (pref: string, lag = 0) => { const c = clusterRaw({ patroni: { members: [{ name: 'n1', role: 'replica', state: 'streaming', lag }, { name: 'n2', role: 'leader', state: 'running' }] } }); (c as any).preferred = { node: pref, at: NOW, by: 'admin' }; return c }
+    const mem = { leader: 'n2', leaderChangedAt: null }
+    expect(rules(snap({ cluster: mk('n1') }), mem)).toContain('cluster.failback_ready|n1|')
+    expect(rules(snap({ cluster: mk('n2') }), mem)).not.toContain('cluster.failback_ready|n2|')        // déjà sur le préféré
+    expect(rules(snap({ cluster: mk('n1', 80 * 1048576) }), mem)).not.toContain('cluster.failback_ready|n1|')   // pas rattrapé
+  })
+})
