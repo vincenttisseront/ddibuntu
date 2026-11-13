@@ -285,3 +285,28 @@ route('POST', '/migration/cutover/rollback', 'admin', async (c) => {
   await audit(c, 'migration_cutover_rollback', 'settings', undefined, { snapshotId: cur.started.snapshotId, preSnapshot: r.preSnapshot })
   return { ...(await cutoverState()), restored: r.counts, preSnapshot: r.preSnapshot }
 })
+
+// ---- Après la migration (0.12.7) ----
+import { checkLocator, gssTemplate, validRealm } from '../utils/ad-post'
+import { qint } from '../utils/router'
+
+route('GET', '/migration/post/locator', 'viewer', async (c) => {
+  const id = qint(c, 'zone_id', 0)
+  const zr = Number.isInteger(id) && id > 0 ? await one<any>("select id, name from dns_zones where id = $1 and type = 'primary'", [id]) : null
+  if (!zr) fail(404, 'not_found')
+  const srv = await query<any>("select name, rdata from dns_records where zone_id = $1 and type = 'SRV' and not disabled", [zr.id])
+  const hs = await query<any>("select lower(r.name) as n, lower(z.name) as z from dns_records r join dns_zones z on z.id = r.zone_id where r.type in ('A','AAAA') and not r.disabled")
+  const hosts = new Set<string>(hs.map((h) => (h.n === '@' ? h.z : `${h.n.replace(/\.$/, '')}.${h.z}`)))
+  return { zone: zr.name, ...checkLocator(zr.name, srv, hosts) }
+})
+
+route('POST', '/migration/post/gss', 'operator', async (c) => {
+  const b = await c.body(z.object({ zone: z.string().min(3).max(253), realm: z.string().min(3).max(253) }))
+  if (!validRealm(b.zone) || !validRealm(b.realm)) fail(400, 'realm_invalid')
+  return { template: gssTemplate(b.zone, b.realm) }
+})
+
+route('GET', '/migration/post', 'viewer', async () => {
+  const cur = parseCutover(await getSetting<unknown>('migration_cutover', null).catch(() => null))
+  return { cutoverFinished: !!cur.finishedAt, finishedAt: cur.finishedAt }
+})

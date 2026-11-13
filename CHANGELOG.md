@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.12.7 — « Migration Windows : après la migration »
+
+- Localisation des contrôleurs de domaine : vérification des SRV attendus (LDAP, Kerberos, kpasswd, catalogue global, `_msdcs`) dans la zone du domaine — présence, format et cible résolue par la console.
+- Mises à jour dynamiques sécurisées (GSS-TSIG) : gabarit de configuration BIND (keytab, `update-policy`) généré pour relecture ; la console ne l'applique pas.
+- Retrait des rôles Windows : script affiché seulement une fois la bascule terminée ; la désinstallation y reste commentée.
+- Tests : unit-iter29, e2e-iter29.
+
 ## 0.12.6 — « Migration Windows : plan de bascule et retour arrière »
 
 - Check-list ordonnée de bascule : TTL abaissés (J-1), vérification sans écart, baux récents, relais DHCP, étendues Windows désactivées, zones basculées en primaires, clients et redirecteurs repointés. Les points vérifiables se cochent seuls.

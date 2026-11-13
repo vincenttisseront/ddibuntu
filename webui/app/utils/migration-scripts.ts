@@ -58,3 +58,13 @@ Write-Host "Étendues désactivées : $($ids.Count) (liste dans $env:TEMP\\scope
 export const PS_CUTOVER_ROLLBACK = `# Retour arrière : réactiver les étendues désactivées par le script de bascule
 Get-Content "$env:TEMP\\scopes-actives.txt" | ForEach-Object { Set-DhcpServerv4Scope -ScopeId $_ -State Active }
 Write-Host "Étendues réactivées. Repointer ensuite les relais DHCP (ip helper-address) et les DNS des clients vers Windows."`
+
+export const PS_RETIRE = `# Retrait des rôles Windows — À N'EXÉCUTER QU'APRÈS la bascule terminée et une période d'observation.
+# 1. DHCP : désautoriser le serveur dans Active Directory puis arrêter le service (réversible : Add-DhcpServerInDC puis Start-Service).
+Remove-DhcpServerInDC -DnsName $env:COMPUTERNAME
+Stop-Service DHCPServer; Set-Service DHCPServer -StartupType Disabled
+# 2. DNS : NE PAS retirer le rôle sur un contrôleur de domaine tant que ses zones sont intégrées à AD ou que d'autres DC l'utilisent.
+#    Sur un serveur qui n'est pas contrôleur de domaine, une fois les clients repointés :
+# Stop-Service DNS; Set-Service DNS -StartupType Disabled
+# 3. Désinstallation définitive (irréversible sans réinstallation) — à décommenter seulement après sauvegarde :
+# Uninstall-WindowsFeature DHCP -IncludeManagementTools`
