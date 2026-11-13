@@ -51,6 +51,7 @@ await load()
           </div>
         </div>
         <p class="text-sm text-muted">{{ META[s.id]!.desc }}</p>
+        <MigrationDns v-if="s.id === 'dns' && canWrite" @done="load" />
         <MigrationLeases v-if="s.id === 'dhcp' && canWrite" @done="load" />
         <MigrationAssess v-if="s.id === 'assess' && canWrite" @done="load" />
         <div v-if="s.id === 'scripts'" class="flex flex-col gap-2">

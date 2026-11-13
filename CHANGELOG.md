@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.12.3 — « Migration Windows : zones DNS (inventaire et transfert) »
+- **Créer les zones d'après l'inventaire** (étape DNS) : on dépose `dns-zones.csv` ; une zone vide est créée pour chaque zone **primaire** (marquée « intégrée AD » si elle l'était), **secondaire** (avec ses serveurs maîtres) et **redirecteur conditionnel** (avec ses redirecteurs). Zones existantes, zones stub, `TrustAnchors`, noms invalides et doublons sont ignorés avec leur motif ; une zone signée DNSSEC est créée sans signature (signalé). Choix de la vue DNS quand il y en a. Instantané avant, historique (`dns-zones`), audit `migration_zones`.
+- **Transfert de zone (AXFR) direct depuis le serveur Windows** (administrateur) : analyse (nouveaux / identiques / en conflit / critiques AD) puis import dans la zone choisie, avec le même moteur que l'import de fichier : jamais d'écrasement en mode « ignorer », enregistrements critiques d'Active Directory (SRV, `_msdcs`…) **protégés**, instantané avant. Appel de `dig` sans shell, serveur validé (IP ou nom, jamais une option). Erreurs claires : transfert refusé, serveur injoignable, `dig` absent.
+- API : `POST /migration/zones/preview|commit` (opérateur), `POST /migration/axfr/preview|commit` (administrateur).
+
 ## 0.12.2 — « Migration Windows : reprise des baux actifs »
 - **Étape DHCP › Reprendre les baux actifs** : on dépose le CSV du nouveau script « 4. Baux actifs » (`Get-DhcpServerv4Lease`, expiration en UTC) ; la console analyse (inactifs, expirés, hors étendue, invalides), puis, après confirmation, inscrit les baux encore valides dans la table `lease4` de Kea avec l'identifiant d'étendue attendu : **les clients gardent leur adresse à la bascule**.
 - **Aucun écrasement** : un bail déjà présent dans Kea n'est jamais modifié (comptés « déjà présents ») ; instantané avant l'écriture, entrée dans l'historique des imports (`dhcp-leases`), audit `migration_leases`. Refus propre (`lease_db_missing`) tant que la base de baux de Kea n'existe pas.

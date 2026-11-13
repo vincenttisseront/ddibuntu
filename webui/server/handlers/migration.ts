@@ -88,3 +88,53 @@ route('POST', '/migration/leases/commit', 'operator', async (c) => {
   await audit(c, 'migration_leases', 'lease4', undefined, { total: p.plan.total, imported })
   return { ...view(p), imported, existing: p.plan.import.length - imported, snapshotId }
 })
+
+// ---- Zones DNS (0.12.3) : création depuis l'inventaire, transfert de zone (AXFR) depuis le serveur Windows ----
+import { planZones } from '../utils/zone-inventory'
+import { axfr, validServer } from '../utils/axfr'
+import { dnsCommitCore, dnsPlan } from './importer'
+
+const zonesBody = z.object({ content: z.string().min(1).max(5_000_000), filename: z.string().max(200).optional(), view_id: z.number().int().nullable().optional() })
+async function zonesPlan(csv: string, viewId: number | null) {
+  const views = (await one<any>('select count(*)::int n from dns_views'))!.n as number
+  if (views > 0 && !viewId) fail(400, 'view_required')
+  if (views === 0 && viewId) fail(400, 'view_not_found')
+  if (viewId && !(await one('select 1 from dns_views where id = $1', [viewId]))) fail(400, 'view_not_found')
+  const ex = await query<any>('select lower(name) as name from dns_zones where view_id is not distinct from $1', [viewId])
+  return planZones(csv, new Set(ex.map((r) => r.name as string)))
+}
+const zonesView = (p: ReturnType<typeof planZones>) => ({ items: p.items, errors: p.errors, toCreate: p.items.filter((i) => i.action === 'create').length })
+
+route('POST', '/migration/zones/preview', 'operator', async (c) => { const b = await c.body(zonesBody); return zonesView(await zonesPlan(b.content, b.view_id ?? null)) })
+route('POST', '/migration/zones/commit', 'operator', async (c) => {
+  const b = await c.body(zonesBody)
+  const p = await zonesPlan(b.content, b.view_id ?? null)
+  if (p.errors.length) fail(400, 'dns_csv_invalid')
+  const todo = p.items.filter((i) => i.action === 'create')
+  if (!todo.length) return { ...zonesView(p), created: 0, snapshotId: null }
+  const snapshotId = await captureSnapshot('pre-import', `avant création des zones (${b.filename ?? 'inventaire'})`, c.user?.username ?? null)
+  await tx(async (cl) => {
+    for (const i of todo) await cl.query('insert into dns_zones (name, type, masters, forwarders, ad_integrated, view_id) values ($1,$2,$3,$4,$5,$6)', [i.name, i.type, i.masters, i.forwarders, i.adIntegrated, b.view_id ?? null])
+  })
+  const out = { ...zonesView(p), created: todo.length }
+  await record(c, 'dns-zones', b.filename, out, snapshotId)
+  await audit(c, 'migration_zones', 'zone', undefined, { created: todo.length })
+  return { ...out, snapshotId }
+})
+
+const axfrBody = z.object({ server: z.string().trim().min(1).max(253), zone_id: z.number().int(), mode: z.enum(['skip', 'replace']).default('skip'), apply_soa: z.boolean().default(false) })
+async function fetchZone(b: z.infer<typeof axfrBody>) {
+  if (!validServer(b.server)) fail(400, 'axfr_server_invalid')
+  const zone = await one<any>('select name, type from dns_zones where id = $1', [b.zone_id])
+  if (!zone) fail(404, 'not_found')
+  if (zone.type !== 'primary') fail(400, 'zone_not_primary')
+  const r = await axfr(zone.name, b.server)
+  if (!r.ok) fail(r.error === 'axfr_refused' ? 502 : r.error === 'dig_missing' ? 501 : 502, r.error!)
+  return r.text
+}
+route('POST', '/migration/axfr/preview', 'admin', async (c) => { const b = await c.body(axfrBody); return (await dnsPlan(b.zone_id, await fetchZone(b))).summary })
+route('POST', '/migration/axfr/commit', 'admin', async (c) => {
+  const b = await c.body(axfrBody)
+  const text = await fetchZone(b)
+  return dnsCommitCore(c, { content: text, filename: `AXFR ${b.server}`, zone_id: b.zone_id, mode: b.mode, apply_soa: b.apply_soa })
+})

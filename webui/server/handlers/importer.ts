@@ -18,7 +18,7 @@ export const preImportSnapshot = (c: any, label: string) => captureSnapshot('pre
 // ---------------------------------------------------------------------------------------------
 // Zone DNS (fichier de zone BIND ou export Windows « dnscmd /ZoneExport »)
 const dnsBody = content.extend({ zone_id: z.number().int(), mode: z.enum(['skip', 'replace']).default('skip'), apply_soa: z.boolean().default(false) })
-async function dnsPlan(zoneId: number, text: string) {
+export async function dnsPlan(zoneId: number, text: string) {
   const zone = await one<any>("select id, name, type from dns_zones where id = $1", [zoneId])
   if (!zone) fail(404, 'not_found')
   if (zone.type !== 'primary') fail(400, 'zone_not_primary')

@@ -62,7 +62,7 @@ Traitée **avant** le reste des séries 0.10.x et 0.11.x. Déjà en place : impo
 | 1 | 0.12.0 | Assistant « Migration Windows » : parcours guidé (inventaire → évaluation → import → vérification → bascule), scripts PowerShell à copier, avancement conservé | ✅ 0.12.0 |
 | 2 | 0.12.1 | Évaluation de compatibilité : rapport « repris / adapté / non pris en charge » pour DHCP (failover, politiques, filtres MAC, superscopes, classes) et DNS (zones intégrées AD, stub, redirecteurs conditionnels, DNSSEC, vieillissement) | ✅ 0.12.1 |
 | 3 | 0.12.2 | Reprise des baux actifs (continuité des clients) ; le failover Windows se remplace par Kea HA du cluster | ✅ 0.12.2 |
-| 4 | 0.12.3 | Import DNS complet : transfert de zone (AXFR) direct depuis le serveur Windows, redirecteurs conditionnels, zones secondaires / stub, enregistrements AD critiques protégés | ⬜ |
+| 4 | 0.12.3 | Zones DNS depuis Windows : création d'après l'inventaire (primaires, secondaires, redirecteurs conditionnels), transfert AXFR direct, enregistrements AD critiques protégés | ✅ 0.12.3 |
 | 5 | 0.12.4 | Coexistence : notre BIND secondaire des zones Windows (synchronisation périodique), baux Windows lus en continu avant bascule | ⬜ |
 | 6 | 0.12.5 | Vérification avant bascule : comparaison automatique Windows ↔ DDI (réponses DNS de chaque enregistrement, étendues / plages / réservations / options DHCP), rapport d'écarts | ⬜ |
 | 7 | 0.12.6 | Plan de bascule et retour arrière : check-list ordonnée (TTL, relais DHCP, redirecteurs AD, arrêt des étendues Windows), exécution assistée, instantané et rollback | ⬜ |
