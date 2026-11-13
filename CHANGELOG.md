@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.12.12 — « Script d'envoi des baux plus sûr »
+
+- Le script PowerShell d'envoi planifié des baux refuse de partir tant que l'adresse de la console et le jeton sont encore les valeurs d'exemple (au lieu d'une erreur de résolution de nom), force TLS 1.2 et rappelle que le certificat de la console doit être approuvé par le serveur Windows.
+- Test : unit-iter24 (complété).
+
 ## 0.12.11 — « Modèles de nommage et contrôle de convention » (ex-0.10.5)
 
 - Règle de nom d'hôte et format de génération de noms au niveau du **VLAN** (prioritaires sur le gabarit du réseau, champ par champ) ; le gabarit gagne lui aussi un format (migration 21).

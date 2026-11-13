@@ -26,3 +26,10 @@ describe('scripts Windows : modules absents', () => {
     expect(PS_INVENTORY).not.toMatch(/\b(Set|Add|Remove|Restart|Stop|Uninstall)-/i)
   })
 })
+
+import { PS_PUSH as PUSH } from '../app/utils/migration-scripts'
+describe('script d\'envoi des baux', () => {
+  it('refuse de partir tant que l\'adresse et le jeton sont les valeurs d\'exemple', () => {
+    expect(PUSH).toMatch(/-like '\*CONSOLE-DDI\*'/); expect(PUSH.indexOf('-like')).toBeLessThan(PUSH.indexOf('Invoke-RestMethod')); expect(PUSH).toContain('Tls12')
+  })
+})

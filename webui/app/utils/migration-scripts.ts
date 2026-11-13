@@ -45,10 +45,14 @@ export const PS_PUSH = `# Envoi planifié des baux vers la console, TANT QUE Win
 # Remplacez l'adresse de la console et le jeton d'API (rôle opérateur, créé dans Profil › Jetons d'API) ; ne laissez pas ce fichier lisible par tous.
 $console = 'https://CONSOLE-DDI'
 $token = 'COLLER-LE-JETON-ICI'
+if ($console -like '*CONSOLE-DDI*' -or $token -like 'COLLER-*') { Write-Warning "Renseignez d'abord \$console (adresse réelle de la console, ex. https://ddi.corp.local) et \$token (jeton d'API)."; return }
+# Windows PowerShell 5.1 : TLS 1.2 ; le certificat de la console doit être approuvé par ce serveur (autorité interne ou certificat installé).
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $csv = (Get-DhcpServerv4Scope | ForEach-Object { Get-DhcpServerv4Lease -ScopeId $_.ScopeId } |
   Select-Object IPAddress, ClientId, HostName, AddressState, @{ n = 'ExpiryUtc'; e = { $_.LeaseExpiryTime.ToUniversalTime().ToString('s') } } |
   ConvertTo-Csv -NoTypeInformation) -join "\`n"
-Invoke-RestMethod -Method Post -Uri "$console/api/migration/leases/commit" -Headers @{ Authorization = "Bearer $token" } -ContentType 'application/json' -Body (@{ content = $csv; refresh = $true } | ConvertTo-Json)`
+Invoke-RestMethod -Method Post -Uri "$console/api/migration/leases/commit" -Headers @{ Authorization = "Bearer $token" } -ContentType 'application/json' -Body (@{ content = $csv; refresh = $true } | ConvertTo-Json)
+Write-Host "Baux envoyés."`
 
 // Scripts de bascule : CONTRAIREMENT aux précédents, ils MODIFIENT le serveur Windows. Ils ne sont affichés que dans le plan de bascule.
 export const PS_CUTOVER_TTL = `# J-1 : abaisser le TTL des enregistrements A / AAAA / CNAME à 300 s pour que la bascule se propage vite (exécuter sur le serveur DNS Windows)
