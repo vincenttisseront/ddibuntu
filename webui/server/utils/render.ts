@@ -187,7 +187,15 @@ export function renderKea(s: KeaSettings, scopes: KeaScope[], classes: any[] = [
 
 // ---- Fichiers, validation, déploiement ----
 export interface OutFile { path: string; content: string; mode: number; kind: 'zone' | 'named' | 'kea' | 'rpz' }
-export interface CheckResult { name: string; ok: boolean | null; output: string; note?: 'deferred' }
+/** « hints » : diagnostics lisibles tirés de la sortie de named-checkzone (la console les traduit). */
+export interface CheckHint { code: 'ns_no_address'; names: string[] }
+export interface CheckResult { name: string; ok: boolean | null; output: string; note?: 'deferred'; hints?: CheckHint[] }
+
+/** NS dont la cible est dans la zone mais sans A/AAAA : BIND refuse alors de charger la zone (courant après une reprise depuis Active Directory : NS périmés). */
+export function checkHints(output: string): CheckHint[] {
+  const names = [...output.matchAll(/NS '([^']{1,255})' has no address records/g)].map((m) => m[1]!)
+  return names.length ? [{ code: 'ns_no_address', names: [...new Set(names)].slice(0, 20) }] : []
+}
 
 export function zoneFile(z: ZoneRow, records: RecInfo[]): OutFile {
   return { path: `zones/${zoneBase(z)}`, content: renderZone(z, records), mode: 0o644, kind: 'zone' }
@@ -220,7 +228,8 @@ export async function validateFiles(files: OutFile[]): Promise<CheckResult[]> {
       const m = f.content.match(/^\$ORIGIN (\S+?)\.?$/m)
       const zone = m ? m[1]! : 'unknown'
       const r = await run(c.namedCheckzone, ['-k', 'warn', zone, join(dir, f.path)])
-      results.push({ name: `named-checkzone ${zone}`, ok: r.missing ? null : r.code === 0, output: r.out })
+      const hints = r.code === 0 ? [] : checkHints(r.out)
+      results.push({ name: `named-checkzone ${zone}`, ok: r.missing ? null : r.code === 0, output: r.out, ...(hints.length ? { hints } : {}) })
     }
     const named = files.filter((x) => x.kind === 'named')
     if (named.length) {

@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.12.15 — « Diagnostic des NS périmés avant déploiement »
+
+- Quand BIND refuse une zone parce qu'un serveur de noms (NS) de la zone n'a aucun enregistrement A/AAAA (cas courant après une reprise depuis Active Directory), la validation affiche maintenant un diagnostic clair avec les noms concernés et la marche à suivre (supprimer ou désactiver le NS, ou ajouter son A), en plus de la sortie brute de `named-checkzone`.
+- Constat : ce contrôle de BIND n'est pas désactivable (ni `-i none` ni `check-integrity no`) ; la correction se fait donc sur les données.
+- Tests : unit-iter33 (complété).
+
 ## 0.12.14 — « Réseaux autorisés (pare-feu) depuis la console, certificat autosigné »
 
 - Nouvel onglet **Système › Pare-feu** : l'administrateur modifie les réseaux autorisés à joindre la console (HTTPS) et SSH, par exemple pour y ajouter les serveurs Windows DHCP/DNS. IPv4 et IPv6, adresse seule ou CIDR, `/0` refusé.

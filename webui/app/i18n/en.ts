@@ -2515,5 +2515,6 @@ const messages: Record<string, string> = {
   "err.firewall_pending": "An application is awaiting confirmation: confirm or roll it back first.",
   "err.firewall_self_lockout": "Your workstation would no longer be allowed: confirmation required.",
   "err.firewall_nothing_pending": "No application is awaiting confirmation.",
+  "apply.hint_ns_no_address": "Zone refused by BIND: the name server(s) {names} have no A/AAAA record in the zone (stale NS, common after importing from Active Directory). In DNS › Records, filter on type NS and delete or disable that NS, or add the missing A record, then validate again.",
 }
 export default messages

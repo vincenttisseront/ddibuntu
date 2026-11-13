@@ -2515,5 +2515,6 @@ const messages: Record<string, string> = {
   "err.firewall_pending": "Une application est en attente de confirmation : confirmez-la ou annulez-la d’abord.",
   "err.firewall_self_lockout": "Votre poste ne serait plus autorisé : confirmation requise.",
   "err.firewall_nothing_pending": "Aucune application en attente de confirmation.",
+  "apply.hint_ns_no_address": "Zone refusée par BIND : le ou les serveurs de noms {names} n’ont aucun enregistrement A/AAAA dans la zone (NS périmé, fréquent après une reprise depuis Active Directory). Dans DNS › Enregistrements, filtrez le type NS puis supprimez ou désactivez ce NS, ou ajoutez l’enregistrement A manquant, puis relancez la validation.",
 }
 export default messages
