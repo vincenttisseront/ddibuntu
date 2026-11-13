@@ -90,7 +90,7 @@ const mk = async () => {
   return { vlan, s1, s2, z }
 }
 let W: Awaited<ReturnType<typeof mk>>
-const MIGRATIONS_LAST = 16   // dernière migration du schéma (16 : double authentification)
+const MIGRATIONS_LAST = 17   // dernière migration du schéma (17 : comptes SSO/LDAP)
 
 describe('points de restauration des données', () => {
   it('migration 2 appliquée, version 0.4.0', async () => {

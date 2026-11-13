@@ -4,7 +4,9 @@ const { t, lang, setLang } = useT()
 const api = useApi()
 const colorMode = useColorMode()
 const { data: setup } = await useFetch<{ needed: boolean }>('/api/setup/status')
-const { data: prov } = await useFetch<{ version: string | null }>('/api/auth/providers', { default: () => ({ version: null }) })
+const { data: prov } = await useFetch<{ version: string | null; oidc: { label: string | null; url: string } | null }>('/api/auth/providers', { default: () => ({ version: null, oidc: null }) })
+const route = useRoute()
+const ssoErr = computed(() => (route.query.sso_error ? t(`err.sso_${String(route.query.sso_error)}`) : ''))
 const username = ref(''), password = ref(''), error = ref(''), busy = ref(false), showPw = ref(false), caps = ref(false)
 // seconde étape (MFA)
 const challenge = ref(''), code = ref(''), recovery = ref(false)
@@ -62,7 +64,7 @@ const onKey = (e: KeyboardEvent) => { caps.value = e.getModifierState?.('CapsLoc
         <!-- Étape 1 : identifiants -->
         <form v-if="!challenge" class="flex flex-col gap-5" @submit.prevent="submit">
           <div><h1 class="text-2xl font-semibold">{{ t('login.title') }}</h1><p class="mt-1 text-sm text-muted">{{ t('login.intro') }}</p></div>
-          <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" role="alert" />
+          <UAlert v-if="error || ssoErr" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error || ssoErr" role="alert" />
           <UFormField :label="t('login.username')" required><UInput v-model="username" icon="i-lucide-user" autocomplete="username" autofocus size="lg" class="w-full" /></UFormField>
           <UFormField :label="t('login.password')" required :help="caps ? t('login.caps') : undefined">
             <UInput v-model="password" :type="showPw ? 'text' : 'password'" icon="i-lucide-lock" autocomplete="current-password" size="lg" class="w-full" @keydown="onKey" @keyup="onKey">
@@ -70,6 +72,10 @@ const onKey = (e: KeyboardEvent) => { caps.value = e.getModifierState?.('CapsLoc
             </UInput>
           </UFormField>
           <UButton type="submit" block size="lg" :loading="busy" :label="t('login.submit')" :disabled="!username || !password" />
+          <template v-if="prov?.oidc">
+            <div class="flex items-center gap-3 text-xs text-muted"><span class="h-px flex-1 bg-border" />{{ t('login.or') }}<span class="h-px flex-1 bg-border" /></div>
+            <UButton block size="lg" color="neutral" variant="outline" icon="i-lucide-log-in" :href="prov.oidc.url" external :label="prov.oidc.label || t('sso.button_default')" />
+          </template>
           <NuxtLink v-if="setup?.needed" to="/setup" class="text-xs text-muted text-center underline">{{ t('login.first_setup') }}</NuxtLink>
         </form>
 

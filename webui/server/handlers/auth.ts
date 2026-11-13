@@ -22,7 +22,11 @@ route('GET', '/health', 'public', async () => {
 })
 
 // Ce que la page de connexion doit proposer (public : avant toute authentification)
-route('GET', '/auth/providers', 'public', async () => ({ version: installedVersion() || null, local: true }))
+route('GET', '/auth/providers', 'public', async (c) => {
+  const o = await getSetting<any>('oidc', { enabled: false })
+  const base = o.publicUrl ? String(o.publicUrl).replace(/\/+$/, '') : ''
+  return { version: installedVersion() || null, local: true, oidc: o.enabled ? { label: o.buttonLabel || null, url: `${base}/api/auth/oidc/start` } : null }
+})
 
 route('GET', '/auth/me', 'public', async (c) => (c.user ? { user: { id: c.user.id, username: c.user.username, role: c.user.role, source: c.user.source, displayName: c.user.displayName, spaceIds: c.user.spaceIds ?? null }, csrf: c.user.csrf } : { user: null }))
 

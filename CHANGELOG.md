@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.46 — « Connexion unique (SSO OpenID Connect) »
+- **SSO OpenID Connect** (Microsoft Entra ID, Keycloak, Okta, Google, Authentik…) : Système → onglet « SSO ». L'administrateur renseigne l'émetteur (découverte automatique), l'identifiant et le secret client, les claims identifiant/groupes et la **correspondance groupe → rôle** (avec périmètre IPAM optionnel) ; bouton « Tester » (découverte + clés). L'adresse de rappel à déclarer chez le fournisseur est affichée.
+- **Page de connexion** : bouton « Se connecter avec <libellé> » affiché seulement quand le SSO est actif ; erreurs explicites (refus, aucun groupe autorisé, compte en conflit/désactivé…).
+- **Sécurité** : flux code d'autorisation + PKCE (S256), `state` et `nonce` dans un cookie chiffré à durée courte, signature, émetteur, audience, expiration et nonce de l'id_token vérifiés, code à usage unique, secret client chiffré et jamais relu. Jamais de reprise d'un compte local/AD de même nom ; compte désactivé refusé ; rôle et périmètre recalculés à chaque connexion ; connexions et échecs journalisés. Les groupes absents du jeton sont lus via userinfo. Uniquement sur le primaire (adresse de service du cluster). Migration de schéma 17.
+
 ## 0.9.45 — « Nouvelle connexion et double authentification »
 - **Page de connexion refaite** : bandeau de marque (DNS, DHCP, IPAM, cluster) et formulaire épuré ; icônes dans les champs, bouton afficher/masquer le mot de passe, avertissement Verr. Maj., bascule clair/sombre et FR/EN, version de l'appliance, affichage adapté au téléphone.
 - **Double authentification (TOTP)** pour les comptes locaux, compatible Google Authenticator, Microsoft Authenticator, Aegis, 1Password, Bitwarden… : activation par l'utilisateur dans « Sécurité du compte » (bouton bouclier du menu) avec QR code, vérification d'un premier code, puis **10 codes de secours** à usage unique (affichés une seule fois, régénérables). À la connexion, une seconde étape demande le code à 6 chiffres (saisie automatique à la sixième) ou un code de secours.
