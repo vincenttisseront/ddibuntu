@@ -2087,5 +2087,18 @@ const messages: Record<string, string> = {
   "err.zones_need_view": "Zones exist outside any view: confirm that they join this first view.",
   "err.zones_without_view": "Configuration refused: some zones belong to no view although views exist (or the reverse).",
   "apply.warn.view_local_uncovered": "No view answers {name} (the server itself).",
+  "mfapol.title": "Mandatory two-factor authentication",
+  "mfapol.hint": "Local accounts with the ticked roles must enable two-factor authentication: on their next request an enrolment dialog is forced and nothing else is allowed until it is done.",
+  "mfapol.scope": "Local accounts only: AD, LDAP and SSO accounts rely on their provider’s second factor. Setting shared by all cluster nodes.",
+  "mfapol.pending": "{n} without MFA",
+  "mfapol.save": "Save",
+  "mfapol.saved": "MFA policy saved",
+  "mfapol.confirm_title": "Require two-factor authentication?",
+  "mfapol.confirm_body": "{n} active local account(s) without a second factor will have to enrol on their next request.",
+  "mfa.forced_desc": "Your administrator requires two-factor authentication for your role: enable it to continue.",
+  "err.mfa_enrol_required": "Two-factor authentication is required: enable it first.",
+  "grid.compact": "{used} / {n} used ({pct}%)",
+  "grid.show": "Show grid",
+  "grid.hide": "Hide",
 }
 export default messages

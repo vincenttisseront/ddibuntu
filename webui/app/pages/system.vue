@@ -28,7 +28,7 @@ const { data: deps } = await useFetch<any>('/api/system/deployments')
 <template>
   <div class="flex flex-col gap-3">
     <UTabs v-model="tab" :items="tabs" :content="false" :aria-label="t('nav.system')" />
-    <div v-if="tab === 'users'" class="flex flex-col gap-3"><SessionSettings />
+    <div v-if="tab === 'users'" class="flex flex-col gap-3"><SessionSettings /><MfaPolicy />
           <ResourceTable ref="usersTable" endpoint="/users" :columns="userCols" :fields="userFields" can-write create-url="/users" :update-url="(r: any) => `/users/${r.id}`" :delete-url="(r: any) => `/users/${r.id}`" :delete-name="(r: any) => r.username" :create-label="t('system.add_user')" :transform="userBody">
             <template #actions="{ row }"><UButton v-if="row.totp_enabled" size="xs" color="neutral" variant="ghost" icon="i-lucide-shield-off" :aria-label="t('mfa.reset')" :title="t('mfa.reset')" @click="resetMfa(row)" /></template>
           </ResourceTable></div>

@@ -6,6 +6,7 @@ import { one, query, inRecovery } from '../utils/db'
 import { decryptSecret, destroyUserSessions, encryptSecret, loginBlocked, parseMfaChallenge, credentialStamp, recordAttempt, replicaLoginBlocked, replicaRecordAttempt, verifyPassword } from '../utils/auth'
 import { isRecoveryFormat, newRecoveryCodes, newTotpSecret, otpauthUri, recoveryHash, verifyTotp } from '../utils/totp'
 import { finishLogin } from './auth'
+import { MFA_ROLES, mfaPolicy, parseMfaPolicy, saveMfaPolicy } from '../utils/mfa-policy'
 
 export const registered = true
 
@@ -113,4 +114,21 @@ route('POST', '/users/:id/mfa/reset', 'admin', async (c) => {
   await destroyUserSessions(id)
   await audit(c, 'mfa_reset', 'user', id, { username: u.username, was_enabled: !!u.totp_enabled })
   return { ok: true }
+})
+
+// ---- MFA obligatoire par rôle (0.9.52) : réglage de l'administrateur, commun au cluster
+async function policyView() {
+  const p = await mfaPolicy()
+  const rows = await query<any>("select role, count(*)::int as n from users where source = 'local' and not disabled and not totp_enabled group by role")
+  const pending: Record<string, number> = { admin: 0, operator: 0, viewer: 0 }
+  for (const r of rows) pending[r.role] = r.n
+  return { roles: p.roles, available: MFA_ROLES, pending }       // pending : comptes locaux actifs sans second facteur, par rôle (ils s'inscriront à leur prochaine requête)
+}
+route('GET', '/mfa/policy', 'admin', async () => policyView())
+route('PUT', '/mfa/policy', 'admin', async (c) => {
+  const b = await c.body(z.object({ roles: z.array(z.enum(MFA_ROLES)).max(3) }))
+  const p = parseMfaPolicy({ roles: b.roles })
+  await saveMfaPolicy(p)
+  await audit(c, 'mfa_policy', 'settings', 'mfa_policy', { roles: p.roles })
+  return policyView()
 })

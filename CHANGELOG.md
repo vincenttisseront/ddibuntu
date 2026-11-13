@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.9.52 — « MFA obligatoire par rôle »
+- **Double authentification imposée par rôle** (Système › Utilisateurs) : l'administrateur coche les rôles (administrateur, opérateur, lecteur) dont les comptes **locaux** doivent activer le TOTP. À leur prochaine requête, une fenêtre d'inscription non fermable s'impose (mot de passe, QR code, premier code, codes de secours) ; tant qu'elle n'est pas terminée, le serveur refuse tout le reste (`mfa_enrol_required`), puis la session retrouve ses droits sans reconnexion. Nombre de comptes encore sans second facteur affiché par rôle, confirmation avant d'imposer.
+- Les comptes AD, LDAP et SSO ne sont jamais bloqués (second facteur de leur fournisseur) ; les jetons d'API ne sont pas concernés. Réglage commun à tous les nœuds du cluster, effet sous 15 s, audité (`mfa_policy`).
+- **IPAM › Adresses** : la grille « Occupation du réseau » est **repliée par défaut** (une ligne de résumé avec une barre d'utilisation) ; le choix est mémorisé par navigateur.
+
 ## 0.9.51 — « Qualité : SonarQube dans la CI et premier lot de remédiation »
 - **SonarQube Cloud intégré à la CI** : nouveau job `sonar` (tests unitaires avec couverture, analyse du code, séparation code de production / code de test), `sonar-project.properties`, plan de remédiation dans `docs/QUALITE.md`. Nécessite le secret GitHub `SONAR_TOKEN` (sans lui l'analyse est simplement sautée).
 - **Corrections issues de l'analyse (656 problèmes, dont 549 de style shell)** : expressions régulières à retour arrière (risque de déni de service) remplacées par des analyses linéaires, promesses non attendues rendues explicites, tris sans comparateur, alternatives vides dans les validations, chemin absolu pour `ping`, outil Python d'import des traductions durci, test sans assertion complété, permissions du workflow de release réduites au strict nécessaire, `npx --no-install` dans les outils. Aucun changement de comportement attendu.

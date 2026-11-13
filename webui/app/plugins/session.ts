@@ -5,7 +5,7 @@ export default defineNuxtPlugin(async () => {
   const f = useRequestFetch()
   try {
     const r: any = await f('/api/auth/me')
-    user.value = r.user
+    user.value = r.user ? { ...r.user, mfaEnrol: !!r.mfaEnrol } : null
     csrf.value = r.csrf ?? ''
   } catch {
     user.value = null

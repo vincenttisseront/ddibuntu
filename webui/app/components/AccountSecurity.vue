@@ -2,6 +2,8 @@
 // Sécurité du compte : double authentification (TOTP) — activation avec QR code, codes de secours, désactivation.
 import QRCode from 'qrcode'
 const open = defineModel<boolean>('open', { default: false })
+const props = defineProps<{ forced?: boolean }>()                 // inscription imposée par la politique de l'administrateur : fenêtre non fermable tant que le second facteur n'est pas actif
+const emit = defineEmits<{ enabled: [] }>()
 const { t } = useT(); const api = useApi(); const toast = useToast()
 const st = ref<{ available: boolean; enabled: boolean; recoveryLeft: number } | null>(null)
 const step = ref<'home' | 'password' | 'scan' | 'codes' | 'disable' | 'regen'>('home')
@@ -22,7 +24,7 @@ const copy = async (txt: string) => { try { await navigator.clipboard.writeText(
 </script>
 
 <template>
-  <UModal v-model:open="open" :title="t('mfa.title')" :description="t('mfa.desc')">
+  <UModal v-model:open="open" :title="t('mfa.title')" :description="props.forced ? t('mfa.forced_desc') : t('mfa.desc')" :dismissible="!props.forced" :close="!props.forced">
     <template #body>
       <div v-if="busy && !st" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="animate-spin" />{{ t('common.loading') }}</div>
       <UAlert v-if="st && !st.available" color="neutral" variant="subtle" icon="i-lucide-info" :title="t('mfa.local_only')" />
@@ -41,7 +43,7 @@ const copy = async (txt: string) => { try { await navigator.clipboard.writeText(
         <form v-else-if="step === 'password'" class="flex flex-col gap-3" @submit.prevent="start">
           <p class="text-sm text-muted">{{ t('mfa.confirm_pw') }}</p>
           <UFormField :label="t('login.password')" required><UInput v-model="password" type="password" autocomplete="current-password" autofocus class="w-full" /></UFormField>
-          <div class="flex justify-end gap-2"><UButton color="neutral" variant="outline" :label="t('common.cancel')" @click="step = 'home'" /><UButton type="submit" :loading="busy" :disabled="!password" :label="t('mfa.next')" /></div>
+          <div class="flex justify-end gap-2"><UButton v-if="!props.forced" color="neutral" variant="outline" :label="t('common.cancel')" @click="step = 'home'" /><UButton type="submit" :loading="busy" :disabled="!password" :label="t('mfa.next')" /></div>
         </form>
 
         <form v-else-if="step === 'scan'" class="flex flex-col gap-3" @submit.prevent="enable">
@@ -57,7 +59,7 @@ const copy = async (txt: string) => { try { await navigator.clipboard.writeText(
         <template v-else-if="step === 'codes'">
           <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('mfa.codes_title')" :description="t('mfa.codes_hint')" />
           <ul class="grid grid-cols-2 gap-x-6 gap-y-1 font-mono text-sm rounded border border-default p-3 bg-elevated/40"><li v-for="c in codes" :key="c">{{ c }}</li></ul>
-          <div class="flex justify-end gap-2"><UButton color="neutral" variant="outline" icon="i-lucide-copy" :label="t('common.copy')" @click="copy(codes.join('\n'))" /><UButton :label="t('mfa.saved')" @click="step = 'home'" /></div>
+          <div class="flex justify-end gap-2"><UButton color="neutral" variant="outline" icon="i-lucide-copy" :label="t('common.copy')" @click="copy(codes.join('\n'))" /><UButton :label="t('mfa.saved')" @click="step = 'home'; emit('enabled')" /></div>
         </template>
 
         <form v-else-if="step === 'disable'" class="flex flex-col gap-3" @submit.prevent="disable">

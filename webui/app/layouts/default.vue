@@ -2,6 +2,9 @@
 const { t, lang, setLang } = useT()
 const user = useState<any>('user')
 const api = useApi()
+const enrolOpen = ref(false)                                   // MFA imposée à ce rôle : fenêtre d'inscription non fermable
+watch(() => user.value?.mfaEnrol, (v) => { enrolOpen.value = !!v }, { immediate: true })
+const enrolDone = () => { if (user.value) user.value = { ...user.value, mfaEnrol: false }; enrolOpen.value = false }
 const route = useRoute()
 const { data: about, refresh: refreshAbout } = useFetch<any>('/api/about', { server: false, lazy: true, default: () => null })
 const { data: clusterInfo, refresh: refreshCluster } = useFetch<any>('/api/cluster/status', { server: false, lazy: true, default: () => null })
@@ -113,5 +116,6 @@ async function logout() {
       </template>
     </UDashboardPanel>
     <GlobalSearch v-model:open="searchOpen" />
+    <AccountSecurity v-if="user?.mfaEnrol" v-model:open="enrolOpen" forced @enabled="enrolDone" />
   </UDashboardGroup>
 </template>

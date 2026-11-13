@@ -323,7 +323,7 @@ describe('tableau de bord', () => {
     expect(d.cluster).toBeNull(); expect(d.node).toBeNull(); expect(d.backup).toBeNull(); expect(d.alerts.summary).toEqual({ critical: 0, warning: 0, info: 0, silenced: 0 }); expect(d.alerts.thresholds).toEqual({ subnetWarn: 90 })
   })
   it('services de ce nœud, certificats, disques : lus du fichier de root', async () => {
-    writeFileSync(HL, JSON.stringify(hlth('solo', { cluster: null, role: 'standalone', services: [{ name: 'console', state: 'active', expected: true }, { name: 'dns', state: 'failed', expected: true }, { name: 'dhcp', state: 'inactive', expected: false }], certs: [{ name: 'console', notAfter: now() + 12 * 86400 }] })))
+    writeFileSync(HL, JSON.stringify(hlth('solo', { cluster: null, role: 'standalone', services: [{ name: 'console', state: 'active', expected: true }, { name: 'dns', state: 'failed', expected: true }, { name: 'dhcp', state: 'inactive', expected: false }], certs: [{ name: 'console', notAfter: now() + 12 * 86400 + 3600 }] })))
     const d = (await viewer.get('/api/dashboard')).json
     expect(d.node).toMatchObject({ name: 'solo', stale: false, postgres: true, timeSynced: true })
     expect(d.node.services).toEqual([{ name: 'console', state: 'active', expected: true }, { name: 'dns', state: 'failed', expected: true }, { name: 'dhcp', state: 'inactive', expected: false }])

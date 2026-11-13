@@ -1,5 +1,6 @@
 // Routeur d'API : un seul point d'entrée (server/api/[...slug].ts) qui centralise authentification,
 // contrôle d'origine, CSRF, rôles, validation (zod), audit et assainissement des erreurs.
+import { ENROL_PATHS, mfaEnrolPending } from './mfa-policy'
 import { createError, deleteCookie, getCookie, getMethod, getQuery, getRequestHeader, getRequestIP, getRequestURL, readBody, setCookie, setResponseHeader } from 'h3'
 import type { H3Event } from 'h3'
 import type { ZodType } from 'zod'
@@ -140,6 +141,7 @@ export async function dispatch(event: H3Event): Promise<unknown> {
       }
       if (user.source === 'token' && path.startsWith('/auth/') && path !== '/auth/me') fail(403, 'forbidden')   // mot de passe, sessions… : réservés aux comptes
       if (ROLE_RANK[user.role] < ROLE_RANK[entry.role]) fail(403, 'forbidden')
+      if (user.source === 'local' && !ENROL_PATHS.has(path) && await mfaEnrolPending(user)) fail(403, 'mfa_enrol_required')   // MFA exigée pour ce rôle : seule l'inscription est permise
       // délégation : un opérateur restreint à des espaces IPAM n'écrit que dans l'IPAM (les routes /ipam/ vérifient l'espace elles-mêmes)
       if (unsafe && user.spaceIds && ROLE_RANK[entry.role] >= ROLE_RANK.operator && !path.startsWith('/ipam/')) fail(403, 'out_of_scope')
     }

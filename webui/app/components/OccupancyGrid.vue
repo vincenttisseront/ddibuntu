@@ -8,6 +8,11 @@ const { t } = useT(); const api = useApi()
 const STATES = ['u', 'd', 'r', 'g', 'i', 'v', 'o', 'p', '.', 'n', 'b'] as const
 const COLORS: Record<string, string> = { u: '#2563eb', d: '#0d9488', r: '#9333ea', g: '#d97706', i: '#64748b', v: '#db2777', n: '#334155', b: '#334155', o: 'rgba(13,148,136,.32)', p: 'rgba(37,99,235,.24)', '.': 'rgba(128,128,128,.16)' }
 
+// Replié par défaut (une ligne de résumé) : le tableau des adresses reste l'objet principal de la page ; le choix est mémorisé par navigateur.
+const KEY = 'ddi.grid.open'
+const open = ref(false)
+try { open.value = localStorage.getItem(KEY) === '1' } catch { /* stockage indisponible : replié */ }
+const toggle = () => { open.value = !open.value; try { localStorage.setItem(KEY, open.value ? '1' : '0') } catch { /* sans mémoire */ } }
 const map = ref<any>(null), err = ref(''), loading = ref(false)
 const canvas = ref<HTMLCanvasElement | null>(null)
 const hover = ref<number>(-1)
@@ -51,6 +56,7 @@ function draw() {
 }
 watch([map, hover], () => nextTick(draw), { flush: 'post' })
 onMounted(() => nextTick(draw))
+watch(open, () => nextTick(draw), { flush: 'post' })
 
 function offsetOf(ev: MouseEvent): number {
   const r = (ev.currentTarget as HTMLCanvasElement).getBoundingClientRect()
@@ -70,21 +76,28 @@ function click(ev: MouseEvent) {
   emit('pick', { ip: ipAt(o), state: stateAt(o), item: it })
 }
 const legend = computed(() => STATES.filter((s) => (map.value?.counts?.[s] ?? 0) > 0 && s !== 'b').map((s) => ({ s, n: (map.value.counts[s] ?? 0) + (s === 'n' ? (map.value.counts.b ?? 0) : 0) })))
+const usedN = computed(() => (map.value ? ['u', 'd', 'r', 'g', 'i'].reduce((a, s) => a + (map.value.counts[s] ?? 0), 0) : 0))
+const pct = computed(() => (size.value ? Math.round((usedN.value / size.value) * 100) : 0))
 const summary = computed(() => (map.value ? t('grid.summary', { cidr: map.value.cidr, n: size.value, used: ['u', 'd', 'r', 'g', 'i'].reduce((a, s) => a + (map.value.counts[s] ?? 0), 0) }) : ''))
 </script>
 
 <template>
-  <UCard :ui="{ body: 'p-3 sm:p-3' }">
+  <UCard :ui="{ header: open ? undefined : 'py-2 sm:py-2', body: open ? 'p-3 sm:p-3' : 'hidden' }">
     <template #header>
       <div class="flex items-center gap-2">
         <UIcon name="i-lucide-grid-3x3" class="size-4 text-muted" />
-        <span class="font-medium">{{ t('grid.title') }}</span>
+        <span class="font-medium text-sm">{{ t('grid.title') }}</span>
         <span v-if="map" class="font-mono text-xs text-muted">{{ map.cidr }}</span>
+        <template v-if="map && !open">
+          <span class="text-xs text-muted">· {{ t('grid.compact', { used: usedN, n: size, pct }) }}</span>
+          <span class="hidden sm:block h-1.5 w-24 rounded-full bg-elevated overflow-hidden" aria-hidden="true"><span class="block h-full bg-primary" :style="{ width: pct + '%' }" /></span>
+        </template>
         <UIcon v-if="loading" name="i-lucide-loader-circle" class="size-4 animate-spin text-muted" :aria-label="t('common.loading')" />
+        <UButton class="ms-auto" size="xs" color="neutral" variant="ghost" :icon="open ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" :label="open ? t('grid.hide') : t('grid.show')" :aria-expanded="open" data-test="grid-toggle" @click="toggle" />
       </div>
     </template>
     <UAlert v-if="err" color="neutral" variant="subtle" icon="i-lucide-info" :title="err" />
-    <div v-else-if="map" class="flex flex-col gap-2">
+    <div v-else-if="map && open" class="flex flex-col gap-2">
       <div class="overflow-auto max-h-[28rem]">
         <canvas ref="canvas" role="img" :aria-label="summary" class="cursor-pointer" @mousemove="hover = offsetOf($event)" @mouseleave="hover = -1" @click="click" />
       </div>

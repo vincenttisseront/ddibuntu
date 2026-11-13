@@ -1,3 +1,4 @@
+import { mfaEnrolPending } from '../utils/mfa-policy'
 import { z } from 'zod'
 import { audit, clearSessionCookie, fail, intParam, route, setSessionCookie, COOKIE } from '../utils/router'
 import { one, query, tx, getSetting, isSchemaReady, inRecovery } from '../utils/db'
@@ -31,7 +32,7 @@ route('GET', '/auth/providers', 'public', async (c) => {
   return { version: installedVersion() || null, local: true, oidc: o.enabled ? { label: o.buttonLabel || null, url: `${base}/api/auth/oidc/start` } : null }
 })
 
-route('GET', '/auth/me', 'public', async (c) => (c.user ? { user: { id: c.user.id, username: c.user.username, role: c.user.role, source: c.user.source, displayName: c.user.displayName, spaceIds: c.user.spaceIds ?? null }, csrf: c.user.csrf } : { user: null }))
+route('GET', '/auth/me', 'public', async (c) => (c.user ? { user: { id: c.user.id, username: c.user.username, role: c.user.role, source: c.user.source, displayName: c.user.displayName, spaceIds: c.user.spaceIds ?? null }, csrf: c.user.csrf, mfaEnrol: await mfaEnrolPending(c.user) } : { user: null }))
 
 route('POST', '/auth/login', 'public', async (c) => {
   const b = await c.body(z.object({ username: z.string().min(1).max(256), password: z.string().min(1).max(512) }))
@@ -95,7 +96,7 @@ export async function finishLogin(c: any, userId: number, replica: boolean) {
   setSessionCookie(c.event, s.token, s.maxAge)
   c.user = { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name, csrf: s.csrf, sessionId: 0, spaceIds: me.space_ids ?? null }
   await audit(c, 'login', 'user', userId)
-  return { user: { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name, spaceIds: me.space_ids ?? null }, csrf: s.csrf }
+  return { user: { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name, spaceIds: me.space_ids ?? null }, csrf: s.csrf, mfaEnrol: await mfaEnrolPending(me) }
 }
 
 route('POST', '/auth/logout', 'viewer', async (c) => {

@@ -2087,5 +2087,18 @@ const messages: Record<string, string> = {
   "err.zones_need_view": "Des zones existent hors vue : confirmez qu’elles rejoignent cette première vue.",
   "err.zones_without_view": "Configuration refusée : des zones n’appartiennent à aucune vue alors que des vues existent (ou l’inverse).",
   "apply.warn.view_local_uncovered": "Aucune vue ne répond à {name} (le serveur lui-même).",
+  "mfapol.title": "Double authentification obligatoire",
+  "mfapol.hint": "Les comptes locaux des rôles cochés doivent activer la double authentification : à leur prochaine requête, une fenêtre d’inscription s’impose et rien d’autre n’est permis tant qu’elle n’est pas terminée.",
+  "mfapol.scope": "Ne concerne que les comptes locaux : les comptes AD, LDAP et SSO relèvent du second facteur de leur fournisseur. Réglage commun à tous les nœuds du cluster.",
+  "mfapol.pending": "{n} sans MFA",
+  "mfapol.save": "Enregistrer",
+  "mfapol.saved": "Politique MFA enregistrée",
+  "mfapol.confirm_title": "Imposer la double authentification ?",
+  "mfapol.confirm_body": "{n} compte(s) local(aux) actif(s) sans second facteur devront s’inscrire à leur prochaine requête.",
+  "mfa.forced_desc": "Votre administrateur impose la double authentification pour votre rôle : activez-la pour continuer.",
+  "err.mfa_enrol_required": "Double authentification obligatoire : activez-la d’abord.",
+  "grid.compact": "{used} / {n} utilisées ({pct} %)",
+  "grid.show": "Afficher la grille",
+  "grid.hide": "Masquer",
 }
 export default messages

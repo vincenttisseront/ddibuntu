@@ -10,7 +10,7 @@ const ssoErr = computed(() => (route.query.sso_error ? t(`err.sso_${String(route
 const username = ref(''), password = ref(''), error = ref(''), busy = ref(false), showPw = ref(false), caps = ref(false)
 // seconde étape (MFA)
 const challenge = ref(''), code = ref(''), recovery = ref(false)
-const done = async (r: any) => { useState<any>('user').value = r.user; api.csrf.value = r.csrf; await navigateTo('/') }
+const done = async (r: any) => { useState<any>('user').value = r.user ? { ...r.user, mfaEnrol: !!r.mfaEnrol } : null; api.csrf.value = r.csrf; await navigateTo('/') }
 async function submit() {
   busy.value = true; error.value = ''
   try {

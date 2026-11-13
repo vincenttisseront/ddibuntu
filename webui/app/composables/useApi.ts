@@ -32,6 +32,7 @@ export function useApi() {
     } catch (e: any) {
       const info = describe(e)
       if (isSessionExpired(info.status, info.code) && !opts.silent) { useState<any>('user').value = null; await navigateTo('/login') }
+      if (info.code === 'mfa_enrol_required') { const u = useState<any>('user'); if (u.value && !u.value.mfaEnrol) u.value = { ...u.value, mfaEnrol: true } }   // politique activée en cours de session
       throw Object.assign(new Error(info.code), { info })
     } finally {
       if (track) busy.value = Math.max(0, busy.value - 1)
