@@ -43,3 +43,17 @@ describe('plan de bascule (logique)', () => {
     for (const s of [PS_CUTOVER_STOP, PS_CUTOVER_ROLLBACK, PS_CUTOVER_TTL]) expect(s).not.toMatch(/ddi_[A-Za-z0-9_-]{20,}|password|jeton/i)
   })
 })
+
+import { joinTxt } from '../server/utils/migration-verify'
+describe('TXT : découpage en chaînes différent mais contenu identique', () => {
+  it('joinTxt concatène les chaînes adjacentes, pas les guillemets échappés', () => {
+    expect(joinTxt('"v=dkim1; k=rsa; " "p=abc" "def"')).toBe('"v=dkim1; k=rsa; p=abcdef"')
+    expect(joinTxt('"a\\" \\"b"')).toBe('"a\\" \\"b"')
+  })
+  it('compareDns : pas d\'écart si seul le découpage diffère ; écart si le contenu diffère', async () => {
+    const run = async (s: string, _n: string, t: string) => (t === 'TXT' ? (s === 'w' ? ['"v=1; " "p=abcdef"'] : ['"v=1; p=abc" "def"']) : ['1.2.3.4'])
+    expect((await compareDns([{ name: 'x.t', type: 'TXT' }], 'w', 'd', run)).diffs).toEqual([])
+    const run2 = async (s: string) => [s === 'w' ? '"v=1; p=abcdef"' : '"v=1; p=abcXYZ"']
+    expect((await compareDns([{ name: 'x.t', type: 'TXT' }], 'w', 'd', run2)).diffs.length).toBe(1)
+  })
+})

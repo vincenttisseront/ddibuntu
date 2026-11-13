@@ -45,6 +45,9 @@ export function compareDhcp(plan: DhcpPlan, db: DbScope[]): Finding[] {
 export const normAnswer = (lines: string[]): string[] =>
   [...new Set(lines.map((l) => l.trim().toLowerCase().replace(/\s+/g, ' ').replace(/\.$/, '')).filter((l) => l && !l.startsWith(';')))].sort()
 
+/** TXT : les « chaînes » d'un même enregistrement sont concaténées par les clients (DKIM, SPF) ; Windows et BIND les découpent à des endroits différents (limite de 255 octets). On compare donc le texte joint. */
+export const joinTxt = (line: string): string => line.replace(/(?<!\\)"\s+"/g, '')
+
 export type Runner = (server: string, name: string, type: string) => Promise<string[] | null>
 export const digRunner: Runner = (server, name, type) => new Promise((resolve) => {
   execFile(process.env.DDI_DIG || 'dig', ['+short', '+time=3', '+tries=1', `@${server}`, name, type], { timeout: 15_000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
@@ -63,7 +66,8 @@ export async function compareDns(probes: DnsProbe[], windows: string, ddi: strin
     for (;;) {
       const p = probes[i++]; if (!p) return
       const [w, d] = await Promise.all([run(windows, p.name, p.type), run(ddi, p.name, p.type)])
-      const nw = w && normAnswer(w), nd = d && normAnswer(d)
+      const nrm = (x: string[]) => normAnswer(p.type.toUpperCase() === 'TXT' ? x.map(joinTxt) : x)
+      const nw = w && nrm(w), nd = d && nrm(d)
       if (!nw || !nd || !same(nw, nd)) diffs.push({ name: p.name, type: p.type, windows: nw, ddi: nd })
     }
   }

@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.12.16 — « Comparaison des réponses DNS : TXT découpés autrement »
+
+- La comparaison Windows ↔ console (étape « Contrôler le résultat ») ne signale plus d'écart pour un enregistrement TXT dont seul le découpage en chaînes de 255 octets diffère (cas des clés DKIM) : les chaînes sont jointes avant comparaison, comme le font les clients. Un contenu réellement différent reste signalé.
+- Test : unit-iter28 (complété).
+
 ## 0.12.15 — « Diagnostic des NS périmés avant déploiement »
 
 - Quand BIND refuse une zone parce qu'un serveur de noms (NS) de la zone n'a aucun enregistrement A/AAAA (cas courant après une reprise depuis Active Directory), la validation affiche maintenant un diagnostic clair avec les noms concernés et la marche à suivre (supprimer ou désactiver le NS, ou ajouter son A), en plus de la sortie brute de `named-checkzone`.
