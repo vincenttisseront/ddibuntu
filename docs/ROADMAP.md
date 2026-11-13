@@ -55,6 +55,21 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
 
 **Règles d'interface permanentes** (demande du 2026-11-10) : toute action un peu longue affiche un indicateur d'attente ; aucune boîte système (`confirm`/`alert`/`prompt`) — uniquement des modales du design de la console. Contrôlé par `tests/b10-cluster.sh`.
 
+## Série 0.10.x — gestion complète DNS ↔ IPAM ↔ DHCP (validée le 2026-11-13)
+Dix évolutions, une version chacune, chacune testée (unitaires, e2e, batteries réelles) avant publication. Ordre retenu : les deux plus rentables d'abord, puis celles qui s'appuient dessus.
+| # | Version | Évolution | État |
+|---|---|---|---|
+| 1 | 0.10.0 | Synchronisation bail DHCP → DNS (DDNS maîtrisé) : A/PTR créés et retirés avec le bail, enregistrements marqués « dynamiques », jamais d'écrasement d'un statique | ⬜ |
+| 2 | 0.10.1 | Contrôle de cohérence continu (« DNS health ») : PTR orphelins, A sans fiche IPAM, IP sans nom, conflits DHCP/DNS, CNAME pendants ; correction en un clic, score par zone | ⬜ |
+| 3 | 0.10.2 | Cycle de vie d'une adresse en un geste (réserver / libérer : fiche, réservation, A, PTR, alias, en tout-ou-rien, avec récapitulatif) | ⬜ |
+| 4 | 0.10.3 | Historique et retour arrière par enregistrement ; diff avant déploiement de zone, validation `named-checkzone` | ⬜ |
+| 5 | 0.10.4 | Zones inverses automatiques par sous-réseau, délégations CIDR (RFC 2317) | ⬜ |
+| 6 | 0.10.5 | Modèles de nommage et d'enregistrements par sous-réseau / VLAN, contrôle de convention | ⬜ |
+| 7 | 0.10.6 | Import / export et opérations en masse (CSV, AXFR, édition multiple avec prévisualisation) | ⬜ |
+| 8 | 0.10.7 | Vues DNS (split-horizon) liées à l'IPAM : nom interne / externe, comparaison des réponses, alerte de mauvaise vue | ⬜ |
+| 9 | 0.10.8 | Supervision corrélée par IP (baux, requêtes DNS, RPZ) et alertes (pools presque pleins, TTL incohérents, zones non transférées) | ⬜ |
+| 10 | 0.10.9 | Approbation à deux personnes des changements sensibles, délégation par zone / sous-réseau / type, webhooks | ⬜ |
+
 ## Ordre proposé
 1. ~~**0.6.0** — Navigation latérale, recherche globale, grille d'occupation d'un réseau.~~ ✅ fait
 2. ~~**0.7.0**~~ ✅ fait — Hygiène IPAM (adresses fantômes), RRL, détection de tunnel DNS (les gabarits de réseau et la réservation DHCP automatique étaient déjà livrés en 0.5.1).
