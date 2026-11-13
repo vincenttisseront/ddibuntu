@@ -11,7 +11,7 @@ import type { Role, SessionUser } from './auth'
 
 export const COOKIE = 'ddi_session'
 // Seules requêtes d'écriture admises sur un secondaire : ouvrir/fermer une session (jeton signé, rien n'est écrit en base ; voir utils/auth.ts)
-const REPLICA_WRITABLE = new Set(['/auth/login', '/auth/logout'])
+const REPLICA_WRITABLE = new Set(['/auth/login', '/auth/login/mfa', '/auth/logout'])
 export interface Ctx {
   event: H3Event
   params: Record<string, string>

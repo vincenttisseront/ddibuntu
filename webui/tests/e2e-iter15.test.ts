@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
+import { hotp, totpStep } from '../server/utils/totp'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 process.env.DDI_SECRET_KEY = 'cle-secrete-de-test-0123456789abcdefghij'; process.env.DDI_TEST_MODE = '1'; process.env.DDI_PBKDF2_ITERATIONS = '2000'
@@ -313,5 +314,88 @@ describe('contrôle d\'une adresse (DNS + présence)', () => {
     expect((await admin.post('/api/users', { username: 'etroit', role: 'operator', password: PW, space_ids: [999] })).status).toBe(200)
     const et = new Client(); expect((await et.login('etroit', PW)).status).toBe(200)
     code(await et.post(`/api/ipam/addresses/${gone}/check`), 403, 'out_of_scope')
+  })
+})
+
+
+describe('double authentification (TOTP)', () => {
+  const U = 'mfa1', uid = async (n: string) => (await db.query('select id from users where username = $1', [n])).rows[0].id as number
+  let secret = '', codes: string[] = []
+  const now = () => totpStep()
+  const mk = async (name: string) => { expect((await admin.post('/api/users', { username: name, role: 'operator', password: PW })).status).toBe(200) }
+  const mfaLogin = async (c: Client, user: string, code: string) => {
+    const r = await c.post('/api/auth/login', { username: user, password: PW }); expect(r.status, r.text).toBe(200); expect(r.json.mfa).toBe(true)
+    const v = await c.post('/api/auth/login/mfa', { challenge: r.json.challenge, code }); if (v.status === 200) c.csrf = v.json.csrf; return v
+  }
+  it('activation : mot de passe exigé, premier code vérifié, 10 codes de secours montrés une fois', async () => {
+    await mk(U); const c = new Client(); expect((await c.login(U, PW)).json.mfa).toBeUndefined()
+    expect((await c.get('/api/auth/mfa')).json).toEqual({ available: true, enabled: false, recoveryLeft: 0 })
+    code(await c.post('/api/auth/mfa/setup', { password: 'mauvais-mot-de-passe' }), 401, 'bad_password')
+    code(await c.post('/api/auth/mfa/enable', { code: '123456' }), 409, 'mfa_no_setup')
+    const su = await c.post('/api/auth/mfa/setup', { password: PW }); expect(su.status, su.text).toBe(200)
+    secret = su.json.secret; expect(secret).toMatch(/^[A-Z2-7]{32}$/); expect(su.json.uri).toContain(`secret=${secret}`)
+    expect((await db.query('select totp_secret_enc from users where username = $1', [U])).rows[0].totp_secret_enc).not.toContain(secret)   // chiffré au repos
+    code(await c.post('/api/auth/mfa/enable', { code: '000000' === hotp(secret, now()) ? '111111' : '000000' }), 400, 'bad_code')
+    const en = await c.post('/api/auth/mfa/enable', { code: hotp(secret, now()) }); expect(en.status, en.text).toBe(200)
+    codes = en.json.codes; expect(codes).toHaveLength(10)
+    expect((await c.get('/api/auth/mfa')).json).toEqual({ available: true, enabled: true, recoveryLeft: 10 })
+    expect(JSON.stringify((await admin.get('/api/users')).json)).not.toContain(codes[0]!)
+    expect((await admin.get('/api/users')).json.items.find((u: any) => u.username === U).totp_enabled).toBe(true)
+    code(await c.post('/api/auth/mfa/setup', { password: PW }), 409, 'mfa_already')
+  })
+  it('connexion : le mot de passe seul ne donne aucune session ; code faux / rejoué refusés ; code frais accepté', async () => {
+    const c = new Client(); const r = await c.post('/api/auth/login', { username: U, password: PW })
+    expect(r.status).toBe(200); expect(r.json.mfa).toBe(true); expect(r.json.user).toBeUndefined(); expect(r.text).not.toContain('csrf')
+    expect((await c.get('/api/auth/me')).json.user).toBeNull(); code(await c.get('/api/ipam/spaces'), 401, 'unauthenticated')
+    code(await c.post('/api/auth/login/mfa', { challenge: r.json.challenge, code: '12345a' }), 401, 'bad_code')
+    code(await c.post('/api/auth/login/mfa', { challenge: r.json.challenge, code: hotp(secret, now()) }), 401, 'bad_code')          // pas consommé à l'activation : rejeu refusé
+    code(await c.post('/api/auth/login/mfa', { challenge: r.json.challenge + 'x', code: hotp(secret, now() + 1) }), 401, 'mfa_expired')   // défi altéré
+    code(await c.post('/api/auth/login/mfa', { challenge: 'aaaaaaaaaa.bbbbbbbbbb', code: hotp(secret, now() + 1) }), 401, 'mfa_expired')
+    const ok = await c.post('/api/auth/login/mfa', { challenge: r.json.challenge, code: hotp(secret, now() + 1) }); expect(ok.status, ok.text).toBe(200)
+    expect(ok.json.user).toMatchObject({ username: U, role: 'operator' }); c.csrf = ok.json.csrf
+    expect((await c.get('/api/ipam/spaces')).status).toBe(200)
+    // le même code ne sert qu'une fois
+    code(await mfaLogin(new Client(), U, hotp(secret, now() + 1)), 401, 'bad_code')
+    expect((await db.query("select count(*)::int n from audit_log where action in ('login_mfa_challenge')")).rows[0].n).toBeGreaterThanOrEqual(2)
+  })
+  it('codes de secours : usage unique, décomptés', async () => {
+    const c = new Client(); expect((await mfaLogin(c, U, codes[0]!.toUpperCase())).status).toBe(200)
+    code(await mfaLogin(new Client(), U, codes[0]!), 401, 'bad_code')
+    expect((await c.get('/api/auth/mfa')).json.recoveryLeft).toBe(9)
+    expect((await mfaLogin(new Client(), U, ` ${codes[1]} `)).status).toBe(200)
+    expect((await db.query("select count(*)::int n from audit_log where action = 'mfa_recovery_used'")).rows[0].n).toBe(2)
+  })
+  it('anti-force brute : 5 codes faux, puis blocage', async () => {
+    await mk('mfa2'); const c = new Client(); await c.login('mfa2', PW)
+    const su = await c.post('/api/auth/mfa/setup', { password: PW }); const s2 = su.json.secret
+    expect((await c.post('/api/auth/mfa/enable', { code: hotp(s2, now()) })).status).toBe(200)
+    const r = await new Client().post('/api/auth/login', { username: 'mfa2', password: PW })
+    for (let i = 0; i < 5; i++) code(await new Client().post('/api/auth/login/mfa', { challenge: r.json.challenge, code: '00000' + i }), 401, 'bad_code')
+    code(await new Client().post('/api/auth/login/mfa', { challenge: r.json.challenge, code: hotp(s2, now() + 1) }), 429, 'too_many_attempts')   // même le bon code
+  })
+  it('défi invalidé par un changement de mot de passe ; comptes non locaux et jetons : pas de MFA locale', async () => {
+    await mk('mfa3'); const c = new Client(); await c.login('mfa3', PW)
+    const s3 = (await c.post('/api/auth/mfa/setup', { password: PW })).json.secret; expect((await c.post('/api/auth/mfa/enable', { code: hotp(s3, now()) })).status).toBe(200)
+    const r = await new Client().post('/api/auth/login', { username: 'mfa3', password: PW })
+    expect((await admin.put(`/api/users/${await uid('mfa3')}`, { password: PW + '-nouveau-1' })).status).toBe(200)
+    code(await new Client().post('/api/auth/login/mfa', { challenge: r.json.challenge, code: hotp(s3, now() + 1) }), 401, 'mfa_expired')
+    await db.query("insert into users (username, role, source) values ('annuaire', 'viewer', 'ad')")
+    const t = (await admin.post('/api/tokens', { name: 'mfa-test', role: 'operator', expiresDays: 1 })).json.token
+    const rt = await fetch(BASE + '/api/auth/mfa/setup', { method: 'POST', headers: { authorization: `Bearer ${t}`, 'content-type': 'application/json' }, body: JSON.stringify({ password: PW }) }); expect(rt.status).toBe(403)
+  })
+  it('désactivation par l\'utilisateur (mot de passe + code) ; réinitialisation par l\'administrateur', async () => {
+    const c = new Client(); expect((await mfaLogin(c, U, codes[2]!)).status).toBe(200)
+    code(await c.post('/api/auth/mfa/disable', { password: 'faux', code: codes[3]! }), 401, 'bad_password')
+    code(await c.post('/api/auth/mfa/disable', { password: PW, code: '000000' }), 400, 'bad_code')
+    const rg = await c.post('/api/auth/mfa/recovery', { password: PW }); expect(rg.status).toBe(200); expect(rg.json.codes).toHaveLength(10)
+    code(await mfaLogin(new Client(), U, codes[4]!), 401, 'bad_code')                                 // anciens codes invalidés
+    expect((await c.post('/api/auth/mfa/disable', { password: PW, code: rg.json.codes[0] })).status).toBe(200)
+    expect((await new Client().login(U, PW)).json.mfa).toBeUndefined()
+    expect((await db.query('select totp_secret_enc, cardinality(recovery_hashes) n from users where username = $1', [U])).rows[0]).toEqual({ totp_secret_enc: null, n: 0 })
+    // administrateur : réinitialise mfa2
+    code(await viewer.post(`/api/users/${await uid('mfa2')}/mfa/reset`), 403, 'forbidden'); code(await admin.post('/api/users/999999/mfa/reset'), 404, 'not_found')
+    expect((await admin.post(`/api/users/${await uid('mfa2')}/mfa/reset`)).status).toBe(200)
+    expect((await new Client().login('mfa2', PW)).json.mfa).toBeUndefined()
+    expect((await db.query("select count(*)::int n from audit_log where action in ('mfa_reset','mfa_disable','mfa_enable')")).rows[0].n).toBeGreaterThanOrEqual(5)
   })
 })

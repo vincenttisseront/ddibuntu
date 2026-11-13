@@ -2,7 +2,8 @@ import { z } from 'zod'
 import { audit, clearSessionCookie, fail, route, setSessionCookie, COOKIE } from '../utils/router'
 import { one, query, tx, getSetting, isSchemaReady, inRecovery } from '../utils/db'
 import { cfg } from '../utils/config'
-import { createSession, destroySession, REPLICA_TOKEN_PREFIX, replicaLoginBlocked, replicaRecordAttempt, signReplicaSession, destroyUserSessions, dummyVerify, hashPassword, loginBlocked, passwordPolicyError, recordAttempt, safeEqual, verifyPassword, decryptSecret } from '../utils/auth'
+import { createSession, destroySession, signMfaChallenge, REPLICA_TOKEN_PREFIX, replicaLoginBlocked, replicaRecordAttempt, signReplicaSession, destroyUserSessions, dummyVerify, hashPassword, loginBlocked, passwordPolicyError, recordAttempt, safeEqual, verifyPassword, decryptSecret } from '../utils/auth'
+import { installedVersion } from '../utils/selfupdate'
 import { sessionSettings } from '../utils/session-settings'
 import { AD_DEFAULTS, authenticateAd, defaultLdapFactory } from '../utils/ad'
 import type { AdSettings } from '../utils/ad'
@@ -19,6 +20,9 @@ route('GET', '/health', 'public', async () => {
   if (await inRecovery().catch(() => false)) return { status: 'waiting_leader' }
   fail(503, 'starting')
 })
+
+// Ce que la page de connexion doit proposer (public : avant toute authentification)
+route('GET', '/auth/providers', 'public', async () => ({ version: installedVersion() || null, local: true }))
 
 route('GET', '/auth/me', 'public', async (c) => (c.user ? { user: { id: c.user.id, username: c.user.username, role: c.user.role, source: c.user.source, displayName: c.user.displayName, spaceIds: c.user.spaceIds ?? null }, csrf: c.user.csrf } : { user: null }))
 
@@ -51,8 +55,18 @@ route('POST', '/auth/login', 'public', async (c) => {
     const res = await authenticateAd(b.username, b.password, ad, ad.bindPasswordEnc ? decryptSecret(ad.bindPasswordEnc) : '', defaultLdapFactory(ad))
     if (res.ok) { if (!replica) await query('update users set role = $2, display_name = $3, space_ids = $4 where id = $1', [u.id, res.role, res.displayName, res.spaceIds]); userId = u.id }
   } else await dummyVerify(b.password)
+  // MFA : mot de passe correct mais second facteur à fournir. On n'enregistre PAS de succès (le compteur d'échecs reste : le code se devine aussi).
+  if (userId !== null && u?.source === 'local' && u.totp_enabled) {
+    await audit(c, 'login_mfa_challenge', 'user', userId)
+    return { mfa: true, challenge: signMfaChallenge(u) }
+  }
   if (replica) replicaRecordAttempt(b.username, c.ip, userId !== null); else await recordAttempt(b.username, c.ip, userId !== null)
   if (userId === null) { await audit(c, 'login_failed', 'user', undefined, { username: b.username.slice(0, 64) }); fail(401, 'bad_credentials') }
+  return await finishLogin(c, userId, replica)
+})
+
+/** Ouvre la session (cookie + CSRF) d'un utilisateur dont tous les facteurs ont été vérifiés. */
+export async function finishLogin(c: any, userId: number, replica: boolean) {
   const me = await one<any>('select id, username, role, source, display_name, password_hash, space_ids from users where id = $1', [userId])
   let s: { token: string; csrf: string; maxAge: number }
   if (replica) s = signReplicaSession(me, Date.now(), (await sessionSettings()).hours)
@@ -61,7 +75,7 @@ route('POST', '/auth/login', 'public', async (c) => {
   c.user = { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name, csrf: s.csrf, sessionId: 0, spaceIds: me.space_ids ?? null }
   await audit(c, 'login', 'user', userId)
   return { user: { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name, spaceIds: me.space_ids ?? null }, csrf: s.csrf }
-})
+}
 
 route('POST', '/auth/logout', 'viewer', async (c) => {
   const t = getCookie(c.event, COOKIE)
@@ -104,7 +118,7 @@ route('POST', '/setup/admin', 'public', async (c) => {
 })
 
 // ---- Utilisateurs (administrateur) ----
-route('GET', '/users', 'admin', async () => ({ items: await query('select id, username, display_name, role, source, disabled, created_at, last_login, space_ids from users order by lower(username)') }))
+route('GET', '/users', 'admin', async () => ({ items: await query('select id, username, display_name, role, source, disabled, created_at, last_login, space_ids, totp_enabled from users order by lower(username)') }))
 route('POST', '/users', 'admin', async (c) => {
   const b = await c.body(z.object({ username, display_name: z.string().max(100).optional(), role, password: z.string().min(1).max(512), space_ids: spaceIds.optional() }))
   const pe = passwordPolicyError(b.password, b.username)

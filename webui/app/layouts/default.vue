@@ -3,7 +3,7 @@ const { t, lang, setLang } = useT()
 const user = useState<any>('user')
 const api = useApi()
 const route = useRoute()
-const pwOpen = ref(false)
+const pwOpen = ref(false), secOpen = ref(false)
 const { data: about, refresh: refreshAbout } = useFetch<any>('/api/about', { server: false, lazy: true, default: () => null })
 const { data: clusterInfo, refresh: refreshCluster } = useFetch<any>('/api/cluster/status', { server: false, lazy: true, default: () => null })
 const clusterOn = computed(() => !!clusterInfo.value?.clustered)
@@ -84,6 +84,7 @@ async function logout() {
         <div class="flex items-center gap-2 w-full" :class="collapsed ? 'justify-center' : 'justify-between'">
           <span v-if="!collapsed" class="text-sm truncate" :title="user?.username">{{ user?.displayName || user?.username }}</span>
           <span v-else-if="about?.version" class="sr-only">v{{ about.version }}</span>
+          <UButton v-if="user?.source === 'local'" icon="i-lucide-shield-check" color="neutral" variant="ghost" size="sm" :aria-label="t('mfa.title')" :title="t('mfa.title')" @click="secOpen = true" />
           <UButton v-if="user?.source === 'local'" icon="i-lucide-key-round" color="neutral" variant="ghost" size="sm" :aria-label="t('login.change_password')" @click="pwOpen = true" />
           <UButton icon="i-lucide-log-out" color="neutral" variant="ghost" size="sm" :aria-label="t('nav.logout')" @click="logout" />
         </div>
@@ -108,6 +109,7 @@ async function logout() {
       </template>
     </UDashboardPanel>
     <PasswordDialog v-model:open="pwOpen" />
+    <AccountSecurity v-model:open="secOpen" />
     <GlobalSearch v-model:open="searchOpen" />
   </UDashboardGroup>
 </template>

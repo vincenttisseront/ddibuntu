@@ -7,12 +7,18 @@ const tab = useHashTab('users', ['users', 'audit', 'alerts', 'backup', 'restore'
 const baseTabs = computed(() => [{ label: t('system.users'), value: 'users', icon: 'i-lucide-users' }, { label: t('system.audit'), value: 'audit', icon: 'i-lucide-scroll-text' }, { label: t('system.about'), value: 'about', icon: 'i-lucide-info' }])
 const tabs = computed(() => { const b = baseTabs.value; return [...b.slice(0, 2), { label: t('alerts.tab'), value: 'alerts', icon: 'i-lucide-bell-ring' }, { label: t('backup.tab'), value: 'backup', icon: 'i-lucide-database-backup' }, { label: t('restore.tab'), value: 'restore', icon: 'i-lucide-history' }, { label: t('update.tab'), value: 'updates', icon: 'i-lucide-download' }, { label: t('tok.tab'), value: 'api', icon: 'i-lucide-key-round' }, ...b.slice(2)] })
 const roleOptions = computed(() => ['admin', 'operator', 'viewer'].map((v) => ({ label: t(`system.role.${v}`), value: v })))
-const userCols = computed(() => [{ key: 'username', label: t('system.user'), kind: 'mono' }, { key: 'display_name', label: t('common.name') }, { key: 'role', label: t('system.role_label'), kind: 'badge', trans: 'system.role' }, { key: 'source', label: t('system.source'), kind: 'badge', trans: 'system.src' }, { key: 'space_ids', label: t('system.scope'), kind: 'mono', fmt: (v: any) => (v?.length ? v.join(', ') : t('system.scope_all')) }, { key: 'disabled', label: t('common.disabled'), kind: 'bool' }, { key: 'last_login', label: t('system.last_login'), kind: 'date' }])
+const userCols = computed(() => [{ key: 'username', label: t('system.user'), kind: 'mono' }, { key: 'display_name', label: t('common.name') }, { key: 'role', label: t('system.role_label'), kind: 'badge', trans: 'system.role' }, { key: 'source', label: t('system.source'), kind: 'badge', trans: 'system.src' }, { key: 'totp_enabled', label: t('mfa.col'), kind: 'bool' }, { key: 'space_ids', label: t('system.scope'), kind: 'mono', fmt: (v: any) => (v?.length ? v.join(', ') : t('system.scope_all')) }, { key: 'disabled', label: t('common.disabled'), kind: 'bool' }, { key: 'last_login', label: t('system.last_login'), kind: 'date' }])
 const userFields = computed(() => [
   { key: 'username', label: t('system.user'), type: 'text', required: true, createOnly: true, mono: true }, { key: 'display_name', label: t('common.name'), type: 'text' },
   { key: 'role', label: t('system.role_label'), type: 'select', required: true, default: 'viewer', options: roleOptions.value }, { key: 'password', label: t('login.password'), type: 'password', hint: t('login.policy') }, { key: 'space_ids', label: t('system.scope'), type: 'text', mono: true, hint: t('system.scope_hint') },
   { key: 'disabled', label: t('common.disabled'), type: 'switch', editHidden: false },
 ] as any[])
+const toast = useToast(), api = useApi(), { ask } = useConfirm()
+const usersTable = ref<any>(null)
+async function resetMfa(row: any) {
+  if (!(await ask(t('mfa.reset'), t('mfa.reset_confirm', { name: row.username })))) return
+  try { await api.call('POST', `/users/${row.id}/mfa/reset`, {}); toast.add({ title: t('mfa.reset_done'), color: 'success', icon: 'i-lucide-check' }); await usersTable.value?.refresh() } catch { /* message déjà affiché par api.call */ }
+}
 const userBody = (b: any, editing: boolean) => { const o = { ...b }; if (!editing) delete o.disabled; o.space_ids = String(o.space_ids ?? '').split(/[\s,;]+/).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0); if (!o.space_ids.length) o.space_ids = null; return o }
 const auditCols = computed(() => [{ key: 'at', label: t('common.date'), kind: 'date' }, { key: 'username', label: t('system.user') }, { key: 'action', label: t('system.action'), kind: 'mono' }, { key: 'entity', label: t('system.entity') }, { key: 'entity_id', label: 'ID', kind: 'mono' }, { key: 'ip', label: 'IP', kind: 'mono' }])
 const { data: info } = await useFetch<any>('/api/system/info')
@@ -23,7 +29,9 @@ const { data: deps } = await useFetch<any>('/api/system/deployments')
   <div class="flex flex-col gap-3">
     <UTabs v-model="tab" :items="tabs" :content="false" :aria-label="t('nav.system')" />
     <div v-if="tab === 'users'" class="flex flex-col gap-3"><SessionSettings />
-          <ResourceTable endpoint="/users" :columns="userCols" :fields="userFields" can-write create-url="/users" :update-url="(r: any) => `/users/${r.id}`" :delete-url="(r: any) => `/users/${r.id}`" :delete-name="(r: any) => r.username" :create-label="t('system.add_user')" :transform="userBody" /></div>
+          <ResourceTable ref="usersTable" endpoint="/users" :columns="userCols" :fields="userFields" can-write create-url="/users" :update-url="(r: any) => `/users/${r.id}`" :delete-url="(r: any) => `/users/${r.id}`" :delete-name="(r: any) => r.username" :create-label="t('system.add_user')" :transform="userBody">
+            <template #actions="{ row }"><UButton v-if="row.totp_enabled" size="xs" color="neutral" variant="ghost" icon="i-lucide-shield-off" :aria-label="t('mfa.reset')" :title="t('mfa.reset')" @click="resetMfa(row)" /></template>
+          </ResourceTable></div>
     <ResourceTable v-else-if="tab === 'audit'" endpoint="/audit" :columns="auditCols" searchable />
     <AlertsPanel v-else-if="tab === 'alerts'" />
     <BackupPanel v-else-if="tab === 'backup'" />

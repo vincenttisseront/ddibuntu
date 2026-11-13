@@ -88,6 +88,20 @@ export function signReplicaSession(u: { id: number; password_hash: string | null
   const payload = b64u(JSON.stringify({ u: u.id, e: Math.floor(now / 1000) + hours * 3600, n: newToken(12), v: credentialStamp(u) }))
   return { token: `${REPLICA_TOKEN_PREFIX}${payload}.${b64u(hmac('sig', payload))}`, csrf: b64u(hmac('csrf', payload)), maxAge: hours * 3600 }
 }
+// Défi MFA : émis après un mot de passe correct, valable 5 minutes, lié à l'empreinte du compte (changer le mot de passe l'invalide). Ne donne AUCUN accès.
+export function signMfaChallenge(u: { id: number; password_hash: string | null; source: string }, now = Date.now()): string {
+  const payload = b64u(JSON.stringify({ u: u.id, e: Math.floor(now / 1000) + 300, n: newToken(12), v: credentialStamp(u) }))
+  return `${payload}.${b64u(hmac('mfa', payload))}`
+}
+export function parseMfaChallenge(token: string, now = Date.now()): { uid: number; stamp: string } | null {
+  if (token.length > 500) return null
+  const parts = token.split('.'); if (parts.length !== 2) return null
+  const [payload, sig] = parts as [string, string]
+  if (!safeEqual(sig, b64u(hmac('mfa', payload)))) return null
+  let j: any; try { j = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) } catch { return null }
+  if (!j || !Number.isInteger(j.u) || !Number.isInteger(j.e) || typeof j.v !== 'string' || j.e * 1000 <= now) return null
+  return { uid: j.u, stamp: j.v }
+}
 export function parseReplicaToken(token: string, now = Date.now()): { uid: number; stamp: string; csrf: string } | null {
   if (!token.startsWith(REPLICA_TOKEN_PREFIX) || token.length > 600) return null
   const parts = token.slice(REPLICA_TOKEN_PREFIX.length).split('.')

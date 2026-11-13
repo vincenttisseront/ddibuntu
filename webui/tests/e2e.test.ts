@@ -547,7 +547,7 @@ describe('pages rendues côté serveur : accès, traductions, accessibilité', (
     const labels = [...html.matchAll(/<label[^>]*\bfor="([^"]+)"[^>]*>([^<]*)<\/label>/g)].map((m) => [m[1]!, m[2]!.trim()])
     expect(labels.map((l) => l[1])).toEqual(['Identifiant', 'Mot de passe'])
     for (const [id] of labels) expect(html, `champ ${id}`).toMatch(new RegExp(`<input[^>]*\\bid="${id}"`))
-    expect(html).toMatch(/<h1[^>]*>DDI-Buntu<\/h1>/)
+    expect(html).toMatch(/<h1[^>]*>Connexion<\/h1>/)
     const en = await new Client('en').get('/login'); expect(en.text).toMatch(/<html\s+lang="en"/); expect(en.text).toContain('Sign in')
   })
   it.each(PAGES)('page %s : rendue en français puis en anglais, sans clé de traduction brute', async (path, fr, en) => {
