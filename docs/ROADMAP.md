@@ -70,6 +70,21 @@ Dix évolutions, une version chacune, chacune testée (unitaires, e2e, batteries
 | 9 | 0.10.8 | Supervision corrélée par IP (baux, requêtes DNS, RPZ) et alertes (pools presque pleins, TTL incohérents, zones non transférées) | ⬜ |
 | 10 | 0.10.9 | Approbation à deux personnes des changements sensibles, délégation par zone / sous-réseau / type, webhooks | ⬜ |
 
+## Série 0.11.x — automatisation, sécurité et pilotage DDI (validée le 2026-11-13)
+Dix évolutions supplémentaires, après la série 0.10.x ; même règle : une version chacune, testée (unitaires, e2e, batteries réelles) avant publication.
+| # | Version | Évolution | État |
+|---|---|---|---|
+| 1 | 0.11.0 | DDNS IPv6 et clients externes : baux DHCPv6, mises à jour dynamiques RFC 2136 signées TSIG, droits de modification par client | ⬜ |
+| 2 | 0.11.1 | Planificateur de changements DNS : création / modification / suppression à une date donnée, retour arrière automatique | ⬜ |
+| 3 | 0.11.2 | Surveillance de l'état des services : sondes TCP / HTTP / ICMP sur les A et CNAME, bascule vers une IP de secours | ⬜ |
+| 4 | 0.11.3 | Dérive de configuration : état voulu (console) contre état servi (BIND, Kea), alerte et resynchronisation | ⬜ |
+| 5 | 0.11.4 | DNSSEC géré : signature de zone, rotation KSK / ZSK, suivi des DS chez le parent, alerte avant expiration | ⬜ |
+| 6 | 0.11.5 | Conformité et rapports planifiés (e-mail / PDF) : inventaire, occupation, alertes, zones sans propriétaire | ⬜ |
+| 7 | 0.11.6 | Propriétaires et cycle de vie : propriétaire, expiration, revue périodique, libération des adresses abandonnées | ⬜ |
+| 8 | 0.11.7 | Cartographie visuelle réseau et DNS : espaces, réseaux, VLAN, zones, serveurs ; parcours depuis une IP | ⬜ |
+| 9 | 0.11.8 | Contrôles de sécurité DNS : sous-domaines pendants, wildcards involontaires, SPF / DMARC absents, blocage par groupe de clients | ⬜ |
+| 10 | 0.11.9 | API et automatisation : spécification OpenAPI, fournisseur Terraform, module Ansible, jetons à portée limitée, limitation de débit | ⬜ |
+
 ## Ordre proposé
 1. ~~**0.6.0** — Navigation latérale, recherche globale, grille d'occupation d'un réseau.~~ ✅ fait
 2. ~~**0.7.0**~~ ✅ fait — Hygiène IPAM (adresses fantômes), RRL, détection de tunnel DNS (les gabarits de réseau et la réservation DHCP automatique étaient déjà livrés en 0.5.1).
