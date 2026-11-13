@@ -1,5 +1,13 @@
 # Journal des modifications
 
+## 0.12.10 — « Zones inverses automatiques et RFC 2317 » (ex-0.10.4)
+
+- Nouvel onglet DNS › Zones inverses : liste des sous-réseaux sans zone inverse et création en un clic (zone modèle optionnelle dont NS et SOA sont repris). Un /22 est servi par la zone de son /16 ; IPv6 au quartet.
+- Délégation « classless » (RFC 2317) pour les /25 à /32 : zone fille `64-26.2.168.192.in-addr.arpa`, un CNAME par adresse dans la zone du /24 (un PTR au même nom y est retiré, car en conflit).
+- Les PTR publiés depuis l'IPAM (adresse avec nom) vont automatiquement dans la zone classless qui couvre l'adresse, et le parent la délègue.
+- Scripts PowerShell Windows : ils vérifient maintenant que les modules DnsServer / DhcpServer sont présents et expliquent quoi faire sinon (au lieu d'une erreur « commande non reconnue » sur un poste sans le rôle DNS).
+- Tests : unit-iter31, e2e-iter32, unit-iter24 (complété).
+
 ## 0.12.9 — « Historique DNS, retour arrière et aperçu de zone » (ex-0.10.3)
 
 - Historique de chaque enregistrement DNS (création, modification, suppression, retour arrière) avec l'avant / après, l'auteur et l'heure : 500 derniers changements par zone, nouvel onglet DNS › Historique (migration 20).

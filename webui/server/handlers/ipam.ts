@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { setResponseHeader } from 'h3'
 import { audit, fail, intParam, qint, qstr, route } from '../utils/router'
 import { one, query, tx } from '../utils/db'
+import { classlessRange } from '../utils/reverse'
 import { capacity, nextFree, nextFreeInRange, isHostname, normIp, normMac, parseCidr, cidrToString, cidrContainsIp, parseIp, ptrName } from '../utils/net'
 import type { PoolClient } from 'pg'
 import { cleanOptions, optionsS } from '../utils/dhcpopts'
@@ -175,6 +176,17 @@ route('GET', '/ipam/subnets/:id/addresses', 'viewer', async (c) => {
 
 const addrBody = z.object({ ip: ipS, status: status.default('used'), hostname: host.nullable().optional(), mac: mac.nullable().optional(), description: z.string().max(500).nullable().optional(), owner: z.string().max(100).nullable().optional(), dns_zone_id: z.number().int().nullable().optional() })
 
+async function classlessZone(cl: PoolClient, ip: string, viewId: number | null): Promise<{ id: number; name: string; parent: string } | null> {
+  const [a, b, c, d] = ip.split('.').map(Number) as [number, number, number, number]
+  const rows = (await cl.query("select id, lower(name) as name from dns_zones where type = 'primary' and view_id is not distinct from $1 and lower(name) like $2", [viewId, `%-%.${c}.${b}.${a}.in-addr.arpa`])).rows
+  for (const r of rows) {
+    const rg = classlessRange(r.name); if (!rg) continue
+    const first = Number(rg.first.split('.')[3]), last = Number(rg.last.split('.')[3])
+    if (d >= first && d <= last) return { id: r.id, name: r.name, parent: rg.parent }
+  }
+  return null
+}
+
 /** Crée les enregistrements A/AAAA et PTR correspondant à une adresse (si une zone inverse primaire existe). */
 export async function syncDns(cl: PoolClient, ip: string, hostname: string, zoneId: number): Promise<void> {
   const z = (await cl.query("select id, name, view_id from dns_zones where id = $1 and type = 'primary'", [zoneId])).rows[0]
@@ -183,6 +195,20 @@ export async function syncDns(cl: PoolClient, ip: string, hostname: string, zone
   await cl.query("insert into dns_records (zone_id, name, type, rdata) values ($1,$2,$3,$4) on conflict do nothing", [z.id, hostname, addr.v === 4 ? 'A' : 'AAAA', ip])
   await cl.query('update dns_zones set dirty = true, updated_at = now() where id = $1', [z.id])
   const ptr = ptrName(addr)
+  // zone inverse « classless » (RFC 2317) qui couvre l'adresse : le PTR y est écrit, et la zone parente le délègue par un CNAME
+  const cz = addr.v === 4 ? await classlessZone(cl, ip, z.view_id) : null
+  if (cz) {
+    const last = ip.split('.')[3]!
+    await cl.query('insert into dns_records (zone_id, name, type, rdata) values ($1,$2,$3,$4) on conflict do nothing', [cz.id, last, 'PTR', `${hostname}.${z.name}.`])
+    await cl.query('update dns_zones set dirty = true, updated_at = now() where id = $1', [cz.id])
+    const par = (await cl.query("select id from dns_zones where lower(name) = $1 and view_id is not distinct from $2 and type = 'primary'", [cz.parent, z.view_id])).rows[0]
+    if (par) {
+      await cl.query("delete from dns_records where zone_id = $1 and name = $2 and type = 'PTR'", [par.id, last])
+      await cl.query("insert into dns_records (zone_id, name, type, rdata, comment) select $1,$2,'CNAME',$3,'RFC 2317' where not exists (select 1 from dns_records where zone_id = $1 and lower(name) = lower($2))", [par.id, last, `${last}.${cz.name}.`])
+      await cl.query('update dns_zones set dirty = true, updated_at = now() where id = $1', [par.id])
+    }
+    return
+  }
   const rz = (await cl.query("select id, name from dns_zones where type = 'primary' and $1 like '%.' || lower(name) order by (view_id is not distinct from $2) desc, length(name) desc limit 1", [ptr, z.view_id])).rows[0]
   if (rz) {
     await cl.query('insert into dns_records (zone_id, name, type, rdata) values ($1,$2,$3,$4) on conflict do nothing', [rz.id, ptr.slice(0, -(rz.name.length + 1)), 'PTR', `${hostname}.${z.name}.`])

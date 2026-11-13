@@ -2463,5 +2463,17 @@ const messages: Record<string, string> = {
   "dnh.no_diff": "Aucune différence avec la zone déployée.",
   "err.history_stale": "L'enregistrement a changé depuis : ce changement ne peut plus être annulé seul.",
   "err.history_not_revertible": "Un retour arrière ne s'annule pas ici : refaites la modification.",
+  "dnr.title": "Zones inverses",
+  "dnr.help": "Sous-réseaux dont la zone inverse (PTR) n'existe pas. Un /22 est servi par la zone de son /16 ; les /25 à /32 reçoivent une zone « classless » (RFC 2317) et un CNAME par adresse dans la zone du /24.",
+  "dnr.view": "Vue",
+  "dnr.model": "Zone modèle",
+  "dnr.model_h": "Optionnel : ses serveurs de noms (NS) et son SOA sont repris dans les nouvelles zones.",
+  "dnr.none": "Aucune",
+  "dnr.create": "Créer les zones",
+  "dnr.all_ok": "Tous les sous-réseaux ont leur zone inverse.",
+  "dnr.confirm_title": "Créer les zones inverses de {c} ?",
+  "dnr.confirm_msg": "Zones : {z}. Elles seront publiées au prochain déploiement.",
+  "dnr.done": "{z} zone(s) et {c} CNAME créés",
+  "err.reverse_too_large": "Ce sous-réseau est trop grand pour une zone inverse.",
 }
 export default messages

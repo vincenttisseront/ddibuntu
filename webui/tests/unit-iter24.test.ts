@@ -17,3 +17,12 @@ describe('migration Windows : état et scripts', () => {
     expect(PS_PUSH).toContain('refresh = $true'); expect(PS_PUSH).toContain('/api/migration/leases/commit')
   })
 })
+
+import { PS_CUTOVER_TTL as TTLS } from '../app/utils/migration-scripts'
+describe('scripts Windows : modules absents', () => {
+  it('chaque script qui a besoin du module DNS ou DHCP le vérifie avant et explique quoi faire', () => {
+    for (const s of [PS_INVENTORY, PS_DNS, TTLS]) expect(s).toMatch(/Get-Command Get-DnsServerZone/)
+    expect(PS_INVENTORY).toMatch(/Get-Command Get-DhcpServerv4Scope/); expect(PS_INVENTORY).toContain('RSAT')
+    expect(PS_INVENTORY).not.toMatch(/\b(Set|Add|Remove|Restart|Stop|Uninstall)-/i)
+  })
+})

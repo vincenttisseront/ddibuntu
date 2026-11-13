@@ -1,21 +1,31 @@
 // Scripts PowerShell à exécuter SUR le serveur Windows (lecture seule) pour préparer la migration. Aucune modification de configuration.
-export const PS_INVENTORY = `# Inventaire DNS / DHCP (lecture seule) — à exécuter sur le serveur Windows, en administrateur
+export const PS_INVENTORY = `# Inventaire DNS / DHCP (lecture seule) — à exécuter en administrateur sur le serveur Windows (ou un poste avec les outils RSAT DNS et DHCP)
 $out = "$env:TEMP\\migration"; New-Item -ItemType Directory -Force $out | Out-Null
-Get-DnsServerZone | Select-Object ZoneName, ZoneType, IsDsIntegrated, IsReverseLookupZone, DynamicUpdate, IsSigned, MasterServers |
-  Export-Csv "$out\\dns-zones.csv" -NoTypeInformation -Encoding UTF8
-Get-DnsServerForwarder | Out-File "$out\\dns-forwarders.txt"
-Get-DhcpServerv4Scope | Select-Object ScopeId, Name, SubnetMask, StartRange, EndRange, LeaseDuration, State, SuperscopeName |
-  Export-Csv "$out\\dhcp-scopes.csv" -NoTypeInformation -Encoding UTF8
-Get-DhcpServerv4Failover -ErrorAction SilentlyContinue | Out-File "$out\\dhcp-failover.txt"
-Get-DhcpServerv4Policy -ErrorAction SilentlyContinue | Out-File "$out\\dhcp-policies.txt"
-Get-DhcpServerv4Class -ErrorAction SilentlyContinue | Out-File "$out\\dhcp-classes.txt"
-Get-DhcpServerv4Filter -ErrorAction SilentlyContinue | Out-File "$out\\dhcp-mac-filters.txt"
+$dnsServer = $env:COMPUTERNAME   # ou le nom d'un autre serveur DNS, si ce poste n'héberge pas le rôle
+if (Get-Command Get-DnsServerZone -ErrorAction SilentlyContinue) {
+  Get-DnsServerZone -ComputerName $dnsServer | Select-Object ZoneName, ZoneType, IsDsIntegrated, IsReverseLookupZone, DynamicUpdate, IsSigned, MasterServers |
+    Export-Csv "$out\\dns-zones.csv" -NoTypeInformation -Encoding UTF8
+  Get-DnsServerForwarder -ComputerName $dnsServer | Out-File "$out\\dns-forwarders.txt"
+} else {
+  Write-Warning "Module DnsServer absent : DNS ignoré. Lancez ce script sur le serveur DNS, ou installez les outils RSAT DNS (Paramètres › Fonctionnalités facultatives, « Outils du serveur DNS »)."
+}
+if (Get-Command Get-DhcpServerv4Scope -ErrorAction SilentlyContinue) {
+  Get-DhcpServerv4Scope | Select-Object ScopeId, Name, SubnetMask, StartRange, EndRange, LeaseDuration, State, SuperscopeName |
+    Export-Csv "$out\\dhcp-scopes.csv" -NoTypeInformation -Encoding UTF8
+  Get-DhcpServerv4Failover -ErrorAction SilentlyContinue | Out-File "$out\\dhcp-failover.txt"
+  Get-DhcpServerv4Policy -ErrorAction SilentlyContinue | Out-File "$out\\dhcp-policies.txt"
+  Get-DhcpServerv4Class -ErrorAction SilentlyContinue | Out-File "$out\\dhcp-classes.txt"
+  Get-DhcpServerv4Filter -ErrorAction SilentlyContinue | Out-File "$out\\dhcp-mac-filters.txt"
+} else {
+  Write-Warning "Module DhcpServer absent : DHCP ignoré."
+}
 Write-Host "Inventaire écrit dans $out"`
 export const PS_DHCP = `# Export de la configuration DHCP (étendues, plages, exclusions, réservations, options) — fichier à importer dans l'onglet « DHCP »
 Export-DhcpServer -ComputerName $env:COMPUTERNAME -File "$env:TEMP\\dhcp-export.xml" -Force
 # Avec les baux actifs (fichier plus gros ; les baux ne sont pas encore repris à l'import) : ajouter -Leases
 Write-Host "Écrit : $env:TEMP\\dhcp-export.xml"`
 export const PS_DNS = `# Export des zones primaires (hors zones automatiques) au format fichier de zone — à importer dans l'onglet « DNS », zone par zone
+if (-not (Get-Command Get-DnsServerZone -ErrorAction SilentlyContinue)) { Write-Warning "Module DnsServer absent : exécutez ce script sur le serveur DNS (rôle installé)."; return }
 $dest = "$env:TEMP\\dns-export"; New-Item -ItemType Directory -Force $dest | Out-Null
 Get-DnsServerZone | Where-Object { -not $_.IsAutoCreated -and $_.ZoneType -eq 'Primary' -and $_.ZoneName -ne 'TrustAnchors' } | ForEach-Object {
   $f = "export-$($_.ZoneName).dns"
@@ -41,7 +51,8 @@ $csv = (Get-DhcpServerv4Scope | ForEach-Object { Get-DhcpServerv4Lease -ScopeId 
 Invoke-RestMethod -Method Post -Uri "$console/api/migration/leases/commit" -Headers @{ Authorization = "Bearer $token" } -ContentType 'application/json' -Body (@{ content = $csv; refresh = $true } | ConvertTo-Json)`
 
 // Scripts de bascule : CONTRAIREMENT aux précédents, ils MODIFIENT le serveur Windows. Ils ne sont affichés que dans le plan de bascule.
-export const PS_CUTOVER_TTL = `# J-1 : abaisser le TTL des enregistrements A / AAAA / CNAME à 300 s pour que la bascule se propage vite (exécuter sur le serveur Windows)
+export const PS_CUTOVER_TTL = `# J-1 : abaisser le TTL des enregistrements A / AAAA / CNAME à 300 s pour que la bascule se propage vite (exécuter sur le serveur DNS Windows)
+if (-not (Get-Command Get-DnsServerZone -ErrorAction SilentlyContinue)) { Write-Warning "Module DnsServer absent : exécutez ce script sur le serveur DNS."; return }
 $ttl = [timespan]::FromSeconds(300)
 Get-DnsServerZone | Where-Object { -not $_.IsAutoCreated -and $_.ZoneType -eq 'Primary' -and -not $_.IsReverseLookupZone -and $_.ZoneName -ne 'TrustAnchors' } | ForEach-Object {
   $z = $_.ZoneName

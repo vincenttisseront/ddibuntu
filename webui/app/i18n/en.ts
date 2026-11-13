@@ -2463,5 +2463,17 @@ const messages: Record<string, string> = {
   "dnh.no_diff": "No difference with the deployed zone.",
   "err.history_stale": "The record has changed since: this change can no longer be undone on its own.",
   "err.history_not_revertible": "A revert cannot be undone here: make the change again.",
+  "dnr.title": "Reverse zones",
+  "dnr.help": "Subnets with no reverse (PTR) zone. A /22 is served by its /16 zone; /25 to /32 get a classless zone (RFC 2317) and one CNAME per address in the /24 zone.",
+  "dnr.view": "View",
+  "dnr.model": "Model zone",
+  "dnr.model_h": "Optional: its name servers (NS) and SOA are copied into the new zones.",
+  "dnr.none": "None",
+  "dnr.create": "Create zones",
+  "dnr.all_ok": "Every subnet has its reverse zone.",
+  "dnr.confirm_title": "Create the reverse zones for {c}?",
+  "dnr.confirm_msg": "Zones: {z}. They will be published at the next deployment.",
+  "dnr.done": "{z} zone(s) and {c} CNAME created",
+  "err.reverse_too_large": "This subnet is too large for a reverse zone.",
 }
 export default messages
