@@ -5,6 +5,12 @@ import { cidrToString, isValidDnsName, normIp, parseCidr } from '../utils/net'
 import { RECORD_TYPES, conflictError, isAdCritical, isRecordType, normalizeRdata, renderZone, toRelativeName } from '../utils/dns'
 import { readAdState } from '../utils/adkrb'
 import { DNS_DEFAULTS } from '../utils/render'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { cfg } from '../utils/config'
+import { buildZoneFile } from '../utils/apply'
+import { validateFiles } from '../utils/render'
+import { lineDiff, logHistory, recSnap } from '../utils/dns-history'
 import { MAX_VIEWS, VIEW_NAME_RE, normalizeAcl, shadowedViews, uncoveredLocal } from '../utils/views'
 import type { ViewInfo } from '../utils/views'
 import type { DnsSettings } from '../utils/render'
@@ -134,6 +140,7 @@ route('POST', '/dns/records', 'operator', async (c) => {
     const r = (await cl.query('insert into dns_records (zone_id, name, type, ttl, rdata, comment, protected, disabled) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id',
       [b.zone_id, v.name, v.type, b.ttl ?? null, v.rdata, b.comment ?? null, v.protectedFlag, b.disabled ?? false])).rows[0].id
     await cl.query('update dns_zones set dirty = true, updated_at = now() where id = $1', [b.zone_id])
+    await logHistory(cl, b.zone_id, r as number, c.user!.username, 'create', null, recSnap({ name: v.name, type: v.type, ttl: b.ttl ?? null, rdata: v.rdata, comment: b.comment ?? null, protected: v.protectedFlag, disabled: b.disabled ?? false }))
     return r as number
   })
   await audit(c, 'record_create', 'record', id, { zone_id: b.zone_id, name: v.name, type: v.type })
@@ -142,7 +149,7 @@ route('POST', '/dns/records', 'operator', async (c) => {
 route('PUT', '/dns/records/:id', 'operator', async (c) => {
   const id = intParam(c, 'id')
   const b = await c.body(recBody)
-  const cur = await one<any>('select zone_id, protected, source from dns_records where id = $1', [id])
+  const cur = await one<any>('select zone_id, name, type, ttl, rdata, comment, protected, disabled, source from dns_records where id = $1', [id])
   if (!cur) fail(404, 'not_found')
   if (cur.source === 'dhcp') fail(409, 'record_dynamic')
   if (cur.protected && c.user!.role !== 'admin') fail(403, 'protected_record')
@@ -152,19 +159,21 @@ route('PUT', '/dns/records/:id', 'operator', async (c) => {
     await cl.query('update dns_records set name=$2, type=$3, ttl=$4, rdata=$5, comment=$6, protected=$7, disabled=$8, updated_at=now() where id=$1',
       [id, v.name, v.type, b.ttl ?? null, v.rdata, b.comment ?? null, cur.protected || v.protectedFlag, b.disabled ?? false])
     await cl.query('update dns_zones set dirty = true, updated_at = now() where id = $1', [b.zone_id])
+    await logHistory(cl, b.zone_id, id, c.user!.username, 'update', recSnap(cur), recSnap({ name: v.name, type: v.type, ttl: b.ttl ?? null, rdata: v.rdata, comment: b.comment ?? null, protected: cur.protected || v.protectedFlag, disabled: b.disabled ?? false }))
   })
   await audit(c, 'record_update', 'record', id, { name: v.name, type: v.type })
   return { ok: true }
 })
 route('DELETE', '/dns/records/:id', 'operator', async (c) => {
   const id = intParam(c, 'id')
-  const cur = await one<any>('select zone_id, protected, source from dns_records where id = $1', [id])
+  const cur = await one<any>('select zone_id, name, type, ttl, rdata, comment, protected, disabled, source from dns_records where id = $1', [id])
   if (!cur) fail(404, 'not_found')
   if (cur.source === 'dhcp') fail(409, 'record_dynamic')
   if (cur.protected && c.user!.role !== 'admin') fail(403, 'protected_record')
   await tx(async (cl) => {
     await cl.query('delete from dns_records where id = $1', [id])
     await cl.query('update dns_zones set dirty = true, updated_at = now() where id = $1', [cur.zone_id])
+    await logHistory(cl, cur.zone_id, id, c.user!.username, 'delete', recSnap(cur), null)
   })
   await audit(c, 'record_delete', 'record', id)
   return { ok: true }
@@ -281,3 +290,67 @@ route('PUT', '/dns/settings', 'admin', async (c) => {
 
 // Valeur exportée et lue par le point d'entrée : empêche l'élimination du module par l'optimiseur
 export const registered = true
+
+// ---- Historique et retour arrière (0.10.3) ----
+const histCols = 'h.id, h.zone_id, h.record_id, h.at, h.username, h.action, h.before, h.after'
+route('GET', '/dns/records/:id/history', 'viewer', async (c) => ({ items: await query(`select ${histCols} from dns_record_history h where h.record_id = $1 order by h.id desc limit 100`, [intParam(c, 'id')]) }))
+route('GET', '/dns/zones/:id/history', 'viewer', async (c) => {
+  const id = intParam(c, 'id'), limit = qint(c, 'limit', 100, 1, 500)
+  if (!(await one('select 1 from dns_zones where id = $1', [id]))) fail(404, 'not_found')
+  return { items: await query(`select ${histCols} from dns_record_history h where h.zone_id = $1 order by h.id desc limit $2`, [id, limit]) }
+})
+
+// Annule UN changement : le contenu actuel doit être exactement celui que ce changement a produit, sinon on ne devine pas (409 history_stale).
+route('POST', '/dns/history/:id/revert', 'operator', async (c) => {
+  const hid = intParam(c, 'id')
+  const h = await one<any>('select id, zone_id, record_id, action, before, after from dns_record_history where id = $1', [hid])
+  if (!h) fail(404, 'not_found')
+  if (h.action === 'revert') fail(400, 'history_not_revertible')
+  const cur = h.record_id ? await one<any>('select id, zone_id, name, type, ttl, rdata, comment, protected, disabled, source from dns_records where id = $1', [h.record_id]) : null
+  if (cur?.source === 'dhcp') fail(409, 'record_dynamic')
+  const guard = (snap: any) => { if ((snap?.protected || cur?.protected) && c.user!.role !== 'admin') fail(403, 'protected_record') }
+  const same = (a: any, b: any) => !!a && !!b && JSON.stringify(recSnap(a)) === JSON.stringify(recSnap(b))
+  const b = h.before, a = h.after
+  let newId: number | null = h.record_id, from: any = null, to: any = null
+  if (h.action === 'create') {
+    if (!same(cur, a)) fail(409, 'history_stale')
+    guard(a); from = recSnap(cur); to = null
+    await tx(async (cl) => {
+      await cl.query('delete from dns_records where id = $1', [cur.id]); await cl.query('update dns_zones set dirty = true, updated_at = now() where id = $1', [h.zone_id])
+      await logHistory(cl, h.zone_id, cur.id, c.user!.username, 'revert', from, null)
+    })
+  } else if (h.action === 'update') {
+    if (!same(cur, a)) fail(409, 'history_stale')
+    guard(b); from = recSnap(cur); to = b
+    const v = await validateRecord(h.zone_id, { zone_id: h.zone_id, name: b.name, type: b.type, ttl: b.ttl, rdata: b.rdata, comment: b.comment, disabled: b.disabled }, cur.id)
+    await tx(async (cl) => {
+      await cl.query('update dns_records set name=$2, type=$3, ttl=$4, rdata=$5, comment=$6, disabled=$7, updated_at=now() where id=$1', [cur.id, v.name, v.type, b.ttl, v.rdata, b.comment, b.disabled])
+      await cl.query('update dns_zones set dirty = true, updated_at = now() where id = $1', [h.zone_id])
+      await logHistory(cl, h.zone_id, cur.id, c.user!.username, 'revert', from, recSnap({ ...b, name: v.name, rdata: v.rdata }))
+    })
+  } else {   // delete : on recrée l'enregistrement tel qu'il était
+    if (cur) fail(409, 'history_stale')
+    guard(b); to = b
+    const v = await validateRecord(h.zone_id, { zone_id: h.zone_id, name: b.name, type: b.type, ttl: b.ttl, rdata: b.rdata, comment: b.comment, disabled: b.disabled })
+    newId = await tx(async (cl) => {
+      const r = (await cl.query('insert into dns_records (zone_id, name, type, ttl, rdata, comment, protected, disabled) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id', [h.zone_id, v.name, v.type, b.ttl, v.rdata, b.comment, b.protected || v.protectedFlag, b.disabled])).rows[0].id as number
+      await cl.query('update dns_zones set dirty = true, updated_at = now() where id = $1', [h.zone_id])
+      await logHistory(cl, h.zone_id, r, c.user!.username, 'revert', null, recSnap({ ...b, name: v.name, rdata: v.rdata }))
+      return r
+    })
+  }
+  await audit(c, 'record_revert', 'record', newId ?? undefined, { history: hid, action: h.action })
+  return { ok: true, id: newId }
+})
+
+// Aperçu d'une zone avant déploiement : validation named-checkzone et différences avec le fichier actuellement déployé.
+route('GET', '/dns/zones/:id/preview', 'viewer', async (c) => {
+  const built = await buildZoneFile(intParam(c, 'id'))
+  if (!built) fail(404, 'not_found')
+  let deployed: string | null = null
+  try { deployed = await readFile(join(cfg().generatedDir, built.file.path), 'utf8') } catch { /* pas encore déployée */ }
+  const checks = await validateFiles([built.file])
+  const diff = deployed === null ? null : lineDiff(deployed, built.file.content)
+  const cap = (a: string[]) => a.slice(0, 500)
+  return { zone: built.zone, dirty: built.dirty, deployed: deployed !== null, checks, diff: diff && { added: cap(diff.added), removed: cap(diff.removed) }, lines: built.file.content.split('\n').length }
+})

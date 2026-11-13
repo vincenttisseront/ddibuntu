@@ -42,3 +42,16 @@ describe('classes de clients DHCP', () => {
     expect(planWindowsClasses('<x', new Set()).errors).toEqual(['dhcp_xml_invalid']); expect(planWindowsClasses('<a/>', new Set()).errors).toEqual(['dhcp_no_ipv4'])
   })
 })
+
+import { lineDiff, recSnap } from '../server/utils/dns-history'
+describe('historique DNS', () => {
+  it('diff : ordre et ligne SOA ignorés, doublons comptés', () => {
+    const a = '$ORIGIN x.\n@ IN SOA a. b. ( 1 2 3 4 5 )\nwww IN A 1.1.1.1\nold IN A 2.2.2.2\n'
+    const b = '$ORIGIN x.\n@ IN SOA a. b. ( 9 2 3 4 5 )\nnew IN A 3.3.3.3\nwww IN A 1.1.1.1\n'
+    expect(lineDiff(a, b)).toEqual({ added: ['new IN A 3.3.3.3'], removed: ['old IN A 2.2.2.2'] })
+    expect(lineDiff(a, a)).toEqual({ added: [], removed: [] })
+  })
+  it('instantané d\'enregistrement : champs normalisés', () => {
+    expect(recSnap({ name: 'w', type: 'A', rdata: '1.1.1.1', id: 5, zone_id: 1 })).toEqual({ name: 'w', type: 'A', ttl: null, rdata: '1.1.1.1', comment: null, protected: false, disabled: false })
+  })
+})

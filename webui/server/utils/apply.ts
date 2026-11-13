@@ -129,3 +129,13 @@ export async function applyConfig(opts: { deploy: boolean; username: string | nu
   }
   return { ok, deployed, results, warnings, files: files.map((f) => f.path), generation }
 }
+
+/** Fichier de zone tel qu'il serait déployé maintenant (numéro de série compris), pour l'aperçu d'une seule zone. */
+export async function buildZoneFile(zoneId: number): Promise<{ file: OutFile; zone: string; dirty: boolean } | null> {
+  const z = await one<any>(`select z.id, z.name, z.type, z.masters, z.forwarders, z.allow_transfer, z.ddns_enabled, z.ddns_secure, z.disabled, z.soa_mname, z.soa_rname, z.soa_refresh, z.soa_retry, z.soa_expire,
+    z.soa_minimum, z.default_ttl, z.serial::text as serial, z.dirty, v.name as view from dns_zones z left join dns_views v on v.id = z.view_id where z.id = $1`, [zoneId])
+  if (!z || z.type !== 'primary') return null
+  const recs = await query<any>('select name, type, ttl, rdata, disabled from dns_records where zone_id = $1', [z.id])
+  const serial = z.dirty ? nextSerial(Number(z.serial)) : Number(z.serial)
+  return { file: zoneFile({ ...z, serial } as ZoneRow, recs), zone: z.name, dirty: !!z.dirty }
+}

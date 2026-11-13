@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.12.9 — « Historique DNS, retour arrière et aperçu de zone » (ex-0.10.3)
+
+- Historique de chaque enregistrement DNS (création, modification, suppression, retour arrière) avec l'avant / après, l'auteur et l'heure : 500 derniers changements par zone, nouvel onglet DNS › Historique (migration 20).
+- Retour arrière d'un changement, tant que l'enregistrement n'a pas été modifié depuis (sinon refus explicite) ; les enregistrements protégés restent réservés à l'administrateur, les enregistrements dynamiques sont exclus.
+- Aperçu d'une zone avant déploiement : validation `named-checkzone` et différences ligne à ligne avec le fichier actuellement déployé (le numéro de série est ignoré).
+- Tests : unit-iter30 (complété), e2e-iter31.
+
 ## 0.12.8 — « Classes de clients DHCP »
 
 - Nouvelle table `dhcp_classes` (migration 19) et onglet DHCP › Classes de clients : classes fabricant (option 60), utilisateur (option 77) ou adresse MAC (préfixe de 3 octets ou adresse complète).

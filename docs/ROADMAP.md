@@ -76,7 +76,7 @@ Dix évolutions, une version chacune, chacune testée (unitaires, e2e, batteries
 | 1 | 0.10.0 | Synchronisation bail DHCP → DNS (DDNS maîtrisé) : A/PTR créés et retirés avec le bail, enregistrements marqués « dynamiques », jamais d'écrasement d'un statique | ✅ 0.10.0 |
 | 2 | 0.10.1 | Contrôle de cohérence continu (« DNS health ») : PTR orphelins, A sans fiche IPAM, IP sans nom, conflits DHCP/DNS, CNAME pendants ; correction en un clic, score par zone | ✅ 0.10.1 |
 | 3 | 0.10.2 | Cycle de vie d'une adresse en un geste (réserver / libérer : fiche, réservation, A, PTR, alias, en tout-ou-rien, avec récapitulatif) | ✅ 0.10.2 |
-| 4 | 0.10.3 | Historique et retour arrière par enregistrement ; diff avant déploiement de zone, validation `named-checkzone` | ⬜ |
+| 4 | 0.10.3 | Historique et retour arrière par enregistrement ; diff avant déploiement de zone, validation `named-checkzone` | ✅ 0.12.9 |
 | 5 | 0.10.4 | Zones inverses automatiques par sous-réseau, délégations CIDR (RFC 2317) | ⬜ |
 | 6 | 0.10.5 | Modèles de nommage et d'enregistrements par sous-réseau / VLAN, contrôle de convention | ⬜ |
 | 7 | 0.10.6 | Import / export et opérations en masse (CSV, AXFR, édition multiple avec prévisualisation) | ⬜ |

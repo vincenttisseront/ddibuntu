@@ -1,8 +1,8 @@
 <script setup lang="ts">
 const { t } = useT(); const api = useApi(); const toast = useToast()
 const { canWrite, isAdmin } = useRole()
-const tab = useHashTab('zones', ['zones', 'views', 'records', 'health', 'settings', 'deploy'])
-const tabs = computed(() => [{ label: t('dns.zones'), value: 'zones', icon: 'i-lucide-folder-tree' }, { label: t('dnsv.title'), value: 'views', icon: 'i-lucide-split' }, { label: t('dns.records'), value: 'records', icon: 'i-lucide-file-text' }, { label: t('dnshealth.title'), value: 'health', icon: 'i-lucide-heart-pulse' }, { label: t('dns.settings'), value: 'settings', icon: 'i-lucide-sliders-horizontal' }, { label: t('apply.title'), value: 'deploy', icon: 'i-lucide-rocket' }])
+const tab = useHashTab('zones', ['zones', 'views', 'records', 'history', 'health', 'settings', 'deploy'])
+const tabs = computed(() => [{ label: t('dns.zones'), value: 'zones', icon: 'i-lucide-folder-tree' }, { label: t('dnsv.title'), value: 'views', icon: 'i-lucide-split' }, { label: t('dns.records'), value: 'records', icon: 'i-lucide-file-text' }, { label: t('dnh.title'), value: 'history', icon: 'i-lucide-history' }, { label: t('dnshealth.title'), value: 'health', icon: 'i-lucide-heart-pulse' }, { label: t('dns.settings'), value: 'settings', icon: 'i-lucide-sliders-horizontal' }, { label: t('apply.title'), value: 'deploy', icon: 'i-lucide-rocket' }])
 const { data: zones, refresh: refreshZones } = await useFetch<any>('/api/dns/zones')
 const { data: types } = await useFetch<any>('/api/dns/types')
 const { data: viewList, refresh: refreshViews } = await useFetch<any>('/api/dns/views')
@@ -94,6 +94,7 @@ async function saveSettings() {
       <div class="flex gap-2 flex-wrap"><USelect v-model="zoneFilter" :items="zoneFilterOptions" class="w-64" :aria-label="t('dns.zone')" /><USelect v-model="typeFilter" :items="typeFilterOptions" class="w-36" :aria-label="t('common.type')" /></div>
       <ResourceTable :key="`${zoneFilter}-${typeFilter}`" endpoint="/dns/records" :query="recQuery" :columns="recCols" :fields="recFields" :can-write="canWrite" create-url="/dns/records" :update-url="(r: any) => `/dns/records/${r.id}`" :delete-url="(r: any) => `/dns/records/${r.id}`" :delete-name="(r: any) => `${r.name} ${r.type}`" :create-label="t('dns.add_record')" searchable @changed="refreshZones" />
     </div>
+    <DnsHistory v-else-if="tab === 'history'" />
     <DnsHealth v-else-if="tab === 'health'" />
     <div v-else-if="tab === 'settings'" class="flex flex-col gap-4 max-w-3xl">
     <UCard>
