@@ -59,7 +59,7 @@ Ces itérations priment sur l'ordre ci-dessous, qui ne concerne que les fonction
 Traitée **avant** le reste des séries 0.10.x et 0.11.x. Déjà en place : import d'un export `Export-DhcpServer` (étendues, plages, exclusions, réservations, options), import de zones (fichiers `dnscmd /ZoneExport`, LDAP AD), sites et sous-réseaux AD, instantané avant import, Kerberos/AD. Il manque l'**accompagnement** : parcours guidé, évaluation de compatibilité, reprise des baux et des fonctions avancées, coexistence, vérification et bascule réversible.
 | # | Version | Évolution | État |
 |---|---|---|---|
-| 1 | 0.12.0 | Assistant « Migration Windows » : parcours guidé (inventaire → évaluation → import → vérification → bascule), scripts PowerShell à copier, avancement conservé | ⬜ |
+| 1 | 0.12.0 | Assistant « Migration Windows » : parcours guidé (inventaire → évaluation → import → vérification → bascule), scripts PowerShell à copier, avancement conservé | ✅ 0.12.0 |
 | 2 | 0.12.1 | Évaluation de compatibilité : rapport « repris / adapté / non pris en charge » pour DHCP (failover, politiques, filtres MAC, superscopes, classes) et DNS (zones intégrées AD, stub, redirecteurs conditionnels, DNSSEC, vieillissement) | ⬜ |
 | 3 | 0.12.2 | Import DHCP complet : baux actifs (continuité des clients), classes / option 43, filtres MAC, politiques → classes Kea, superscopes, failover → Kea HA | ⬜ |
 | 4 | 0.12.3 | Import DNS complet : transfert de zone (AXFR) direct depuis le serveur Windows, redirecteurs conditionnels, zones secondaires / stub, enregistrements AD critiques protégés | ⬜ |

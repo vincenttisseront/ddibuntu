@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.12.0 — « Assistant de migration Windows »
+- **Nouvel onglet Import › Migration Windows** (premier onglet) : parcours guidé en sept étapes pour reprendre un DNS / DHCP Windows Server — préparer les exports, sites et sous-réseaux AD, DHCP, DNS, contrôle, bascule, retrait des rôles Windows. Barre d'avancement et totaux déjà repris (réseaux, étendues, zones).
+- **Scripts PowerShell prêts à l'emploi**, en lecture seule, à copier ou télécharger : inventaire (zones, redirecteurs, étendues, failover, politiques, classes, filtres MAC), export DHCP (`Export-DhcpServer`) et export des zones (`dnscmd /ZoneExport`).
+- **Détection automatique** des étapes d'import (historique des imports) ; les autres étapes se cochent à la main. L'avancement est partagé par tous les administrateurs et par le cluster (réglage `migration`), les changements sont audités (`migration_step`).
+- API : `GET /migration` (lecture), `PUT /migration {step, done}` (opérateur).
+- Série 0.12.x prioritaire : évaluation de compatibilité, import DHCP/DNS complets, coexistence, vérification, bascule réversible (voir la feuille de route).
+
 ## 0.10.2 — « Libérer une adresse en un geste »
 - **IPAM › Adresses › Supprimer** ouvre désormais un **récapitulatif** de tout ce qui disparaît avec l'IP : enregistrements **A/AAAA**, **PTR**, **alias CNAME** (toutes profondeurs, toutes vues) et **réservation DHCP**. Case « supprimer aussi ces enregistrements DNS » (cochée par défaut).
 - **Tout ou rien** : fiche IPAM, réservation et enregistrements DNS partent dans une seule transaction ; les zones touchées passent « à déployer » ; action auditée (`address_release`).

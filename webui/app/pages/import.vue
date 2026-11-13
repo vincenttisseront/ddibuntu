@@ -1,10 +1,10 @@
 <script setup lang="ts">
 const { t } = useT(); const api = useApi(); const toast = useToast()
 const { canWrite, isAdmin } = useRole()
-const tab = useHashTab(isAdmin.value ? 'wizard' : 'dns', ['wizard', 'dns', 'dhcp', 'subnets', 'csv', 'ad', 'history'])
+const tab = useHashTab(isAdmin.value ? 'migration' : 'dns', ['migration', 'wizard', 'dns', 'dhcp', 'subnets', 'csv', 'ad', 'history'])
 const baseTabs = computed(() => [{ label: t('import.t_dns'), value: 'dns', icon: 'i-lucide-globe' }, { label: t('import.t_dhcp'), value: 'dhcp', icon: 'i-lucide-server' }, { label: t('import.t_subnets'), value: 'subnets', icon: 'i-lucide-map-pinned' },
   { label: t('import.t_csv'), value: 'csv', icon: 'i-lucide-table' }, { label: t('import.t_ad'), value: 'ad', icon: 'i-lucide-key-round' }, { label: t('import.history'), value: 'history', icon: 'i-lucide-history' }])
-const tabs = computed(() => [...(isAdmin.value ? [{ label: t('adw.title'), value: 'wizard', icon: 'i-lucide-wand-sparkles' }] : []), ...baseTabs.value])
+const tabs = computed(() => [{ label: t('mig.title'), value: 'migration', icon: 'i-lucide-route' }, ...(isAdmin.value ? [{ label: t('adw.title'), value: 'wizard', icon: 'i-lucide-wand-sparkles' }] : []), ...baseTabs.value])
 const { data: zones } = await useFetch<any>('/api/dns/zones')
 const primary = computed(() => (zones.value?.items ?? []).filter((z: any) => z.type === 'primary').map((z: any) => ({ label: z.name, value: z.id })))
 const dnsExtra = reactive<any>({ zone_id: 0, mode: 'skip', apply_soa: false })
@@ -33,6 +33,7 @@ async function testAd() { testRes.value = null; try { testRes.value = await api.
   <div class="flex flex-col gap-3">
     <UTabs v-model="tab" :items="tabs" :content="false" :aria-label="t('nav.import')" />
     <p v-if="!canWrite" class="text-sm text-muted">{{ t('import.readonly') }}</p>
+    <MigrationWizard v-else-if="tab === 'migration'" @goto="(x: string) => (tab = x)" />
     <AdWizard v-else-if="tab === 'wizard'" />
     <ImportPanel v-else-if="tab === 'dns'" preview-url="/import/dns/preview" commit-url="/import/dns/commit" :extra="dnsExtra" accept=".dns,.txt,.zone,text/plain" :hint="t('import.dns_hint')">
       <UFormField :label="t('dns.zone')"><USelect v-model="dnsExtra.zone_id" :items="primary" class="w-full" /></UFormField>
