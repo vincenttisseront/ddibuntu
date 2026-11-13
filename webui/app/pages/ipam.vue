@@ -124,6 +124,7 @@ watch([spaceId, fam, addrSubnet, addrQ, addrStatus], () => { addrOffset.value = 
 const addrCols = computed<DCol[]>(() => [
   { key: 'ip', label: 'IP', kind: 'mono' }, { key: 'status', label: t('common.status'), kind: 'badge', trans: 'ipam.status' }, { key: 'hostname', label: t('ipam.hostname') }, { key: 'mac', label: 'MAC', kind: 'mono' },
   { key: 'reachable', label: t('ipam.reach.col'), fmt: (v: boolean | null, r: any) => (v === null || v === undefined ? t('ipam.reach.unknown') : `${v ? t('ipam.reach.up') : t('ipam.reach.down')} · ${new Date(r.checked_at).toLocaleDateString()}`) },
+  { key: 'aliases', label: t('addrdns.col'), fmt: (v: string[] | null) => (v?.length ? (v.length > 2 ? `${v.slice(0, 2).join(', ')} +${v.length - 2}` : v.join(', ')) : '') },
   { key: 'description', label: t('common.description') }, { key: 'owner', label: t('ipam.owner') }, { key: 'cidr', label: t('ipam.network'), kind: 'mono' }, { key: 'space', label: t('ipam.space'), hidden: !!spaceId.value },
 ])
 const addrPrefill = ref('')
@@ -210,6 +211,8 @@ async function useDnsName() {
   try { await api.call('PUT', `/ipam/addresses/${chk.row.id}`, { hostname: chkName.value }); chk.res = { ...chk.res, hostname: chkName.value, hostnameIps: null, hostnameMatchesIp: null }; toast.add({ title: t('common.saved'), color: 'success', icon: 'i-lucide-check' }); await refreshAll() } catch (e: any) { chk.err = e.info?.message ?? t('err.internal') } finally { chk.busy = false }
 }
 async function deleteChecked() { const r = chk.row; chk.open = false; await removeAddr(r) }
+const dnsOpen = ref(false), dnsRow = ref<any>(null)
+const openDns = (row: any) => { dnsRow.value = row; dnsOpen.value = true }
 const nextOpen = ref(false), nextState = reactive({ subnet_id: 0, pool_id: 0, hostname: '', status: 'used', dns_zone_id: 0 }), nextErr = ref('')
 const nextPoolOptions = computed(() => [{ label: t('ipam.no_pool'), value: 0 }, ...(pools.value?.items ?? []).filter((p: any) => p.subnet_id === nextState.subnet_id).map((p: any) => ({ label: `${p.name} (${p.start_ip} – ${p.end_ip})`, value: p.id }))])
 function openNext(subnetId = 0, poolId = 0) { nextState.subnet_id = subnetId || addrSubnet.value || (leafOptions.value[0]?.value as number) || 0; nextState.pool_id = poolId; nextErr.value = ''; nextOpen.value = true }
@@ -298,6 +301,7 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
         <UButton icon="i-lucide-download" size="sm" color="neutral" variant="ghost" :label="t('ipam.export')" href="/api/ipam/export/addresses" external />
       </template>
       <template #actions="{ row }">
+        <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-link" :aria-label="t('addrdns.open')" :title="t('addrdns.open')" data-test="addr-dns" @click="openDns(row)" />
         <UButton v-if="canWrite" size="xs" color="neutral" variant="ghost" icon="i-lucide-radar" :aria-label="t('ipam.check')" :title="t('ipam.check')" @click="checkAddr(row)" />
         <UButton v-if="canWrite" size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t('common.edit')" @click="openForm('addr', row)" />
         <UButton v-if="canWrite" size="xs" color="error" variant="ghost" icon="i-lucide-trash-2" :aria-label="t('common.delete')" @click="removeAddr(row)" />
@@ -359,6 +363,7 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
         </div>
       </template>
     </UModal>
+    <AddressDns v-model:open="dnsOpen" :address="dnsRow" :can-write="canWrite" @changed="refreshAll" />
     <UModal v-model:open="nextOpen" :title="t('ipam.next_free')" :description="t('ipam.next_desc')">
       <template #body><form class="flex flex-col gap-3" @submit.prevent="allocate">
         <UAlert v-if="nextErr" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="nextErr" />

@@ -5,6 +5,7 @@ import { one, query, tx } from '../utils/db'
 import { capacity, nextFree, nextFreeInRange, isHostname, normIp, normMac, parseCidr, cidrToString, cidrContainsIp, parseIp, ptrName } from '../utils/net'
 import type { PoolClient } from 'pg'
 import { cleanOptions, optionsS } from '../utils/dhcpopts'
+import { aliasNames } from '../utils/alias-db'
 import { checkHostnameRule, patternError, resolveDnsZone, syncReservation } from '../utils/smartddi'
 
 const cidrS = z.string().trim().refine((v) => !!parseCidr(v), 'cidr')
@@ -168,13 +169,14 @@ route('GET', '/ipam/subnets/:id/addresses', 'viewer', async (c) => {
   const items = await query(`select id, host(ip) as ip, status, hostname, mac::text as mac, description, owner, reachable, checked_at from addresses
     where subnet_id = $1 and ($2::text is null or hostname ilike $2 or host(ip) like $2 or mac::text ilike $2 or description ilike $2)
       and ($3::text is null or status = $3) order by ip`, [id, q ? `%${q}%` : null, st ?? null])
-  return { items }
+  const al = await aliasNames((items as any[]).map((i) => i.ip))
+  return { items: (items as any[]).map((i) => ({ ...i, aliases: al.get(normIp(i.ip) ?? '') ?? [] })) }
 })
 
 const addrBody = z.object({ ip: ipS, status: status.default('used'), hostname: host.nullable().optional(), mac: mac.nullable().optional(), description: z.string().max(500).nullable().optional(), owner: z.string().max(100).nullable().optional(), dns_zone_id: z.number().int().nullable().optional() })
 
 /** Crée les enregistrements A/AAAA et PTR correspondant à une adresse (si une zone inverse primaire existe). */
-async function syncDns(cl: PoolClient, ip: string, hostname: string, zoneId: number): Promise<void> {
+export async function syncDns(cl: PoolClient, ip: string, hostname: string, zoneId: number): Promise<void> {
   const z = (await cl.query("select id, name, view_id from dns_zones where id = $1 and type = 'primary'", [zoneId])).rows[0]
   if (!z) fail(400, 'zone_not_primary')
   const addr = parseIp(ip)!
@@ -317,7 +319,8 @@ route('GET', '/ipam/addresses', 'viewer', async (c) => {
   const total = (await one<any>(`select count(*)::int as n from addresses a join subnets s on s.id = a.subnet_id ${where}`, args)).n
   const items = await query(`select a.id, a.subnet_id, host(a.ip) as ip, a.status, a.hostname, a.mac::text as mac, a.description, a.owner, a.reachable, a.checked_at, text(s.cidr) as cidr, s.name as network, sp.name as space
     from addresses a join subnets s on s.id = a.subnet_id join ipam_spaces sp on sp.id = s.space_id ${where} order by s.space_id, a.ip limit ${limit} offset ${offset}`, args)
-  return { items, total }
+  const al = await aliasNames((items as any[]).map((i) => i.ip))
+  return { items: (items as any[]).map((i) => ({ ...i, aliases: al.get(normIp(i.ip) ?? '') ?? [] })), total }
 })
 
 // ---- Gabarits de réseau : règles héritées à la création d'un réseau ----

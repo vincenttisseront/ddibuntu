@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.9.53 — « Alias (CNAME) gérés depuis l'adresse IP »
+- **Vue unifiée d'une adresse** (IPAM › Adresses, bouton « Noms DNS et alias ») : les noms qui portent l'adresse (A/AAAA), son PTR et tous ses **alias CNAME**, avec ajout, modification (cible, TTL, commentaire, désactivation) et suppression sans quitter l'IP. Nouvelle colonne **Alias** dans les listes d'adresses.
+- Aucun lien stocké : les alias sont **recalculés à la lecture** (CNAME de la même vue DNS qui pointent, directement ou en chaîne, vers un nom de l'adresse), donc rien à resynchroniser quand le DNS évolue. Alias d'alias affichés en arborescence (8 niveaux au plus).
+- Création : nom court (zone de la cible) ou complet (zone déduite du nom, suffixe le plus long, y compris une autre zone), cible choisie quand l'adresse a plusieurs noms. Garde-fous : nom déjà pris, sommet de zone, alias vers soi-même, **boucle**, chaîne trop longue, zone d'une autre vue. Une adresse sans enregistrement A/AAAA propose de le créer (avec PTR) depuis son nom d'hôte.
+- Suppression d'un alias qui en porte d'autres : refusée, ou en cascade sur demande ; un alias qui en porte ne se renomme pas. Un alias ne se modifie que depuis l'adresse dont il dépend ; droits d'opérateur et périmètre d'espaces respectés ; chaque action est auditée (`alias_create|update|delete`, `address_dns_create`). Les zones touchées sont marquées « à déployer ».
+- Correctif de test : l'échéance de certificat du tableau de bord ne dépend plus de la seconde en cours.
+
 ## 0.9.52 — « MFA obligatoire par rôle »
 - **Double authentification imposée par rôle** (Système › Utilisateurs) : l'administrateur coche les rôles (administrateur, opérateur, lecteur) dont les comptes **locaux** doivent activer le TOTP. À leur prochaine requête, une fenêtre d'inscription non fermable s'impose (mot de passe, QR code, premier code, codes de secours) ; tant qu'elle n'est pas terminée, le serveur refuse tout le reste (`mfa_enrol_required`), puis la session retrouve ses droits sans reconnexion. Nombre de comptes encore sans second facteur affiché par rôle, confirmation avant d'imposer.
 - Les comptes AD, LDAP et SSO ne sont jamais bloqués (second facteur de leur fournisseur) ; les jetons d'API ne sont pas concernés. Réglage commun à tous les nœuds du cluster, effet sous 15 s, audité (`mfa_policy`).
