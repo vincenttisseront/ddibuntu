@@ -242,6 +242,38 @@ check_fail "la dernière sauvegarde ne peut pas être supprimée" bk delete "$(f
 expect_eq "(elle est restée)" "1" "$(nbk)"
 sleep 1; bk run >/dev/null 2>&1; bk run >/dev/null 2>&1; bk prune >/dev/null 2>&1
 
+echo "== Rétention en jours et contrôle d'intégrité =="
+check "KEEP_FULL=1 KEEP_DAYS=30" bk configure KEEP_FULL=1 KEEP_DAYS=30 INTERVAL_HOURS=24 START_HOUR=0 MIRROR_DIR=
+sleep 1; bk run >/dev/null 2>&1; sleep 1; bk run >/dev/null 2>&1
+n2="$(nbk)"; check "plusieurs sauvegardes récentes" test "$n2" -ge 2
+bk prune >/dev/null 2>&1
+expect_eq "prune : les sauvegardes de moins de 30 jours sont conservées malgré KEEP_FULL=1" "$n2" "$(nbk)"
+DDI_NOW=$(( $(date +%s) + 40 * 86400 )) bk prune >/dev/null 2>&1
+expect_eq "prune 40 jours plus tard : seule la plus récente reste" "1" "$(nbk)"
+expect_eq "KEEP_DAYS publié dans l'état" "30" "$(st 'd["keepDays"]')"
+check_fail "KEEP_DAYS hors bornes refusé" bk configure KEEP_DAYS=366
+check_fail "VERIFY_AFTER invalide refusé" bk configure VERIFY_AFTER=2
+check "retour à KEEP_DAYS=0" bk configure KEEP_FULL=2 KEEP_DAYS=0 INTERVAL_HOURS=24 START_HOUR=0 MIRROR_DIR=
+sleep 1; bk run >/dev/null 2>&1; sleep 1
+check "verify" bk verify
+expect_eq "dernier contrôle : intègre" "True" "$(st 'd["lastVerify"]["ok"]')"
+CORR="$(find "$REPO/base" -mindepth 1 -maxdepth 1 -name '2*' -printf '%f\n' | sort | head -n1)"
+printf 'x' >> "$REPO/base/$CORR/base.tar.gz"
+check_fail "verify détecte la corruption" bk verify
+expect_eq "dernier contrôle : corrompu" "False" "$(st 'd["lastVerify"]["ok"]')"
+expect_eq "…avec une sauvegarde corrompue" "1" "$(st 'd["lastVerify"]["badBackups"]')"
+check "suppression de la sauvegarde corrompue" bk delete "$CORR"
+check "verify de nouveau intègre" bk verify
+expect_eq "dernier contrôle : intègre à nouveau" "True" "$(st 'd["lastVerify"]["ok"]')"
+sleep 1; bk run >/dev/null 2>&1; bk prune >/dev/null 2>&1
+rm -f "$RUN/backup-verify.json"
+DDI_NOW=$(( $(date +%s) + 90000 )) bk auto >/dev/null 2>&1
+check "auto : contrôle automatique après la sauvegarde planifiée" test -s "$RUN/backup-verify.json"
+rm -f "$RUN/backup-verify.json"; bk configure KEEP_FULL=2 VERIFY_AFTER=0 INTERVAL_HOURS=24 START_HOUR=0 MIRROR_DIR= >/dev/null 2>&1
+DDI_NOW=$(( $(date +%s) + 200000 )) bk auto >/dev/null 2>&1
+check "auto : pas de contrôle si VERIFY_AFTER=0" test ! -e "$RUN/backup-verify.json"
+bk configure KEEP_FULL=2 VERIFY_AFTER=1 INTERVAL_HOURS=24 START_HOUR=0 MIRROR_DIR= >/dev/null 2>&1
+
 echo "== Planification (minuteur) =="
 n1="$(nbk)"
 bk auto >/dev/null 2>&1
@@ -270,11 +302,14 @@ check "run : une sauvegarde de plus (ou rétention)" test "$(nbk)" -ge 1
 req '{"action":"verify"}';                                expect_eq "verify accepté" "True" "$(res 'd["ok"]')"
 req '{"action":"configure","keepFull":3,"intervalHours":12,"startHour":1,"mirrorDir":""}'; expect_eq "configure accepté" "True" "$(res 'd["ok"]')"
 expect_grep "configure : écrit" '^INTERVAL_HOURS=12$' "$CONF"
+req '{"action":"configure","keepFull":3,"keepDays":14,"verifyAfter":false,"intervalHours":12,"startHour":1,"mirrorDir":""}'; expect_eq "configure (rétention en jours, contrôle) accepté" "True" "$(res 'd["ok"]')"
+expect_grep "configure : KEEP_DAYS écrit" '^KEEP_DAYS=14$' "$CONF"; expect_grep "configure : VERIFY_AFTER écrit" '^VERIFY_AFTER=0$' "$CONF"
 req '{"action":"prune"}';                                 expect_eq "prune accepté" "True" "$(res 'd["ok"]')"
 for bad in 'pas du json' '[]' '{"action":"format-disk"}' '{"action":"run","x":1}' '{"action":"delete","id":"../../etc"}' '{"action":"delete","id":"20260101T000000Z","extra":1}' \
            '{"action":"verify","id":"$(id)"}' '{"action":"configure","keepFull":0,"intervalHours":12,"startHour":1,"mirrorDir":""}' \
            '{"action":"configure","keepFull":3,"intervalHours":12,"startHour":1,"mirrorDir":"../../etc"}' \
            '{"action":"configure","keepFull":3,"intervalHours":12,"startHour":1}' \
+           '{"action":"configure","keepFull":3,"keepDays":366,"intervalHours":12,"startHour":1,"mirrorDir":""}' '{"action":"configure","keepFull":3,"verifyAfter":"oui","intervalHours":12,"startHour":1,"mirrorDir":""}' \
            '{"action":"restore","mode":"latest"}' '{"action":"restore","mode":"latest","confirm":"autre-nom"}' \
            '{"action":"restore","mode":"at","at":"2026-01-01 00:00:00","confirm":"'"$HOST"'"}' '{"action":"restore","mode":"id","id":"x","confirm":"'"$HOST"'"}' \
            '{"action":"restore","mode":"latest","id":"20260101T000000Z","confirm":"'"$HOST"'"}'; do

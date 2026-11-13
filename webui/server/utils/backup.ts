@@ -11,11 +11,12 @@ export interface ArchiverState { archivedCount: number; lastArchivedWal: string 
 export interface BackupStatus {
   at: number; ageSeconds: number; stale: boolean
   enabled: boolean; role: 'primary' | 'standby' | 'witness' | 'unknown'; node: string; hostname: string; cluster: string | null
-  repo: string; keepFull: number; intervalHours: number; startHour: number; mirrorDir: string | null
+  repo: string; keepFull: number; keepDays: number; verifyAfter: boolean; lastVerify: LastVerify | null; intervalHours: number; startHour: number; mirrorDir: string | null
   archiveMode: string | null; archiver: ArchiverState | null; diskFreeBytes: number; preRestoreDirs: number
   walFiles: number; walBytes: number; lastWalAt: number | null; pitrFrom: number | null; backups: BackupItem[]
   confirmWord: string
 }
+export interface LastVerify { at: number; ok: boolean; backups: number; badBackups: number; badWal: number }
 export interface BackupResult { at: number; action: string; ok: boolean; message: string; id: string | null }
 export interface RestoreState { at: number; phase: string; message: string; active: boolean }
 
@@ -39,7 +40,9 @@ export function parseBackupStatus(raw: string, nowSec = Date.now() / 1000): Back
   const hostname = str(j.hostname, 63)
   return {
     at, ageSeconds: age, stale: age > MAX_AGE_SECONDS, enabled: j.enabled, role, node: str(j.node, 63), hostname, cluster,
-    repo: str(j.repo, 200), keepFull: nint(j.keepFull, 3), intervalHours: nint(j.intervalHours, 24), startHour: nint(j.startHour, 2), mirrorDir: typeof j.mirrorDir === 'string' && j.mirrorDir ? str(j.mirrorDir, 200) : null,
+    repo: str(j.repo, 200), keepFull: nint(j.keepFull, 3), keepDays: Math.max(0, nint(j.keepDays, 0)), verifyAfter: j.verifyAfter !== false,
+    lastVerify: j.lastVerify && typeof j.lastVerify === 'object' && typeof j.lastVerify.at === 'number' ? { at: nint(j.lastVerify.at), ok: j.lastVerify.ok === true, backups: nint(j.lastVerify.backups), badBackups: nint(j.lastVerify.badBackups), badWal: nint(j.lastVerify.badWal) } : null,
+    intervalHours: nint(j.intervalHours, 24), startHour: nint(j.startHour, 2), mirrorDir: typeof j.mirrorDir === 'string' && j.mirrorDir ? str(j.mirrorDir, 200) : null,
     archiveMode: typeof j.archiveMode === 'string' ? str(j.archiveMode, 16) : null,
     archiver: a ? { archivedCount: nint(a.archived_count), lastArchivedWal: typeof a.last_archived_wal === 'string' ? str(a.last_archived_wal, 64) : null, lastArchivedAt: num(a.last_archived_at),
       failedCount: nint(a.failed_count), lastFailedWal: typeof a.last_failed_wal === 'string' ? str(a.last_failed_wal, 64) : null, lastFailedAt: num(a.last_failed_at) } : null,

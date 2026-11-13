@@ -24,6 +24,7 @@ const T: Record<string, [(p: P, n: string, s: string) => string, (p: P, n: strin
   'node.memory_low': [(p, n) => `Mémoire utilisée à ${p.percent} % sur ${n}.`, (p, n) => `Memory ${p.percent}% used on ${n}.`],
   'backup.state_stale': [(p, n) => `L’état des sauvegardes de ${n} n’est plus publié (depuis ${p.ageSeconds} s).`, (p, n) => `Backup state of ${n} has not been published for ${p.ageSeconds} s.`],
   'backup.none': [(_p, n) => `Aucune sauvegarde de la base sur ${n}.`, (_p, n) => `No database backup on ${n}.`],
+  'backup.verify_failed': [(p, n) => `Le dernier contrôle d’intégrité des sauvegardes de ${n} a échoué : ${p.bad} sauvegarde(s) et ${p.badWal} journal(aux) corrompu(s). Relancez une sauvegarde et un contrôle.`, (p, n) => `The last backup integrity check on ${n} failed: ${p.bad} backup(s) and ${p.badWal} log(s) corrupted. Run a new backup and a check.`],
   'backup.too_old': [(p, n) => `Dernière sauvegarde de ${n} vieille de ${p.hours} h (maximum toléré : ${p.maxHours} h).`, (p, n) => `Last backup on ${n} is ${p.hours} h old (maximum allowed: ${p.maxHours} h).`],
   'backup.archiver_failing': [(p, n) => `L’archivage des journaux WAL échoue sur ${n} (${p.failed} échec(s), dernier : ${p.wal}) : la restauration à un instant donné est compromise.`, (p, n) => `WAL archiving is failing on ${n} (${p.failed} failure(s), last: ${p.wal}): point-in-time recovery is at risk.`],
   'backup.run_failed': [(p, n) => `La dernière sauvegarde a échoué sur ${n} : ${p.message}`, (p, n) => `The last backup failed on ${n}: ${p.message}`],

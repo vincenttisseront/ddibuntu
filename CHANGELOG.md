@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.9.50 — « Sauvegardes : rétention et contrôle d'intégrité »
+- **Rétention en jours** (nouveau réglage « Conserver au moins (jours) ») en plus du nombre de sauvegardes : les N plus récentes sont toujours gardées, et au-delà une sauvegarde n'est supprimée que si elle a plus de X jours (0 = comportement précédent). Les journaux WAL inutiles sont purgés en conséquence.
+- **Contrôle d'intégrité automatique** après chaque sauvegarde planifiée (empreintes, archives, journaux WAL), désactivable. Le résultat du dernier contrôle (manuel ou automatique) est affiché dans la page Sauvegardes et une **alerte critique** « contrôle d'intégrité en échec » est levée si une copie est corrompue (jusqu'au prochain contrôle réussi) : on le découvre le jour même, pas le jour de la restauration.
+- **Page Sauvegardes** : lignes « Conservation », « Prochaine sauvegarde » (calculée d'après l'intervalle et l'heure de début) et « Dernier contrôle » ; nouveaux champs dans la fenêtre des réglages.
+- Les réglages restent partagés dans le cluster (etcd). Mise à jour progressive : un nœud encore en 0.9.49 ignore les nouveaux réglages tant qu'il n'est pas mis à jour (il garde les précédents). Aucune migration de schéma.
+
 ## 0.9.49 — « Profil utilisateur et traitement des alertes »
 - **Page « Mon profil »** (clic sur votre nom en bas à gauche) : identité, rôle, **origine de la connexion** (compte local, Active Directory, annuaire LDAP, SSO), dates de création et de dernière connexion, périmètre IPAM ; mot de passe et double authentification pour les comptes locaux (pour AD/LDAP/SSO, la page indique que cela se gère chez le fournisseur d'identité) ; **sessions actives** (appareil, adresse, dernière activité) avec déconnexion d'une session ou de toutes les autres. Chacun ne voit et ne ferme que ses propres sessions ; la session en cours se ferme par « Se déconnecter ».
 - **Ligne utilisateur du menu refaite** : avatar à initiales, nom, rôle et origine du compte ; cliquable vers le profil (les boutons bouclier et clé sont remplacés par la page Profil).

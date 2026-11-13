@@ -69,3 +69,15 @@ describe('restoreRefusal', () => {
     expect(restoreRefusal(st(), { mode: 'id', id: '20200101T000000Z', confirm: 'lab' }, null, NOW)).toBe('backup_unknown')
   })
 })
+
+describe('rétention en jours et dernier contrôle', () => {
+  it('valeurs par défaut sûres si l’état est ancien (sans les nouveaux champs)', () => {
+    expect(st()).toMatchObject({ keepDays: 0, verifyAfter: true, lastVerify: null })
+  })
+  it('champs lus et bornés ; contrôle hostile écarté', () => {
+    expect(st({ keepDays: 30, verifyAfter: false, lastVerify: { at: NOW - 5, ok: false, backups: 3, badBackups: 1, badWal: 2 } })).toMatchObject({ keepDays: 30, verifyAfter: false, lastVerify: { at: NOW - 5, ok: false, badBackups: 1, badWal: 2 } })
+    expect(st({ keepDays: -5 }).keepDays).toBe(0)
+    expect(st({ lastVerify: 'x' }).lastVerify).toBeNull(); expect(st({ lastVerify: { ok: true } }).lastVerify).toBeNull()
+    expect(st({ lastVerify: { at: NOW, ok: 'true' } }).lastVerify!.ok).toBe(false)           // seul le booléen vrai compte
+  })
+})

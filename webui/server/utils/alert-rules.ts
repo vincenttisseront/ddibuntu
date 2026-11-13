@@ -38,7 +38,7 @@ export const RULES: Record<string, Severity> = {
   'cluster.node_recovered': 'info', 'cluster.resync_in_progress': 'info', 'cluster.failback_ready': 'info',
   'node.health_stale': 'critical', 'node.service_down': 'critical', 'node.postgres_down': 'critical', 'node.disk_low': 'warning', 'node.cert_expiry': 'warning',
   'node.time_unsynced': 'warning', 'node.memory_low': 'warning',
-  'backup.state_stale': 'warning', 'backup.none': 'warning', 'backup.too_old': 'warning', 'backup.archiver_failing': 'critical', 'backup.run_failed': 'warning',
+  'backup.state_stale': 'warning', 'backup.none': 'warning', 'backup.too_old': 'warning', 'backup.archiver_failing': 'critical', 'backup.run_failed': 'warning', 'backup.verify_failed': 'critical',
   'ipam.subnet_full': 'warning', 'ipam.ghosts': 'info', 'ipam.unknown_hosts': 'warning', 'ipam.mac_changed': 'warning',
 }
 export const RULE_IDS = Object.keys(RULES)
@@ -153,6 +153,8 @@ export function evaluate(s: Snapshot, th: Thresholds, memory: Memory): { finding
       const last = b.backups.reduce((m, x) => Math.max(m, x.finishedAt), 0)
       if (b.backups.length === 0) out.push(f('backup.none', 'warning', node))
       else if (s.now - last > max) out.push(f('backup.too_old', s.now - last > 2 * max ? 'critical' : 'warning', node, '', { hours: Math.floor((s.now - last) / 3600), maxHours: Math.round(max / 3600) }))
+      const lv = b.lastVerify
+      if (lv && !lv.ok && s.now - lv.at < 14 * 86400) out.push(f('backup.verify_failed', 'critical', node, '', { bad: lv.badBackups, badWal: lv.badWal }))
       const a = b.archiver
       if (a && a.failedCount > 0 && a.lastFailedAt !== null && (a.lastArchivedAt === null || a.lastFailedAt > a.lastArchivedAt) && s.now - a.lastFailedAt < 86400) {
         out.push(f('backup.archiver_failing', 'critical', node, '', { failed: a.failedCount, wal: a.lastFailedWal ?? '' }))

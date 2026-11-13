@@ -5,8 +5,8 @@
 #   auto                        appelé par le minuteur : sauvegarde si nécessaire, rétention, copie externe, état
 #   list | status               catalogue / état en JSON (status publie aussi /run/ddibuntu/backup-status.json)
 #   verify [ID]                 contrôle d'intégrité (empreintes, archives gzip, journaux WAL)
-#   prune                       rétention : ne garde que KEEP_FULL sauvegardes et les journaux utiles
-#   configure K=V...            KEEP_FULL, INTERVAL_HOURS, START_HOUR, MIRROR_DIR
+#   prune                       rétention : garde les KEEP_FULL plus récentes (et toute sauvegarde de moins de KEEP_DAYS jours) et les journaux utiles
+#   configure K=V...            KEEP_FULL, KEEP_DAYS, INTERVAL_HOURS, START_HOUR, MIRROR_DIR, VERIFY_AFTER
 #   restore --latest|--at T|--id ID --yes     restaure (T = « 2026-11-11 10:00:00+00 »)
 #   request                     demande JSON déposée par la console (.backup-request), revalidée ici
 # Outils standards uniquement : pg_basebackup, archive_command (wal-archive.sh), restore_command (gunzip). Dépôt : DIR, propriété de postgres.
@@ -30,7 +30,7 @@ die() { printf 'ddibuntu-backup: ERREUR : %s\n' "$*" >&2; exit 1; }
 [ -n "${DDI_TEST:-}" ] || [ "$(id -u)" -eq 0 ] || die "à lancer en root"
 
 # ---------------------------------------------------------------- configuration (lecture stricte, valeurs bornées)
-declare -A B=([ENABLED]=0 [DIR]=/var/lib/ddibuntu/backup [KEEP_FULL]=3 [INTERVAL_HOURS]=24 [START_HOUR]=2 [MIRROR_DIR]="")
+declare -A B=([ENABLED]=0 [DIR]=/var/lib/ddibuntu/backup [KEEP_FULL]=3 [KEEP_DAYS]=0 [INTERVAL_HOURS]=24 [START_HOUR]=2 [MIRROR_DIR]="" [VERIFY_AFTER]=1)
 valid_dir() { [[ "$1" = /* && "$1" != *..* && "$1" =~ ^/[A-Za-z0-9._/@:+-]{1,200}$ ]]; }
 valid_int() { [[ "$2" =~ ^[0-9]{1,3}$ ]] && [ "$2" -ge "$3" ] && [ "$2" -le "$4" ]; }
 check_conf() {
@@ -38,6 +38,8 @@ check_conf() {
   valid_dir "${B[DIR]}" || die "DIR invalide"
   [ -z "${B[MIRROR_DIR]}" ] || valid_dir "${B[MIRROR_DIR]}" || die "MIRROR_DIR invalide"
   valid_int KEEP_FULL "${B[KEEP_FULL]}" 1 30 || die "KEEP_FULL doit être entre 1 et 30"
+  valid_int KEEP_DAYS "${B[KEEP_DAYS]}" 0 365 || die "KEEP_DAYS doit être entre 0 et 365"
+  [ "${B[VERIFY_AFTER]}" = 0 ] || [ "${B[VERIFY_AFTER]}" = 1 ] || die "VERIFY_AFTER invalide"
   valid_int INTERVAL_HOURS "${B[INTERVAL_HOURS]}" 1 168 || die "INTERVAL_HOURS doit être entre 1 et 168"
   valid_int START_HOUR "${B[START_HOUR]}" 0 23 || die "START_HOUR doit être entre 0 et 23"
 }
@@ -46,7 +48,7 @@ load_conf() {
   if [ -f "$CONF" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in ''|'#'*) continue ;; esac
-      [[ "$line" =~ ^(ENABLED|DIR|KEEP_FULL|INTERVAL_HOURS|START_HOUR|MIRROR_DIR)=([A-Za-z0-9._/@:+-]*)$ ]] || die "ligne illisible dans $CONF : ${line:0:40}"
+      [[ "$line" =~ ^(ENABLED|DIR|KEEP_FULL|KEEP_DAYS|INTERVAL_HOURS|START_HOUR|MIRROR_DIR|VERIFY_AFTER)=([A-Za-z0-9._/@:+-]*)$ ]] || die "ligne illisible dans $CONF : ${line:0:40}"
       B[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]}"
     done < "$CONF"
   fi
@@ -71,7 +73,7 @@ write_conf() {
   mkdir -p -- "$(dirname "$CONF")"
   local t; t="$(mktemp "$CONF.XXXXXX")" || die "écriture impossible"
   { echo "# Sauvegarde et restauration à un instant donné (PITR) — géré par « ddibuntu-backup » (jamais édité par la console)."
-    printf '%s=%s\n' ENABLED "${B[ENABLED]}" DIR "${B[DIR]}" KEEP_FULL "${B[KEEP_FULL]}" INTERVAL_HOURS "${B[INTERVAL_HOURS]}" START_HOUR "${B[START_HOUR]}" MIRROR_DIR "${B[MIRROR_DIR]}"; } > "$t"
+    printf '%s=%s\n' ENABLED "${B[ENABLED]}" DIR "${B[DIR]}" KEEP_FULL "${B[KEEP_FULL]}" KEEP_DAYS "${B[KEEP_DAYS]}" INTERVAL_HOURS "${B[INTERVAL_HOURS]}" START_HOUR "${B[START_HOUR]}" MIRROR_DIR "${B[MIRROR_DIR]}" VERIFY_AFTER "${B[VERIFY_AFTER]}"; } > "$t"
   chmod 0644 "$t"; mv -f "$t" "$CONF"
 }
 
@@ -213,20 +215,35 @@ cmd_verify() {
   [ "$n" -gt 0 ] || die "aucune sauvegarde${want:+ $want}"
   # journaux WAL archivés : lisibles
   local w wbad=0; for w in "$REPO"/wal/*.gz; do [ -e "$w" ] || continue; gzip -t "$w" 2>/dev/null || { log "journal $(basename "$w") : CORROMPU"; wbad=$((wbad + 1)); }; done
-  [ "$bad" -eq 0 ] && [ "$wbad" -eq 0 ] || die "$bad sauvegarde(s) et $wbad journal(aux) corrompu(s)"
+  if [ "$bad" -ne 0 ] || [ "$wbad" -ne 0 ]; then record_verify false "$n" "$bad" "$wbad"; die "$bad sauvegarde(s) et $wbad journal(aux) corrompu(s)"; fi
+  record_verify true "$n" 0 0
   log "contrôle terminé : $n sauvegarde(s) et journaux WAL intègres"
+}
+# Dernier contrôle d'intégrité (manuel ou automatique) : publié dans l'état et surveillé par la console (alerte si corrompu).
+record_verify() {   # record_verify OK N MAUVAISES WAL_MAUVAIS
+  install -d -m 0755 "$RUNDIR" 2>/dev/null || return 0
+  local t; t="$(mktemp "$RUNDIR/.verify.XXXXXX")" || return 0
+  OK="$1" N="$2" BAD="$3" WBAD="$4" NOW="$(now)" python3 -c '
+import json, os
+e = os.environ
+print(json.dumps({"at": int(e["NOW"]), "ok": e["OK"] == "true", "backups": int(e["N"]), "badBackups": int(e["BAD"]), "badWal": int(e["WBAD"])}))' > "$t" && chmod 0644 "$t" && mv -f "$t" "$RUNDIR/backup-verify.json" || rm -f "$t"
 }
 
 # ---------------------------------------------------------------- rétention
 cmd_prune() {
   load_conf; need_db
-  local keep="${B[KEEP_FULL]}" ids=() m i
+  local keep="${B[KEEP_FULL]}" days="${B[KEEP_DAYS]}" ids=() m i
   for m in $(meta_list); do ids+=("$(basename "$(dirname "$m")")"); done
-  local total="${#ids[@]}"
-  if [ "$total" -gt "$keep" ]; then
-    for ((i = 0; i < total - keep; i++)); do log "suppression de la sauvegarde ${ids[$i]} (au-delà de $keep)"; rm -rf -- "${REPO:?}/base/${ids[$i]}"; done
-    ids=("${ids[@]:$((total - keep))}")
-  fi
+  local total="${#ids[@]}" kept=() fin cutoff
+  cutoff=$(( $(now) - days * 86400 ))
+  # les KEEP_FULL plus récentes sont toujours gardées ; au-delà, une sauvegarde n'est supprimée que si elle a plus de KEEP_DAYS jours (0 = pas de délai)
+  for ((i = 0; i < total; i++)); do
+    if [ "$i" -ge $((total - keep)) ]; then kept+=("${ids[$i]}"); continue; fi
+    fin="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["finishedAt"])' "$REPO/base/${ids[$i]}/meta.json" 2>/dev/null || echo 0)"
+    if [ "$days" -gt 0 ] && [ "$fin" -gt "$cutoff" ]; then kept+=("${ids[$i]}"); log "sauvegarde ${ids[$i]} conservée (moins de $days jours)"
+    else log "suppression de la sauvegarde ${ids[$i]} (au-delà de $keep et de $days jour(s))"; rm -rf -- "${REPO:?}/base/${ids[$i]}"; fi
+  done
+  ids=("${kept[@]}")
   find "$REPO/base" -maxdepth 1 -name '.tmp-*' -mmin +120 -exec rm -rf {} + 2>/dev/null || true
   # journaux antérieurs au premier segment de la plus ancienne sauvegarde conservée : inutiles
   if [ "${#ids[@]}" -gt 0 ]; then
@@ -279,7 +296,12 @@ cmd_auto() {
     if [ "$last" -eq 0 ]; then due=1; log "aucune sauvegarde : première sauvegarde complète"
     elif [ "$cur" != "$lasttli" ] && [ "$cur" != 0 ]; then due=1; log "nouvelle timeline ($lasttli → $cur) : sauvegarde complète"
     elif [ "$age" -ge $(( B[INTERVAL_HOURS] * 3600 )) ] && { [ "$hour" -ge "${B[START_HOUR]}" ] || [ "$age" -ge $(( B[INTERVAL_HOURS] * 3600 * 3 / 2 )) ]; }; then due=1; log "sauvegarde planifiée (dernière il y a $((age / 3600)) h)"; fi
-    if [ "$due" -eq 1 ]; then ( cmd_run ) >/dev/null || log "AVERTISSEMENT : la sauvegarde planifiée a échoué"; fi
+    if [ "$due" -eq 1 ]; then
+      local newid; if newid="$( ( cmd_run ) 2>/dev/null | tail -n1 )"; then
+        # contrôle d'intégrité de la sauvegarde qui vient d'être faite (désactivable) : une copie corrompue se découvre le jour même, pas le jour de la restauration
+        [ "${B[VERIFY_AFTER]}" != 1 ] || ( cmd_verify "$newid" ) >/dev/null 2>&1 || log "AVERTISSEMENT : le contrôle d'intégrité de la sauvegarde $newid a échoué"
+      else log "AVERTISSEMENT : la sauvegarde planifiée a échoué"; fi
+    fi
     cmd_prune || true
     mirror_sync || true
   fi
@@ -302,7 +324,7 @@ status_json() {
   local wal_n=0 wal_b=0; if [ -d "$REPO/wal" ]; then wal_n="$(find "$REPO/wal" -maxdepth 1 -name '*.gz' | wc -l)"; wal_b="$(du -sb "$REPO/wal" 2>/dev/null | cut -f1)"; fi
   local files=() m; for m in $(meta_list); do files+=("$m"); done
   local lastwal=0; if [ "$wal_n" -gt 0 ]; then lastwal="$(find "$REPO/wal" -maxdepth 1 -name '*.gz' -printf '%T@\n' | sort -n | tail -n1 | cut -d. -f1)"; fi
-  ENABLED="${B[ENABLED]}" REPOP="${B[DIR]}" KEEP="${B[KEEP_FULL]}" INTERVAL="${B[INTERVAL_HOURS]}" STARTH="${B[START_HOUR]}" MIRROR="${B[MIRROR_DIR]}" ROLE="$role" MODE="$mode" ARCH="$arch" FREE="${free:-0}" PRE="$pre" \
+  ENABLED="${B[ENABLED]}" REPOP="${B[DIR]}" KEEP="${B[KEEP_FULL]}" KEEPD="${B[KEEP_DAYS]}" VERIFYA="${B[VERIFY_AFTER]}" LASTVERIFY="$(head -c 400 "$RUNDIR/backup-verify.json" 2>/dev/null || true)" INTERVAL="${B[INTERVAL_HOURS]}" STARTH="${B[START_HOUR]}" MIRROR="${B[MIRROR_DIR]}" ROLE="$role" MODE="$mode" ARCH="$arch" FREE="${free:-0}" PRE="$pre" \
     WALN="$wal_n" WALB="${wal_b:-0}" LASTWAL="$lastwal" CL="$CLNAME" NODEN="${NODE:-$(hostname -s)}" HOSTN="$(hostname -s)" python3 -c '
 import json, os, sys, time
 e = os.environ
@@ -313,8 +335,10 @@ for p in sys.argv[1:]:
 b.sort(key=lambda x: x.get("id", ""))
 try: arch = json.loads(e["ARCH"])
 except Exception: arch = None
+try: lv = json.loads(e["LASTVERIFY"]); lv = lv if isinstance(lv, dict) else None
+except Exception: lv = None
 print(json.dumps({"at": int(time.time()), "enabled": e["ENABLED"] == "1", "role": e["ROLE"], "node": e["NODEN"], "hostname": e["HOSTN"], "cluster": e["CL"] or None,
-  "repo": e["REPOP"], "keepFull": int(e["KEEP"]), "intervalHours": int(e["INTERVAL"]), "startHour": int(e["STARTH"]), "mirrorDir": e["MIRROR"] or None,
+  "repo": e["REPOP"], "keepFull": int(e["KEEP"]), "keepDays": int(e["KEEPD"]), "verifyAfter": e["VERIFYA"] == "1", "lastVerify": lv, "intervalHours": int(e["INTERVAL"]), "startHour": int(e["STARTH"]), "mirrorDir": e["MIRROR"] or None,
   "archiveMode": e["MODE"] or None, "archiver": arch, "diskFreeBytes": int(e["FREE"]), "preRestoreDirs": int(e["PRE"]),
   "walFiles": int(e["WALN"]), "walBytes": int(e["WALB"] or 0), "lastWalAt": int(e["LASTWAL"]) or None, "backups": b,
   "pitrFrom": b[0]["finishedAt"] if b else None}, ensure_ascii=False))' "${files[@]}"
@@ -331,7 +355,7 @@ cmd_configure() {
   load_conf; local kv k v
   for kv in "$@"; do
     k="${kv%%=*}"; v="${kv#*=}"
-    case "$k" in KEEP_FULL|INTERVAL_HOURS|START_HOUR|MIRROR_DIR) B[$k]="$v" ;; *) die "paramètre inconnu : $k" ;; esac
+    case "$k" in KEEP_FULL|KEEP_DAYS|INTERVAL_HOURS|START_HOUR|MIRROR_DIR|VERIFY_AFTER) B[$k]="$v" ;; *) die "paramètre inconnu : $k" ;; esac
   done
   write_conf; conf_push; log "paramètres enregistrés"
 }
@@ -551,9 +575,10 @@ def i(k, lo, hi): v = d.get(k); return isinstance(v, int) and not isinstance(v, 
 if a in ("refresh", "enable", "disable", "run", "prune") and ks == {"action"}: print(a)
 elif a == "verify" and ks <= {"action", "id"} and ("id" not in d or (isinstance(d["id"], str) and re.fullmatch(rid, d["id"]))): print("verify\t" + d.get("id", "-"))
 elif a == "delete" and ks == {"action", "id"} and isinstance(d["id"], str) and re.fullmatch(rid, d["id"]): print("delete\t" + d["id"])
-elif a == "configure" and ks == {"action", "keepFull", "intervalHours", "startHour", "mirrorDir"} and i("keepFull", 1, 30) and i("intervalHours", 1, 168) and i("startHour", 0, 23) \
+elif a == "configure" and ks <= {"action", "keepFull", "keepDays", "intervalHours", "startHour", "mirrorDir", "verifyAfter"} and {"keepFull", "intervalHours", "startHour", "mirrorDir"} <= ks and i("keepFull", 1, 30) and i("intervalHours", 1, 168) and i("startHour", 0, 23) \
+     and ("keepDays" not in d or i("keepDays", 0, 365)) and ("verifyAfter" not in d or isinstance(d["verifyAfter"], bool)) \
      and isinstance(d["mirrorDir"], str) and (d["mirrorDir"] == "" or (re.fullmatch(r"/[A-Za-z0-9._/@:+-]{1,200}", d["mirrorDir"]) and ".." not in d["mirrorDir"])):
-    print("configure\t%d\t%d\t%d\t%s" % (d["keepFull"], d["intervalHours"], d["startHour"], d["mirrorDir"] or "-"))
+    print("configure\t%d\t%d\t%d\t%s\t%s\t%s" % (d["keepFull"], d["intervalHours"], d["startHour"], d["mirrorDir"] or "-", d.get("keepDays", -1), {True: 1, False: 0, None: -1}[d.get("verifyAfter")]))
 elif a == "restore" and ks <= {"action", "mode", "at", "id", "confirm"} and d.get("confirm") == (os.environ["CL"] or os.environ["HOSTN"]):
     m = d.get("mode")
     if m == "latest" and ks == {"action", "mode", "confirm"}: print("restore\tlatest\t-")
@@ -561,8 +586,8 @@ elif a == "restore" and ks <= {"action", "mode", "at", "id", "confirm"} and d.ge
     elif m == "at" and ks == {"action", "mode", "at", "confirm"} and isinstance(d["at"], str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", d["at"]): print("restore\tat\t" + d["at"])
     else: print("invalid")
 else: print("invalid")' 2>/dev/null || echo invalid)"
-  local a x1 x2 x3 x4 out="" ok=false msg="" rid=""
-  IFS=$'\t' read -r a x1 x2 x3 x4 <<<"$parsed"
+  local a x1 x2 x3 x4 x5 x6 out="" ok=false msg="" rid=""
+  IFS=$'\t' read -r a x1 x2 x3 x4 x5 x6 <<<"$parsed"
   case "$a" in
     refresh) cmd_status >/dev/null 2>&1; ok=true; msg="état actualisé" ;;
     enable) out="$( ( cmd_enable ) 2>&1 )" && ok=true ;;
@@ -571,7 +596,10 @@ else: print("invalid")' 2>/dev/null || echo invalid)"
     prune) out="$( ( cmd_prune ) 2>&1 )" && ok=true ;;
     verify) out="$( ( cmd_verify "$([ "$x1" = - ] && echo '' || echo "$x1")" ) 2>&1 )" && ok=true ;;
     delete) out="$( ( cmd_delete "$x1" ) 2>&1 )" && ok=true ;;
-    configure) out="$( ( cmd_configure "KEEP_FULL=$x1" "INTERVAL_HOURS=$x2" "START_HOUR=$x3" "MIRROR_DIR=$([ "$x4" = - ] && echo '' || echo "$x4")" ) 2>&1 )" && ok=true ;;
+    configure)
+      local cargs=("KEEP_FULL=$x1" "INTERVAL_HOURS=$x2" "START_HOUR=$x3" "MIRROR_DIR=$([ "$x4" = - ] && echo '' || echo "$x4")")
+      [ "${x5:--1}" = -1 ] || cargs+=("KEEP_DAYS=$x5"); [ "${x6:--1}" = -1 ] || cargs+=("VERIFY_AFTER=$x6")
+      out="$( ( cmd_configure "${cargs[@]}" ) 2>&1 )" && ok=true ;;
     restore)
       case "$x1" in
         latest) out="$( ( cmd_restore --latest --yes ) 2>&1 )" && ok=true ;;

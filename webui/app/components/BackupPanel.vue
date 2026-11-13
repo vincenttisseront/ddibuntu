@@ -22,6 +22,13 @@ const bytes = (n: number | null | undefined) => (n == null ? '—' : n < 1048576
 const ageText = computed(() => { const s = st.value?.ageSeconds ?? 0; return s < 120 ? `${s} s` : s < 7200 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h` })
 const isPrimary = computed(() => st.value?.role === 'primary')
 const isWitness = computed(() => st.value?.role === 'witness')
+// Prochaine sauvegarde planifiée : au plus tôt « dernière + intervalle », à partir de l'heure de début ; la première est immédiate.
+const nextRun = computed(() => {
+  const s = st.value; if (!s || !s.backups.length) return null
+  const last = s.backups[s.backups.length - 1].finishedAt, due = last + s.intervalHours * 3600
+  const d = new Date(due * 1000); if (d.getHours() < s.startHour) d.setHours(s.startHour, 0, 0, 0)
+  return Math.max(Math.floor(d.getTime() / 1000), Math.floor(Date.now() / 1000))
+})
 const sorted = computed(() => [...(st.value?.backups ?? [])].reverse())
 const archiverFailing = computed(() => (st.value?.archiver?.failedCount ?? 0) > 0 && (st.value?.archiver?.lastFailedAt ?? 0) >= (st.value?.archiver?.lastArchivedAt ?? 0))
 
@@ -54,11 +61,11 @@ async function removeOne(b: any) { if (await ask(t('backup.delete'), t('backup.d
 async function refresh() { await submit('refresh', '/backup/refresh', {}) }
 
 // ---- réglages
-const cfgOpen = ref(false), cfgForm = reactive({ keepFull: 3, intervalHours: 24, startHour: 2, mirrorDir: '' }), cfgErr = ref('')
-function openCfg() { if (!st.value) return; Object.assign(cfgForm, { keepFull: st.value.keepFull, intervalHours: st.value.intervalHours, startHour: st.value.startHour, mirrorDir: st.value.mirrorDir ?? '' }); cfgErr.value = ''; cfgOpen.value = true }
+const cfgOpen = ref(false), cfgForm = reactive({ keepFull: 3, keepDays: 0, verifyAfter: true, intervalHours: 24, startHour: 2, mirrorDir: '' }), cfgErr = ref('')
+function openCfg() { if (!st.value) return; Object.assign(cfgForm, { keepFull: st.value.keepFull, keepDays: st.value.keepDays ?? 0, verifyAfter: st.value.verifyAfter !== false, intervalHours: st.value.intervalHours, startHour: st.value.startHour, mirrorDir: st.value.mirrorDir ?? '' }); cfgErr.value = ''; cfgOpen.value = true }
 async function saveCfg() {
   cfgErr.value = ''
-  const body = { keepFull: Number(cfgForm.keepFull), intervalHours: Number(cfgForm.intervalHours), startHour: Number(cfgForm.startHour), mirrorDir: cfgForm.mirrorDir.trim() }
+  const body = { keepFull: Number(cfgForm.keepFull), keepDays: Number(cfgForm.keepDays) || 0, verifyAfter: !!cfgForm.verifyAfter, intervalHours: Number(cfgForm.intervalHours), startHour: Number(cfgForm.startHour), mirrorDir: cfgForm.mirrorDir.trim() }
   try { await api.call('POST', '/backup/configure', body, { silent: true }) } catch (e: any) { cfgErr.value = e.info?.message ?? t('err.internal'); return }
   cfgOpen.value = false
   const before = result.value?.at ?? 0
@@ -130,6 +137,12 @@ async function goRestore() {
           <dd>{{ st.archiver && st.archiver.archivedCount ? t('backup.archiving_ok', { n: st.archiver.archivedCount, at: when(st.archiver.lastArchivedAt) }) : t('backup.archiving_none') }}</dd>
           <dt class="text-muted">{{ t('backup.schedule') }}</dt>
           <dd>{{ t('backup.schedule_val', { h: st.intervalHours, s: st.startHour, k: st.keepFull }) }}</dd>
+          <dt class="text-muted">{{ t('backup.retention') }}</dt>
+          <dd>{{ st.keepDays ? t('backup.retention_val_days', { k: st.keepFull, d: st.keepDays }) : t('backup.retention_val', { k: st.keepFull }) }}</dd>
+          <template v-if="st.enabled && isPrimary"><dt class="text-muted">{{ t('backup.next') }}</dt><dd>{{ nextRun ? when(nextRun) : t('backup.next_soon') }}</dd></template>
+          <dt class="text-muted">{{ t('backup.verify') }}</dt>
+          <dd><span v-if="st.lastVerify" :class="st.lastVerify.ok ? '' : 'text-error font-medium'">{{ st.lastVerify.ok ? t('backup.verify_ok', { at: when(st.lastVerify.at), n: st.lastVerify.backups }) : t('backup.verify_ko', { at: when(st.lastVerify.at), n: st.lastVerify.badBackups, w: st.lastVerify.badWal }) }}</span><span v-else class="text-muted">{{ t('backup.verify_never') }}</span>
+            <span class="text-xs text-muted"> · {{ st.verifyAfter ? t('backup.verify_auto_on') : t('backup.verify_auto_off') }}</span></dd>
           <dt class="text-muted">{{ t('backup.repo') }}</dt><dd class="font-mono text-xs">{{ st.repo }} · {{ bytes(st.walBytes) }} · {{ t('backup.disk_free') }} {{ bytes(st.diskFreeBytes) }}</dd>
           <dt class="text-muted">{{ t('backup.mirror') }}</dt><dd class="font-mono text-xs">{{ st.mirrorDir ?? t('backup.mirror_none') }}</dd>
           <template v-if="st.preRestoreDirs"><dt class="text-muted" /><dd class="text-xs text-muted">{{ t('backup.pre_restore', { n: st.preRestoreDirs }) }}</dd></template>
@@ -192,6 +205,8 @@ async function goRestore() {
       <template #body>
         <form class="flex flex-col gap-3" @submit.prevent="saveCfg">
           <label class="text-sm">{{ t('backup.settings.keep') }}<UInput v-model.number="cfgForm.keepFull" type="number" min="1" max="30" class="w-full mt-1" /></label>
+          <label class="text-sm">{{ t('backup.settings.keep_days') }}<UInput v-model.number="cfgForm.keepDays" type="number" min="0" max="365" class="w-full mt-1" /><span class="text-xs text-muted">{{ t('backup.settings.keep_days_help') }}</span></label>
+          <div class="text-sm flex flex-col justify-end"><USwitch v-model="cfgForm.verifyAfter" :label="t('backup.settings.verify_after')" /><span class="text-xs text-muted mt-1">{{ t('backup.settings.verify_after_help') }}</span></div>
           <label class="text-sm">{{ t('backup.settings.interval') }}<UInput v-model.number="cfgForm.intervalHours" type="number" min="1" max="168" class="w-full mt-1" /></label>
           <label class="text-sm">{{ t('backup.settings.start') }}<UInput v-model.number="cfgForm.startHour" type="number" min="0" max="23" class="w-full mt-1" /></label>
           <label class="text-sm">{{ t('backup.settings.mirror') }}<UInput v-model="cfgForm.mirrorDir" class="w-full mt-1 font-mono" placeholder="/mnt/sauvegardes" autocomplete="off" /></label>

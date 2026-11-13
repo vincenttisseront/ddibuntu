@@ -137,6 +137,11 @@ describe('règles : sauvegardes et IPAM', () => {
     expect(old(30)).toBeUndefined(); expect(old(60)!.severity).toBe('warning'); expect(old(120)!.severity).toBe('critical')
     expect(rules(snap({ backup: bk({ at: NOW - 7200 }) }))).toEqual(['backup.state_stale|n1|'])
   })
+  it('contrôle d’intégrité en échec : critique pendant 14 jours, rétabli par un contrôle réussi', () => {
+    const lv = (ok: boolean, age: number) => ({ lastVerify: { at: NOW - age, ok, backups: 2, badBackups: ok ? 0 : 1, badWal: 0 } })
+    expect(run(snap({ backup: bk(lv(false, 600)) })).findings.find((x) => x.rule === 'backup.verify_failed')).toMatchObject({ severity: 'critical', node: 'n1', params: { bad: 1, badWal: 0 } })
+    expect(rules(snap({ backup: bk(lv(true, 600)) }))).toEqual([]); expect(rules(snap({ backup: bk(lv(false, 15 * 86400)) }))).toEqual([])
+  })
   it('archivage des WAL en échec : critique ; rétabli (un succès plus récent) : rien', () => {
     const failing = bk({ archiver: { archived_count: 5, last_archived_wal: 'A', last_archived_at: NOW - 600, failed_count: 3, last_failed_wal: 'B', last_failed_at: NOW - 60 } })
     expect(run(snap({ backup: failing })).findings.find((x) => x.rule === 'backup.archiver_failing')).toMatchObject({ severity: 'critical', params: { failed: 3, wal: 'B' } })

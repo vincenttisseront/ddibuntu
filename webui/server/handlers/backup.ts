@@ -31,7 +31,7 @@ route('POST', '/backup/action', 'admin', async (c) => {
 })
 
 const Configure = z.object({
-  keepFull: z.number().int().min(1).max(30), intervalHours: z.number().int().min(1).max(168), startHour: z.number().int().min(0).max(23),
+  keepFull: z.number().int().min(1).max(30), keepDays: z.number().int().min(0).max(365).optional(), verifyAfter: z.boolean().optional(), intervalHours: z.number().int().min(1).max(168), startHour: z.number().int().min(0).max(23),
   mirrorDir: z.string().max(200).refine((v) => v === '' || (MIRROR_RE.test(v) && !v.includes('..')), { message: 'mirror_invalid' }),
 }).strict()
 route('POST', '/backup/configure', 'admin', async (c) => {
