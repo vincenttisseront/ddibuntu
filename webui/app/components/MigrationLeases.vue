@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Reprise des baux actifs Windows (0.12.2) : CSV de Get-DhcpServerv4Lease → base de baux de Kea. Analyse d'abord, puis confirmation.
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm()
+const props = defineProps<{ push?: { at: string | null; imported: number; total: number } | null }>()
 const emit = defineEmits<{ done: [] }>()
 const csv = ref(''), name = ref(''), pre = ref<any>(null), busy = ref(false), err = ref('')
 async function pick(e: Event) {
@@ -25,6 +26,8 @@ async function commit() {
   <div class="flex flex-col gap-2 rounded-md bg-elevated/50 p-3">
     <span class="text-sm font-medium">{{ t('mil.title') }}</span>
     <p class="text-xs text-muted">{{ t('mil.hint') }}</p>
+    <p v-if="props.push?.at" class="text-xs text-success" data-test="mil-push">{{ t('mil.push', { n: props.push.total, d: new Date(props.push.at).toLocaleString() }) }}</p>
+    <p class="text-xs text-dimmed">{{ t('mil.push_hint') }}</p>
     <input type="file" accept=".csv,text/csv,text/plain" class="block w-full text-sm" :aria-label="t('mil.title')" data-test="mil-file" @change="pick">
     <UAlert v-if="err" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="err" role="alert" />
     <div v-if="busy && !pre" class="flex items-center gap-2 text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />{{ t('common.loading') }}</div>

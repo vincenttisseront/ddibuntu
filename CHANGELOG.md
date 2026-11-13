@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.12.4 — « Migration Windows : coexistence »
+
+- Zones : option « coexistence » à la création — les zones primaires Windows sont créées en **secondaires** de BIND, derrière le serveur Windows (transfert périodique).
+- Contrôle du transfert par zone, puis **bascule** (administrateur) : transfert, instantané, zone passée en primaire, enregistrements AD critiques protégés ; retour en secondaire si l'import échoue.
+- Baux : envoi planifié (mode « rafraîchir », script PowerShell fourni) pour garder les baux à jour avant la bascule, sans instantané ni historique ; refusé une fois l'étape « bascule » cochée.
+- Tests : unit-iter27, e2e-iter26.
+
 ## 0.12.3 — « Migration Windows : zones DNS (inventaire et transfert) »
 - **Créer les zones d'après l'inventaire** (étape DNS) : on dépose `dns-zones.csv` ; une zone vide est créée pour chaque zone **primaire** (marquée « intégrée AD » si elle l'était), **secondaire** (avec ses serveurs maîtres) et **redirecteur conditionnel** (avec ses redirecteurs). Zones existantes, zones stub, `TrustAnchors`, noms invalides et doublons sont ignorés avec leur motif ; une zone signée DNSSEC est créée sans signature (signalé). Choix de la vue DNS quand il y en a. Instantané avant, historique (`dns-zones`), audit `migration_zones`.
 - **Transfert de zone (AXFR) direct depuis le serveur Windows** (administrateur) : analyse (nouveaux / identiques / en conflit / critiques AD) puis import dans la zone choisie, avec le même moteur que l'import de fichier : jamais d'écrasement en mode « ignorer », enregistrements critiques d'Active Directory (SRV, `_msdcs`…) **protégés**, instantané avant. Appel de `dig` sans shell, serveur validé (IP ou nom, jamais une option). Erreurs claires : transfert refusé, serveur injoignable, `dig` absent.

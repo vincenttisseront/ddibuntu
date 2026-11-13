@@ -29,3 +29,13 @@ Get-DhcpServerv4Scope | ForEach-Object { Get-DhcpServerv4Lease -ScopeId $_.Scope
   Select-Object IPAddress, ClientId, HostName, AddressState, @{ n = 'ExpiryUtc'; e = { $_.LeaseExpiryTime.ToUniversalTime().ToString('s') } } |
   Export-Csv "$env:TEMP\\dhcp-leases.csv" -NoTypeInformation -Encoding UTF8
 Write-Host "Écrit : $env:TEMP\\dhcp-leases.csv"`
+
+export const PS_PUSH = `# Envoi planifié des baux vers la console, TANT QUE Windows sert encore les clients (coexistence). À lancer toutes les 5 minutes, par exemple :
+#   Register-ScheduledTask -TaskName DdiLeasePush -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)) -Action (New-ScheduledTaskAction -Execute powershell.exe -Argument '-File C:\\Scripts\\ddi-lease-push.ps1')
+# Remplacez l'adresse de la console et le jeton d'API (rôle opérateur, créé dans Profil › Jetons d'API) ; ne laissez pas ce fichier lisible par tous.
+$console = 'https://CONSOLE-DDI'
+$token = 'COLLER-LE-JETON-ICI'
+$csv = (Get-DhcpServerv4Scope | ForEach-Object { Get-DhcpServerv4Lease -ScopeId $_.ScopeId } |
+  Select-Object IPAddress, ClientId, HostName, AddressState, @{ n = 'ExpiryUtc'; e = { $_.LeaseExpiryTime.ToUniversalTime().ToString('s') } } |
+  ConvertTo-Csv -NoTypeInformation) -join "\`n"
+Invoke-RestMethod -Method Post -Uri "$console/api/migration/leases/commit" -Headers @{ Authorization = "Bearer $token" } -ContentType 'application/json' -Body (@{ content = $csv; refresh = $true } | ConvertTo-Json)`

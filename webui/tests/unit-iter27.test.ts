@@ -46,4 +46,12 @@ describe('zones Windows : inventaire et transfert', () => {
     const z = parseZoneFile(DIG, 'corp.local')
     expect(z.soa).not.toBeNull(); expect(z.records.map((r) => `${r.name}/${r.type}`).sort()).toEqual(['@/NS', '_ldap._tcp/SRV', 'dc1/A', 'www/CNAME'])
   })
+
+  it('coexistence : les primaires deviennent secondaires derrière le serveur Windows, le reste est inchangé', () => {
+    const p = planZones(CSV, new Set(), '192.0.2.1')
+    const by = Object.fromEntries([...p.items].reverse().map((i) => [i.name, i]))
+    expect(by['corp.local']).toMatchObject({ type: 'secondary', masters: ['192.0.2.1'] })
+    expect(by['sec.corp.local'].masters).toEqual(['10.0.0.5', '10.0.0.6'])
+    expect(by['partner.net'].type).toBe('forward')
+  })
 })

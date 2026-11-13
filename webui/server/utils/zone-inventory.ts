@@ -14,7 +14,8 @@ const yes = (s: string | undefined) => /^(true|vrai|1|yes|oui)$/i.test((s ?? '')
 /** « MasterServers » : adresses séparées par espaces, virgules ou points-virgules ; ne garde que les IPv4/IPv6 valides. */
 export const parseServers = (s: string | undefined): string[] => [...new Set((s ?? '').split(/[\s,;]+/).map((x) => normIp(x)).filter((x): x is string => !!x))]
 
-export function planZones(csv: string, existing: Set<string>): ZonePlan {
+/** `coexist` : adresse du serveur Windows ; les zones primaires deviennent des zones SECONDAIRES de ce serveur (il reste maître jusqu'à la bascule). */
+export function planZones(csv: string, existing: Set<string>, coexist: string | null = null): ZonePlan {
   const rows = csvObjects(csv)
   if (!rows.length || !('zonename' in rows[0]!)) return { items: [], errors: ['dns_csv_invalid'] }
   const items: ZonePlanItem[] = [], seen = new Set<string>()
@@ -22,12 +23,14 @@ export function planZones(csv: string, existing: Set<string>): ZonePlan {
     const name = (r.zonename ?? '').trim().toLowerCase().replace(/\.$/, '')
     if (!name || name === '.' || name === 'trustanchors') continue
     const t = (r.zonetype ?? '').toLowerCase(), servers = parseServers(r.masterservers)
+    const mirror = !!coexist && t !== 'secondary' && t !== 'forwarder' && t !== 'stub'
     const base = { name, winType: r.zonetype ?? '', masters: [] as string[], forwarders: [] as string[], adIntegrated: yes(r.isdsintegrated), signed: yes(r.issigned) }
     if (!isValidDnsName(name, false)) { items.push({ ...base, type: null, action: 'skip', reason: 'invalid_name' }); continue }
     if (seen.has(name)) { items.push({ ...base, type: null, action: 'skip', reason: 'duplicate' }); continue }
     seen.add(name)
     if (t === 'stub') { items.push({ ...base, type: null, action: 'skip', reason: 'stub' }); continue }
-    const type = t === 'secondary' ? 'secondary' : t === 'forwarder' ? 'forward' : 'primary'
+    const type = t === 'secondary' || mirror ? 'secondary' : t === 'forwarder' ? 'forward' : 'primary'
+    if (mirror) servers.splice(0, servers.length, coexist!)
     if (type !== 'primary' && !servers.length) { items.push({ ...base, type, action: 'skip', reason: 'no_masters' }); continue }
     items.push({ ...base, type, action: existing.has(name) ? 'exists' : 'create', masters: type === 'secondary' ? servers : [], forwarders: type === 'forward' ? servers : [] })
   }
