@@ -48,3 +48,43 @@ route('POST', '/migration/assess', 'operator', async (c) => {
   await audit(c, 'migration_assess', 'settings', undefined, { verdict: r.verdict, ...r.summary })
   return r
 })
+
+// ---- Reprise des baux actifs (0.12.2) : CSV de Get-DhcpServerv4Lease → table lease4 de Kea. Jamais d'écrasement d'un bail existant. ----
+import { captureSnapshot } from '../utils/snapshots'
+import { planLeases } from '../utils/lease-import'
+import { fail } from '../utils/router'
+import { record } from './importer'
+import { tx } from '../utils/db'
+
+const leasesBody = z.object({ content: z.string().min(1).max(25_000_000), filename: z.string().max(200).optional() })
+async function leasePlan(csv: string) {
+  const scopes = (await query<any>('select d.id, text(s.cidr) as cidr, d.lease_time from dhcp_scopes d join subnets s on s.id = d.subnet_id')).map((r) => ({ id: r.id as number, cidr: r.cidr as string, leaseTime: r.lease_time as number }))
+  const t = await one<any>("select to_regclass('public.lease4') is not null as ok")
+  return { plan: planLeases(csv, scopes), available: !!t?.ok, scopes: scopes.length }
+}
+const view = (p: Awaited<ReturnType<typeof leasePlan>>) => ({ available: p.available, scopes: p.scopes, total: p.plan.total, toImport: p.plan.import.length, skipped: p.plan.skipped, errors: p.plan.errors })
+
+route('POST', '/migration/leases/preview', 'operator', async (c) => view(await leasePlan((await c.body(leasesBody)).content)))
+
+route('POST', '/migration/leases/commit', 'operator', async (c) => {
+  const b = await c.body(leasesBody)
+  const p = await leasePlan(b.content)
+  if (p.plan.errors.length) fail(400, 'leases_csv_invalid')
+  if (!p.available) fail(409, 'lease_db_missing')
+  if (!p.plan.import.length) return { ...view(p), imported: 0, existing: 0, snapshotId: null }
+  const snapshotId = await captureSnapshot('pre-import', `avant reprise des baux (${b.filename ?? 'baux'})`, c.user?.username ?? null)
+  const imported = await tx(async (cl) => {
+    const cols = new Set((await cl.query("select column_name from information_schema.columns where table_schema = 'public' and table_name = 'lease4'")).rows.map((r) => r.column_name as string))
+    for (const need of ['address', 'hwaddr', 'expire', 'subnet_id']) if (!cols.has(need)) fail(409, 'lease_db_missing')
+    let n = 0
+    for (const l of p.plan.import) {
+      const v: Record<string, unknown> = { address: l.n, hwaddr: Buffer.from(l.mac.replace(/:/g, ''), 'hex'), valid_lifetime: l.lifetime, expire: l.expire.toISOString().slice(0, 19).replace('T', ' '), subnet_id: l.scopeId, fqdn_fwd: false, fqdn_rev: false, hostname: l.hostname ?? '', state: 0 }
+      const use = Object.keys(v).filter((k) => cols.has(k))
+      n += (await cl.query(`insert into lease4 (${use.join(', ')}) values (${use.map((_, i) => `$${i + 1}`).join(', ')}) on conflict (address) do nothing`, use.map((k) => v[k]))).rowCount ?? 0
+    }
+    return n
+  })
+  await record(c, 'dhcp-leases', b.filename, { ...view(p), imported }, snapshotId)
+  await audit(c, 'migration_leases', 'lease4', undefined, { total: p.plan.total, imported })
+  return { ...view(p), imported, existing: p.plan.import.length - imported, snapshotId }
+})

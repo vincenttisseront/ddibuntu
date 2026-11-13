@@ -23,3 +23,9 @@ Get-DnsServerZone | Where-Object { -not $_.IsAutoCreated -and $_.ZoneType -eq 'P
   Copy-Item "$env:SystemRoot\\System32\\dns\\$f" "$dest\\$f" -Force
 }
 Write-Host "Fichiers de zone dans $dest"`
+
+export const PS_LEASES = `# Export des baux DHCP actifs (adresse, MAC, nom, expiration en UTC) — fichier à déposer dans l'étape « DHCP » pour que les clients gardent leur adresse
+Get-DhcpServerv4Scope | ForEach-Object { Get-DhcpServerv4Lease -ScopeId $_.ScopeId } |
+  Select-Object IPAddress, ClientId, HostName, AddressState, @{ n = 'ExpiryUtc'; e = { $_.LeaseExpiryTime.ToUniversalTime().ToString('s') } } |
+  Export-Csv "$env:TEMP\\dhcp-leases.csv" -NoTypeInformation -Encoding UTF8
+Write-Host "Écrit : $env:TEMP\\dhcp-leases.csv"`

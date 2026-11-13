@@ -5,7 +5,7 @@ const { canWrite } = useRole()
 const emit = defineEmits<{ goto: [tab: string] }>()
 const st = ref<any>(null), busy = ref(''), err = ref(''), shown = ref('')
 const SCRIPTS = computed<Record<string, { title: string; code: string }>>(() => ({
-  inventory: { title: t('mig.s_inventory'), code: PS_INVENTORY }, dhcp: { title: t('mig.s_dhcp'), code: PS_DHCP }, dns: { title: t('mig.s_dns'), code: PS_DNS },
+  inventory: { title: t('mig.s_inventory'), code: PS_INVENTORY }, leases: { title: t('mig.s_leases'), code: PS_LEASES }, dhcp: { title: t('mig.s_dhcp'), code: PS_DHCP }, dns: { title: t('mig.s_dns'), code: PS_DNS },
 }))
 const META = computed<Record<string, { label: string; desc: string; icon: string; tab?: string; link?: string }>>(() => ({
   scripts: { label: t('mig.st.scripts'), desc: t('mig.st.scripts_d'), icon: 'i-lucide-terminal' },
@@ -51,6 +51,7 @@ await load()
           </div>
         </div>
         <p class="text-sm text-muted">{{ META[s.id]!.desc }}</p>
+        <MigrationLeases v-if="s.id === 'dhcp' && canWrite" @done="load" />
         <MigrationAssess v-if="s.id === 'assess' && canWrite" @done="load" />
         <div v-if="s.id === 'scripts'" class="flex flex-col gap-2">
           <div class="flex flex-wrap gap-2"><UButton v-for="(sc, k) in SCRIPTS" :key="k" size="xs" :color="shown === k ? 'primary' : 'neutral'" variant="outline" icon="i-lucide-file-code" :label="sc.title" @click="shown = shown === k ? '' : String(k)" /></div>

@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.12.2 — « Migration Windows : reprise des baux actifs »
+- **Étape DHCP › Reprendre les baux actifs** : on dépose le CSV du nouveau script « 4. Baux actifs » (`Get-DhcpServerv4Lease`, expiration en UTC) ; la console analyse (inactifs, expirés, hors étendue, invalides), puis, après confirmation, inscrit les baux encore valides dans la table `lease4` de Kea avec l'identifiant d'étendue attendu : **les clients gardent leur adresse à la bascule**.
+- **Aucun écrasement** : un bail déjà présent dans Kea n'est jamais modifié (comptés « déjà présents ») ; instantané avant l'écriture, entrée dans l'historique des imports (`dhcp-leases`), audit `migration_leases`. Refus propre (`lease_db_missing`) tant que la base de baux de Kea n'existe pas.
+- L'évaluation de compatibilité signale désormais les baux de l'export XML comme « à adapter » (repris à part) au lieu de « non pris en charge ».
+- API : `POST /migration/leases/preview|commit` (opérateur).
+- Reporté (feuille de route, 0.12.8) : classes de clients Kea — stratégies, classes fabricant / utilisateur, filtres MAC, option 43 — car la console n'a pas encore de gestion des classes DHCP. Le failover Windows se remplace par Kea HA du cluster (déjà disponible).
+
 ## 0.12.1 — « Migration Windows : évaluation de compatibilité »
 - **Nouvelle étape « Évaluer la compatibilité »** dans l'assistant (Import › Migration Windows) : on dépose l'export DHCP (`Export-DhcpServer`, XML) et/ou l'inventaire des zones (CSV du script d'inventaire) ; le rapport classe chaque fonction en **repris**, **à adapter** ou **non pris en charge**, avec la marche à suivre. **Rien n'est importé ni modifié.**
 - **DHCP** : étendues et réservations (repris) ; stratégies, classes fabricant / utilisateur, filtres MAC, relation de basculement (→ Kea HA), superscopes, options non reconnues (à adapter) ; DHCPv6 et baux actifs (non pris en charge pour l'instant).

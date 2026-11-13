@@ -43,7 +43,7 @@ export function assessDhcp(xml: string, out: AssessFinding[], errors: string[]):
   add(out, 'dhcp', 'dhcp_failover', 'adapted', countKey(v4, 'failover') + countKey(v4, 'relationship'))
   add(out, 'dhcp', 'dhcp_superscopes', 'adapted', countKey(v4, 'superscope'))
   add(out, 'dhcp', 'dhcp_ipv6', 'unsupported', countKey(tree?.dhcpserver ?? {}, 'ipv6') ? Math.max(1, countKey(tree.dhcpserver.ipv6 ?? {}, 'scope')) : 0)
-  add(out, 'dhcp', 'dhcp_leases', 'unsupported', countKey(tree?.dhcpserver ?? {}, 'lease'))
+  add(out, 'dhcp', 'dhcp_leases', 'adapted', countKey(tree?.dhcpserver ?? {}, 'lease'))
 }
 
 const yes = (s: string | undefined) => /^(true|vrai|1|yes|oui)$/i.test((s ?? '').trim())

@@ -61,12 +61,13 @@ Traitée **avant** le reste des séries 0.10.x et 0.11.x. Déjà en place : impo
 |---|---|---|---|
 | 1 | 0.12.0 | Assistant « Migration Windows » : parcours guidé (inventaire → évaluation → import → vérification → bascule), scripts PowerShell à copier, avancement conservé | ✅ 0.12.0 |
 | 2 | 0.12.1 | Évaluation de compatibilité : rapport « repris / adapté / non pris en charge » pour DHCP (failover, politiques, filtres MAC, superscopes, classes) et DNS (zones intégrées AD, stub, redirecteurs conditionnels, DNSSEC, vieillissement) | ✅ 0.12.1 |
-| 3 | 0.12.2 | Import DHCP complet : baux actifs (continuité des clients), classes / option 43, filtres MAC, politiques → classes Kea, superscopes, failover → Kea HA | ⬜ |
+| 3 | 0.12.2 | Reprise des baux actifs (continuité des clients) ; le failover Windows se remplace par Kea HA du cluster | ✅ 0.12.2 |
 | 4 | 0.12.3 | Import DNS complet : transfert de zone (AXFR) direct depuis le serveur Windows, redirecteurs conditionnels, zones secondaires / stub, enregistrements AD critiques protégés | ⬜ |
 | 5 | 0.12.4 | Coexistence : notre BIND secondaire des zones Windows (synchronisation périodique), baux Windows lus en continu avant bascule | ⬜ |
 | 6 | 0.12.5 | Vérification avant bascule : comparaison automatique Windows ↔ DDI (réponses DNS de chaque enregistrement, étendues / plages / réservations / options DHCP), rapport d'écarts | ⬜ |
 | 7 | 0.12.6 | Plan de bascule et retour arrière : check-list ordonnée (TTL, relais DHCP, redirecteurs AD, arrêt des étendues Windows), exécution assistée, instantané et rollback | ⬜ |
 | 8 | 0.12.7 | Après migration : localisation des contrôleurs de domaine (SRV), mises à jour dynamiques sécurisées (GSS-TSIG), retrait des rôles Windows | ⬜ |
+| 9 | 0.12.8 | Classes de clients Kea dans la console : stratégies, classes fabricant / utilisateur, filtres MAC (autoriser / refuser), option 43 ; import correspondant depuis Windows | ⬜ |
 
 ## Série 0.10.x — gestion complète DNS ↔ IPAM ↔ DHCP (validée le 2026-11-13)
 Dix évolutions, une version chacune, chacune testée (unitaires, e2e, batteries réelles) avant publication. Ordre retenu : les deux plus rentables d'abord, puis celles qui s'appuient dessus.
