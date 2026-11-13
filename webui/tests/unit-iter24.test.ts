@@ -33,3 +33,11 @@ describe('script d\'envoi des baux', () => {
     expect(PUSH).toMatch(/-like '\*CONSOLE-DDI\*'/); expect(PUSH.indexOf('-like')).toBeLessThan(PUSH.indexOf('Invoke-RestMethod')); expect(PUSH).toContain('Tls12')
   })
 })
+
+import { withConsoleUrl } from '../app/utils/migration-scripts'
+describe('adresse de la console dans le script', () => {
+  it('remplace l\'adresse d\'exemple par celle du navigateur ; jamais de jeton ; origine douteuse ignorée', () => {
+    const c = withConsoleUrl(PUSH, 'https://ddi.corp.local'); expect(c).toContain("$console = 'https://ddi.corp.local'"); expect(c).toContain('COLLER-LE-JETON-ICI')
+    for (const bad of ['', "https://x'; Remove-Item *; '", 'javascript:alert(1)', 'https://a b']) expect(withConsoleUrl(PUSH, bad)).toBe(PUSH)
+  })
+})

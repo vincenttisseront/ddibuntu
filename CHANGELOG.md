@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.12.13 — « Adresse de la console préremplie dans le script des baux »
+
+- Le script d'envoi des baux affiché par l'assistant de migration reprend l'adresse de la console telle que le navigateur la voit (par exemple `https://ddi.corp.local`) au lieu de `https://CONSOLE-DDI`. Le jeton d'API reste à coller par l'utilisateur : il n'est jamais préinséré.
+- Test : unit-iter24 (complété).
+
 ## 0.12.12 — « Script d'envoi des baux plus sûr »
 
 - Le script PowerShell d'envoi planifié des baux refuse de partir tant que l'adresse de la console et le jeton sont encore les valeurs d'exemple (au lieu d'une erreur de résolution de nom), force TLS 1.2 et rappelle que le certificat de la console doit être approuvé par le serveur Windows.

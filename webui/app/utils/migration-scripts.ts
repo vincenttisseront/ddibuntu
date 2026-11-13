@@ -83,3 +83,6 @@ Stop-Service DHCPServer; Set-Service DHCPServer -StartupType Disabled
 # Stop-Service DNS; Set-Service DNS -StartupType Disabled
 # 3. Désinstallation définitive (irréversible sans réinstallation) — à décommenter seulement après sauvegarde :
 # Uninstall-WindowsFeature DHCP -IncludeManagementTools`
+
+/** Remplace l'adresse d'exemple par celle de la console telle que le navigateur la voit (jamais le jeton : il se crée dans Profil › Jetons d'API). */
+export const withConsoleUrl = (code: string, origin: string): string => (/^https?:\/\/[^\s'"`$]+$/.test(origin) ? code.replace("'https://CONSOLE-DDI'", `'${origin}'`) : code)
