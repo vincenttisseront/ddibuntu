@@ -2177,5 +2177,14 @@ const messages: Record<string, string> = {
   "dnshealth.confirm.title": "Fix inconsistencies",
   "dnshealth.confirm.msg": "{n} fix(es) will be applied. Touched zones will be marked as pending deployment.",
   "dnshealth.fixed": "{n} fixed, {g} already resolved, {u} not fixable",
+  "release.title": "Release {ip}",
+  "release.desc": "The IPAM entry is deleted together with its dependents, in one all-or-nothing operation.",
+  "release.row": "Address",
+  "release.reservation": "DHCP reservation (removed with the entry)",
+  "release.nothing": "Nothing else is attached to this address.",
+  "release.dynamic": "{n} dynamic record(s) from a lease are left alone: they follow the lease.",
+  "release.dns": "Also delete these DNS records (zones will be marked pending deployment)",
+  "release.blocked": "A protected record can only be deleted by an administrator: untick the option or ask one.",
+  "release.go": "Release",
 }
 export default messages

@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.10.2 — « Libérer une adresse en un geste »
+- **IPAM › Adresses › Supprimer** ouvre désormais un **récapitulatif** de tout ce qui disparaît avec l'IP : enregistrements **A/AAAA**, **PTR**, **alias CNAME** (toutes profondeurs, toutes vues) et **réservation DHCP**. Case « supprimer aussi ces enregistrements DNS » (cochée par défaut).
+- **Tout ou rien** : fiche IPAM, réservation et enregistrements DNS partent dans une seule transaction ; les zones touchées passent « à déployer » ; action auditée (`address_release`).
+- Garde-fous : un enregistrement **protégé** ne peut être supprimé que par un administrateur (sinon la libération avec DNS est refusée sans rien toucher ; sans l'option DNS, l'opérateur peut libérer) ; les enregistrements **dynamiques** issus d'un bail ne sont jamais touchés ; le récapitulatif est en lecture seule (opérateur au moins).
+- API : `GET /ipam/addresses/:id/release-plan`, `POST /ipam/addresses/:id/release {dns}`. L'ancien `DELETE /ipam/addresses/:id` reste disponible (fiche seule).
+
 ## 0.10.1 — « Contrôle de cohérence DNS ↔ IPAM »
 - **Nouvel onglet DNS › Cohérence** : analyse en lecture seule qui croise zones, enregistrements et fiches IPAM et signale cinq types d'écarts — **PTR orphelin** (aucun A ne porte l'adresse), **A sans PTR** (zone inverse présente), **A sans fiche IPAM** (adresse dans un réseau géré), **IP nommée non publiée** (hostname IPAM absent du DNS) et **CNAME pendant** (cible inexistante dans une zone gérée de la même vue).
 - **Score de 0 à 100** global et par zone ; filtre par type.

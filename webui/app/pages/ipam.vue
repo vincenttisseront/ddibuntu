@@ -136,9 +136,16 @@ const addrFields = computed(() => [
   { key: 'description', label: t('common.description'), type: 'text' }, { key: 'owner', label: t('ipam.owner'), type: 'text' },
   { key: 'dns_zone_id', label: t('ipam.dns_sync'), type: 'select', options: zoneOptions.value, default: 0, createOnly: true, hint: t('ipam.dns_sync_hint') },
 ] as any[])
+// Libération d'une adresse (0.10.2) : récapitulatif de ce qui disparaît (noms DNS, alias, réservation DHCP), puis suppression en tout-ou-rien.
+const rel = reactive<{ open: boolean; row: any; plan: any; dns: boolean; busy: boolean; err: string }>({ open: false, row: null, plan: null, dns: true, busy: false, err: '' })
 async function removeAddr(row: any) {
-  if (!(await ask(t('common.delete'), t('common.delete_confirm', { name: row.ip })))) return
-  try { await api.call('DELETE', `/ipam/addresses/${row.id}`); await refreshAll() } catch (e: any) { fail(e) }
+  Object.assign(rel, { open: true, row, plan: null, dns: true, busy: false, err: '' })
+  try { rel.plan = await api.call('GET', `/ipam/addresses/${row.id}/release-plan`, undefined, { silent: true }) } catch (e: any) { rel.err = e?.info?.message ?? t('err.internal') }
+}
+async function confirmRelease() {
+  rel.busy = true; rel.err = ''
+  try { await api.call('POST', `/ipam/addresses/${rel.row.id}/release`, { dns: rel.dns }, { silent: true }); rel.open = false; await refreshAll() }
+  catch (e: any) { rel.err = e?.info?.message ?? t('err.internal') } finally { rel.busy = false }
 }
 const addrFrom = computed(() => (addrs.value?.total ? addrOffset.value + 1 : 0))
 const addrTo = computed(() => Math.min(addrOffset.value + LIMIT, addrs.value?.total ?? 0))
@@ -361,6 +368,28 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
             <UButton size="sm" color="neutral" variant="outline" :label="t('common.close')" @click="chk.open = false" />
           </div>
         </div>
+      </template>
+    </UModal>
+    <UModal v-model:open="rel.open" :title="t('release.title', { ip: rel.row?.ip ?? '' })" :description="t('release.desc')">
+      <template #body>
+        <div class="flex flex-col gap-3">
+          <UAlert v-if="rel.err" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="rel.err" role="alert" />
+          <div v-if="!rel.plan && !rel.err" class="flex items-center gap-2 text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />{{ t('common.loading') }}</div>
+          <template v-if="rel.plan">
+            <p class="text-sm">{{ t('release.row') }} <span class="font-mono">{{ rel.plan.ip }}</span><span v-if="rel.plan.hostname"> · {{ rel.plan.hostname }}</span></p>
+            <ul class="text-sm flex flex-col gap-1" data-test="release-list">
+              <li v-for="r in rel.plan.records" :key="r.id" class="flex gap-2"><UBadge color="neutral" variant="subtle" :label="r.type" /><span class="font-mono">{{ r.fqdn }}</span><span class="text-muted">({{ r.zone }})</span></li>
+              <li v-if="rel.plan.reservation" class="flex gap-2"><UBadge color="neutral" variant="subtle" label="DHCP" />{{ t('release.reservation') }}</li>
+              <li v-if="!rel.plan.records.length && !rel.plan.reservation" class="text-muted">{{ t('release.nothing') }}</li>
+            </ul>
+            <p v-if="rel.plan.dynamic" class="text-xs text-dimmed">{{ t('release.dynamic', { n: rel.plan.dynamic }) }}</p>
+            <UCheckbox v-if="rel.plan.records.length" v-model="rel.dns" :label="t('release.dns')" />
+            <UAlert v-if="rel.plan.blocked && rel.dns" color="warning" variant="subtle" icon="i-lucide-lock" :title="t('release.blocked')" />
+          </template>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2"><UButton color="neutral" variant="outline" :label="t('common.cancel')" @click="rel.open = false" /><UButton color="error" icon="i-lucide-trash-2" :label="t('release.go')" :loading="rel.busy" :disabled="!rel.plan || (rel.plan.blocked && rel.dns)" data-test="release-go" @click="confirmRelease" /></div>
       </template>
     </UModal>
     <AddressDns v-model:open="dnsOpen" :address="dnsRow" :can-write="canWrite" @changed="refreshAll" />

@@ -2177,5 +2177,14 @@ const messages: Record<string, string> = {
   "dnshealth.confirm.title": "Corriger les incohérences",
   "dnshealth.confirm.msg": "{n} correction(s) vont être appliquées. Les zones touchées seront marquées « à déployer ».",
   "dnshealth.fixed": "{n} corrigé(s), {g} déjà résolu(s), {u} non corrigeable(s)",
+  "release.title": "Libérer {ip}",
+  "release.desc": "La fiche IPAM est supprimée avec ce qui en dépend, en une seule opération : tout ou rien.",
+  "release.row": "Adresse",
+  "release.reservation": "Réservation DHCP (supprimée avec la fiche)",
+  "release.nothing": "Rien d'autre n'est lié à cette adresse.",
+  "release.dynamic": "{n} enregistrement(s) dynamique(s) issus d'un bail ne sont pas touchés : ils suivent le bail.",
+  "release.dns": "Supprimer aussi ces enregistrements DNS (les zones seront marquées « à déployer »)",
+  "release.blocked": "Un enregistrement protégé ne peut être supprimé que par un administrateur : décochez l'option ou demandez-lui.",
+  "release.go": "Libérer",
 }
 export default messages

@@ -157,3 +157,54 @@ route('DELETE', '/ipam/addresses/:id/aliases/:rid', 'operator', async (c) => {
   await audit(c, 'alias_delete', 'record', m.rid, { address: m.id, fqdn: m.al.fqdn, removed: all.length })
   return { ok: true, removed: all.length }
 })
+
+// ---- Libération d'une adresse (0.10.2) : récapitulatif puis suppression en tout-ou-rien de la fiche, de la réservation DHCP et des noms DNS ----
+async function releasePlan(id: number) {
+  const { a, ip, hosts, cnames } = await context(id)
+  const dyn = new Set((await query<any>("select id from dns_records where source = 'dhcp' and id = any($1::int[])", [hosts.map((h) => h.id)])).map((r) => r.id as number))
+  const own = hosts.filter((h) => !dyn.has(h.id))
+  const fq = new Set(own.map((h) => h.fqdn))
+  const ptrFq = ptrName(parseIp(ip)!)
+  const ptrs = (await query<any>("select r.id, r.name, r.rdata, r.protected, z.id as zone_id, z.name as zone from dns_records r join dns_zones z on z.id = r.zone_id where r.type = 'PTR' and z.type = 'primary' and r.source = 'manual' and (r.name || '.' || z.name = $1 or (r.name = '@' and z.name = $1))", [ptrFq]))
+    .filter((r) => fq.has(stripDot(r.rdata)))
+  const aliases = aliasesOf(own, cnames)
+  const resv = (await query<any>('select id, host(ip) as ip, mac from dhcp_reservations where address_id = $1', [id]).catch(() => [])) as any[]
+  const aliasRecs = aliases.map((x) => ({ id: x.rec.id, zoneId: x.rec.zoneId, zone: x.rec.zone, type: 'CNAME', fqdn: x.fqdn, protected: x.rec.protected }))
+  const records = [
+    ...own.map((h) => ({ id: h.id, zoneId: h.zoneId, zone: h.zone, type: h.type, fqdn: h.fqdn, protected: false })),
+    ...ptrs.map((r) => ({ id: r.id as number, zoneId: r.zone_id as number, zone: r.zone as string, type: 'PTR', fqdn: ptrFq, protected: !!r.protected })),
+    ...aliasRecs,
+  ]
+  if (own.length) {
+    const prot = await query<any>('select id from dns_records where protected and id = any($1::int[])', [own.map((h) => h.id)])
+    for (const p of prot) records.find((r) => r.id === p.id)!.protected = true
+  }
+  return { a, ip, records, reservation: resv.length > 0, dynamic: dyn.size }
+}
+
+route('GET', '/ipam/addresses/:id/release-plan', 'operator', async (c) => {
+  const id = intParam(c, 'id')
+  await allowAddress(c, id)
+  const p = await releasePlan(id)
+  return { ip: p.ip, hostname: p.a.hostname ?? null, records: p.records, reservation: p.reservation, dynamic: p.dynamic, blocked: p.records.some((r) => r.protected) && c.user!.role !== 'admin' }
+})
+
+route('POST', '/ipam/addresses/:id/release', 'operator', async (c) => {
+  const id = intParam(c, 'id')
+  await allowAddress(c, id)
+  const b = await c.body(z.object({ dns: z.boolean() }))
+  const p = await releasePlan(id)
+  const doDns = b.dns && p.records.length > 0
+  if (doDns && p.records.some((r) => r.protected) && c.user!.role !== 'admin') fail(403, 'protected_record')
+  const removed = await tx(async (cl) => {
+    let n = 0
+    if (doDns) {
+      n = (await cl.query('delete from dns_records where id = any($1::int[])', [p.records.map((r) => r.id)])).rowCount ?? 0
+      await cl.query('update dns_zones set dirty = true, updated_at = now() where id = any($1::int[])', [[...new Set(p.records.map((r) => r.zoneId))]])
+    }
+    await cl.query('delete from addresses where id = $1', [id])
+    return n
+  })
+  await audit(c, 'address_release', 'address', id, { ip: p.ip, dns: doDns, records: removed, reservation: p.reservation })
+  return { ok: true, records: removed, reservation: p.reservation }
+})
