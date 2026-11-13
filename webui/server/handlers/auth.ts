@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { audit, clearSessionCookie, fail, route, setSessionCookie, COOKIE } from '../utils/router'
+import { audit, clearSessionCookie, fail, intParam, route, setSessionCookie, COOKIE } from '../utils/router'
 import { one, query, tx, getSetting, isSchemaReady, inRecovery } from '../utils/db'
 import { cfg } from '../utils/config'
 import { createSession, destroySession, signMfaChallenge, REPLICA_TOKEN_PREFIX, replicaLoginBlocked, replicaRecordAttempt, signReplicaSession, destroyUserSessions, dummyVerify, hashPassword, loginBlocked, passwordPolicyError, recordAttempt, safeEqual, verifyPassword, decryptSecret } from '../utils/auth'
@@ -103,6 +103,36 @@ route('POST', '/auth/logout', 'viewer', async (c) => {
   clearSessionCookie(c.event)
   await audit(c, 'logout', 'user', c.user!.id)
   return { ok: true }
+})
+
+// ---- Profil : identité, origine de connexion, périmètre, sessions actives (chacun ne voit et ne ferme que les siennes)
+route('GET', '/auth/profile', 'viewer', async (c) => {
+  const me = c.user!
+  const u = await one<any>('select created_at, last_login, totp_enabled, space_ids, display_name from users where id = $1', [me.id]).catch(() => null)
+  const ids: number[] | null = u?.space_ids ?? me.spaceIds ?? null
+  const spaces = ids ? await query<any>('select id, name from ipam_spaces where id = any($1::int[]) order by lower(name)', [ids]).catch(() => []) : null
+  return { username: me.username, displayName: u?.display_name ?? me.displayName ?? '', role: me.role, source: me.source, createdAt: u?.created_at ?? null, lastLogin: u?.last_login ?? null,
+    mfa: me.source === 'local' ? !!u?.totp_enabled : null, spaces, replica: await inRecovery() }
+})
+route('GET', '/auth/sessions', 'viewer', async (c) => {
+  if (await inRecovery()) return { items: [], unavailable: true }
+  const rows = await query<any>('select id, created_at, last_seen, expires_at, host(ip) as ip, user_agent from sessions where user_id = $1 and expires_at > now() order by last_seen desc', [c.user!.id])
+  return { items: rows.map((r) => ({ ...r, current: Number(r.id) === c.user!.sessionId })), unavailable: false }
+})
+route('DELETE', '/auth/sessions/:id', 'viewer', async (c) => {
+  if (await inRecovery()) fail(409, 'primary_only')
+  const id = intParam(c, 'id')
+  if (id === c.user!.sessionId) fail(400, 'current_session')              // sa propre session se ferme par « Se déconnecter »
+  const r = await query('delete from sessions where id = $1 and user_id = $2 returning id', [id, c.user!.id])
+  if (!r.length) fail(404, 'not_found')
+  await audit(c, 'session_revoked', 'user', c.user!.id)
+  return { ok: true }
+})
+route('POST', '/auth/sessions/revoke-others', 'viewer', async (c) => {
+  if (await inRecovery()) fail(409, 'primary_only')
+  const r = await query('delete from sessions where user_id = $1 and id <> $2 returning id', [c.user!.id, c.user!.sessionId])
+  await audit(c, 'sessions_revoked', 'user', c.user!.id, { count: r.length })
+  return { ok: true, count: r.length }
 })
 
 route('POST', '/auth/password', 'viewer', async (c) => {

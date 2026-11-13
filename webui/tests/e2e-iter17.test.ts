@@ -90,3 +90,27 @@ describe('Connexion LDAP générique', () => {
     const l = await admin.get('/api/users'); expect(l.json.items.find((u: any) => u.username === 'carole')).toMatchObject({ source: 'ldap', totp_enabled: false })
   })
 })
+
+describe('Profil et sessions', () => {
+  it('profil : identité, origine, MFA, périmètre', async () => {
+    const a = await admin.get('/api/auth/profile'); expect(a.json).toMatchObject({ username: 'admin', role: 'admin', source: 'local', mfa: false, spaces: null, replica: false }); expect(a.json.lastLogin).toBeTruthy()
+    await db.query("update users set space_ids = (select array_agg(id) from ipam_spaces) where username = 'lect'")
+    const sp = (await db.query('select id, name from ipam_spaces order by lower(name)')).rows
+    expect((await viewer.get('/api/auth/profile')).json).toMatchObject({ username: 'lect', role: 'viewer', spaces: sp })
+    expect((await new Client().get('/api/auth/profile')).status).toBe(401)
+  })
+  it('sessions : liste personnelle, session courante signalée, fermeture d’une autre session, jamais celle d’autrui ni la sienne', async () => {
+    const second = new Client(); expect((await second.login('lect', PW)).status).toBe(200)
+    const l = (await viewer.get('/api/auth/sessions')).json; expect(l.items.length).toBe(2); expect(l.items.filter((s: any) => s.current).length).toBe(1)
+    const cur = l.items.find((s: any) => s.current), other = l.items.find((s: any) => !s.current)
+    code(await viewer.delete(`/api/auth/sessions/${cur.id}`), 400, 'current_session')
+    code(await admin.delete(`/api/auth/sessions/${other.id}`), 404, 'not_found')                                  // la session d'un autre utilisateur
+    expect((await viewer.delete(`/api/auth/sessions/${other.id}`)).status).toBe(200)
+    expect((await second.get('/api/auth/me')).json.user).toBeFalsy()                                           // la session fermée ne marche plus
+    const adminList = (await admin.get('/api/auth/sessions')).json.items; expect(adminList.every((s: any) => s.id !== other.id)).toBe(true)
+    const third = new Client(); await third.login('lect', PW)
+    const r = await viewer.post('/api/auth/sessions/revoke-others', {}); expect(r.json.count).toBe(1); expect((await third.get('/api/auth/me')).json.user).toBeFalsy()
+    expect((await viewer.get('/api/auth/me')).json.user.username).toBe('lect')
+    expect((await db.query("select count(*)::int n from audit_log where action in ('session_revoked','sessions_revoked')")).rows[0].n).toBe(2)
+  })
+})

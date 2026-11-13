@@ -3,7 +3,6 @@ const { t, lang, setLang } = useT()
 const user = useState<any>('user')
 const api = useApi()
 const route = useRoute()
-const pwOpen = ref(false), secOpen = ref(false)
 const { data: about, refresh: refreshAbout } = useFetch<any>('/api/about', { server: false, lazy: true, default: () => null })
 const { data: clusterInfo, refresh: refreshCluster } = useFetch<any>('/api/cluster/status', { server: false, lazy: true, default: () => null })
 const clusterOn = computed(() => !!clusterInfo.value?.clustered)
@@ -29,6 +28,7 @@ watch(() => about.value?.version, (v) => {
 })
 const updateAvailable = computed(() => !!about.value?.update?.available)
 const role = computed(() => user.value?.role)
+const initials = computed(() => { const n = (user.value?.displayName || user.value?.username || '?').trim(); const w = n.split(/[\s._@-]+/).filter(Boolean); return ((w[0]?.[0] ?? '?') + (w.length > 1 ? (w[w.length - 1]![0] ?? '') : '')).toUpperCase() })
 // Navigation par module : données (IPAM, DNS, DHCP), sécurité, puis exploitation. Les groupes vides n'apparaissent pas.
 const navGroups = computed(() => {
   const g: Array<{ label?: string; items: any[] }> = [
@@ -54,7 +54,7 @@ const navMenu = computed(() => navGroups.value.map((g) => [...(g.label ? [{ labe
 const nav = computed(() => navGroups.value.flatMap((g) => g.items))
 const searchOpen = ref(false)
 defineShortcuts({ meta_k: { handler: () => { searchOpen.value = true }, usingInput: true }, '/': () => { searchOpen.value = true } })
-const title = computed(() => nav.value.find((n) => (n.to === '/' ? route.path === '/' : route.path.startsWith(n.to)))?.label ?? '')
+const title = computed(() => route.path === '/profile' ? t('profile.title') : nav.value.find((n) => (n.to === '/' ? route.path === '/' : route.path.startsWith(n.to)))?.label ?? '')
 async function logout() {
   try { await api.call('POST', '/auth/logout', {}, { silent: true }) } catch { /* session déjà fermée */ }
   useState<any>('user').value = null
@@ -81,12 +81,16 @@ async function logout() {
         <UNavigationMenu :items="navMenu" orientation="vertical" :collapsed="collapsed" :aria-label="t('nav.label')" />
       </template>
       <template #footer="{ collapsed }">
-        <div class="flex items-center gap-2 w-full" :class="collapsed ? 'justify-center' : 'justify-between'">
-          <span v-if="!collapsed" class="text-sm truncate" :title="user?.username">{{ user?.displayName || user?.username }}</span>
-          <span v-else-if="about?.version" class="sr-only">v{{ about.version }}</span>
-          <UButton v-if="user?.source === 'local'" icon="i-lucide-shield-check" color="neutral" variant="ghost" size="sm" :aria-label="t('mfa.title')" :title="t('mfa.title')" @click="secOpen = true" />
-          <UButton v-if="user?.source === 'local'" icon="i-lucide-key-round" color="neutral" variant="ghost" size="sm" :aria-label="t('login.change_password')" @click="pwOpen = true" />
-          <UButton icon="i-lucide-log-out" color="neutral" variant="ghost" size="sm" :aria-label="t('nav.logout')" @click="logout" />
+        <div class="flex items-center gap-1 w-full" :class="collapsed ? 'flex-col' : ''">
+          <NuxtLink to="/profile" class="flex items-center gap-2 min-w-0 flex-1 rounded-md p-1 hover:bg-elevated focus-visible:outline-2 focus-visible:outline-primary" :class="collapsed ? 'justify-center' : ''" :title="t('profile.open')" :aria-label="t('profile.open')">
+            <UAvatar :text="initials" size="sm" class="shrink-0" />
+            <span v-if="!collapsed" class="flex flex-col min-w-0 leading-tight">
+              <span class="text-sm font-medium truncate">{{ user?.displayName || user?.username }}</span>
+              <span class="text-xs text-muted truncate">{{ t(`system.role.${user?.role}`) }} · {{ t(`profile.src.${user?.source}`) }}</span>
+            </span>
+            <span v-else-if="about?.version" class="sr-only">v{{ about.version }}</span>
+          </NuxtLink>
+          <UButton icon="i-lucide-log-out" color="neutral" variant="ghost" size="sm" :aria-label="t('nav.logout')" :title="t('nav.logout')" @click="logout" />
         </div>
       </template>
     </UDashboardSidebar>
@@ -108,8 +112,6 @@ async function logout() {
         <slot />
       </template>
     </UDashboardPanel>
-    <PasswordDialog v-model:open="pwOpen" />
-    <AccountSecurity v-model:open="secOpen" />
     <GlobalSearch v-model:open="searchOpen" />
   </UDashboardGroup>
 </template>

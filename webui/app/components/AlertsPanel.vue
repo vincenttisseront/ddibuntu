@@ -15,6 +15,9 @@ const when = (v: string | number | null | undefined) => (v ? fmt.dateTime(v) : '
 const ruleText = (a: any) => t(`alerts.rule.${a.rule}`, { node: a.node || '?', subject: a.subject || '', ...(a.params ?? {}) })
 const sevColor = (s: string) => (s === 'critical' ? 'error' : s === 'warning' ? 'warning' : 'info')
 const sevIcon = (s: string) => (s === 'critical' ? 'i-lucide-octagon-alert' : s === 'warning' ? 'i-lucide-triangle-alert' : 'i-lucide-info')
+// Où traiter une alerte : écran adapté à la règle (aucune action automatique n'est lancée)
+const ACTION: Array<[RegExp, string]> = [[/^ipam\.(unknown_hosts|mac_changed)$/, '/ipam#discovery'], [/^ipam\.ghosts$/, '/ipam#ghosts'], [/^ipam\.subnet_full$/, '/ipam#subnets'], [/^(cluster|node)\./, '/cluster'], [/^backup\./, '/system#backup']]
+const actionFor = (a: any) => ACTION.find(([re]) => re.test(a.rule))?.[1] ?? null
 const runsHere = computed(() => data.value?.engine?.runsHere !== false)
 
 // ---- évaluation immédiate
@@ -137,7 +140,8 @@ const promExample = computed(() => `scrape_configs:\n  - job_name: ddibuntu\n   
             <div class="text-xs text-muted">{{ t('alerts.col.since') }} {{ when(a.started_at) }}<template v-if="a.node"> · <span class="font-mono">{{ a.node }}</span></template></div>
           </div>
           <UBadge v-if="a.silenced" color="neutral" variant="outline" icon="i-lucide-bell-off" :label="t('alerts.silenced')" />
-          <UButton v-else size="xs" color="neutral" variant="outline" icon="i-lucide-bell-off" :label="t('alerts.silence')" @click="openSilence(a)" />
+          <UButton v-if="actionFor(a)" size="xs" color="primary" variant="soft" icon="i-lucide-arrow-right" :label="t('alerts.handle')" :to="actionFor(a)!" />
+          <UButton v-if="!a.silenced" size="xs" color="neutral" variant="outline" icon="i-lucide-bell-off" :label="t('alerts.silence')" @click="openSilence(a)" />
         </li>
       </ul>
     </UCard>

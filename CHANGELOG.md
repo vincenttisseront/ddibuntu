@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.9.49 — « Profil utilisateur et traitement des alertes »
+- **Page « Mon profil »** (clic sur votre nom en bas à gauche) : identité, rôle, **origine de la connexion** (compte local, Active Directory, annuaire LDAP, SSO), dates de création et de dernière connexion, périmètre IPAM ; mot de passe et double authentification pour les comptes locaux (pour AD/LDAP/SSO, la page indique que cela se gère chez le fournisseur d'identité) ; **sessions actives** (appareil, adresse, dernière activité) avec déconnexion d'une session ou de toutes les autres. Chacun ne voit et ne ferme que ses propres sessions ; la session en cours se ferme par « Se déconnecter ».
+- **Ligne utilisateur du menu refaite** : avatar à initiales, nom, rôle et origine du compte ; cliquable vers le profil (les boutons bouclier et clé sont remplacés par la page Profil).
+- **Alertes ouvertes** : bouton « Traiter » qui mène à l'écran adapté (hôtes inconnus ou MAC changée → Découverte IPAM, adresses fantômes, sous-réseau plein, cluster/nœud, sauvegardes), en plus de « Réduire au silence ». Aucune action automatique.
+- Nouveaux points d'API : `GET /auth/profile`, `GET /auth/sessions`, `DELETE /auth/sessions/:id`, `POST /auth/sessions/revoke-others` (principal uniquement pour la fermeture).
+
 ## 0.9.48 — « Connexion par annuaire LDAP générique »
 - **Annuaires LDAP non Active Directory** (OpenLDAP, FreeIPA, 389-ds, Samba…) : Système → onglet « Annuaire LDAP ». Serveurs LDAPS, compte de liaison en lecture, base de recherche, **filtre utilisateur à gabarit** (`{u}`), attributs identifiant et nom affiché, modèles prêts à l'emploi (OpenLDAP, FreeIPA, 389-ds/Samba). Groupes lus dans l'attribut `memberOf` **ou** par recherche dans l'annuaire des groupes (`member={dn}`, `memberUid={u}`…), avec **correspondance groupe → rôle** et périmètre IPAM facultatif, comme pour Active Directory. Bouton « Tester » (liaison, et recherche d'un utilisateur donné).
 - **Fonctionnement** : à la première connexion d'un identifiant inconnu localement, Active Directory est essayé (s'il est activé) puis l'annuaire LDAP ; le compte est créé avec l'origine « ldap » et son rôle/périmètre sont recalculés à chaque connexion. Fonctionne aussi sur un nœud secondaire pour les comptes déjà connus.
