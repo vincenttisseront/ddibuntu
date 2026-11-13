@@ -7,6 +7,8 @@ import { installedVersion } from '../utils/selfupdate'
 import { sessionSettings } from '../utils/session-settings'
 import { AD_DEFAULTS, authenticateAd, defaultLdapFactory } from '../utils/ad'
 import type { AdSettings } from '../utils/ad'
+import { LDAP_DEFAULTS, authenticateLdap } from '../utils/ldap'
+import type { LdapSettings } from '../utils/ldap'
 import { getCookie, getRequestHeader } from 'h3'
 
 const username = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9._@-]+$/)
@@ -42,21 +44,25 @@ route('POST', '/auth/login', 'public', async (c) => {
   } else if (!u && replica) {
     await dummyVerify(b.password)
   } else if (!u) {
-    // compte inconnu localement : tentative Active Directory si activé
+    // compte inconnu localement : tentative Active Directory, puis annuaire LDAP générique, si activés
     const ad = await getSetting<AdSettings>('ad', AD_DEFAULTS)
+    const ld = { ...LDAP_DEFAULTS, ...(await getSetting<LdapSettings>('ldap', LDAP_DEFAULTS)) }
     if (ad.enabled) {
       const res = await authenticateAd(b.username, b.password, ad, ad.bindPasswordEnc ? decryptSecret(ad.bindPasswordEnc) : '', defaultLdapFactory(ad))
-      if (res.ok) {
-        const r = await one<any>(
-          `insert into users (username, display_name, role, source, space_ids) values ($1, $2, $3, 'ad', $4)
-           on conflict (lower(username)) do update set role = excluded.role, display_name = excluded.display_name, space_ids = excluded.space_ids returning id`,
-          [res.username, res.displayName, res.role, res.spaceIds])
-        userId = r.id
-      }
-    } else await dummyVerify(b.password)
+      if (res.ok) userId = await upsertDirectoryUser(res, 'ad')
+    }
+    if (userId === null && ld.enabled) {
+      const res = await authenticateLdap(b.username, b.password, ld, ld.bindPasswordEnc ? decryptSecret(ld.bindPasswordEnc) : '', defaultLdapFactory(ld as any))
+      if (res.ok) userId = await upsertDirectoryUser(res, 'ldap')
+    }
+    if (!ad.enabled && !ld.enabled) await dummyVerify(b.password)
   } else if (u.source === 'ad' && !u.disabled) {
     const ad = await getSetting<AdSettings>('ad', AD_DEFAULTS)
     const res = await authenticateAd(b.username, b.password, ad, ad.bindPasswordEnc ? decryptSecret(ad.bindPasswordEnc) : '', defaultLdapFactory(ad))
+    if (res.ok) { if (!replica) await query('update users set role = $2, display_name = $3, space_ids = $4 where id = $1', [u.id, res.role, res.displayName, res.spaceIds]); userId = u.id }
+  } else if (u.source === 'ldap' && !u.disabled) {
+    const ld = { ...LDAP_DEFAULTS, ...(await getSetting<LdapSettings>('ldap', LDAP_DEFAULTS)) }
+    const res = await authenticateLdap(b.username, b.password, ld, ld.bindPasswordEnc ? decryptSecret(ld.bindPasswordEnc) : '', defaultLdapFactory(ld as any))
     if (res.ok) { if (!replica) await query('update users set role = $2, display_name = $3, space_ids = $4 where id = $1', [u.id, res.role, res.displayName, res.spaceIds]); userId = u.id }
   } else await dummyVerify(b.password)
   // MFA : mot de passe correct mais second facteur à fournir. On n'enregistre PAS de succès (le compteur d'échecs reste : le code se devine aussi).
@@ -68,6 +74,16 @@ route('POST', '/auth/login', 'public', async (c) => {
   if (userId === null) { await audit(c, 'login_failed', 'user', undefined, { username: b.username.slice(0, 64) }); fail(401, 'bad_credentials') }
   return await finishLogin(c, userId, replica)
 })
+
+/** Crée ou met à jour le compte d'un utilisateur d'annuaire (jamais celui d'une autre origine : le conflit de nom est exclu par l'appelant). */
+async function upsertDirectoryUser(res: { username: string; displayName: string; role: string; spaceIds: number[] | null }, source: 'ad' | 'ldap'): Promise<number> {
+  const r = await one<any>(
+    `insert into users (username, display_name, role, source, space_ids) values ($1, $2, $3, $5, $4)
+     on conflict (lower(username)) do update set role = excluded.role, display_name = excluded.display_name, space_ids = excluded.space_ids where users.source = $5 returning id`,
+    [res.username, res.displayName, res.role, res.spaceIds, source])
+  if (!r) fail(401, 'bad_credentials')          // même nom que le compte d'une autre origine : jamais de reprise
+  return r.id
+}
 
 /** Ouvre la session (cookie + CSRF) d'un utilisateur dont tous les facteurs ont été vérifiés. */
 export async function finishLogin(c: any, userId: number, replica: boolean) {
