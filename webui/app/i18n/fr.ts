@@ -2516,5 +2516,8 @@ const messages: Record<string, string> = {
   "err.firewall_self_lockout": "Votre poste ne serait plus autorisé : confirmation requise.",
   "err.firewall_nothing_pending": "Aucune application en attente de confirmation.",
   "apply.hint_ns_no_address": "Zone refusée par BIND : le ou les serveurs de noms {names} n’ont aucun enregistrement A/AAAA dans la zone (NS périmé, fréquent après une reprise depuis Active Directory). Dans DNS › Enregistrements, filtrez le type NS puis supprimez ou désactivez ce NS, ou ajoutez l’enregistrement A manquant, puis relancez la validation.",
+  "auth.enable_after_test": "L’activation sera possible une fois la connexion testée avec succès (bouton « Tester »). Toute modification de la connexion demande un nouveau test.",
+  "auth.disabled_until_test": "Connexion modifiée : l’authentification est désactivée jusqu’à la réussite du nouveau test.",
+  "err.auth_not_verified": "Testez d’abord la connexion (bouton « Tester ») : l’authentification ne peut être activée qu’avec une connexion opérationnelle.",
 }
 export default messages

@@ -46,7 +46,7 @@ beforeAll(async () => {
   expect(existsSync('.output/server/index.mjs'), 'lancer « nuxt build » avant les tests').toBe(true)
   db = new pg.Client({ connectionString: DBURL }); await db.connect()
   await db.query('drop schema public cascade; create schema public')
-  srv = spawn('node', ['.output/server/index.mjs'], { env: { ...process.env, NODE_ENV: 'production', PORT: String(PORT), NITRO_HOST: '127.0.0.1', DDI_TEST_MODE: '1', DDI_COOKIE_SECURE: 'false', DDI_DATABASE_URL: DBURL,
+  srv = spawn('node', ['.output/server/index.mjs'], { env: { ...process.env, NODE_ENV: 'production', PORT: String(PORT), NITRO_HOST: '127.0.0.1', DDI_TEST_MODE: '1', DDI_ALLOW_UNVERIFIED_AUTH: '1', DDI_COOKIE_SECURE: 'false', DDI_DATABASE_URL: DBURL,
     DDI_SECRET_KEY: 'cle-secrete-de-test-0123456789abcdefghij', DDI_SETUP_TOKEN: SETUP_TOKEN, DDI_PBKDF2_ITERATIONS: '2000', DDI_GENERATED_DIR: GEN, DDI_ALLOW_PRIVATE_FETCH: '1' } })
   srv.stdout!.on('data', (d) => { srvLog += d }); srv.stderr!.on('data', (d) => { srvLog += d })
   await until(async () => (await fetch(BASE + '/api/health')).status === 200)

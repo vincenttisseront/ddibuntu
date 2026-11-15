@@ -5,6 +5,7 @@ import { getSetting, setSetting } from '../utils/db'
 import { decryptSecret, encryptSecret } from '../utils/auth'
 import { defaultLdapFactory, escapeFilter } from '../utils/ad'
 import type { AdSettings } from '../utils/ad'
+import { isVerified, markVerified, mayEnable } from '../utils/auth-verify'
 import { LDAP_DEFAULTS, validFilter } from '../utils/ldap'
 import type { LdapSettings } from '../utils/ldap'
 
@@ -19,7 +20,7 @@ const body = z.object({
 })
 const load = async (): Promise<LdapSettings> => ({ ...LDAP_DEFAULTS, ...(await getSetting<LdapSettings>('ldap', LDAP_DEFAULTS)) })
 
-route('GET', '/ldap/settings', 'admin', async () => { const { bindPasswordEnc, ...s } = await load(); return { ...s, bindPasswordSet: !!bindPasswordEnc } })
+route('GET', '/ldap/settings', 'admin', async () => { const cur = await load(); const { bindPasswordEnc, ...s } = cur; return { ...s, bindPasswordSet: !!bindPasswordEnc, verified: await isVerified('ldap', cur) } })
 route('PUT', '/ldap/settings', 'admin', async (c) => {
   const b = await c.body(body)
   if (!validFilter(b.userFilter, ['{u}'])) fail(400, 'ldap_bad_filter')
@@ -29,7 +30,9 @@ route('PUT', '/ldap/settings', 'admin', async (c) => {
   if (b.enabled && !b.groupMap.length) fail(400, 'ldap_no_mapping')
   const cur = await load()
   const { bindPassword, clearPassword, ...rest } = b
-  await setSetting('ldap', { ...cur, ...rest, bindPasswordEnc: bindPassword ? encryptSecret(bindPassword) : clearPassword ? undefined : cur.bindPasswordEnc })
+  const next = { ...cur, ...rest, bindPasswordEnc: bindPassword ? encryptSecret(bindPassword) : clearPassword ? undefined : cur.bindPasswordEnc }
+  if (b.enabled && !(await mayEnable('ldap', cur, next))) fail(409, 'auth_not_verified')
+  await setSetting('ldap', next)
   await audit(c, 'ldap_settings', 'settings', 'ldap', { enabled: b.enabled, passwordChanged: !!bindPassword })
   return { ok: true }
 })
@@ -43,6 +46,7 @@ route('POST', '/ldap/test', 'admin', async (c) => {
     const cl = factory(url)
     try {
       try { await cl.bind(s.bindDn, s.bindPasswordEnc ? decryptSecret(s.bindPasswordEnc) : '') } catch { return { ok: false, step: 'bind', server: url } }
+      await markVerified('ldap', s)   // connexion de service opérationnelle avec ces réglages : l'activation devient possible
       if (b.username) {
         const r = await cl.search(s.baseDn, { scope: 'sub', filter: s.userFilter.replace(/\{u\}/g, escapeFilter(b.username)), attributes: ['dn'], sizeLimit: 2 })
         return { ok: r.searchEntries.length === 1, step: 'search', server: url, found: r.searchEntries.length }

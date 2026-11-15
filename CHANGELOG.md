@@ -1,5 +1,13 @@
 # Journal des modifications
 
+## 0.12.17 — « Authentification AD/LDAP : activation seulement avec une connexion opérationnelle »
+
+- L'authentification **Active Directory** (Import / AD › Authentification AD) et **LDAP** (Système › LDAP) ne peut être activée qu'après un **test de connexion réussi** (liaison du compte de service) avec les réglages enregistrés. Le serveur l'impose (refus 409 `auth_not_verified`) et l'interface grise l'interrupteur avec une explication tant que le test n'a pas réussi.
+- Toute modification de la **connexion** (serveurs, Base DN, compte de liaison, mot de passe, vérification TLS, autorité de certification) exige un nouveau test ; modifier les groupes ou les filtres ne le demande pas.
+- « Tester » enregistre d'abord la saisie : si la connexion a changé, l'authentification est désactivée jusqu'à la réussite du nouveau test (jamais active sur une connexion non validée).
+- Les installations où l'authentification est déjà active ne sont pas coupées par la mise à jour.
+- Tests : e2e-iter35 (nouveau) ; les e2e existants activent l'authentification avec le réglage de test `DDI_ALLOW_UNVERIFIED_AUTH=1` (jamais utilisé en production).
+
 ## 0.12.16 — « Comparaison des réponses DNS : TXT découpés autrement »
 
 - La comparaison Windows ↔ console (étape « Contrôler le résultat ») ne signale plus d'écart pour un enregistrement TXT dont seul le découpage en chaînes de 255 octets diffère (cas des clés DKIM) : les chaînes sont jointes avant comparaison, comme le font les clients. Un contenu réellement différent reste signalé.

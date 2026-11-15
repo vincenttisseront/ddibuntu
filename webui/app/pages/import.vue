@@ -19,14 +19,28 @@ const f = reactive<any>({ enabled: false, urls: '', baseDn: '', bindDn: '', bind
 watch(ad, (s) => { if (!s) return; f.enabled = s.enabled; f.urls = (s.urls ?? []).join('\n'); f.baseDn = s.baseDn; f.bindDn = s.bindDn; f.userAttr = s.userAttr; f.groups = (s.groupMap ?? []).map((g: any) => `${g.groupDn} | ${g.role}${g.spaceIds?.length ? ' | ' + g.spaceIds.join(',') : ''}`).join('\n'); f.nestedGroups = s.nestedGroups; f.tlsRejectUnauthorized = s.tlsRejectUnauthorized; f.caPem = s.caPem ?? '' }, { immediate: true })
 const adErr = ref(''), testRes = ref<any>(null), testUser = ref('')
 const parseGroups = () => String(f.groups ?? '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const [dn, role, sp] = l.split('|').map((x) => x.trim()); const spaceIds = (sp ?? '').split(/[\s,;]+/).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0); return { groupDn: dn, role, ...(spaceIds.length ? { spaceIds } : {}) } })
+// Activation : possible seulement quand la connexion de service a réussi avec les réglages de connexion ENREGISTRÉS (le serveur l'impose aussi).
+const connDirty = computed(() => !!ad.value && (String(f.urls).split(/\s+/).filter(Boolean).join('\n') !== (ad.value.urls ?? []).join('\n') || f.baseDn !== ad.value.baseDn || f.bindDn !== ad.value.bindDn || !!f.bindPassword || f.tlsRejectUnauthorized !== ad.value.tlsRejectUnauthorized || (f.caPem ?? '').trim() !== (ad.value.caPem ?? '').trim()))
+const canEnable = computed(() => !!ad.value?.verified && !connDirty.value)
+const adPayload = (enabled: boolean) => ({ enabled, urls: String(f.urls).split(/\s+/).filter(Boolean), baseDn: f.baseDn, bindDn: f.bindDn, ...(f.bindPassword ? { bindPassword: f.bindPassword } : {}), userAttr: f.userAttr, groupMap: parseGroups(), nestedGroups: f.nestedGroups, tlsRejectUnauthorized: f.tlsRejectUnauthorized, caPem: f.caPem })
 async function saveAd() {
   adErr.value = ''
   try {
-    await api.call('PUT', '/ad/settings', { enabled: f.enabled, urls: String(f.urls).split(/\s+/).filter(Boolean), baseDn: f.baseDn, bindDn: f.bindDn, ...(f.bindPassword ? { bindPassword: f.bindPassword } : {}), userAttr: f.userAttr, groupMap: parseGroups(), nestedGroups: f.nestedGroups, tlsRejectUnauthorized: f.tlsRejectUnauthorized, caPem: f.caPem })
+    await api.call('PUT', '/ad/settings', adPayload(f.enabled), { silent: true })
     f.bindPassword = ''; toast.add({ title: t('common.saved'), color: 'success', icon: 'i-lucide-check' }); await refreshAd()
   } catch (e: any) { adErr.value = e.info?.message ?? t('err.internal') }
 }
-async function testAd() { testRes.value = null; try { testRes.value = await api.call('POST', '/ad/test', testUser.value ? { username: testUser.value } : {}) } catch (e: any) { testRes.value = { ok: false, step: 'error', message: e.info?.message } } }
+// Tester = enregistrer la connexion saisie (désactivée tant qu'elle n'est pas validée), puis la tester ; une réussite rend l'activation possible.
+async function testAd() {
+  testRes.value = null; adErr.value = ''
+  try {
+    const wasEnabled = f.enabled && !connDirty.value
+    await api.call('PUT', '/ad/settings', adPayload(wasEnabled), { silent: true })
+    if (f.enabled && !wasEnabled) toast.add({ title: t('auth.disabled_until_test'), color: 'warning', icon: 'i-lucide-triangle-alert' })
+    f.bindPassword = ''
+    testRes.value = await api.call('POST', '/ad/test', testUser.value ? { username: testUser.value } : {}); await refreshAd()
+  } catch (e: any) { testRes.value = { ok: false, step: 'error', message: e.info?.message } }
+}
 </script>
 
 <template>
@@ -50,7 +64,8 @@ async function testAd() { testRes.value = null; try { testRes.value = await api.
         <form class="flex flex-col gap-3" @submit.prevent="saveAd">
           <p class="text-sm text-muted">{{ t('ad.desc') }}</p>
           <UAlert v-if="adErr" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="adErr" />
-          <USwitch v-model="f.enabled" :label="t('ad.enabled')" :disabled="!isAdmin" />
+          <USwitch v-model="f.enabled" :label="t('ad.enabled')" :disabled="!isAdmin || (!f.enabled && !canEnable)" data-test="ad-enabled" />
+          <p v-if="!f.enabled && !canEnable" class="text-xs text-muted -mt-2" data-test="ad-enable-hint">{{ t('auth.enable_after_test') }}</p>
           <UFormField :label="t('ad.urls')" :help="t('ad.urls_hint')"><UTextarea v-model="f.urls" :rows="2" class="w-full font-mono" :disabled="!isAdmin" placeholder="ldaps://dc01.corp.example.com" /></UFormField>
           <UFormField label="Base DN"><UInput v-model="f.baseDn" class="w-full font-mono" :disabled="!isAdmin" placeholder="DC=corp,DC=example,DC=com" /></UFormField>
           <UFormField :label="t('ad.bind_dn')"><UInput v-model="f.bindDn" class="w-full font-mono" :disabled="!isAdmin" placeholder="CN=svc-ddi,OU=Services,DC=corp,DC=example,DC=com" /></UFormField>

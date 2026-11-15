@@ -2516,5 +2516,8 @@ const messages: Record<string, string> = {
   "err.firewall_self_lockout": "Your workstation would no longer be allowed: confirmation required.",
   "err.firewall_nothing_pending": "No application is awaiting confirmation.",
   "apply.hint_ns_no_address": "Zone refused by BIND: the name server(s) {names} have no A/AAAA record in the zone (stale NS, common after importing from Active Directory). In DNS › Records, filter on type NS and delete or disable that NS, or add the missing A record, then validate again.",
+  "auth.enable_after_test": "Activation becomes available once the connection has been tested successfully (“Test” button). Any change to the connection requires a new test.",
+  "auth.disabled_until_test": "Connection changed: authentication is disabled until the new test succeeds.",
+  "err.auth_not_verified": "Test the connection first (“Test” button): authentication can only be enabled with a working connection.",
 }
 export default messages

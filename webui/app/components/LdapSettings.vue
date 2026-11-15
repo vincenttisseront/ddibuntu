@@ -3,6 +3,10 @@
 const { t } = useT(); const api = useApi(); const toast = useToast()
 const f = reactive<any>({ enabled: false, urls: '', baseDn: '', bindDn: '', bindPassword: '', clearPassword: false, userFilter: '', userAttr: 'uid', displayAttr: 'cn', groupMode: 'memberOf', groupBaseDn: '', groupFilter: '', tlsRejectUnauthorized: true, caPem: '' })
 const mapText = ref(''), pwSet = ref(false), busy = ref(false), testing = ref(false), error = ref(''), test = ref<any>(null), testUser = ref('')
+// Activation : possible seulement quand la connexion de service a réussi avec les réglages de connexion ENREGISTRÉS (le serveur l'impose aussi).
+const saved = ref<any>(null)
+const connDirty = computed(() => !!saved.value && (String(f.urls).split(/\s+/).filter(Boolean).join('\n') !== saved.value.urls.join('\n') || f.baseDn !== saved.value.baseDn || f.bindDn !== saved.value.bindDn || !!f.bindPassword || f.tlsRejectUnauthorized !== saved.value.tlsRejectUnauthorized || (f.caPem ?? '').trim() !== (saved.value.caPem ?? '').trim()))
+const canEnable = computed(() => !!saved.value?.verified && !connDirty.value)
 const modes = computed(() => [{ label: t('ldap.mode_memberof'), value: 'memberOf' }, { label: t('ldap.mode_search'), value: 'search' }])
 const presets = computed(() => [
   { label: 'OpenLDAP', v: { userFilter: '(&(objectClass=inetOrgPerson)(uid={u}))', userAttr: 'uid', displayAttr: 'cn', groupMode: 'search', groupFilter: '(&(objectClass=groupOfNames)(member={dn}))' } },
@@ -12,6 +16,7 @@ const presets = computed(() => [
 async function load() {
   const r: any = await api.call('GET', '/ldap/settings')
   Object.assign(f, { ...r, urls: r.urls.join('\n'), bindPassword: '', clearPassword: false, caPem: r.caPem ?? '' })
+  saved.value = { urls: r.urls, baseDn: r.baseDn, bindDn: r.bindDn, tlsRejectUnauthorized: r.tlsRejectUnauthorized, caPem: r.caPem ?? '', verified: !!r.verified }
   mapText.value = r.groupMap.map((g: any) => `${g.groupDn} | ${g.role}${g.spaceIds?.length ? ' | ' + g.spaceIds.join(',') : ''}`).join('\n'); pwSet.value = r.bindPasswordSet
 }
 onMounted(load)
@@ -21,25 +26,25 @@ const parseMap = () => mapText.value.split('\n').map((l) => l.trim()).filter(Boo
   void i; const spaceIds = sp.split(/[\s,;]+/).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0)
   return { groupDn: parts.slice(0, roleIdx).join('|'), role: parts[roleIdx], ...(spaceIds.length ? { spaceIds } : {}) }
 })
-async function save() {
+async function save(forceEnabled?: boolean) {
   busy.value = true; error.value = ''
   try {
-    const b: any = { ...f, urls: String(f.urls).split(/\s+/).filter(Boolean), groupMap: parseMap() }; if (!b.bindPassword) delete b.bindPassword; if (!b.caPem) delete b.caPem
+    const b: any = { ...f, ...(forceEnabled === undefined ? {} : { enabled: forceEnabled }), urls: String(f.urls).split(/\s+/).filter(Boolean), groupMap: parseMap() }; if (!b.bindPassword) delete b.bindPassword; if (!b.caPem) delete b.caPem
     await api.call('PUT', '/ldap/settings', b, { silent: true }); toast.add({ title: t('common.saved'), color: 'success', icon: 'i-lucide-check' }); await load()
   } catch (e: any) { error.value = e.info?.message ?? t('err.internal') } finally { busy.value = false }
 }
 async function runTest() {
   testing.value = true; test.value = null; error.value = ''
-  try { await save(); if (!error.value) test.value = await api.call('POST', '/ldap/test', testUser.value ? { username: testUser.value } : {}, { silent: true }) } catch (e: any) { error.value = e.info?.message ?? t('err.internal') } finally { testing.value = false }
+  try { const wasEnabled = f.enabled && !connDirty.value; await save(wasEnabled); if (f.enabled && !wasEnabled && !error.value) toast.add({ title: t('auth.disabled_until_test'), color: 'warning', icon: 'i-lucide-triangle-alert' }); if (!error.value) test.value = await api.call('POST', '/ldap/test', testUser.value ? { username: testUser.value } : {}, { silent: true }); if (!error.value) await load() } catch (e: any) { error.value = e.info?.message ?? t('err.internal') } finally { testing.value = false }
 }
 </script>
 
 <template>
   <UCard>
     <template #header><div class="flex items-center gap-2"><UIcon name="i-lucide-book-user" class="size-5 text-primary" /><h2 class="font-semibold">{{ t('ldap.title') }}</h2></div><p class="text-sm text-muted mt-1">{{ t('ldap.desc') }}</p></template>
-    <form class="flex flex-col gap-4" @submit.prevent="save">
+    <form class="flex flex-col gap-4" @submit.prevent="save()">
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" role="alert" />
-      <div class="flex flex-wrap items-center gap-3"><USwitch v-model="f.enabled" :label="t('ldap.enabled')" /><span class="text-xs text-muted ml-auto">{{ t('ldap.presets') }}</span>
+      <div class="flex flex-wrap items-center gap-3"><USwitch v-model="f.enabled" :label="t('ldap.enabled')" :disabled="!f.enabled && !canEnable" data-test="ldap-enabled" /><span v-if="!f.enabled && !canEnable" class="text-xs text-muted" data-test="ldap-enable-hint">{{ t('auth.enable_after_test') }}</span><span class="text-xs text-muted ml-auto">{{ t('ldap.presets') }}</span>
         <UButton v-for="p in presets" :key="p.label" size="xs" color="neutral" variant="outline" :label="p.label" @click="Object.assign(f, p.v)" /></div>
       <div class="grid gap-4 md:grid-cols-2">
         <UFormField :label="t('ldap.urls')" :help="t('ldap.urls_help')" required><UTextarea v-model="f.urls" :rows="2" class="w-full font-mono" placeholder="ldaps://ldap.exemple.fr" /></UFormField>

@@ -1,3 +1,4 @@
+import { isVerified, markVerified, mayEnable } from '../utils/auth-verify'
 import { z } from 'zod'
 import { audit, fail, intParam, route } from '../utils/router'
 import { getSetting, one, query, setSetting, tx } from '../utils/db'
@@ -189,15 +190,18 @@ const adBody = z.object({
   nestedGroups: z.boolean(), tlsRejectUnauthorized: z.boolean(), caPem: z.string().max(20000).regex(/^(?:-----BEGIN CERTIFICATE-----[\s\S]*-----END CERTIFICATE-----\s*)?$/).optional(),
 })
 route('GET', '/ad/settings', 'admin', async () => {
-  const { bindPasswordEnc, ...s } = await getSetting<AdSettings>('ad', AD_DEFAULTS)
-  return { ...s, bindPasswordSet: !!bindPasswordEnc }
+  const cur = await getSetting<AdSettings>('ad', AD_DEFAULTS)
+  const { bindPasswordEnc, ...s } = cur
+  return { ...s, bindPasswordSet: !!bindPasswordEnc, verified: await isVerified('ad', cur) }
 })
 route('PUT', '/ad/settings', 'admin', async (c) => {
   const b = await c.body(adBody)
   if (b.enabled && (!b.urls.length || !b.baseDn || !b.bindDn)) fail(400, 'ad_incomplete')
   const cur = await getSetting<AdSettings>('ad', AD_DEFAULTS)
   const { bindPassword, ...rest } = b
-  await setSetting('ad', { ...cur, ...rest, bindPasswordEnc: bindPassword ? encryptSecret(bindPassword) : cur.bindPasswordEnc })
+  const next = { ...cur, ...rest, bindPasswordEnc: bindPassword ? encryptSecret(bindPassword) : cur.bindPasswordEnc }
+  if (b.enabled && !(await mayEnable('ad', cur, next))) fail(409, 'auth_not_verified')
+  await setSetting('ad', next)
   await audit(c, 'ad_settings', 'settings', 'ad', { enabled: b.enabled, passwordChanged: !!bindPassword })
   return { ok: true }
 })
@@ -210,6 +214,7 @@ route('POST', '/ad/test', 'admin', async (c) => {
     const cl = factory(url)
     try {
       try { await cl.bind(s.bindDn, s.bindPasswordEnc ? decryptSecret(s.bindPasswordEnc) : '') } catch { return { ok: false, step: 'bind', server: url } }
+      await markVerified('ad', s)   // connexion de service opérationnelle avec ces réglages : l'activation devient possible
       if (b.username) {
         const r = await cl.search(s.baseDn, { scope: 'sub', filter: `(&(objectClass=user)(${s.userAttr}=${escapeFilter(b.username)}))`, attributes: ['dn'], sizeLimit: 2 })
         return { ok: r.searchEntries.length === 1, step: 'search', server: url, found: r.searchEntries.length }
