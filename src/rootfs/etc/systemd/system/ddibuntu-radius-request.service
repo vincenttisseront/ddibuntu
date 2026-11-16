@@ -1,0 +1,9 @@
+[Unit]
+Description=DDI-Buntu : demande RADIUS de la console (validée par root)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-radius request
+TimeoutStartSec=120
+PrivateTmp=yes
+ProtectHome=yes

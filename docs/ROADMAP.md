@@ -69,6 +69,19 @@ Traitée **avant** le reste des séries 0.10.x et 0.11.x. Déjà en place : impo
 | 8 | 0.12.7 | Après migration : localisation des contrôleurs de domaine (SRV), mises à jour dynamiques sécurisées (GSS-TSIG), retrait des rôles Windows | ✅ 0.12.7 |
 | 9 | 0.12.8 | Classes de clients Kea dans la console : stratégies, classes fabricant / utilisateur, filtres MAC (autoriser / refuser), option 43 ; import correspondant depuis Windows | ✅ 0.12.8 |
 
+## Série 0.13.x — accès réseau : RADIUS / 802.1X / VPN en EAP-TLS (remplace un NPS Windows, demande du 2026-11-16)
+Un NPS Windows n'existe pas sous Linux : le service est **FreeRADIUS** intégré à l'appliance, piloté par la console (même frontière de privilèges que BIND et Kea). EAP-TLS dès le départ (pas de mot de passe : pas de jonction au domaine ; l'AD n'est lu qu'en LDAPS, lecture seule, pour l'état du compte et les groupes imbriqués). Maquette du parcours : assistant en 6 étapes (contexte, import NPS, annuaire AD, PKI / certificats, règles, validation).
+| # | Version | Évolution | État |
+|---|---|---|---|
+| 1 | 0.13.0 | Service FreeRADIUS, clients (contrôleurs Wi-Fi, passerelles VPN), secrets chiffrés, déploiement avec retour arrière, pare-feu limité aux clients, test d'Access-Request | ✅ 0.13.0 (vrai FreeRADIUS 3.2.5 ; refus par défaut) |
+| 2 | 0.13.1 | Annuaire : liaison LDAPS en lecture seule, état du compte et groupes imbriqués, test de recherche | ✅ 0.13.1 (vrai Samba AD en LDAPS ; pas encore testé sur un AD Microsoft) |
+| 3 | 0.13.2 | PKI : autorité de confiance des certificats clients, certificat du serveur, EAP-TLS, révocation (CRL / OCSP) | ✅ 0.13.2 (vrai FreeRADIUS + `eapol_test` en TLS 1.2 et 1.3 ; CRL seulement, **OCSP reporté** ; pas encore essayé avec AD CS) |
+| 4 | 0.13.3 | Règles d'accès : groupe AD → décision, VLAN, pool ; ordre d'évaluation, simulation avant publication | ✅ 0.13.3 (vrai FreeRADIUS + `eapol_test` + Samba AD, mêmes décisions que la simulation sur 15 cas ; **jamais essayé sur un AD Microsoft** ; DN de groupe à échappement hexadécimal refusés) |
+| 5 | 0.13.4 | Import d'un NPS existant (`netsh nps export`) : clients, stratégies, rapport « repris / adapté / non pris en charge » | ⬜ |
+| 6 | 0.13.5 | Comptabilité (1813), journal des authentifications, alertes | ⬜ |
+| 7 | 0.13.6 | Cluster : deux nœuds actifs, mêmes clients et règles, sans adresse virtuelle | ⬜ |
+| 8 | 0.13.7 | Liens IPAM / DHCP : VLAN et pools issus de l'IPAM, session ↔ bail ↔ utilisateur dans la traçabilité | ⬜ |
+
 ## Série 0.10.x — gestion complète DNS ↔ IPAM ↔ DHCP (validée le 2026-11-13)
 Dix évolutions, une version chacune, chacune testée (unitaires, e2e, batteries réelles) avant publication. Ordre retenu : les deux plus rentables d'abord, puis celles qui s'appuient dessus.
 | # | Version | Évolution | État |

@@ -27,6 +27,10 @@ export function cfg() {
     fwResultFile: e.DDI_FW_RESULT ?? '/run/ddibuntu/fw-result.json',
     fwPendingFile: e.DDI_FW_PENDING ?? '/run/ddibuntu/fw-pending.json',
     adStatusFile: e.DDI_AD_STATUS ?? '/run/ddibuntu/ad-status.json',
+    // service RADIUS (ddibuntu-radius, root) : état du service et résultat de la dernière demande
+    radiusStatusFile: e.DDI_RADIUS_STATUS ?? '/run/ddibuntu/radius-status.json',
+    radiusResultFile: e.DDI_RADIUS_RESULT ?? '/run/ddibuntu/radius-result.json',
+    radiusPort: num(e.DDI_RADIUS_PORT, 1812),
     // sauvegardes de la base (ddibuntu-backup, root) : état, résultat de la dernière demande, phase d'une restauration en cours
     backupStatusFile: e.DDI_BACKUP_STATUS ?? '/run/ddibuntu/backup-status.json',
     backupResultFile: e.DDI_BACKUP_RESULT ?? '/run/ddibuntu/backup-result.json',

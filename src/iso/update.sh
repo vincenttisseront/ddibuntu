@@ -191,7 +191,9 @@ deploy_files() {
   in_target groupadd -f ddiadmin || { fail "groupe ddiadmin impossible à créer"; return; }
   in_target bash -c 'id ddiconsole >/dev/null 2>&1 || useradd --system --gid ddiconsole --home-dir /var/lib/ddibuntu --shell /usr/sbin/nologin ddiconsole' || { fail "compte ddiconsole impossible"; return; }
   in_target systemctl enable ddibuntu-firstboot.service nftables.service postgresql.service named.service \
-    ddibuntu-db-init.service ddibuntu-console.service ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-fw-request.path ddibuntu-cluster-setup.path ddibuntu-backup-request.path ddibuntu-backup.timer ddibuntu-health.timer ddibuntu-selfupdate.path ddibuntu-update-check.timer >/dev/null 2>&1 || { fail "activation des services impossible"; return; }
+    ddibuntu-db-init.service ddibuntu-console.service ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-fw-request.path ddibuntu-radius-request.path ddibuntu-cluster-setup.path ddibuntu-backup-request.path ddibuntu-backup.timer ddibuntu-health.timer ddibuntu-selfupdate.path ddibuntu-update-check.timer >/dev/null 2>&1 || { fail "activation des services impossible"; return; }
+  # le paquet freeradius (nouveau) s'active seul : il ne doit tourner que sur ordre de la console, jamais avec la configuration du paquet
+  [ -d "$TARGET/etc/ddibuntu/radius" ] || in_target systemctl disable freeradius.service >/dev/null 2>&1 || true
   # dépôt des sauvegardes : propriété de postgres (l'archivage des journaux WAL s'y écrit sous ce compte)
   mkdir -p "$TARGET/var/lib/ddibuntu/backup/base" "$TARGET/var/lib/ddibuntu/backup/wal"
   in_target chown -R postgres:postgres /var/lib/ddibuntu/backup 2>/dev/null || say "avertissement : dépôt de sauvegarde non attribué à postgres (sera corrigé par le minuteur)"

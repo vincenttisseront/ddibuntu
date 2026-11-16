@@ -1,0 +1,915 @@
+#!/bin/bash
+# ddibuntu-radius — service RADIUS (FreeRADIUS) de l'appliance, piloté par la console web (sans privilège).
+# Frontière de privilèges : la console dépose .radius-request et radius-clients.conf ; ICI, root revalide le fichier ligne à ligne
+# (aucune directive libre), installe une arborescence FreeRADIUS dont DDI-Buntu est seul propriétaire (/etc/ddibuntu/radius, jamais
+# la configuration du paquet), la contrôle (freeradius -Cx), redémarre le service, n'ouvre le pare-feu qu'aux clients déclarés et
+# restaure l'ancienne arborescence en cas d'échec.
+# EAP-TLS (0.13.2) : la console dépose aussi un dossier radius-pki/ (autorités de confiance, certificat et clé du serveur, CRL) ; root le copie
+# dans un dossier privé, le revalide avec openssl (chaîne, usage, clé, dates, signature des CRL), installe CE qui a été validé, jamais l'original.
+# Règles d'accès (0.13.3) : la console dépose des DONNÉES (radius-authz/ : rules.json, ldap.json, ldap-ca.pem) ; root les valide champ par champ et
+# écrit lui-même le module LDAP et la décision (unlang). Aucun texte de configuration de la console n'est jamais repris.
+set -euo pipefail
+umask 027
+
+DDI_LIBDIR="${DDI_LIBDIR:-/usr/local/lib/ddibuntu}"
+# shellcheck source=/dev/null
+. "$DDI_LIBDIR/common.sh"
+
+GEN="${DDI_GENERATED_DIR:-/var/lib/ddibuntu/generated}"
+RDIR="${DDI_RADIUS_DIR:-/etc/ddibuntu/radius}"          # arborescence gérée (propriétaire root, groupe freerad)
+STOCK="${DDI_RADIUS_STOCK:-/etc/freeradius/3.0}"        # modules du paquet (liens symboliques seulement, jamais modifiés)
+RUN="${DDI_RUN_DIR:-/run/ddibuntu}"
+STATE="${DDI_STATE_DIR:-/var/lib/ddibuntu}"
+RADIUSD="${DDI_RADIUSD:-/usr/sbin/freeradius}"
+SYSCTL="${DDI_RADIUS_SYSTEMCTL:-systemctl}"
+FW_BIN="${DDI_FW_BIN:-/usr/local/sbin/ddibuntu-fw}"
+GROUP="${DDI_RADIUS_GROUP:-freerad}"
+SERVICE="freeradius.service"
+BACKUP="$STATE/radius-backup"
+MODULES="always attr_filter preprocess"                 # modules du paquet réellement utilisés par le site (le module eap est généré, pas celui du paquet)
+LDAP_SO="${DDI_RADIUS_LDAP_SO:-/usr/lib/freeradius/rlm_ldap.so}"   # module LDAP : paquet freeradius-ldap (séparé du paquet freeradius)
+MAX_CLIENTS_BYTES=1048576
+
+usage() {
+  cat <<'USAGE'
+Usage : ddibuntu-radius <commande>
+  apply FICHIER [PKI [RÈGLES]]  installe la configuration (clients validés, EAP-TLS si un dossier PKI est fourni, règles d'accès si un dossier RÈGLES est fourni), la contrôle et (re)démarre le service
+  stop            arrête et désactive le service, referme le pare-feu
+  status          publie l'état (/run/ddibuntu/radius-status.json)
+  request         traite la demande déposée par la console (.radius-request + radius-clients.conf)
+  crl             installe les CRL déposées (radius-pki/crl) sans redémarrer le service
+  check FICHIER   valide un fichier de clients (sans rien installer) ; affiche les réseaux à ouvrir au pare-feu
+  check-pki DOSSIER  valide un dossier PKI (sans rien installer)
+  check-authz DOSSIER FICHIER  valide un dossier de règles d'accès (avec le fichier de clients correspondant) et affiche la configuration générée
+USAGE
+}
+
+log() { ddi_log "radius: $*"; printf 'ddibuntu-radius: %s\n' "$*" >&2; }
+
+# ---- Publication (sans secret, lisible par la console) ----
+publish() {   # $1 = nom de fichier, $2 = JSON
+  install -d -m 0755 "$RUN" 2>/dev/null || return 0
+  local t; t="$(mktemp "$RUN/.radius.XXXXXX")" || return 0
+  printf '%s\n' "$2" > "$t"; chmod 0644 "$t"; mv -f "$t" "$RUN/$1"
+}
+publish_result() {   # $1 = action, $2 = ok (true|false), $3 = message
+  publish radius-result.json "$(A="$1" O="$2" M="$3" python3 -c 'import json,os,time; print(json.dumps({"at": int(time.time()), "action": os.environ["A"], "ok": os.environ["O"] == "true", "message": os.environ["M"][:300]}, ensure_ascii=False))')"
+}
+svc_state() { "$SYSCTL" "$1" --quiet "$SERVICE" >/dev/null 2>&1 && echo true || echo false; }
+# État d'EAP-TLS installé (sans secret) : certificat du serveur, nombre d'autorités, CRL et leur échéance.
+pki_info() {
+  RDIR="$RDIR" python3 - <<'PY' 2>/dev/null || echo '{"enabled": false}'
+import calendar, json, os, re, subprocess, time
+r = os.environ["RDIR"]; c = os.path.join(r, "certs")
+def ossl(*a):
+    p = subprocess.run(["openssl", *a], capture_output=True, timeout=20, env=dict(os.environ, LC_ALL="C"))
+    return p.returncode, p.stdout.decode("utf-8", "replace")
+def when(txt, key):
+    m = re.search(key + r"=(\w{3}) +(\d+) (\d\d):(\d\d):(\d\d) (\d{4}) GMT", txt)
+    if not m: return None
+    mon = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].index(m.group(1)) + 1
+    return calendar.timegm((int(m.group(6)), mon, int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5))))
+out = {"enabled": False}
+sp = os.path.join(c, "server.pem")
+if os.path.isfile(sp) and os.path.isfile(os.path.join(r, "mods-enabled", "eap")):
+    rc, t = ossl("x509", "-in", sp, "-noout", "-subject", "-enddate", "-nameopt", "RFC2253")
+    m = re.search(r"^subject=(.*)$", t, re.M)
+    out = {"enabled": True, "server": {"subject": (m.group(1).strip() if m else "")[:300], "not_after": when(t, "notAfter")}, "cas": 0, "crls": [],
+           "check_crl": "check_crl = yes" in open(os.path.join(r, "mods-enabled", "eap"), encoding="utf-8", errors="replace").read()}
+    try: out["cas"] = open(os.path.join(c, "ca.pem")).read().count("BEGIN CERTIFICATE")
+    except OSError: pass
+    d = os.path.join(c, "crl")
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if not f.endswith(".pem"): continue
+        rc, t = ossl("crl", "-in", os.path.join(d, f), "-noout", "-issuer", "-nextupdate", "-nameopt", "RFC2253")
+        m = re.search(r"^issuer=(.*)$", t, re.M)
+        out["crls"].append({"issuer": (m.group(1).strip() if m else "")[:300], "next_update": when(t, "nextUpdate")})
+print(json.dumps(out))
+PY
+}
+# État des règles d'accès installées (sans secret) : nombre de règles et serveurs d'annuaire.
+authz_info() {
+  RDIR="$RDIR" python3 - <<'PY' 2>/dev/null || echo '{"enabled": false}'
+import json, os, re
+r = os.environ["RDIR"]; ldap = os.path.join(r, "mods-enabled", "ldap"); site = os.path.join(r, "sites-available", "ddibuntu")
+if not (os.path.isfile(ldap) and os.path.isfile(site)):
+    print(json.dumps({"enabled": False})); raise SystemExit(0)
+servers = re.findall(r'^\tserver = "([^"]+)"$', open(ldap, encoding="utf-8", errors="replace").read(), re.M)
+n = len(re.findall(r"^\t\t# règle \d+ :", open(site, encoding="utf-8", errors="replace").read(), re.M))
+print(json.dumps({"enabled": True, "rules": n, "servers": servers[:5]}))
+PY
+}
+cmd_status() {
+  local version="" installed=false configured=false nclients=0 ldapmod=false
+  [[ -f "$LDAP_SO" ]] && ldapmod=true
+  if [[ -x "$RADIUSD" ]]; then installed=true; version="$("$RADIUSD" -v 2>/dev/null | sed -n 's/^radiusd: FreeRADIUS Version \([0-9][0-9.]*\).*/\1/p' | head -n1)" || version=""; fi
+  if [[ -f "$RDIR/clients.conf" ]]; then configured=true; nclients="$(grep -c '^client "' "$RDIR/clients.conf" || true)"; nclients=$((nclients > 0 ? nclients - 1 : 0)); fi   # sans le client d'essai local
+  publish radius-status.json "$(V="$version" I="$installed" C="$configured" N="$nclients" A="$(svc_state is-active)" E="$(svc_state is-enabled)" P="$(pki_info)" Z="$(authz_info)" M="$ldapmod" python3 -c '
+import json, os, time
+b = lambda k: os.environ[k] == "true"
+print(json.dumps({"at": int(time.time()), "installed": b("I"), "version": os.environ["V"], "configured": b("C"), "active": b("A"), "enabled": b("E"), "clients": int(os.environ["N"]), "ports": [1812, 1813], "eap": json.loads(os.environ["P"]), "authz": json.loads(os.environ["Z"]), "ldap_module": b("M")}))')"
+}
+
+# ---- Validation du fichier déposé par la console : uniquement des blocs « client » de forme imposée ----
+# Sortie : un réseau normalisé par ligne (clients à ouvrir au pare-feu, sans le client d'essai local).
+validate_clients() {
+  python3 - "$1" <<'PY'
+import ipaddress, re, sys
+NAME = re.compile(r'^[a-z][a-z0-9-]{0,40}$')
+SECRET = re.compile(r'^[A-Za-z0-9._~+=:@,;()!*-]{16,128}$')
+def die(m):
+    sys.stderr.write("clients RADIUS refusés : %s\n" % m); sys.exit(1)
+try:
+    lines = open(sys.argv[1], encoding="utf-8").read().split("\n")
+except Exception:
+    die("fichier illisible")
+seen, nets, selftest = set(), [], False
+cur = None
+OPEN = re.compile(r'^client "([^"]*)" \{$')
+KEYS = [("ipaddr", re.compile(r'^ipaddr = ([0-9./]+)$')), ("ipv6addr", re.compile(r'^ipv6addr = ([0-9a-f:./]+)$')),
+        ("secret", re.compile(r'^secret = "([^"]*)"$')), ("shortname", re.compile(r'^shortname = ([a-z0-9-]+)$')),
+        ("require_message_authenticator", re.compile(r'^require_message_authenticator = (yes)$')), ("nas_type", re.compile(r'^nas_type = (other)$'))]
+for i, raw in enumerate(lines, 1):
+    line = raw.strip()
+    if cur is None:
+        if not line or line.startswith("#"): continue
+        m = OPEN.match(line)
+        if not m: die("ligne %d inattendue" % i)
+        name = m.group(1)
+        if not NAME.match(name): die("nom de client invalide (ligne %d)" % i)
+        if name in seen: die("nom de client en double : %s" % name)
+        seen.add(name); cur = {"name": name}
+        continue
+    if line == "}":
+        for k in ("addr", "secret", "shortname", "require_message_authenticator", "nas_type"):
+            if k not in cur: die("client %s : directive %s manquante" % (cur["name"], k))
+        if cur["shortname"] != cur["name"]: die("client %s : shortname différent du nom" % cur["name"])
+        a = cur["addr"]
+        if cur["name"] == "ddi-selftest":
+            if str(a) != "127.0.0.1/32": die("le client d'essai doit être exactement 127.0.0.1")
+            selftest = True
+        else:
+            if a.is_loopback or a.is_multicast or a.is_unspecified or a.is_link_local: die("client %s : adresse réservée" % cur["name"])
+            if a.version == 4 and a.prefixlen < 16: die("client %s : réseau trop large (/16 au plus large en IPv4)" % cur["name"])
+            if a.version == 6 and a.prefixlen < 48: die("client %s : réseau trop large (/48 au plus large en IPv6)" % cur["name"])
+            nets.append(str(a))
+        cur = None
+        continue
+    ok = False
+    for key, rx in KEYS:
+        m = rx.match(line)
+        if not m: continue
+        ok = True
+        if key in ("ipaddr", "ipv6addr"):
+            if "addr" in cur: die("client %s : adresse en double" % cur["name"])
+            try:
+                a = ipaddress.ip_network(m.group(1), strict=True)
+            except ValueError:
+                die("client %s : adresse invalide" % cur["name"])
+            if (key == "ipaddr") != (a.version == 4): die("client %s : famille d'adresse incohérente" % cur["name"])
+            cur["addr"] = a
+        elif key == "secret":
+            if "secret" in cur: die("client %s : secret en double" % cur["name"])
+            if not SECRET.match(m.group(1)): die("client %s : secret refusé (16 à 128 caractères autorisés)" % cur["name"])
+            cur["secret"] = True
+        else:
+            if key in cur: die("client %s : directive %s en double" % (cur["name"], key))
+            cur[key] = m.group(1)
+        break
+    if not ok: die("client %s : directive inattendue (ligne %d)" % (cur["name"], i))
+if cur is not None: die("bloc client non fermé")
+if not selftest: die("client d'essai local absent")
+if len(seen) > 2000: die("trop de clients")
+print("\n".join(nets))
+PY
+}
+
+# ---- Validation du dossier PKI déposé par la console (openssl) ----
+# validate_pki SOURCE INSTANTANÉ [crl AUTORITÉS_INSTALLÉES CHECK_CRL] : copie ce qui est valide dans INSTANTANÉ (dossier privé de root) ; l'installation
+# se fait depuis cette copie, jamais depuis la source (que la console peut encore modifier). Sortie : « checkCrl=true|false » puis « warn: … ».
+validate_pki() {
+  python3 - "$@" <<'PY'
+import atexit, datetime, json, os, re, shutil, subprocess, sys, tempfile
+src, snap = sys.argv[1], sys.argv[2]
+mode = sys.argv[3] if len(sys.argv) > 3 else "full"
+def die(m):
+    sys.stderr.write("PKI RADIUS refusée : %s\n" % m); sys.exit(1)
+ENV = dict(os.environ, LC_ALL="C")
+tmp = tempfile.mkdtemp(prefix="ddi-pki-"); atexit.register(shutil.rmtree, tmp, True)
+def ossl(*a, inp=None):
+    try: p = subprocess.run(["openssl", *a], input=inp, capture_output=True, timeout=30, env=ENV)
+    except Exception: die("openssl indisponible")
+    return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
+def read(rel, limit, required=True):
+    p = os.path.join(src, rel)
+    if os.path.islink(p) or not os.path.isfile(p):
+        if required: die("%s absent" % rel)
+        return None
+    if os.path.getsize(p) > limit: die("%s trop volumineux" % rel)
+    try: return open(p, "rb").read().decode("ascii")
+    except UnicodeDecodeError: die("%s : caractères non PEM" % rel)
+def wr(name, txt):
+    f = os.path.join(tmp, name); open(f, "w").write(txt); return f
+CERT = re.compile(r"-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+?-----END CERTIFICATE-----\r?\n?")
+CRLRX = re.compile(r"-----BEGIN X509 CRL-----\r?\n[A-Za-z0-9+/=\r\n]+?-----END X509 CRL-----\r?\n?")
+def only(rx, txt, what):
+    blocks = rx.findall(txt)
+    if not blocks or rx.sub("", txt).strip(): die("%s : seul du PEM attendu (certificats ou CRL), rien d'autre" % what)
+    return blocks
+def when(txt, key):
+    m = re.search(key + r"=(\w{3}) +(\d+) (\d\d):(\d\d):(\d\d) (\d{4}) GMT", txt)
+    if not m: return None
+    return datetime.datetime.strptime("%s %s %s:%s:%s %s" % m.groups(), "%b %d %H:%M:%S %Y").replace(tzinfo=datetime.timezone.utc)
+now = datetime.datetime.now(datetime.timezone.utc)
+if os.path.islink(src) or not os.path.isdir(src): die("dossier de dépôt absent")
+if mode == "crl":
+    ca_txt = open(sys.argv[4], encoding="ascii").read(); check_crl = sys.argv[5] == "true"
+else:
+    try: opts = json.loads(read("pki.json", 4096))
+    except ValueError: die("pki.json illisible")
+    if not isinstance(opts, dict) or not isinstance(opts.get("checkCrl"), bool): die("pki.json : checkCrl absent")
+    check_crl = opts["checkCrl"]; ca_txt = read("ca.pem", 262144)
+ca_blocks = only(CERT, ca_txt, "ca.pem")
+if len(ca_blocks) > 32: die("trop d'autorités de confiance (32 au plus)")
+cas = []
+for i, b in enumerate(ca_blocks):
+    f = wr("ca%d.pem" % i, b)
+    rc, out, _ = ossl("x509", "-in", f, "-noout", "-subject", "-issuer", "-nameopt", "RFC2253", "-ext", "basicConstraints", "-checkend", "0")
+    subj = re.search(r"^subject=(.*)$", out, re.M); iss = re.search(r"^issuer=(.*)$", out, re.M)
+    if rc != 0 and "will expire" in out: die("autorité expirée : %s" % (subj.group(1).strip() if subj else "?"))
+    if rc != 0 or not subj or not iss: die("certificat d'autorité illisible (n° %d)" % (i + 1))
+    if "CA:TRUE" not in out: die("%s n'est pas une autorité (CA:TRUE absent)" % subj.group(1).strip())
+    cas.append({"f": f, "subject": subj.group(1).strip(), "issuer": iss.group(1).strip(), "pem": b})
+for c in cas: c["root"] = c["subject"] == c["issuer"]
+roots = [c for c in cas if c["root"]]
+if not roots: die("aucune racine (autorité autosignée) dans la chaîne de confiance")
+roots_f = wr("roots.pem", "".join(c["pem"] for c in roots)); all_f = wr("allcas.pem", "".join(c["pem"] for c in cas))
+for c in cas:
+    rc, out, err = ossl("verify", "-CAfile", roots_f, "-untrusted", all_f, "-check_ss_sig", c["f"])
+    if rc != 0 or ": OK" not in out: die("%s : chaîne incomplète ou invalide jusqu'à une racine de la liste" % c["subject"])
+# autorités qui émettent les certificats clients = feuilles de l'arbre (aucune autre autorité de la liste ne leur est subordonnée)
+issuing = [c for c in cas if not any((o is not c) and (not o["root"]) and o["issuer"] == c["subject"] for o in cas)]
+# CRL
+crls = []
+d = os.path.join(src, "crl")
+names = sorted(os.listdir(d)) if os.path.isdir(d) and not os.path.islink(d) else []
+if len(names) > 64: die("trop de CRL (64 au plus)")
+for n in names:
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}\.pem", n): die("nom de CRL refusé : %s" % n)
+    txt = read(os.path.join("crl", n), 12 * 1024 * 1024)
+    only(CRLRX, txt, "CRL %s" % n)
+    if len(CRLRX.findall(txt)) != 1: die("CRL %s : un seul bloc attendu" % n)
+    f = wr("crl-%s" % n, txt)
+    rc, out, err = ossl("crl", "-in", f, "-noout", "-issuer", "-nextupdate", "-lastupdate", "-nameopt", "RFC2253", "-CAfile", all_f)
+    iss = re.search(r"^issuer=(.*)$", out, re.M)
+    if rc != 0 or "verify OK" not in (out + err) or not iss: die("CRL %s : signature non vérifiée par une autorité de la liste" % n)
+    nu = when(out, "nextUpdate")
+    if nu is None: die("CRL %s : date de prochaine mise à jour absente" % n)
+    if nu <= now: die("CRL %s expirée depuis le %s (FreeRADIUS refuserait alors tous les certificats)" % (n, nu.strftime("%Y-%m-%d %H:%M")))
+    lu = when(out, "lastUpdate")
+    if lu is not None and (lu - now).total_seconds() > 60: die("CRL %s émise dans le futur (%s) : vérifiez l'heure de ce nœud et celle de l'autorité (OpenSSL refuserait tous les certificats jusque-là)" % (n, lu.strftime("%Y-%m-%d %H:%M")))
+    crls.append({"name": n, "issuer": iss.group(1).strip(), "txt": txt, "next": nu})
+if check_crl:
+    for c in issuing:
+        if not any(k["issuer"] == c["subject"] for k in crls): die("CRL manquante pour l'autorité %s (vérification des révocations activée)" % c["subject"])
+warns = []
+for k in crls:
+    if (k["next"] - now).total_seconds() < 86400: warns.append("la CRL de %s expire dans moins de 24 h" % k["issuer"])
+server_pem = key_txt = None
+if mode == "full":
+    chain = only(CERT, read("server.pem", 65536), "server.pem")
+    if len(chain) > 10: die("chaîne du serveur trop longue")
+    sp = wr("server.pem", "".join(chain)); leaf = wr("leaf.pem", chain[0])
+    rc, out, err = ossl("verify", "-CAfile", roots_f, "-untrusted", sp, "-purpose", "sslserver", leaf)
+    if rc != 0 or ": OK" not in out:
+        reason = re.search(r"error \d+ at \d+ depth lookup: (.*)", out + err)
+        die("certificat du serveur refusé : %s (la chaîne envoyée aux clients doit contenir les autorités intermédiaires)" % (reason.group(1) if reason else "chaîne ou usage invalide"))
+    rc, out, _ = ossl("x509", "-in", leaf, "-noout", "-enddate", "-checkend", str(30 * 86400))
+    if "will expire" in out: warns.append("le certificat du serveur expire dans moins de 30 jours")
+    key_txt = read("server.key", 16384)
+    if "ENCRYPTED" in key_txt or len(re.findall(r"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----", key_txt)) != 1 or not re.fullmatch(r"(?s)\s*-----BEGIN (?:RSA |EC )?PRIVATE KEY-----[A-Za-z0-9+/=\r\n]+-----END (?:RSA |EC )?PRIVATE KEY-----\s*", key_txt):
+        die("server.key : une seule clé privée PEM non chiffrée est attendue")
+    kf = wr("server.key", key_txt)
+    rc, out, _ = ossl("pkey", "-in", kf, "-noout", "-text")
+    if rc != 0: die("clé privée illisible")
+    m = re.search(r"Private-Key: \((\d+) bit", out)
+    if "modulus:" in out and (not m or int(m.group(1)) < 2048): die("clé RSA de moins de 2048 bits refusée")
+    rc1, pub_c, _ = ossl("x509", "-in", leaf, "-noout", "-pubkey"); rc2, pub_k, _ = ossl("pkey", "-in", kf, "-pubout")
+    if rc1 != 0 or rc2 != 0 or pub_c.strip() != pub_k.strip(): die("la clé privée ne correspond pas au certificat du serveur")
+    server_pem = "".join(chain)
+# instantané : uniquement ce qui vient d'être validé
+os.makedirs(os.path.join(snap, "crl"), mode=0o700, exist_ok=True)
+def put(rel, txt, mode_=0o600):
+    f = os.path.join(snap, rel); fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode_)
+    with os.fdopen(fd, "w") as h: h.write(txt)
+put("ca.pem", "".join(c["pem"] for c in cas))
+for k in crls: put(os.path.join("crl", k["name"]), k["txt"])
+if mode == "full": put("server.pem", server_pem); put("server.key", key_txt)
+print("checkCrl=%s" % ("true" if check_crl else "false"))
+for w in warns: print("warn: " + w)
+PY
+}
+
+# ---- Règles d'accès (0.13.3) : validation du dossier déposé par la console ET génération de la configuration ----
+# La console dépose des DONNÉES (rules.json, ldap.json, ldap-ca.pem), jamais de configuration FreeRADIUS : root valide chaque champ avec des
+# listes blanches strictes, puis écrit LUI-MÊME le module LDAP et le serveur de décision (unlang) dans l'instantané. Aucun texte de la console n'est
+# repris tel quel dans une directive, et aucun caractère susceptible d'être interprété (guillemet, « $ », « % », « { », saut de ligne) n'y entre.
+# validate_authz SOURCE INSTANTANÉ FICHIER_CLIENTS : écrit INSTANTANÉ/{ldap.mod,site.conf,ldap-ca.pem}. Sortie : « rules=N servers=URL,URL ».
+validate_authz() {
+  python3 - "$@" <<'PY'
+import json, os, re, subprocess, sys, tempfile, shutil, atexit
+src, snap, clients_file = sys.argv[1], sys.argv[2], sys.argv[3]
+def die(m):
+    sys.stderr.write("règles d'accès refusées : %s\n" % m); sys.exit(1)
+def read(rel, limit, required=True):
+    p = os.path.join(src, rel)
+    if os.path.islink(p) or not os.path.isfile(p):
+        if required: die("%s absent" % rel)
+        return None
+    if os.path.getsize(p) > limit: die("%s trop volumineux" % rel)
+    try: return open(p, "rb").read().decode("utf-8")
+    except UnicodeDecodeError: die("%s : UTF-8 attendu" % rel)
+if os.path.islink(src) or not os.path.isdir(src): die("dossier de dépôt absent")
+# seuls les trois fichiers que dépose la console sont admis (rien d'autre n'est lu ni ne doit survivre dans le dépôt)
+extra = sorted(set(os.listdir(src)) - {"rules.json", "ldap.json", "ldap-ca.pem"})
+if extra: die("fichier inattendu dans le dépôt : %s" % extra[0][:40].encode("ascii", "replace").decode())
+try: rules_doc = json.loads(read("rules.json", 4 * 1024 * 1024))
+except ValueError: die("rules.json illisible")
+try: ldap_doc = json.loads(read("ldap.json", 65536))
+except ValueError: die("ldap.json illisible")
+ca_txt = read("ldap-ca.pem", 65536, required=False)
+
+CTRL = re.compile(r"[\x00-\x1f\x7f]")
+def text(v, what, lo, hi, rx=None):
+    if not isinstance(v, str) or not (lo <= len(v) <= hi) or CTRL.search(v): die("%s : valeur invalide" % what)
+    if rx is not None and not rx.fullmatch(v): die("%s : caractères refusés" % what)
+    return v
+def integer(v, what, lo, hi):
+    if isinstance(v, bool) or not isinstance(v, int) or not (lo <= v <= hi): die("%s : entier entre %d et %d attendu" % (what, lo, hi))
+    return v
+# FreeRADIUS interprète « ${…} », « $ENV{…} » et « $(…) » dans une chaîne de configuration, même entre guillemets
+def noexpand(v, what):
+    if re.search(r"\$(\{|ENV|\()", v): die("%s : la séquence « $ » suivie de « { », « ENV » ou « ( » n'est pas prise en charge" % what)
+    return v
+dq = lambda s: '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'      # chaîne de configuration (module)
+sq = lambda s: "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'"      # littéral unlang (aucune expansion)
+
+# ---- annuaire ----
+if not isinstance(ldap_doc, dict): die("ldap.json : objet attendu")
+if set(ldap_doc) - {"urls", "baseDn", "bindDn", "bindPassword", "tlsRejectUnauthorized"}: die("ldap.json : champ inconnu")
+urls = ldap_doc.get("urls")
+if not isinstance(urls, list) or not (1 <= len(urls) <= 5): die("ldap.json : 1 à 5 serveurs attendus")
+URL = re.compile(r"ldaps://[A-Za-z0-9._-]{1,253}(:[0-9]{1,5})?")
+for u in urls:
+    text(u, "serveur LDAP", 9, 280, URL)
+if len(set(urls)) != len(urls): die("serveurs LDAP en double")
+BASE = re.compile(r"[^\"$%{}`\\]{3,500}")
+base_dn = text(ldap_doc.get("baseDn"), "base DN", 3, 500, BASE)
+if "=" not in base_dn: die("base DN invalide")
+bind_dn = noexpand(text(ldap_doc.get("bindDn"), "compte de liaison", 1, 500), "compte de liaison")
+bind_pw = noexpand(text(ldap_doc.get("bindPassword"), "mot de passe de liaison", 1, 200), "mot de passe de liaison")
+reject_unauth = ldap_doc.get("tlsRejectUnauthorized")
+if not isinstance(reject_unauth, bool): die("ldap.json : tlsRejectUnauthorized booléen attendu")
+ca_ok = False
+if ca_txt is not None:
+    CERT = re.compile(r"-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+?-----END CERTIFICATE-----\r?\n?")
+    blocks = CERT.findall(ca_txt)
+    if not blocks or CERT.sub("", ca_txt).strip() or len(blocks) > 10: die("ldap-ca.pem : 1 à 10 certificats PEM attendus, rien d'autre")
+    tmp = tempfile.mkdtemp(prefix="ddi-ldapca-"); atexit.register(shutil.rmtree, tmp, True)
+    for i, b in enumerate(blocks):
+        f = os.path.join(tmp, "c%d.pem" % i); open(f, "w").write(b)
+        p = subprocess.run(["openssl", "x509", "-in", f, "-noout", "-subject"], capture_output=True, timeout=20)
+        if p.returncode != 0: die("ldap-ca.pem : certificat illisible (n° %d)" % (i + 1))
+    ca_ok = True
+
+# ---- règles ----
+if not isinstance(rules_doc, dict) or not isinstance(rules_doc.get("rules"), list): die("rules.json : liste « rules » attendue")
+rules = rules_doc["rules"]
+if not (1 <= len(rules) <= 200): die("1 à 200 règles attendues")
+known = set()
+try: txt = open(clients_file, encoding="utf-8").read()
+except OSError: die("fichier de clients illisible")
+for m in re.finditer(r'^client "([a-z][a-z0-9-]{0,40})" \{$', txt, re.M): known.add(m.group(1))
+known.discard("ddi-selftest")
+NAME = re.compile(r"[a-z][a-z0-9-]{0,40}")
+GDN = re.compile(r"(?:[^\x00-\x1f\x7f\"$%{}`\\]|\\[,+<>;=# \\]){3,512}")
+SSID = re.compile(r"[A-Za-z0-9 ._@#&+=,;:!()/-]{1,32}")
+POOL = re.compile(r"[A-Za-z0-9._-]{1,63}")
+FILT = re.compile(r"[A-Za-z0-9 ._:@=/,;()#*+-]{1,128}")
+VENDOR = {"Aruba-User-Role": re.compile(r"[A-Za-z0-9 ._:@=/,;()#*+-]{1,128}"), "Fortinet-Group-Name": re.compile(r"[A-Za-z0-9 ._:@=/,;()#*+-]{1,128}"),
+          "Reply-Message": re.compile(r"[A-Za-z0-9 ._:@=/,;()#*+!?-]{1,128}"), "Cisco-AVPair": re.compile(r"[A-Za-z0-9 ._:@=/,;()#*+-]{1,200}")}
+uses_ssid = False
+out = []
+for n, r in enumerate(rules, 1):
+    if not isinstance(r, dict): die("règle %d : objet attendu" % n)
+    extra = set(r) - {"name", "action", "kind", "groups", "nas", "ssids", "reply"}
+    if extra: die("règle %d : champ inattendu" % n)
+    label = re.sub(r"[^A-Za-z0-9 ._-]", "?", str(r.get("name", ""))[:60])
+    act = r.get("action")
+    if act not in ("accept", "reject"): die("règle %d : action invalide" % n)
+    kind = r.get("kind")
+    if kind not in (None, "user", "computer"): die("règle %d : type d'identité invalide" % n)
+    groups = r.get("groups", [])
+    if not isinstance(groups, list) or len(groups) > 30: die("règle %d : 30 groupes au plus" % n)
+    groups = [text(g, "règle %d : groupe" % n, 3, 512, GDN) for g in groups]
+    for g in groups:
+        if "=" not in g: die("règle %d : groupe invalide" % n)
+    nas = r.get("nas")
+    if nas is not None:
+        if not isinstance(nas, list) or len(nas) > 2000: die("règle %d : liste de clients invalide" % n)
+        for c in nas:
+            text(c, "règle %d : client" % n, 1, 41, NAME)
+            if c not in known: die("règle %d : client inconnu « %s » (absent du fichier de clients déposé)" % (n, c))
+    ssids = r.get("ssids", [])
+    if not isinstance(ssids, list) or len(ssids) > 20: die("règle %d : 20 SSID au plus" % n)
+    ssids = [text(s, "règle %d : SSID" % n, 1, 32, SSID) for s in ssids]
+    if ssids: uses_ssid = True
+    reply = r.get("reply", {})
+    if not isinstance(reply, dict) or set(reply) - {"vlan", "pool", "sessionTimeout", "filterId", "attrs"}: die("règle %d : réponse invalide" % n)
+    if act == "reject" and reply: die("règle %d : un refus ne porte aucun attribut de réponse" % n)
+    rl = []
+    if "vlan" in reply:
+        v = integer(reply["vlan"], "règle %d : VLAN" % n, 1, 4094)
+        rl += ["&Tunnel-Type := VLAN", "&Tunnel-Medium-Type := IEEE-802", "&Tunnel-Private-Group-Id := '%d'" % v]
+    if "pool" in reply: rl.append("&Framed-Pool := " + sq(text(reply["pool"], "règle %d : pool" % n, 1, 63, POOL)))
+    if "sessionTimeout" in reply: rl.append("&Session-Timeout := %d" % integer(reply["sessionTimeout"], "règle %d : durée de session" % n, 60, 2592000))
+    if "filterId" in reply: rl.append("&Filter-Id := " + sq(text(reply["filterId"], "règle %d : Filter-Id" % n, 1, 128, FILT)))
+    attrs = reply.get("attrs", [])
+    if not isinstance(attrs, list) or len(attrs) > 8: die("règle %d : 8 attributs au plus" % n)
+    seen_attr = set()
+    for a in attrs:
+        if not isinstance(a, dict) or set(a) != {"name", "value"} or a["name"] not in VENDOR: die("règle %d : attribut non autorisé" % n)
+        if a["name"] in seen_attr: die("règle %d : attribut en double (%s)" % (n, a["name"]))
+        seen_attr.add(a["name"])
+        rl.append("&%s := %s" % (a["name"], sq(text(a["value"], "règle %d : %s" % (n, a["name"]), 1, 200, VENDOR[a["name"]]))))
+    out.append({"n": n, "label": label, "act": act, "kind": kind, "groups": groups, "nas": nas, "ssids": ssids, "reply": rl})
+
+# ---- module LDAP (généré ici) ----
+L = ["# Généré par ddibuntu-radius : lecture seule de l'annuaire (état du compte et groupes imbriqués). Ne pas modifier à la main.", "ldap {"]
+for u in urls: L.append("\tserver = " + dq(u))
+L += ["\tidentity = " + dq(bind_dn), "\tpassword = " + dq(bind_pw), "\tbase_dn = " + dq(base_dn),
+      "\tupdate {", "\t\tcontrol:Tmp-String-3 := 'userAccountControl'", "\t\tcontrol:Tmp-String-4 := 'msDS-User-Account-Control-Computed'", "\t\tcontrol:Tmp-String-5 := 'accountExpires'", "\t}",
+      '\tuser_dn = "LDAP-UserDn"',
+      "\tuser {", '\t\tbase_dn = "${..base_dn}"',
+      '\t\tfilter = "(&(objectClass=user)(objectCategory=%{control:Tmp-String-7})(%{control:Tmp-String-6}=%{control:Tmp-String-1}))"', "\t\tscope = sub", "\t}",
+      "\tgroup {", '\t\tbase_dn = "${..base_dn}"', "\t\tfilter = '(objectClass=group)'", "\t\tname_attribute = cn",
+      '\t\tmembership_filter = "(&(objectClass=group)(member:1.2.840.113556.1.4.1941:=%{control:LDAP-UserDn}))"', "\t\tcacheable_name = no", "\t\tcacheable_dn = yes", "\t}",
+      "\toptions {", "\t\tchase_referrals = no", "\t\trebind = no", "\t\tres_timeout = 10", "\t\tsrv_timelimit = 5", "\t\tnet_timeout = 3", "\t\tidle = 60", "\t\tprobes = 3", "\t\tinterval = 3", "\t}",
+      "\ttls {", ("\t\tca_file = ${certdir}/ldap-ca.pem" if ca_ok else "\t\tca_file = '/etc/ssl/certs/ca-certificates.crt'"), "\t\trequire_cert = '%s'" % ("demand" if reject_unauth else "never"), "\t}",
+      # connexions ouvertes à la demande : avec start = 1 (défaut), FreeRADIUS REFUSE de démarrer quand l'annuaire est injoignable.
+      # max >= max_servers (radiusd.conf, 32 fils) : un fil n'attend jamais de connexion — à saturation FreeRADIUS ne met PAS en file, il
+      # échoue aussitôt (« Cannot open new connection, already at max ») et la requête serait refusée à tort lors d'une pointe d'authentifications.
+      "\tpool {", "\t\tstart = 0", "\t\tmin = 0", "\t\tmax = 32", "\t\tspare = 1", "\t\tuses = 0", "\t\tretry_delay = 5", "\t\tlifetime = 0", "\t\tidle_timeout = 60", "\t}", "}"]
+
+# ---- serveur de décision (généré ici) ----
+S = []
+def block(lines, ind):
+    S.extend("\t" * ind + l for l in lines)
+def deny(msg, ind):
+    block(["update config {", "\t&Auth-Type := Reject", "}", "update outer.request {", '\t&Module-Failure-Message := "ddibuntu : %s"' % msg, "}", "return"], ind)
+S += ["# Généré par ddibuntu-radius : décision d'accès après la poignée de main EAP-TLS (chaîne, dates, usage et révocation déjà contrôlés).",
+      "# Ordre : identité du certificat → compte dans l'annuaire → état du compte → règles dans l'ordre (première correspondance) → refus par défaut.",
+      "# Seul Auth-Type décide dans ce serveur virtuel (un « reject » simple n'a aucun effet).", "server ddibuntu-check-eap-tls {", "\tauthorize {"]
+block(["# 1. identité portée par le certificat : UPN (utilisateur), sinon nom DNS (machine)",
+       "if (&TLS-Client-Cert-Subject-Alt-Name-Upn) {", "\tupdate control {", "\t\t&Tmp-String-0 := 'user'", "\t\t&Tmp-String-1 := &TLS-Client-Cert-Subject-Alt-Name-Upn[0]",
+       "\t\t&Tmp-String-6 := 'userPrincipalName'", "\t\t&Tmp-String-7 := 'person'", "\t}", "}",
+       "elsif (&TLS-Client-Cert-Subject-Alt-Name-Dns) {", "\tupdate control {", "\t\t&Tmp-String-0 := 'computer'", "\t\t&Tmp-String-1 := &TLS-Client-Cert-Subject-Alt-Name-Dns[0]",
+       "\t\t&Tmp-String-6 := 'dNSHostName'", "\t\t&Tmp-String-7 := 'computer'", "\t}", "}", "else {"], 2)
+deny("certificat sans identite (ni UPN ni nom DNS)", 3)
+block(["}", "if (!&control:Tmp-String-1) {"], 2); deny("identite du certificat vide", 3)
+block(["}", "# 2. compte dans l'annuaire (échec ou résultat ambigu = refus)", "ldap", "if (notfound) {"], 2); deny("compte introuvable dans l'annuaire", 3)
+block(["}", "elsif (!(updated || ok)) {"], 2); deny("annuaire indisponible ou compte ambigu", 3)
+block(["}", "# 3. état du compte : mêmes critères que la console (désactivé, verrouillé, expiré ; attributs illisibles = refus)",
+       "if (!&control:Tmp-String-3 || &control:Tmp-String-3 !~ /^[0-9]{1,10}$/) {"], 2); deny("attributs du compte illisibles", 3)
+block(["}", "if (\"%{expr:%{control:Tmp-String-3} & 2}\" != '0') {"], 2); deny("compte desactive", 3)
+block(["}", "if (&control:Tmp-String-4 && &control:Tmp-String-4 =~ /^[0-9]{1,10}$/) {", "\tif (\"%{expr:%{control:Tmp-String-4} & 16}\" != '0') {"], 2); deny("compte verrouille", 4)
+block(["\t}", "}", "elsif (\"%{expr:%{control:Tmp-String-3} & 16}\" != '0') {"], 2); deny("compte verrouille", 3)
+block(["}", "if (&control:Tmp-String-5 && &control:Tmp-String-5 =~ /^[0-9]{1,18}$/ && &control:Tmp-String-5 != '0') {",
+       "\tif (\"%{expr:%l - (%{control:Tmp-String-5} / 10000000 - 11644473600)}\" =~ /^[0-9]+$/) {"], 2); deny("compte expire", 4)
+block(["\t}", "}"], 2)
+if uses_ssid:
+    block(["# SSID : suffixe de Called-Station-Id (« AA-BB-CC-DD-EE-FF:SSID »)",
+           "if (\"%{outer.request:Called-Station-Id}\" =~ /^([0-9A-Fa-f]{2}[-:.]?){5}[0-9A-Fa-f]{2}:(.+)$/) {", "\tupdate control {", "\t\t&Tmp-String-2 := \"%{2}\"", "\t}", "}"], 2)
+block(["# 4. règles d'accès, dans l'ordre : la première qui correspond décide"], 2)
+for r in out:
+    block(["", "# règle %d : %s (%s)" % (r["n"], r["label"], "accepter" if r["act"] == "accept" else "refuser")], 2)
+    if r["nas"] is not None and len(r["nas"]) == 0:
+        block(["# aucun client ne correspond : cette règle ne s'applique jamais"], 2); continue
+    cond = []
+    if r["kind"]: cond.append("&control:Tmp-String-0 == '%s'" % r["kind"])
+    if r["groups"]: cond.append("(" + " || ".join("LDAP-Group == " + sq(g) for g in r["groups"]) + ")")
+    if r["nas"]: cond.append("(" + " || ".join("\"%%{client:shortname}\" == '%s'" % c for c in r["nas"]) + ")")
+    if r["ssids"]: cond.append("(" + " || ".join("&control:Tmp-String-2 == " + sq(s) for s in r["ssids"]) + ")")
+    block(["if (%s) {" % (" && ".join(cond) if cond else "&control:Tmp-String-0")], 2)
+    if r["act"] == "accept":
+        if r["reply"]: block(["\tupdate outer.reply {"] + ["\t\t" + x for x in r["reply"]] + ["\t}"], 2)
+        block(["\tupdate config {", "\t\t&Auth-Type := Accept", "\t}", "\treturn"], 2)
+    else:
+        block(["\tupdate config {", "\t\t&Auth-Type := Reject", "\t}", "\tupdate outer.request {", "\t\t&Module-Failure-Message := \"ddibuntu : regle %d : refus\"" % r["n"], "\t}", "\treturn"], 2)
+    block(["}"], 2)
+block(["", "# 5. refus par défaut"], 2); deny("aucune regle ne correspond (refus par defaut)", 2)
+S += ["\t}", "}"]
+for g in ["ldap.mod", "site.conf", "ldap-ca.pem"]:
+    p = os.path.join(snap, g)
+    if os.path.lexists(p): os.unlink(p)
+def put(name, txt):
+    fd = os.open(os.path.join(snap, name), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as h: h.write(txt)
+os.makedirs(snap, exist_ok=True)
+put("ldap.mod", "\n".join(L) + "\n"); put("site.conf", "\n".join(S) + "\n")
+if ca_ok: put("ldap-ca.pem", "".join(CERT.findall(ca_txt)))
+print("rules=%d servers=%s" % (len(out), ",".join(urls)))
+PY
+}
+
+# ---- Arborescence FreeRADIUS gérée par DDI-Buntu ----
+write_radiusd_conf() {
+  cat > "$RDIR/radiusd.conf" <<EOF
+# Généré par ddibuntu-radius $(ddi_version). Ne pas modifier à la main : réécrit à chaque déploiement.
+prefix = /usr
+exec_prefix = /usr
+sysconfdir = /etc
+localstatedir = /var
+sbindir = \${exec_prefix}/sbin
+logdir = /var/log/freeradius
+raddbdir = $RDIR
+radacctdir = \${logdir}/radacct
+name = freeradius
+confdir = \${raddbdir}
+modconfdir = \${confdir}/mods-config
+certdir = \${confdir}/certs
+cadir = \${confdir}/certs
+run_dir = \${localstatedir}/run/\${name}
+db_dir = \${raddbdir}
+libdir = /usr/lib/freeradius
+pidfile = \${run_dir}/\${name}.pid
+max_request_time = 30
+cleanup_delay = 5
+max_requests = 16384
+hostname_lookups = no
+log {
+	destination = files
+	colourise = no
+	file = \${logdir}/radius.log
+	syslog_facility = daemon
+	stripped_names = no
+	auth = yes
+	auth_badpass = no
+	auth_goodpass = no
+}
+checkrad = \${sbindir}/checkrad
+security {
+	user = freerad
+	group = freerad
+	allow_core_dumps = no
+	max_attributes = 200
+	reject_delay = 1
+	status_server = no
+	require_message_authenticator = yes
+	limit_proxy_state = yes
+}
+proxy_requests = no
+\$INCLUDE clients.conf
+thread pool {
+	start_servers = 5
+	max_servers = 32
+	min_spare_servers = 3
+	max_spare_servers = 10
+	max_requests_per_server = 0
+	auto_limit_acct = no
+}
+modules {
+	\$INCLUDE mods-enabled/
+}
+instantiate {
+}
+\$INCLUDE sites-enabled/
+EOF
+}
+write_site() {   # $1 = eap (« eap » : EAP-TLS actif) ; sans argument : tout accès refusé (itérations 1 et 2) ; $2 = serveur de décision généré (règles d'accès)
+  local v6="" eap="${1:-}" decision="${2:-}"
+  # écoute IPv6 seulement si la pile IPv6 existe (sinon freeradius refuse de démarrer)
+  if [[ -r /proc/net/if_inet6 ]]; then
+    v6=$'\tlisten {\n\t\ttype = auth\n\t\tipv6addr = ::\n\t\tport = 1812\n\t}\n\tlisten {\n\t\ttype = acct\n\t\tipv6addr = ::\n\t\tport = 1813\n\t}\n'
+  fi
+  { cat <<'EOF'
+# Site RADIUS de DDI-Buntu. Refus par défaut : aucune règle d'accès n'existe encore (itération 4), donc aucun accès n'est jamais accordé.
+server default {
+	listen {
+		type = auth
+		ipaddr = *
+		port = 1812
+		limit {
+			max_connections = 16
+			lifetime = 0
+			idle_timeout = 30
+		}
+	}
+	listen {
+		type = acct
+		ipaddr = *
+		port = 1813
+	}
+EOF
+  printf '%s' "$v6"
+  if [[ "$eap" = eap ]]; then
+    cat <<'EOF'
+	authorize {
+		eap {
+			ok = return
+			updated = return
+		}
+		reject
+	}
+	authenticate {
+		Auth-Type eap {
+			eap
+		}
+	}
+EOF
+  else
+    cat <<'EOF'
+	authorize {
+		reject
+	}
+	authenticate {
+	}
+EOF
+  fi
+  cat <<'EOF'
+	preacct {
+		preprocess
+	}
+	accounting {
+		ok
+	}
+	session {
+	}
+	post-auth {
+		Post-Auth-Type REJECT {
+			attr_filter.access_reject
+EOF
+  [[ "$eap" = eap ]] && printf '\t\t\teap\n'
+  cat <<'EOF'
+		}
+	}
+}
+EOF
+  if [[ "$eap" = eap && -n "$decision" ]]; then
+    cat "$decision"
+  elif [[ "$eap" = eap ]]; then
+    cat <<'EOF'
+# Appelé par EAP-TLS une fois la poignée de main réussie : la chaîne de confiance, les dates, l'usage et la révocation du certificat client
+# ont déjà été contrôlés. Aucune règle d'accès n'est déployée : refus par défaut. ATTENTION : un simple « reject » ne suffit
+# pas dans ce serveur virtuel, seul Auth-Type décide (Accept ou Reject) ; sans lui le certificat serait accepté. Le message distingue ce
+# refus d'un échec TLS dans le journal.
+server ddibuntu-check-eap-tls {
+	authorize {
+		update config {
+			&Auth-Type := Reject
+		}
+		update outer.request {
+			&Module-Failure-Message := "ddibuntu : certificat valide, aucune regle d'acces (refus par defaut)"
+		}
+	}
+}
+EOF
+  fi
+  } > "$RDIR/sites-available/ddibuntu"
+}
+write_eap_module() {   # $1 = true|false : vérification des révocations (CRL)
+  local crl=no; [[ "$1" = true ]] && crl=yes
+  cat > "$RDIR/mods-enabled/eap" <<EOF
+# Généré par ddibuntu-radius $(ddi_version). EAP-TLS seulement (aucune autre méthode) ; ne pas modifier à la main.
+eap {
+	default_eap_type = tls
+	timer_expire = 60
+	ignore_unknown_eap_types = no
+	cisco_accounting_username_bug = no
+	max_sessions = \${max_requests}
+	tls-config tls-common {
+		private_key_file = \${certdir}/server.key
+		certificate_file = \${certdir}/server.pem
+		ca_file = \${certdir}/ca.pem
+		ca_path = \${certdir}/crl
+		ca_path_reload_interval = 600
+		auto_chain = no
+		check_crl = $crl
+		check_all_crl = no
+		allow_expired_crl = no
+		cipher_server_preference = no
+		tls_min_version = "1.2"
+		tls_max_version = "1.3"
+		ecdh_curve = ""
+		cache {
+			enable = no
+		}
+		verify {
+		}
+		ocsp {
+			enable = no
+		}
+	}
+	tls {
+		tls = tls-common
+		# décision d'accès une fois la poignée de main réussie (voir le site) : DOIT être ici, pas dans tls-config
+		virtual_server = "ddibuntu-check-eap-tls"
+	}
+}
+EOF
+}
+install_pki() {   # $1 = instantané validé (validate_pki) ; $2 = true|false (vérification des CRL)
+  local c="$RDIR/certs" f
+  install -d -m 0750 -o root -g "$GROUP" "$c" "$c/crl"
+  install -m 0640 -o root -g "$GROUP" "$1/ca.pem" "$c/ca.pem"
+  install -m 0640 -o root -g "$GROUP" "$1/server.pem" "$c/server.pem"
+  install -m 0640 -o root -g "$GROUP" "$1/server.key" "$c/server.key"
+  for f in "$1"/crl/*.pem; do [[ -e "$f" ]] && install -m 0640 -o root -g "$GROUP" "$f" "$c/crl/$(basename "$f")"; done
+  # FreeRADIUS cherche les CRL par nom de hachage (<hash>.r0) dans ca_path
+  compgen -G "$c/crl/*.pem" >/dev/null && openssl rehash "$c/crl" >/dev/null 2>&1
+  write_eap_module "$2"
+}
+build_tree() {   # $1 = clients.conf validé ; $2 = instantané PKI validé (optionnel) ; $3 = vérification des CRL (true|false) ; $4 = instantané des règles d'accès validé (optionnel, exige $2)
+  [[ -d "$STOCK/mods-available" ]] || { log "modules du paquet freeradius introuvables ($STOCK)"; return 1; }
+  getent group "$GROUP" >/dev/null || { log "groupe $GROUP absent (paquet freeradius non installé ?)"; return 1; }
+  # le démon abandonne ses privilèges (utilisateur freerad) : le dossier parent doit rester traversable (umask 027 de ce script)
+  [[ -d "$(dirname "$RDIR")" ]] || install -d -m 0755 "$(dirname "$RDIR")"
+  install -d -m 0750 -o root -g "$GROUP" "$RDIR" "$RDIR/sites-available" "$RDIR/sites-enabled" "$RDIR/mods-enabled"
+  local m mods="$MODULES"
+  [[ -n "${4:-}" ]] && mods="$MODULES expr"
+  wipe_ldap "$RDIR"    # le module LDAP porte le mot de passe de liaison : écrasé avant suppression
+  find "$RDIR/mods-enabled" "$RDIR/sites-enabled" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  wipe_certs "$RDIR"   # jamais de clé ni de certificat d'un déploiement précédent : réinstallés depuis la PKI validée, ou absents
+  for m in $mods; do
+    [[ -f "$STOCK/mods-available/$m" ]] || { log "module absent du paquet : $m"; return 1; }
+    ln -s "$STOCK/mods-available/$m" "$RDIR/mods-enabled/$m"
+  done
+  ln -sfn "$STOCK/mods-config" "$RDIR/mods-config"
+  ln -s ../sites-available/ddibuntu "$RDIR/sites-enabled/ddibuntu"
+  write_radiusd_conf
+  if [[ -n "${2:-}" ]]; then
+    install_pki "$2" "${3:-true}"
+    if [[ -n "${4:-}" ]]; then
+      install -m 0640 -o root -g "$GROUP" "$4/ldap.mod" "$RDIR/mods-enabled/ldap"
+      [[ -f "$4/ldap-ca.pem" ]] && install -m 0640 -o root -g "$GROUP" "$4/ldap-ca.pem" "$RDIR/certs/ldap-ca.pem"
+      write_site eap "$4/site.conf"
+    else write_site eap; fi
+  else write_site; fi
+  { printf '# Généré par ddibuntu-radius %s à partir de la console (revalidé par root). Ne pas modifier à la main.\n' "$(ddi_version)"; cat "$1"; } > "$RDIR/clients.conf"
+  chown root:"$GROUP" "$RDIR/radiusd.conf" "$RDIR/clients.conf" "$RDIR/sites-available/ddibuntu"
+  chmod 0640 "$RDIR/radiusd.conf" "$RDIR/clients.conf" "$RDIR/sites-available/ddibuntu"
+}
+wipe_ldap() {    # $1 = arborescence ; le module LDAP (mot de passe de liaison) est écrasé avant suppression
+  [[ -f "$1/mods-enabled/ldap" ]] && shred -u "$1/mods-enabled/ldap" 2>/dev/null || true
+  return 0
+}
+wipe_certs() {   # $1 = arborescence ; les clés sont écrasées avant suppression
+  [[ -d "$1/certs" ]] || return 0
+  find "$1/certs" -type f -name '*.key' -exec shred -u {} + 2>/dev/null || true
+  rm -rf "$1/certs"
+}
+restore_tree() {
+  if [[ -d "$BACKUP/tree" ]]; then rm -rf "$RDIR"; cp -a "$BACKUP/tree" "$RDIR"; else rm -rf "$RDIR"; fi
+}
+
+fw_open() {   # $1 = réseaux (un par ligne) ; vide = referme. Échec : avertissement, le service reste en place.
+  local csv; csv="$(printf '%s' "$1" | tr '\n' ',' | sed 's/,$//')"
+  if [[ ! -x "$FW_BIN" ]]; then printf 'pare-feu non mis à jour (ddibuntu-fw absent)'; return 0; fi
+  if "$FW_BIN" set RADIUS_NETS "$csv" >/dev/null 2>&1 && "$FW_BIN" apply >/dev/null 2>&1; then return 0; fi
+  printf 'AVERTISSEMENT : pare-feu non mis à jour, les équipements ne pourront pas joindre le service'
+}
+
+cmd_apply() {   # $1 = clients.conf ; $2 = dossier PKI déposé (optionnel : sans lui, EAP-TLS est désactivé) ; $3 = dossier des règles d'accès déposé (optionnel, exige $2)
+  local file="${1:-}" pkisrc="${2:-}" authzsrc="${3:-}" nets warn="" had=0 rc=0 snap="" check_crl=true pkiout="" authzout="" authzsnap=""
+  [[ -f "$file" && ! -L "$file" ]] || ddi_die "fichier de clients absent"
+  [[ "$(stat -c %s "$file")" -le "$MAX_CLIENTS_BYTES" ]] || ddi_die "fichier de clients trop volumineux"
+  nets="$(validate_clients "$file")" || return 1
+  [[ -x "$RADIUSD" ]] || { log "freeradius n'est pas installé"; return 1; }
+  if [[ -n "$pkisrc" ]]; then
+    snap="$(mktemp -d "${TMPDIR:-/tmp}/ddi-radius-pki.XXXXXX")"; chmod 0700 "$snap"
+    # shellcheck disable=SC2064
+    trap "find '$snap' -type f -exec shred -u {} + 2>/dev/null; rm -rf '$snap'" EXIT   # exécuté à la fin du sous-shell de la demande (ou du script)
+    pkiout="$(validate_pki "$pkisrc" "$snap")" || return 1
+    check_crl="$(printf '%s\n' "$pkiout" | sed -n 's/^checkCrl=//p')"
+    if [[ -n "$authzsrc" ]]; then
+      [[ -f "$LDAP_SO" ]] || { log "règles d'accès : le module LDAP de FreeRADIUS est absent (paquet freeradius-ldap à installer)"; return 1; }
+      authzout="$(validate_authz "$authzsrc" "$snap" "$file")" || return 1
+      authzsnap="$snap"
+    fi
+  elif [[ -n "$authzsrc" ]]; then
+    log "règles d'accès : EAP-TLS (PKI) est requis"; return 1
+  fi
+  install -d -m 0750 "$STATE" 2>/dev/null || true
+  rm -rf "$BACKUP"; install -d -m 0700 "$BACKUP"
+  if [[ -d "$RDIR" ]]; then cp -a "$RDIR" "$BACKUP/tree"; had=1; fi
+  if ! build_tree "$file" "$snap" "$check_crl" "$authzsnap"; then restore_tree; wipe_backup; return 1; fi
+  local out
+  if ! out="$("$RADIUSD" -d "$RDIR" -Cx -lstdout 2>&1)"; then
+    restore_tree; wipe_backup
+    log "configuration refusée par freeradius : $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ' | cut -c1-200)"; return 1
+  fi
+  "$SYSCTL" daemon-reload >/dev/null 2>&1 || true
+  if ! { "$SYSCTL" enable "$SERVICE" >/dev/null 2>&1 && "$SYSCTL" restart "$SERVICE" >/dev/null 2>&1; }; then rc=1; fi
+  if [[ "$rc" -eq 0 ]]; then sleep 1; [[ "$(svc_state is-active)" = true ]] || rc=1; fi
+  if [[ "$rc" -ne 0 ]]; then
+    restore_tree; wipe_backup
+    if [[ "$had" -eq 1 ]]; then "$SYSCTL" restart "$SERVICE" >/dev/null 2>&1 || true; else "$SYSCTL" disable --now "$SERVICE" >/dev/null 2>&1 || true; fi
+    log "le service ne démarre pas ; configuration précédente restaurée"; return 1
+  fi
+  warn="$(fw_open "$nets")"
+  wipe_backup
+  local n; n="$(printf '%s' "$nets" | grep -c . || true)" extra=""
+  [[ -n "$snap" ]] && extra=" EAP-TLS activé."
+  [[ -n "$authzsnap" ]] && extra="$extra Règles d'accès : $(printf '%s' "$authzout" | sed -n 's/^rules=\([0-9]*\) .*/\1/p') règle(s)."
+  printf '%s' "$pkiout" | grep -q '^warn:' && extra="$extra $(printf '%s' "$pkiout" | sed -n 's/^warn: /AVERTISSEMENT : /p' | tr '\n' ' ')"
+  printf 'Service RADIUS démarré (%s client(s)).%s%s' "$n" "$extra" "${warn:+ $warn}"
+}
+wipe_backup() {   # la sauvegarde de l'arborescence contient les clés (et le mot de passe de liaison) de l'ancien déploiement : écrasés avant suppression
+  [[ -d "$BACKUP/tree" ]] && { wipe_certs "$BACKUP/tree"; wipe_ldap "$BACKUP/tree"; }
+  rm -rf "$BACKUP"
+}
+# Installe les CRL déposées. FreeRADIUS ne relit pas un dossier de CRL sur signal (HUP : « No files changed ») et seulement toutes les 10 minutes
+# sinon : si le jeu de CRL a changé, le service est donc redémarré (quelques centaines de millisecondes) pour qu'une révocation soit effective
+# tout de suite ; s'il n'a pas changé, rien n'est touché. En cas d'échec du redémarrage, les anciennes CRL sont rétablies.
+cmd_crl() {   # $1 = dossier PKI déposé (seul crl/ est lu)
+  local src="${1:-}" snap check_crl=false out c="$RDIR/certs" f before after
+  [[ -f "$c/ca.pem" && -f "$RDIR/mods-enabled/eap" ]] || { log "EAP-TLS n'est pas déployé : déployez d'abord le service"; return 1; }
+  grep -q 'check_crl = yes' "$RDIR/mods-enabled/eap" && check_crl=true
+  snap="$(mktemp -d "${TMPDIR:-/tmp}/ddi-radius-crl.XXXXXX")"; chmod 0700 "$snap"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$snap'" EXIT
+  out="$(validate_pki "$src" "$snap" crl "$c/ca.pem" "$check_crl")" || return 1
+  crl_digest() { (cd "$1" 2>/dev/null && find . -maxdepth 1 -name '*.pem' -type f | sort | xargs -r sha256sum | sha256sum); }
+  before="$(crl_digest "$c/crl")"; after="$(crl_digest "$snap/crl")"
+  local warns; warns="$(printf '%s' "$out" | sed -n 's/^warn: / AVERTISSEMENT : /p' | tr '\n' ' ')"
+  if [[ "$before" = "$after" ]]; then printf 'CRL inchangées : rien à faire.%s' "$warns"; return 0; fi
+  rm -rf "$c/crl.new" "$c/crl.old"; install -d -m 0750 -o root -g "$GROUP" "$c/crl.new"
+  for f in "$snap"/crl/*.pem; do [[ -e "$f" ]] && install -m 0640 -o root -g "$GROUP" "$f" "$c/crl.new/$(basename "$f")"; done
+  compgen -G "$c/crl.new/*.pem" >/dev/null && openssl rehash "$c/crl.new" >/dev/null 2>&1
+  mv "$c/crl" "$c/crl.old" && mv "$c/crl.new" "$c/crl"
+  if "$SYSCTL" restart "$SERVICE" >/dev/null 2>&1 && { sleep 1; [[ "$(svc_state is-active)" = true ]]; }; then
+    rm -rf "$c/crl.old"
+    printf 'CRL installées (%s), service redémarré : les révocations sont effectives.%s' "$(compgen -G "$c/crl/*.pem" | wc -l)" "$warns"
+  else
+    rm -rf "$c/crl"; mv "$c/crl.old" "$c/crl"; "$SYSCTL" restart "$SERVICE" >/dev/null 2>&1 || true
+    log "le service ne redémarre pas avec les nouvelles CRL ; anciennes CRL rétablies"; return 1
+  fi
+}
+cmd_stop() {
+  "$SYSCTL" disable --now "$SERVICE" >/dev/null 2>&1 || true
+  local warn; warn="$(fw_open "")"
+  printf 'Service RADIUS arrêté.%s' "${warn:+ $warn}"
+}
+
+# ---- Demande de la console (sans privilège) : revalidée ici en totalité ----
+# Format : {"action":"apply","pki":true|false} (avec radius-clients.conf, et radius-pki/ si pki) | {"action":"stop"} | {"action":"status"} | {"action":"crl"} (avec radius-pki/crl/)
+cmd_request() {
+  local rq="$GEN/.radius-request" cf="$GEN/radius-clients.conf" pkid="$GEN/radius-pki" azd="$GEN/radius-authz" raw="" action="" usepki="" useauthz="" out="" rc=0 ok=false
+  [[ -e "$rq" || -L "$rq" ]] || return 0
+  if [[ -f "$rq" && ! -L "$rq" ]]; then raw="$(head -c 4096 "$rq")"; fi
+  rm -f "$rq"
+  read -r action usepki useauthz < <(RAW="$raw" python3 - <<'PY' 2>/dev/null || true
+import json, os
+try: d = json.loads(os.environ["RAW"])
+except Exception: raise SystemExit(0)
+if isinstance(d, dict) and d.get("action") in ("apply", "stop", "status", "crl"): print(d["action"], "pki" if d.get("pki") is True else "-", "authz" if d.get("authz") is True else "-")
+PY
+) || true
+  case "$action" in
+    apply)
+      if [[ -f "$cf" && ! -L "$cf" ]]; then out="$( ( cmd_apply "$cf" "$([[ "$usepki" = pki ]] && echo "$pkid")" "$([[ "$useauthz" = authz ]] && echo "$azd")" ) 2>&1)" || rc=$?; else out="fichier de clients non déposé"; rc=1; fi ;;
+    crl) out="$( ( cmd_crl "$pkid" ) 2>&1)" || rc=$? ;;
+    stop) out="$( ( cmd_stop ) 2>&1)" || rc=$? ;;
+    status) out="état publié" ;;
+    *) out="demande invalide"; rc=1 ;;
+  esac
+  # les secrets déposés par la console ne restent jamais sur le disque, même en cas de refus
+  if [[ -e "$cf" || -L "$cf" ]]; then if [[ -f "$cf" && ! -L "$cf" ]]; then shred -u "$cf" 2>/dev/null || rm -f "$cf"; else rm -f "$cf"; fi; fi
+  if [[ -d "$pkid" && ! -L "$pkid" ]]; then find "$pkid" -type f -exec shred -u {} + 2>/dev/null || true; fi   # la clé privée du serveur ne reste jamais sur le disque
+  rm -rf "$pkid"
+  if [[ -d "$azd" && ! -L "$azd" ]]; then find "$azd" -type f -exec shred -u {} + 2>/dev/null || true; fi   # le mot de passe de liaison ne reste jamais sur le disque
+  rm -rf "$azd"
+  [[ "$rc" -eq 0 ]] && ok=true
+  out="$(printf '%s' "$out" | tr '\n\r' '  ' | sed 's/ddibuntu-radius: //g')"
+  log "demande de la console (${action:-invalide}) : ${out:-ok}"
+  publish_result "${action:-invalide}" "$ok" "$out"
+  cmd_status || true
+  [[ "$ok" = true ]]
+}
+
+# validation seule : aucun effet, utilisable sans privilège (tests, diagnostic)
+if [[ "${1:-}" = check ]]; then validate_clients "${2:-}"; exit $?; fi
+if [[ "${1:-}" = check-pki ]]; then t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT; validate_pki "${2:-}" "$t"; exit $?; fi
+if [[ "${1:-}" = check-authz ]]; then t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT; validate_authz "${2:-}" "$t" "${3:-}" && { cat "$t/ldap.mod" "$t/site.conf" | sed -E 's/^(\tpassword = ).*/\1"***"/'; }; exit $?; fi
+[[ "$(id -u)" -eq 0 ]] || ddi_die "à lancer en root"
+exec 9>"${DDI_RADIUS_LOCK:-/run/ddibuntu-radius.lock}"
+flock -w 120 9 || ddi_die "une autre demande RADIUS est en cours depuis plus de 2 minutes"
+cmd="${1:-}"; [[ $# -gt 0 ]] && shift
+case "$cmd" in
+  apply) cmd_apply "${1:-}" "${2:-}" "${3:-}"; echo; cmd_status ;;
+  crl) cmd_crl "${1:-$GEN/radius-pki}"; echo; cmd_status ;;
+  stop) cmd_stop; echo; cmd_status ;;
+  status) cmd_status ;;
+  request) cmd_request ;;
+  *) usage >&2; exit 2 ;;
+esac
