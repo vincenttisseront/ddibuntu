@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.12.23 — « Kea : fuseau UTC, les clients reçoivent de nouveau leurs offres »
+
+- **Correctif critique DHCP** : Kea tournait avec le fuseau du système (ex. Europe/Paris) alors que PostgreSQL lit `expire` en UTC. Les baux étaient écrits avec une heure de décalage, la mise à jour du bail ne retrouvait plus sa ligne (`ALLOC_ENGINE_V4_ALLOC_ERROR … does not exist`) et aucune offre n'était envoyée au client.
+- Un fichier `kea-dhcp4-server.service.d/ddibuntu-tz.conf` (`TZ=UTC`) est livré ; la mise à jour de l'appliance redémarre Kea une seule fois s'il n'est pas encore en UTC.
+- Les rôles PostgreSQL `kea` et `ddi` sont créés avec `timezone = 'UTC'` (nouvelles installations).
+- Test statique (b01) sur le drop-in, le redémarrage et le rôle.
+
 ## 0.12.22 — « Découverte : on ne remonte plus les postes DHCP »
 
 - La découverte planifiée **ne liste plus et ne compte plus les postes vus par le DHCP** (colonne « Détecté par » contenant `dhcp`, y compris « tcp, dhcp ») : ces postes dynamiques sont trop fluctuants pour une alerte ou un import. Leurs baux restent visibles dans IPAM › Adresses (statut « Bail DHCP ») et dans la Traçabilité. Les hôtes à IP fixe trouvés par scan restent proposés à l'import.

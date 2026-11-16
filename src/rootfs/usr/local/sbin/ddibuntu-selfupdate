@@ -286,6 +286,10 @@ cmd_apply() {
   cp "$WORKDIR/b/VERSION" "$DDI_STATEDIR/installed-version"
   chmod 0755 "$DDI_STATEDIR" 2>/dev/null || true   # répare les droits changés par ddibuntu-reload (≤ 0.9.41) : la console doit traverser ce dossier
   svc daemon-reload
+  # Kea doit tourner en UTC (voir kea-dhcp4-server.service.d/ddibuntu-tz.conf) : redémarré une seule fois si le service actif ne l'a pas encore
+  if svc is-active --quiet kea-dhcp4-server 2>/dev/null && ! svc show -p Environment kea-dhcp4-server 2>/dev/null | grep -q 'TZ=UTC'; then
+    svc restart kea-dhcp4-server >/dev/null 2>&1 || log "avertissement : kea-dhcp4-server n'a pas pu être redémarré"
+  fi
   # unités « demande » éventuellement modifiées par cette version : redémarrées pour prendre en compte leurs nouvelles règles (sans effet si elles sont inactives)
   svc restart ddibuntu-cluster-request.path ddibuntu-cluster-setup.path ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-fw-request.path ddibuntu-backup-request.path >/dev/null 2>&1 || true
   "$DDI_ROOT/usr/local/sbin/ddibuntu-fw" write >/dev/null 2>&1 || log "avertissement : règles du pare-feu non re-rendues"

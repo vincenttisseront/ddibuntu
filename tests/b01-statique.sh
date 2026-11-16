@@ -116,6 +116,9 @@ expect_grep "console : port 443 par capacité, pas par root" '^AmbientCapabiliti
 expect_grep "console : élévation de privilèges interdite" '^NoNewPrivileges=yes$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 expect_grep "console : le dossier de dépôt est réparé au démarrage (propriétaire ddiconsole)" '^ExecStartPre=\+/usr/bin/chown -Rh ddiconsole:ddiconsole /var/lib/ddibuntu/generated$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 # AF_NETLINK : sans lui, os.networkInterfaces() échoue (errno 97) et la page Cluster répond « Erreur interne » tant qu'aucun cluster n'existe (0.9.0)
+expect_grep "Kea : tourne en UTC (sinon les mises à jour de baux PostgreSQL échouent et aucune offre n'est envoyée)" '^Environment=TZ=UTC$' "$P/rootfs/etc/systemd/system/kea-dhcp4-server.service.d/ddibuntu-tz.conf"
+expect_grep "mise à jour : Kea redémarré une fois pour prendre le fuseau UTC" "svc restart kea-dhcp4-server" "$P/rootfs/usr/local/sbin/ddibuntu-selfupdate"
+expect_grep "base : rôle kea en UTC" "alter role kea set timezone = 'UTC'" "$P/rootfs/usr/local/sbin/ddibuntu-db-init"
 expect_grep "console : familles d'adresses limitées, AF_NETLINK inclus (énumération des interfaces en lecture seule)" '^RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 expect_nogrep "console : aucune capacité réseau d'administration (CAP_NET_ADMIN) accordée" '^(Ambient|Bounding)?CapabilityBoundingSet=.*CAP_NET_ADMIN|^AmbientCapabilities=.*CAP_NET_ADMIN' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 expect_grep "pare-feu livré : DNS (UDP 53 et 67 DHCP) ouvert" 'udp dport \{ 53, 67 \} accept' "$P/rootfs/etc/ddibuntu/nftables.nft"

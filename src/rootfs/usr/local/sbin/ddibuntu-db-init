@@ -33,6 +33,8 @@ do \$\$ begin
 end \$\$;
 alter role ddi password '$DB_PW';
 alter role kea password '$KEA_PW';
+alter role kea set timezone = 'UTC';
+alter role ddi set timezone = 'UTC';
 select 'create database ddibuntu owner ddi' where not exists (select from pg_database where datname = 'ddibuntu') \gexec
 grant connect on database ddibuntu to kea;
 SQL
