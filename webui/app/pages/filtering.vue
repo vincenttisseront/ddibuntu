@@ -84,7 +84,10 @@ async function purge() {
         <UButton v-if="canWrite" icon="i-lucide-upload" size="xs" color="neutral" variant="ghost" :aria-label="t('filter.import')" @click="openImport(row)" />
       </template>
     </ResourceTable>
-    <ResourceTable v-else-if="tab === 'rules'" endpoint="/filter/rules" :columns="ruleCols" :fields="ruleFields" :can-write="canWrite" create-url="/filter/rules" :delete-url="(r: any) => `/filter/rules/${r.id}`" :delete-name="(r: any) => r.domain" :create-label="t('filter.add_rule')" />
+    <div v-else-if="tab === 'rules'" class="flex flex-col gap-4">
+      <ResourceTable endpoint="/filter/rules" :columns="ruleCols" :fields="ruleFields" :can-write="canWrite" create-url="/filter/rules" :delete-url="(r: any) => `/filter/rules/${r.id}`" :delete-name="(r: any) => r.domain" :create-label="t('filter.add_rule')" />
+      <FilterEntries />
+    </div>
     <UCard v-else-if="tab === 'test'" class="max-w-2xl">
       <form class="flex gap-2 items-end" @submit.prevent="check"><UFormField :label="t('filter.domain')" class="flex-1"><UInput v-model="dom" class="w-full font-mono" placeholder="ads.example.com" /></UFormField><UButton type="submit" :label="t('filter.check')" :disabled="!dom" /></form>
       <UAlert v-if="vErr" class="mt-3" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="vErr" />

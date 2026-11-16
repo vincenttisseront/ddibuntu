@@ -2545,5 +2545,15 @@ const messages: Record<string, string> = {
   "ipam.status.lease": "DHCP lease",
   "ipam.lease_add": "Declare in IPAM",
   "trace.recent": "Most recent associations (up to 200). Enter an IP, a MAC or a name to search the whole history.",
+  "filter.all_lists": "All lists",
+  "filter.list_domains": "List domains",
+  "filter.list_domains_hint": "Read-only: from block lists (enabled or not). Your manual rules (above) take precedence.",
+  "filter.search_domain": "Search a domain…",
+  "filter.no_entries": "No domains: add a list, then import or update it.",
+  "filter.list": "List",
+  "filter.list_disabled": "List disabled",
+  "common.previous": "Previous",
+  "common.next": "Next",
+  "filter.entries_range": "{from}–{to} of {total}",
 }
 export default messages

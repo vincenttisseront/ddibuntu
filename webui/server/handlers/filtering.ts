@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { audit, fail, intParam, qstr, route } from '../utils/router'
+import { audit, fail, intParam, qint, qstr, route } from '../utils/router'
 import { one, query, tx } from '../utils/db'
 import { cfg } from '../utils/config'
 import { CATEGORIES, fetchList, parseBlocklist } from '../utils/blocklist'
@@ -79,6 +79,17 @@ route('POST', '/filter/lists/:id/update', 'operator', async (c) => {
   }
 })
 
+// Domaines issus des listes de blocage (lecture seule), avec filtre par liste, recherche et pagination : une liste peut en contenir des centaines de milliers
+route('GET', '/filter/entries', 'viewer', async (c) => {
+  const list = qint(c, 'list', 0, 0, 2_000_000_000)
+  const q = (qstr(c, 'q', 100) ?? '').toLowerCase().replace(/[\\%_]/g, (m) => `\\${m}`)
+  const limit = qint(c, 'limit', 50, 1, 200), offset = qint(c, 'offset', 0, 0, 100_000_000)
+  const args = [list, q ? `%${q}%` : null]
+  const where = 'where ($1 = 0 or e.list_id = $1) and ($2::text is null or e.domain like $2)'
+  const total = (await one<any>(`select count(*)::int n from block_entries e ${where}`, args))?.n ?? 0
+  const items = await query(`select e.domain, e.list_id, l.name list_name, l.category, l.enabled from block_entries e join block_lists l on l.id = e.list_id ${where} order by e.domain, e.list_id limit ${limit} offset ${offset}`, args)
+  return { items, total, limit, offset }
+})
 route('GET', '/filter/rules', 'viewer', async () => ({ items: await query('select id, domain, action, comment, created_at from filter_rules order by domain') }))
 route('POST', '/filter/rules', 'operator', async (c) => {
   const b = await c.body(z.object({ domain: domainS, action: z.enum(['block', 'allow']), comment: z.string().max(200).nullable().optional() }))

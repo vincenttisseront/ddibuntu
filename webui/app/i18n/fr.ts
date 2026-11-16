@@ -2545,5 +2545,15 @@ const messages: Record<string, string> = {
   "ipam.status.lease": "Bail DHCP",
   "ipam.lease_add": "Déclarer dans l’IPAM",
   "trace.recent": "Associations les plus récentes (200 au plus). Saisissez une IP, une MAC ou un nom pour chercher dans tout l’historique.",
+  "filter.all_lists": "Toutes les listes",
+  "filter.list_domains": "Domaines des listes",
+  "filter.list_domains_hint": "Lecture seule : issus des listes de blocage activées ou non. Vos règles manuelles (ci-dessus) l’emportent.",
+  "filter.search_domain": "Rechercher un domaine…",
+  "filter.no_entries": "Aucun domaine : ajoutez une liste puis importez-la ou mettez-la à jour.",
+  "filter.list": "Liste",
+  "filter.list_disabled": "Liste désactivée",
+  "common.previous": "Précédent",
+  "common.next": "Suivant",
+  "filter.entries_range": "{from}–{to} sur {total}",
 }
 export default messages

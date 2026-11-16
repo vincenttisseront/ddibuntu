@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.12.24 — « Filtrage DNS : les domaines des listes visibles dans Règles »
+
+- Onglet **Règles** : sous les règles manuelles, un tableau en lecture seule liste les domaines issus des listes de blocage (liste, catégorie, état), avec filtre par liste, recherche et pagination (utile pour des listes de plusieurs centaines de milliers de domaines).
+- Nouvel endpoint `GET /api/filter/entries` (lecteur) ; les jokers LIKE saisis dans la recherche sont traités littéralement.
+- Test e2e-iter38.
+
 ## 0.12.23 — « Kea : fuseau UTC, les clients reçoivent de nouveau leurs offres »
 
 - **Correctif critique DHCP** : Kea tournait avec le fuseau du système (ex. Europe/Paris) alors que PostgreSQL lit `expire` en UTC. Les baux étaient écrits avec une heure de décalage, la mise à jour du bail ne retrouvait plus sa ligne (`ALLOC_ENGINE_V4_ALLOC_ERROR … does not exist`) et aucune offre n'était envoyée au client.
