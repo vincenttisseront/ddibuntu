@@ -65,10 +65,11 @@ describe('hôtes découverts : liste puis import', () => {
     await setJson('discovery_found', { at: 1_700_000_000, hosts: [
       { ip: '10.77.0.10', subnetId: sid, mac: 'aa:bb:cc:00:00:10', name: 'srv10.example.test', via: ['arp', 'reverse'] },
       { ip: '10.77.0.11', subnetId: sid, mac: null, name: null, via: ['icmp'] },
-      { ip: '10.77.0.12', subnetId: sid, mac: 'aa:bb:cc:00:00:12', name: 'nom invalide !', via: ['arp'] }] })
+      { ip: '10.77.0.12', subnetId: sid, mac: 'aa:bb:cc:00:00:12', name: 'nom invalide !', via: ['arp'] },
+      { ip: '10.77.0.50', subnetId: sid, mac: 'aa:bb:cc:00:00:50', name: 'iphone', via: ['tcp', 'dhcp'] }] })   // poste DHCP : jamais proposé
     await setJson('discovery_schedule_last', { at: 1_700_000_000, ok: true, scanned: 254, alive: 3, known: 0, unknown: 3, macChanged: 0, unreachable: 0 })
     const r = await oper.get('/api/discovery/found'); expect(r.status).toBe(200)
-    expect(r.json.at).toBe(1_700_000_000); expect(r.json.hosts.map((h: any) => h.ip)).toEqual(['10.77.0.10', '10.77.0.11', '10.77.0.12'])
+    expect(r.json.at).toBe(1_700_000_000); expect(r.json.hosts.map((h: any) => h.ip)).toEqual(['10.77.0.10', '10.77.0.11', '10.77.0.12'])   // 10.77.0.50 (vu par le DHCP) n'y est pas
     expect(r.json.hosts[0]).toMatchObject({ subnet: '10.77.0.0/24', subnetName: 'Découverte', name: 'srv10.example.test' })
     await db.query("insert into addresses (subnet_id, ip, status) values ($1, '10.77.0.11', 'used')", [sid])   // saisie à la main entre-temps
     expect((await oper.get('/api/discovery/found')).json.hosts.map((h: any) => h.ip)).toEqual(['10.77.0.10', '10.77.0.12'])
@@ -76,6 +77,7 @@ describe('hôtes découverts : liste puis import', () => {
   it('import : lecteur refusé ; IP hors liste refusée ; point de restauration, adresses créées, liste et alerte mises à jour', async () => {
     code(await viewer.post('/api/discovery/found/import', { ips: ['10.77.0.10'] }), 403, 'forbidden')
     code(await oper.post('/api/discovery/found/import', { ips: ['10.99.9.9'] }), 404, 'not_found')
+    code(await oper.post('/api/discovery/found/import', { ips: ['10.77.0.50'] }), 404, 'not_found')   // poste DHCP : pas importable par cette liste
     expect((await oper.post('/api/discovery/found/import', { ips: [] })).status).toBe(400)
     const before = Number((await rows("select count(*)::int n from config_snapshots where kind = 'pre-import'"))[0]!.n)
     const r = await oper.post('/api/discovery/found/import', { ips: ['10.77.0.10', '10.77.0.12'] }); expect(r.status).toBe(200)

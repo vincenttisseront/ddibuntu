@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.12.22 — « Découverte : on ne remonte plus les postes DHCP »
+
+- La découverte planifiée **ne liste plus et ne compte plus les postes vus par le DHCP** (colonne « Détecté par » contenant `dhcp`, y compris « tcp, dhcp ») : ces postes dynamiques sont trop fluctuants pour une alerte ou un import. Leurs baux restent visibles dans IPAM › Adresses (statut « Bail DHCP ») et dans la Traçabilité. Les hôtes à IP fixe trouvés par scan restent proposés à l'import.
+- L'alerte « hôte absent d'IPAM » utilise la même liste (donc le même compte) ; une liste mémorisée avant cette version est filtrée à la lecture, sans attendre le passage suivant. L'assistant de découverte manuelle est inchangé (il montre tout, avec la colonne « Détecté par »).
+- Tests : e2e-iter15 (alerte uniquement pour un hôte hors DHCP) et e2e-iter36 (poste DHCP non listé, non importable).
+
 ## 0.12.21 — « Pools, baux et traçabilité visibles dans l'IPAM »
 
 - **IPAM › Pools** : affiche aussi les **plages des étendues DHCP** (importées d'AD ou créées dans DHCP), colonne « Origine » IPAM / DHCP, avec leur taux d'utilisation (adresses IPAM + baux actifs, sans double compte). Les plages DHCP sont en lecture seule ici (bouton vers la page DHCP).

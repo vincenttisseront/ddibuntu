@@ -17,6 +17,8 @@ export const ScheduleBody = z.object({
 export type Schedule = z.infer<typeof ScheduleBody>
 export interface FoundHost { ip: string; subnetId: number; mac: string | null; name: string | null; via: string[] }
 export const MAX_FOUND = 500
+/** Un hôte vu par le DHCP (bail) est un poste dynamique : trop fluctuant pour alerter ou être proposé à l'import ; son bail est déjà suivi (Traçabilité, adresses « Bail DHCP »). */
+export const viaDhcp = (via: readonly string[]) => via.includes('dhcp')
 /** Hôtes trouvés par le dernier passage et absents de l'IPAM : l'alerte d'hygiène y renvoie, l'utilisateur peut les importer (rien n'est créé sans lui). */
 export const getFound = async (): Promise<{ at: number; hosts: FoundHost[] }> => getSetting<{ at: number; hosts: FoundHost[] }>('discovery_found', { at: 0, hosts: [] })
 export interface LastRun { at: number; ok: boolean; scanned: number; alive: number; known: number; unknown: number; macChanged: number; unreachable: number; error?: string }
@@ -48,7 +50,7 @@ export async function runScheduled(sch?: Schedule): Promise<LastRun> {
     const res = classify(found, known, (ip) => byCidr.get(targets.subnetOf.get(ip)!)!)
     let knownN = 0, unknownN = 0, macN = 0
     for (const h of res.hosts) {
-      if (h.status === 'new') { unknownN++; continue }
+      if (h.status === 'new') { if (!viaDhcp(h.via)) unknownN++; continue }
       if (!h.known) continue
       knownN++; if (h.status === 'mac_changed') macN++
       const nm = (h.ptr ?? h.leaseName)?.toLowerCase()
@@ -64,7 +66,7 @@ export async function runScheduled(sch?: Schedule): Promise<LastRun> {
       : (await query<any>('update addresses set reachable = true, checked_at = now() where subnet_id = any($1) and host(ip) = any($2) returning 1', [subs.map((r) => r.id), alive]), 0)
     const last: LastRun = { at: t0, ok: true, scanned: targets.ips.length, alive: found.filter((h) => h.alive).length, known: knownN, unknown: unknownN, macChanged: macN, unreachable: unreach }
     await setSetting('discovery_schedule_last', last)
-    await setSetting('discovery_found', { at: t0, hosts: res.hosts.filter((h) => h.status === 'new').slice(0, MAX_FOUND).map((h): FoundHost => ({ ip: h.ip, subnetId: h.subnetId, mac: h.mac ? normMac(h.mac) : null, name: (h.ptr ?? h.leaseName)?.toLowerCase() ?? null, via: h.via })) })
+    await setSetting('discovery_found', { at: t0, hosts: res.hosts.filter((h) => h.status === 'new' && !viaDhcp(h.via)).slice(0, MAX_FOUND).map((h): FoundHost => ({ ip: h.ip, subnetId: h.subnetId, mac: h.mac ? normMac(h.mac) : null, name: (h.ptr ?? h.leaseName)?.toLowerCase() ?? null, via: h.via })) })
     if (s.autoGhost) await applyGhosting(s.ghostDays)
     return last
   } catch (e: any) {

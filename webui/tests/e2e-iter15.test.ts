@@ -120,7 +120,8 @@ describe('découverte planifiée et alertes d\'hygiène', () => {
     expect((await admin.post('/api/discovery/schedule/run')).status).toBe(200)
     await until(async () => (await admin.get('/api/discovery/schedule')).json.last !== null, 40000)
     const last = (await admin.get('/api/discovery/schedule')).json.last
-    expect(last, JSON.stringify(last)).toMatchObject({ ok: true, known: 1, unknown: 1, macChanged: 0 })
+    expect(last, JSON.stringify(last)).toMatchObject({ ok: true, known: 1, unknown: 0, macChanged: 0 })   // 0.12.22 : l'inconnu n'est vu que par le DHCP (poste dynamique) : ni compté, ni listé
+    expect((await admin.get('/api/discovery/found')).json.hosts).toEqual([])
     const n = (await db.query('select count(*)::int as n, count(last_seen)::int as seen from addresses')).rows[0]
     expect(n).toEqual({ n: 2, seen: 1 })      // aucune adresse créée, la connue qui répond est marquée vue
     // joignabilité : celle qui répond (bail) est joignable, celle qui ne répond à aucune sonde active est injoignable
@@ -129,6 +130,11 @@ describe('découverte planifiée et alertes d\'hygiène', () => {
     expect(last.unreachable).toBe(1)
     const list = (await admin.get(`/api/ipam/subnets/${s}/addresses`)).json.items
     expect(list.map((a: any) => [a.ip, a.reachable])).toEqual([['10.77.0.2', true], ['10.77.0.5', false]])
+    expect((await admin.post('/api/alerts/evaluate')).status).toBe(200)
+    expect((await admin.get('/api/alerts')).json.active.find((x: any) => x.rule === 'ipam.unknown_hosts')).toBeUndefined()   // postes DHCP : pas d'alerte
+    // un hôte à IP fixe (trouvé hors DHCP) déclenche l'alerte, et la liste d'import en est la source
+    const set = (k: string, v: unknown) => db.query("insert into settings (key, value) values ($1, $2::jsonb) on conflict (key) do update set value = excluded.value", [k, JSON.stringify(v)])
+    await set('discovery_found', { at: last.at, hosts: [{ ip: '10.77.0.4', subnetId: s, mac: null, name: null, via: ['tcp'] }, { ip: '10.77.0.3', subnetId: s, mac: 'aa:bb:cc:01:01:02', name: 'inconnu', via: ['dhcp'] }] })
     const ev = await admin.post('/api/alerts/evaluate'); expect(ev.status).toBe(200)
     const act = (await admin.get('/api/alerts')).json.active
     expect(act.find((x: any) => x.rule === 'ipam.unknown_hosts')).toMatchObject({ severity: 'warning', params: { count: 1 } })

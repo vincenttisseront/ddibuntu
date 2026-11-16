@@ -9,7 +9,7 @@ import { DiscoveryError, PORT_PRESETS, classify, discoverHosts, enumerateTargets
 import type { Job, KnownAddr } from '../utils/discovery'
 import { preImportSnapshot, record } from './importer'
 import { leaseMap } from '../utils/leasemap'
-import { ScheduleBody, getFound, getLastRun, getSchedule, runScheduled, scheduleRunning } from '../utils/discovery-schedule'
+import { ScheduleBody, viaDhcp, getFound, getLastRun, getSchedule, runScheduled, scheduleRunning } from '../utils/discovery-schedule'
 
 route('GET', '/discovery/capabilities', 'operator', async () => ({ icmp: await pingWorks(), maxTargets: 4096, presets: PORT_PRESETS }))
 
@@ -68,7 +68,7 @@ route('POST', '/discovery/schedule/run', 'operator', async (c) => {
 
 // ---- Hôtes trouvés par la découverte planifiée et absents de l'IPAM : liste, puis import au choix de l'utilisateur
 route('GET', '/discovery/found', 'operator', async () => {
-  const f = await getFound()
+  const f = await getFound(); f.hosts = f.hosts.filter((h) => !viaDhcp(h.via))   // listes mémorisées avant la 0.12.22 : les postes DHCP en sont retirés
   // une adresse importée entre-temps (ou saisie à la main) n'a plus à figurer dans la liste
   const known = f.hosts.length ? new Set((await query<any>('select host(ip) as ip from addresses where host(ip) = any($1)', [f.hosts.map((h) => h.ip)])).map((r) => r.ip)) : new Set<string>()
   const subs = new Map((await query<any>('select id, text(cidr) as cidr, name from subnets where id = any($1)', [[...new Set(f.hosts.map((h) => h.subnetId))]])).map((r) => [r.id, r]))
@@ -77,7 +77,8 @@ route('GET', '/discovery/found', 'operator', async () => {
 })
 route('POST', '/discovery/found/import', 'operator', async (c) => {
   const b = await c.body(z.object({ ips: z.array(z.string().max(45)).min(1).max(500) }))
-  const f = await getFound(), pick = new Set(b.ips), todo = f.hosts.filter((h) => pick.has(h.ip))
+  const f = await getFound(); f.hosts = f.hosts.filter((h) => !viaDhcp(h.via))
+  const pick = new Set(b.ips), todo = f.hosts.filter((h) => pick.has(h.ip))
   if (!todo.length) fail(404, 'not_found')
   const snapshotId = await preImportSnapshot(c, `avant import de la découverte planifiée (${todo.length} adresse(s))`)
   const out = { created: 0, updated: 0, skipped: 0, snapshotId }

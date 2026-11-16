@@ -6,7 +6,7 @@ import { getSetting, inRecovery, one, query, setSetting, tx } from './db'
 import { readLocalHealth } from './health'
 import { readBackupResult, readBackupStatus } from './backup'
 import { subnetUsage } from './ipam-usage'
-import { getLastRun, getSchedule } from './discovery-schedule'
+import { getFound, getLastRun, getSchedule, viaDhcp } from './discovery-schedule'
 import { evaluate, SEVERITY_RANK } from './alert-rules'
 import type { Finding, Memory, Severity, Snapshot } from './alert-rules'
 import { loadConfig } from './alert-config'
@@ -24,7 +24,10 @@ async function gatherHygiene() {
   const GHOST_DAYS = (await getSchedule()).ghostDays
   const g = (await query<any>("select count(*)::int as n from addresses where status in ('used','dhcp','ghost') and last_seen is not null and last_seen < now() - make_interval(days => $1)", [GHOST_DAYS]))[0]!.n
   const last = await getLastRun()
-  return { ghosts: g, ghostDays: GHOST_DAYS, scanAt: last?.ok ? last.at : null, unknown: last?.unknown ?? 0, macChanged: last?.macChanged ?? 0 }
+  // même source que la liste d'import (sans les postes DHCP, trop fluctuants) ; à défaut de liste pour ce passage, le compteur mémorisé
+  const found = await getFound()
+  const unknown = last && found.at === last.at ? found.hosts.filter((h) => !viaDhcp(h.via)).length : (last?.unknown ?? 0)
+  return { ghosts: g, ghostDays: GHOST_DAYS, scanAt: last?.ok ? last.at : null, unknown, macChanged: last?.macChanged ?? 0 }
 }
 
 export interface RunInfo { at: number; ok: boolean; findings: number; opened: number; resolved: number; notified: number; error?: string }
