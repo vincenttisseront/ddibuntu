@@ -15,6 +15,10 @@ export const ScheduleBody = z.object({
   autoGhost: z.boolean(), ghostDays: z.number().int().min(1).max(3650),   // bascule automatique « utilisée » ⇄ « fantôme » ; ghostDays sert aussi à l'alerte
 }).strict()
 export type Schedule = z.infer<typeof ScheduleBody>
+export interface FoundHost { ip: string; subnetId: number; mac: string | null; name: string | null; via: string[] }
+export const MAX_FOUND = 500
+/** Hôtes trouvés par le dernier passage et absents de l'IPAM : l'alerte d'hygiène y renvoie, l'utilisateur peut les importer (rien n'est créé sans lui). */
+export const getFound = async (): Promise<{ at: number; hosts: FoundHost[] }> => getSetting<{ at: number; hosts: FoundHost[] }>('discovery_found', { at: 0, hosts: [] })
 export interface LastRun { at: number; ok: boolean; scanned: number; alive: number; known: number; unknown: number; macChanged: number; unreachable: number; error?: string }
 
 export const DEFAULT_SCHEDULE: Schedule = { enabled: false, intervalHours: 24, subnetIds: [], methods: { tcp: false, icmp: true, arp: true, reverse: true, leases: true }, autoGhost: false, ghostDays: 30 }
@@ -60,6 +64,7 @@ export async function runScheduled(sch?: Schedule): Promise<LastRun> {
       : (await query<any>('update addresses set reachable = true, checked_at = now() where subnet_id = any($1) and host(ip) = any($2) returning 1', [subs.map((r) => r.id), alive]), 0)
     const last: LastRun = { at: t0, ok: true, scanned: targets.ips.length, alive: found.filter((h) => h.alive).length, known: knownN, unknown: unknownN, macChanged: macN, unreachable: unreach }
     await setSetting('discovery_schedule_last', last)
+    await setSetting('discovery_found', { at: t0, hosts: res.hosts.filter((h) => h.status === 'new').slice(0, MAX_FOUND).map((h): FoundHost => ({ ip: h.ip, subnetId: h.subnetId, mac: h.mac ? normMac(h.mac) : null, name: (h.ptr ?? h.leaseName)?.toLowerCase() ?? null, via: h.via })) })
     if (s.autoGhost) await applyGhosting(s.ghostDays)
     return last
   } catch (e: any) {

@@ -2528,5 +2528,15 @@ const messages: Record<string, string> = {
   "ad.krb.m1_step2": "Étape 2, sur Linux (par exemple cette appliance, paquet krb5-user) : tapez le mot de passe à l’invite de ktutil, puis installez dns.keytab ci-dessus et supprimez le fichier. Le mot de passe ne doit jamais figurer dans une commande ni dans un message.",
   "ad.krb.m2_title": "Méthode 2 : ktpass",
   "ad.krb.m2_desc": "Sur un contrôleur de domaine, avec un compte déjà créé : ktpass en réinitialise le mot de passe. Sur certaines configurations, une fenêtre « Carte à puce » s’affiche et la commande échoue : utilisez alors la méthode 1.",
+  "dfound.title": "Hôtes découverts, absents de l’IPAM",
+  "dfound.never": "Aucune découverte planifiée n’a encore dressé de liste. Lancez « Exécuter maintenant » dans la découverte planifiée ci-dessous.",
+  "dfound.none": "Aucun hôte à importer (dernier passage : {at}).",
+  "dfound.intro": "{n} hôte(s) actif(s) trouvé(s) lors du dernier passage ({at}) et absents de l’IPAM. Cochez ceux à importer : rien n’est créé sans votre accord.",
+  "dfound.subnet": "Sous-réseau",
+  "dfound.import": "Importer les hôtes",
+  "dfound.import_n": "Importer ({n})",
+  "dfound.confirm": "Créer {n} adresse(s) dans l’IPAM avec l’IP, le nom et la MAC découverts ? Un point de restauration est créé avant.",
+  "dfound.done": "{n} adresse(s) importée(s).",
+  "dfound.undo": "Un point de restauration est créé avant l’import (Système › Points de restauration).",
 }
 export default messages

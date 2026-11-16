@@ -9,7 +9,7 @@ import { DiscoveryError, PORT_PRESETS, classify, discoverHosts, enumerateTargets
 import type { Job, KnownAddr } from '../utils/discovery'
 import { preImportSnapshot, record } from './importer'
 import { leaseMap } from '../utils/leasemap'
-import { ScheduleBody, getLastRun, getSchedule, runScheduled, scheduleRunning } from '../utils/discovery-schedule'
+import { ScheduleBody, getFound, getLastRun, getSchedule, runScheduled, scheduleRunning } from '../utils/discovery-schedule'
 
 route('GET', '/discovery/capabilities', 'operator', async () => ({ icmp: await pingWorks(), maxTargets: 4096, presets: PORT_PRESETS }))
 
@@ -64,6 +64,40 @@ route('POST', '/discovery/schedule/run', 'operator', async (c) => {
   await audit(c, 'discovery_schedule_run', 'discovery')
   void runScheduled(sch)   // en arrière-plan : l'interface relit l'état
   return { started: true }
+})
+
+// ---- Hôtes trouvés par la découverte planifiée et absents de l'IPAM : liste, puis import au choix de l'utilisateur
+route('GET', '/discovery/found', 'operator', async () => {
+  const f = await getFound()
+  // une adresse importée entre-temps (ou saisie à la main) n'a plus à figurer dans la liste
+  const known = f.hosts.length ? new Set((await query<any>('select host(ip) as ip from addresses where host(ip) = any($1)', [f.hosts.map((h) => h.ip)])).map((r) => r.ip)) : new Set<string>()
+  const subs = new Map((await query<any>('select id, text(cidr) as cidr, name from subnets where id = any($1)', [[...new Set(f.hosts.map((h) => h.subnetId))]])).map((r) => [r.id, r]))
+  const hosts = f.hosts.filter((h) => !known.has(h.ip)).map((h) => ({ ...h, subnet: subs.get(h.subnetId)?.cidr ?? null, subnetName: subs.get(h.subnetId)?.name ?? null }))
+  return { at: f.at || null, hosts }
+})
+route('POST', '/discovery/found/import', 'operator', async (c) => {
+  const b = await c.body(z.object({ ips: z.array(z.string().max(45)).min(1).max(500) }))
+  const f = await getFound(), pick = new Set(b.ips), todo = f.hosts.filter((h) => pick.has(h.ip))
+  if (!todo.length) fail(404, 'not_found')
+  const snapshotId = await preImportSnapshot(c, `avant import de la découverte planifiée (${todo.length} adresse(s))`)
+  const out = { created: 0, updated: 0, skipped: 0, snapshotId }
+  await tx(async (cl) => {
+    for (const h of todo) {
+      const host = h.name && isValidDnsName(h.name, false) ? h.name : null
+      const r = await cl.query("insert into addresses (subnet_id, ip, status, hostname, mac, description, source, last_seen) values ($1,$2,'used',$3,$4,$5,'discovery',now()) on conflict (subnet_id, ip) do nothing",
+        [h.subnetId, h.ip, host, h.mac, `découvert le ${new Date().toISOString().slice(0, 10)}`])
+      if (r.rowCount) out.created++; else out.skipped++
+    }
+  })
+  // la liste et le compteur de l'alerte reflètent aussitôt ce qui reste à traiter
+  const rest = f.hosts.filter((h) => !pick.has(h.ip))
+  const present = rest.length ? new Set((await query<any>('select host(ip) as ip from addresses where host(ip) = any($1)', [rest.map((h) => h.ip)])).map((r) => r.ip)) : new Set<string>()
+  const left = rest.filter((h) => !present.has(h.ip))   // saisies à la main entre-temps : plus à traiter
+  await setSetting('discovery_found', { at: f.at, hosts: left })
+  const last = await getLastRun(); if (last) await setSetting('discovery_schedule_last', { ...last, unknown: left.length })
+  await record(c, 'discovery', undefined, out, snapshotId)
+  await audit(c, 'discovery_import', 'discovery', undefined, out)
+  return out
 })
 
 const getJob = (id: string): Job => { const j = jobs.get(id); if (!j) fail(404, 'not_found'); return j }

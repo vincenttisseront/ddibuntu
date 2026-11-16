@@ -2528,5 +2528,15 @@ const messages: Record<string, string> = {
   "ad.krb.m1_step2": "Step 2, on Linux (for example this appliance, package krb5-user): type the password at the ktutil prompt, then install dns.keytab above and delete the file. The password must never appear in a command or a message.",
   "ad.krb.m2_title": "Method 2: ktpass",
   "ad.krb.m2_desc": "On a domain controller, with an account that already exists: ktpass resets its password. On some setups a “Smart Card” window appears and the command fails: use method 1 then.",
+  "dfound.title": "Discovered hosts missing from IPAM",
+  "dfound.never": "No scheduled discovery has built a list yet. Click “Run now” in the scheduled discovery below.",
+  "dfound.none": "No host to import (last run: {at}).",
+  "dfound.intro": "{n} active host(s) found on the last run ({at}) that are missing from IPAM. Tick those to import: nothing is created without your consent.",
+  "dfound.subnet": "Subnet",
+  "dfound.import": "Import hosts",
+  "dfound.import_n": "Import ({n})",
+  "dfound.confirm": "Create {n} address(es) in IPAM with the discovered IP, name and MAC? A restore point is created first.",
+  "dfound.done": "{n} address(es) imported.",
+  "dfound.undo": "A restore point is created before the import (System › Restore points).",
 }
 export default messages

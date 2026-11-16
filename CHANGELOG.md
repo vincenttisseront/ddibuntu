@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.12.20 — « Hôtes découverts : liste puis import »
+
+- L'alerte « N hôte(s) actif(s) absent(s) d'IPAM » mène maintenant à **IPAM › Découverte**, qui affiche **en premier la liste des hôtes trouvés** (IP, nom, MAC, sous-réseau, méthode de détection) au lieu de l'assistant de scan : on coche, on **importe**. Rien n'est créé sans accord ; un **point de restauration** précède l'import ; les noms invalides ne sont jamais enregistrés.
+- La découverte planifiée mémorise désormais ces hôtes (500 au plus). Une adresse saisie ou importée entre-temps disparaît de la liste, et le compteur de l'alerte suit l'import sans attendre le passage suivant.
+- API : `GET /api/discovery/found` et `POST /api/discovery/found/import` (opérateur).
+- Test : e2e-iter36 (droits, liste, import, restauration, compteur d'alerte).
+
 ## 0.12.19 — « Aide Kerberos : méthode ktutil éprouvée »
 
 - Active Directory › Kerberos › « Comment obtenir le keytab ? » : nouvelle **méthode 1 recommandée avec `ktutil`** (testée en conditions réelles quand `ktpass` affichait une fenêtre « Carte à puce » et échouait). Étape PowerShell : création du compte de service dédié, `setspn -S`, lecture de la version de clé (kvno) et mot de passe aléatoire ; étape Linux : `ktutil addent -password … -s <ROYAUME><compte>` (salt AD exact), `wkt`, `klist -ket`. Aucun mot de passe n'apparaît dans une commande.
