@@ -30,3 +30,20 @@ describe('diagnostic des NS sans adresse', () => {
     expect(r.ok).toBe(false); expect(r.hints).toEqual([{ code: 'ns_no_address', names: ['stale.ex.test'] }])
   })
 })
+
+import { ktpassCommand } from '../app/utils/ktpass'
+describe('commande ktpass de l\'aide Kerberos', () => {
+  it('pré-remplie avec le domaine et le nom de la console ; une seule ligne ; compte de service et mot de passe aléatoire', () => {
+    const c = ktpassCommand('AR-SYSTEMS.FR', 'DDI-02.ar-systems.fr')
+    expect(c).toBe('ktpass -princ DNS/ddi-02.ar-systems.fr@AR-SYSTEMS.FR -mapuser AR-SYSTEMS\\svc-ddi-dns -pass +rndpass -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -out dns.keytab')
+    expect(c).not.toContain('\n'); expect(c).not.toContain('^'); expect(c).not.toMatch(/\$ /)
+  })
+  it('adresse IP ou nom court dans la barre d\'adresse : nom d\'exemple dans le domaine ; domaine inconnu ou invalide : exemple', () => {
+    expect(ktpassCommand('ar-systems.fr', '10.0.31.150')).toContain('DNS/ddi1.ar-systems.fr@AR-SYSTEMS.FR')
+    expect(ktpassCommand('ar-systems.fr', 'ddi')).toContain('DNS/ddi1.ar-systems.fr@AR-SYSTEMS.FR')
+    expect(ktpassCommand('', '')).toContain('@CORP.LOCAL'); expect(ktpassCommand('x; calc', 'h')).toContain('@CORP.LOCAL')
+  })
+  it('le principal produit est accepté par l\'installation du keytab (DNS/<nom>@DOMAINE)', () => {
+    expect(/DNS\/[A-Za-z0-9][A-Za-z0-9.-]{0,200}@AR-SYSTEMS\.FR/.test(ktpassCommand('AR-SYSTEMS.FR', 'ddi.ar-systems.fr'))).toBe(true)
+  })
+})

@@ -1250,7 +1250,7 @@ const messages: Record<string, string> = {
   "ad.krb.timeout": "Pas de réponse du système pour l’instant ; vérifiez l’état plus tard.",
   "ad.krb.admin_only": "Seul un administrateur peut modifier la configuration Kerberos.",
   "ad.krb.howto_title": "Comment obtenir le keytab ?",
-  "ad.krb.howto": "Sur un contrôleur de domaine Windows, créez un compte de service pour ce serveur DNS, puis exportez son keytab :",
+  "ad.krb.howto": "Sur un contrôleur de domaine Windows, créez un compte de service UTILISATEUR dédié à ce serveur DNS (par exemple svc-ddi-dns), puis exportez son keytab. La commande est pré-remplie avec votre domaine et le nom de cette console ; lancez-la en une seule ligne :",
   "ad.krb.howto_zone": "Ensuite, activez « Mises à jour sécurisées » dans la zone voulue et déployez. Chaque nœud d’un cluster doit recevoir le keytab (le nom du principal doit être celui que les clients résolvent).",
   "ad.fw.title": "Redirecteurs conditionnels",
   "ad.fw.intro": "Les requêtes du domaine Active Directory sont renvoyées à ses contrôleurs, les autres suivent la résolution normale. La vérification interroge les contrôleurs avant toute création.",
@@ -2519,5 +2519,6 @@ const messages: Record<string, string> = {
   "auth.enable_after_test": "L’activation sera possible une fois la connexion testée avec succès (bouton « Tester »). Toute modification de la connexion demande un nouveau test.",
   "auth.disabled_until_test": "Connexion modifiée : l’authentification est désactivée jusqu’à la réussite du nouveau test.",
   "err.auth_not_verified": "Testez d’abord la connexion (bouton « Tester ») : l’authentification ne peut être activée qu’avec une connexion opérationnelle.",
+  "ad.krb.howto_account": "Le compte doit exister avant la commande : utilisateur ordinaire (pas un compte ordinateur), « Le mot de passe n’expire jamais » coché et « Ce compte prend en charge le chiffrement Kerberos AES 256 bits » coché. Le nom après DNS/ doit avoir un enregistrement A dans le DNS et ne pas déjà servir de SPN à un autre compte. ktpass réinitialise le mot de passe du compte (aléatoire) : n’utilisez pas un compte existant.",
 }
 export default messages

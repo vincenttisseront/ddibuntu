@@ -37,7 +37,8 @@ export function gssTemplate(zone: string, realm: string, keytab = '/etc/bind/dns
   const r = realm.toUpperCase()
   return `# Gabarit — à relire puis à placer dans la configuration BIND (la console ne l'applique pas).
 # 1. Sur un contrôleur de domaine, créer le compte du serveur DNS et exporter sa clé :
-#      ktpass /princ DNS/ddi.${zone.toLowerCase()}@${r} /mapuser DDI-DNS$ /crypto AES256-SHA1 /ptype KRB5_NT_PRINCIPAL /out dns.keytab +rndpass
+#      (compte de service utilisateur dédié « svc-ddi-dns », mot de passe n'expirant jamais, chiffrement AES 256 bits accepté)
+#      ktpass -princ DNS/ddi1.${zone.toLowerCase()}@${r} -mapuser ${r.split('.')[0]}\\svc-ddi-dns -pass +rndpass -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -out dns.keytab
 # 2. Copier dns.keytab vers ${keytab} (propriétaire bind, mode 0400).
 options {
     tkey-gssapi-keytab "${keytab}";

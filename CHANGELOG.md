@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.12.18 — « Aide Kerberos : commande ktpass exacte »
+
+- Active Directory › Kerberos : la commande `ktpass` affichée est maintenant **pré-remplie avec votre domaine** (royaume Kerberos configuré) et le **nom de la console**, sur **une seule ligne** (le « ^ » de continuation ne fonctionnait que sous cmd.exe, pas PowerShell).
+- Corrections de fond : compte de **service utilisateur dédié** (`DOMAINE\svc-ddi-dns`) au lieu d'un compte machine (`…$`) ; mot de passe **aléatoire** (`-pass +rndpass`, personne n'a à le connaître) ; principal `DNS/<nom>@DOMAINE` conforme à ce que l'installation du keytab accepte. Rappels ajoutés : compte AES 256 bits accepté, mot de passe n'expirant jamais, enregistrement A du nom, pas de SPN en double, ktpass réinitialise le mot de passe du compte.
+- Le gabarit BIND (GSS-TSIG) utilise la même commande (il différait).
+- Test : unit-iter33 (complété).
+
 ## 0.12.17 — « Authentification AD/LDAP : activation seulement avec une connexion opérationnelle »
 
 - L'authentification **Active Directory** (Import / AD › Authentification AD) et **LDAP** (Système › LDAP) ne peut être activée qu'après un **test de connexion réussi** (liaison du compte de service) avec les réglages enregistrés. Le serveur l'impose (refus 409 `auth_not_verified`) et l'interface grise l'interrupteur avec une explication tant que le test n'a pas réussi.

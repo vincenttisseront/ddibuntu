@@ -1250,7 +1250,7 @@ const messages: Record<string, string> = {
   "ad.krb.timeout": "No answer from the system yet; check the state later.",
   "ad.krb.admin_only": "Only an administrator can change the Kerberos configuration.",
   "ad.krb.howto_title": "How do I get the keytab?",
-  "ad.krb.howto": "On a Windows domain controller, create a service account for this DNS server, then export its keytab:",
+  "ad.krb.howto": "On a Windows domain controller, create a dedicated service USER account for this DNS server (for example svc-ddi-dns), then export its keytab. The command is pre-filled with your domain and this console's name; run it as a single line:",
   "ad.krb.howto_zone": "Then enable “Secure updates” on the target zone and deploy. Every node of a cluster must receive the keytab (the principal name must be the one clients resolve).",
   "ad.fw.title": "Conditional forwarders",
   "ad.fw.intro": "Queries for the Active Directory domain are forwarded to its controllers, others follow normal resolution. The check queries the controllers before anything is created.",
@@ -2519,5 +2519,6 @@ const messages: Record<string, string> = {
   "auth.enable_after_test": "Activation becomes available once the connection has been tested successfully (“Test” button). Any change to the connection requires a new test.",
   "auth.disabled_until_test": "Connection changed: authentication is disabled until the new test succeeds.",
   "err.auth_not_verified": "Test the connection first (“Test” button): authentication can only be enabled with a working connection.",
+  "ad.krb.howto_account": "The account must exist before the command: an ordinary user (not a computer account) with “Password never expires” and “This account supports Kerberos AES 256 bit encryption” ticked. The name after DNS/ must have an A record in DNS and must not already be an SPN of another account. ktpass resets the account password (random): do not use an existing account.",
 }
 export default messages

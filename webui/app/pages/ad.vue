@@ -8,8 +8,10 @@ async function load(silent = false) {
   catch (e: any) { if (!silent) error.value = e.info?.message ?? t('err.internal') }
   finally { loading.value = false }
 }
-onMounted(() => load())
+const ddiHost = ref('')
+onMounted(() => { void load(); ddiHost.value = window.location.hostname })
 const st = computed(() => info.value?.state ?? null)
+const ktCmd = computed(() => ktpassCommand(st.value?.realm ?? '', ddiHost.value))
 const kt = computed(() => st.value?.keytab ?? null)
 const fmt = useFmt()
 const when = (s?: number | null) => (s ? fmt.dateTime(s * 1000) : '—')
@@ -125,8 +127,8 @@ async function applyForwarders() {
         <details class="mt-4 text-sm">
           <summary class="cursor-pointer text-muted">{{ t('ad.krb.howto_title') }}</summary>
           <p class="mt-2 text-muted">{{ t('ad.krb.howto') }}</p>
-          <pre class="mt-2 p-2 rounded bg-elevated text-xs overflow-x-auto">ktpass -princ DNS/ddi1.corp.local@CORP.LOCAL -mapuser ddi1-dns$ -pass * ^
-  -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -out dns.keytab</pre>
+          <pre class="mt-2 p-2 rounded bg-elevated text-xs overflow-x-auto whitespace-pre-wrap break-all" data-test="ktpass-cmd">{{ ktCmd }}</pre>
+          <p class="mt-2 text-xs text-muted">{{ t('ad.krb.howto_account') }}</p>
           <p class="mt-2 text-muted">{{ t('ad.krb.howto_zone') }}</p>
         </details>
       </UCard>
