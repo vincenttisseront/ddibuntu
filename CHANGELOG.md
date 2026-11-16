@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.13.4 — « Listes de blocage : format adblock reconnu automatiquement »
+
+- **Correctif** : une liste au format adblock (ex. hagezi/dns-blocklists `tif.txt`, lignes `||domaine^`) enregistrée avec un autre format donnait 0 domaine. Les lignes `||domaine^` sont désormais reconnues quel que soit le format choisi.
+- Test unitaire.
+
 ## 0.13.3 — « Accès réseau : règles d'accès par groupe AD (itération 4) »
 
 Quatrième étape de l'accès réseau 802.1X / VPN en EAP-TLS : **le service RADIUS décide maintenant qui entre**, d'après l'état du compte et ses groupes Active Directory, et peut renvoyer un VLAN, un pool d'adresses ou une durée de session. Sans règle (ou sans annuaire configuré), **tout est toujours refusé** : rien ne s'ouvre par omission.

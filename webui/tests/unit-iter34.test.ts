@@ -24,3 +24,10 @@ describe('listes de blocage', () => {
     expect(parseBlocklist('0.0.0.0\n1.2.3.4\nplain.example.com\n', 'domains').domains).toEqual(['plain.example.com'])
   })
 })
+
+describe('listes adblock', () => {
+  it('un fichier adblock déclaré « domains » ou « hosts » est reconnu (lignes ||domaine^)', () => {
+    const txt = '! Title: x\n[Adblock Plus]\n||ads.example.com^\n||track.example.org^\n@@||ok.example.com^\n'
+    for (const f of ['adblock', 'domains', 'hosts'] as const) expect(parseBlocklist(txt, f).domains).toEqual(['ads.example.com', 'track.example.org'])
+  })
+})

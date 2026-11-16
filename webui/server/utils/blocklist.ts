@@ -21,7 +21,7 @@ export function parseBlocklist(text: string, format: ListFormat, max = 5_000_000
     let cand: string | null = null
     // un fichier au format « hosts » déclaré à tort en « domains » (cas courant) est reconnu ligne par ligne : la première colonne est une adresse IP, jamais un domaine
     const first = line.split(/\s+/)[0]!
-    if (format === 'hosts' || (format === 'domains' && isIP(first))) {
+    if (!line.startsWith('||') && (format === 'hosts' || (format === 'domains' && isIP(first)))) {
       line = stripTrailingComment(line)
       const p = line.split(/\s+/)
       if (p.length < 2 || !['0.0.0.0', '127.0.0.1', '::', '::1'].includes(p[0]!)) { skipped++; continue }
@@ -29,7 +29,7 @@ export function parseBlocklist(text: string, format: ListFormat, max = 5_000_000
       if (out.size >= max) break
       continue
     }
-    if (format === 'adblock') {
+    if (format === 'adblock' || line.startsWith('||')) {
       if (line.startsWith('@@')) { skipped++; continue }
       const m = line.match(/^\|\|([a-z0-9._*-]+)\^$/i)
       if (!m) { skipped++; continue }
