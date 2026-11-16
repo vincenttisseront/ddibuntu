@@ -11,7 +11,12 @@ async function load(silent = false) {
 const ddiHost = ref('')
 onMounted(() => { void load(); ddiHost.value = window.location.hostname })
 const st = computed(() => info.value?.state ?? null)
-const ktCmd = computed(() => ktpassCommand(st.value?.realm ?? '', ddiHost.value))
+const ktAccount = ref('svc_ddi_dns'), ktNetbios = ref(''), ktKvno = ref('2')
+const ktOpts = computed(() => ({ account: ktAccount.value, netbios: ktNetbios.value, kvno: ktKvno.value }))
+const ktCmd = computed(() => ktpassCommand(st.value?.realm ?? '', ddiHost.value, ktOpts.value))
+const ktPs = computed(() => ktAccountScript(st.value?.realm ?? '', ddiHost.value, ktOpts.value))
+const ktUtil = computed(() => ktutilSteps(st.value?.realm ?? '', ddiHost.value, ktOpts.value))
+const ktNetbiosHint = computed(() => ktNames(st.value?.realm ?? '', ddiHost.value, ktOpts.value).netbios)
 const kt = computed(() => st.value?.keytab ?? null)
 const fmt = useFmt()
 const when = (s?: number | null) => (s ? fmt.dateTime(s * 1000) : '—')
@@ -127,7 +132,19 @@ async function applyForwarders() {
         <details class="mt-4 text-sm">
           <summary class="cursor-pointer text-muted">{{ t('ad.krb.howto_title') }}</summary>
           <p class="mt-2 text-muted">{{ t('ad.krb.howto') }}</p>
-          <pre class="mt-2 p-2 rounded bg-elevated text-xs overflow-x-auto whitespace-pre-wrap break-all" data-test="ktpass-cmd">{{ ktCmd }}</pre>
+          <div class="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <UFormField :label="t('ad.krb.f_account')"><UInput v-model="ktAccount" class="w-full font-mono" data-test="kt-account" /></UFormField>
+            <UFormField :label="t('ad.krb.f_netbios')"><UInput v-model="ktNetbios" :placeholder="ktNetbiosHint" class="w-full font-mono" data-test="kt-netbios" /></UFormField>
+            <UFormField :label="t('ad.krb.f_kvno')"><UInput v-model="ktKvno" class="w-full font-mono" data-test="kt-kvno" /></UFormField>
+          </div>
+          <p class="mt-3 font-medium">{{ t('ad.krb.m1_title') }}</p>
+          <p class="mt-1 text-xs text-muted">{{ t('ad.krb.m1_step1') }}</p>
+          <pre class="mt-1 p-2 rounded bg-elevated text-xs overflow-x-auto whitespace-pre-wrap break-all" data-test="kt-ps">{{ ktPs }}</pre>
+          <p class="mt-2 text-xs text-muted">{{ t('ad.krb.m1_step2') }}</p>
+          <pre class="mt-1 p-2 rounded bg-elevated text-xs overflow-x-auto whitespace-pre-wrap break-all" data-test="kt-ktutil">{{ ktUtil }}</pre>
+          <p class="mt-3 font-medium">{{ t('ad.krb.m2_title') }}</p>
+          <p class="mt-1 text-xs text-muted">{{ t('ad.krb.m2_desc') }}</p>
+          <pre class="mt-1 p-2 rounded bg-elevated text-xs overflow-x-auto whitespace-pre-wrap break-all" data-test="ktpass-cmd">{{ ktCmd }}</pre>
           <p class="mt-2 text-xs text-muted">{{ t('ad.krb.howto_account') }}</p>
           <p class="mt-2 text-muted">{{ t('ad.krb.howto_zone') }}</p>
         </details>

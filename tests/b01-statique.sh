@@ -114,6 +114,7 @@ expect_grep "console : exécutée sous un compte sans privilège" '^User=ddicons
 expect_grep "console : écriture limitée au dossier de dépôt" '^ReadWritePaths=/var/lib/ddibuntu/generated$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 expect_grep "console : port 443 par capacité, pas par root" '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 expect_grep "console : élévation de privilèges interdite" '^NoNewPrivileges=yes$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
+expect_grep "console : le dossier de dépôt est réparé au démarrage (propriétaire ddiconsole)" '^ExecStartPre=\+/usr/bin/chown -Rh ddiconsole:ddiconsole /var/lib/ddibuntu/generated$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 # AF_NETLINK : sans lui, os.networkInterfaces() échoue (errno 97) et la page Cluster répond « Erreur interne » tant qu'aucun cluster n'existe (0.9.0)
 expect_grep "console : familles d'adresses limitées, AF_NETLINK inclus (énumération des interfaces en lecture seule)" '^RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 expect_nogrep "console : aucune capacité réseau d'administration (CAP_NET_ADMIN) accordée" '^(Ambient|Bounding)?CapabilityBoundingSet=.*CAP_NET_ADMIN|^AmbientCapabilities=.*CAP_NET_ADMIN' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
@@ -164,6 +165,7 @@ expect_grep "PS1 : empreinte SHA-256 = celle du script .sh" "ExpectedSha256 = '$
 # shellcheck disable=SC2016  # motif sed littéral
 sed -n '/^\$PayloadB64 = @/,/^'"'"'@$/p' "$PS1" | sed '1d;$d' | tr -d '\n ' | base64 -d | gunzip > "$T_TMP/roundtrip.sh" 2>/dev/null
 # régression 0.9.42 : ddibuntu-reload ne doit jamais changer les droits de /var/lib/ddibuntu (la console doit le traverser)
+check "ddibuntu-ad : ne modifie pas les droits du dossier d'état (régression 0.12.19)" bash -c '! grep -nE "install -d -m 0[0-9]+ \"\$STATE\"" "$1"' _ "$ROOT/src/rootfs/usr/local/sbin/ddibuntu-ad"
 check "ddibuntu-reload : ne modifie pas les droits du dossier d'état" bash -c '! grep -nE "install -d -m 0[0-9]+ \"\$STATE\"" "$1"' _ "$ROOT/src/rootfs/usr/local/sbin/ddibuntu-reload"
 check "PS1 : le script embarqué décompressé est identique octet pour octet" cmp "$T_TMP/roundtrip.sh" "$DIST"
 

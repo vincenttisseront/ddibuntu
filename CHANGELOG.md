@@ -1,5 +1,14 @@
 # Journal des modifications
 
+## 0.12.19 — « Aide Kerberos : méthode ktutil éprouvée »
+
+- Active Directory › Kerberos › « Comment obtenir le keytab ? » : nouvelle **méthode 1 recommandée avec `ktutil`** (testée en conditions réelles quand `ktpass` affichait une fenêtre « Carte à puce » et échouait). Étape PowerShell : création du compte de service dédié, `setspn -S`, lecture de la version de clé (kvno) et mot de passe aléatoire ; étape Linux : `ktutil addent -password … -s <ROYAUME><compte>` (salt AD exact), `wkt`, `klist -ket`. Aucun mot de passe n'apparaît dans une commande.
+- Champs modifiables **nom du compte**, **NetBIOS** (au lieu d'un nom deviné) et **kvno** ; toute valeur invalide retombe sur un exemple sûr (rien d'injectable).
+- `ktpass` devient la méthode 2, avec le nom de compte `svc_ddi_dns` par défaut. Avertissement renforcé : ne jamais réutiliser un compte existant, en particulier le compte de liaison AD de la console.
+- **Correction de fond** : `ddibuntu-ad install-keytab` faisait `install -d -m 0700 /var/lib/ddibuntu`, ce qui **interdisait à la console de traverser ce dossier** : Déployer et les demandes à root échouaient ensuite par « Internal error » (`EACCES`). Les droits d'un dossier existant ne sont plus jamais modifiés ; un test statique l'interdit (même régression que la 0.9.42 dans `ddibuntu-reload`).
+- Auto-réparation : l'unité de la console remet le dossier de dépôt (`/var/lib/ddibuntu/generated`) à `ddiconsole` et rend `/var/lib/ddibuntu` traversable au démarrage (`ExecStartPre=+`, sans suivre de lien symbolique). Sans cela, un dossier resté à `root` faisait échouer Déployer et les demandes à root par « Internal error » (`EACCES`).
+- Test : unit-iter33 (complété), b01 (unité).
+
 ## 0.12.18 — « Aide Kerberos : commande ktpass exacte »
 
 - Active Directory › Kerberos : la commande `ktpass` affichée est maintenant **pré-remplie avec votre domaine** (royaume Kerberos configuré) et le **nom de la console**, sur **une seule ligne** (le « ^ » de continuation ne fonctionnait que sous cmd.exe, pas PowerShell).

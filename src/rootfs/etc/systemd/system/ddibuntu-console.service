@@ -8,6 +8,11 @@ ConditionPathExists=/etc/ddibuntu/console.env
 User=ddiconsole
 Group=ddiconsole
 EnvironmentFile=/etc/ddibuntu/console.env
+# Auto-réparation (« + » : avec les droits complets, hors du bac à sable de l'unité) : le dossier de dépôt doit appartenir à la console, sinon plus aucun
+# déploiement ni demande à root n'est possible (EACCES). -h : jamais de suivi de lien symbolique.
+ExecStartPre=+/usr/bin/chmod go+x /var/lib/ddibuntu
+ExecStartPre=+/usr/bin/install -d -m 0750 -o ddiconsole -g ddiconsole /var/lib/ddibuntu/generated
+ExecStartPre=+/usr/bin/chown -Rh ddiconsole:ddiconsole /var/lib/ddibuntu/generated
 ExecStart=/usr/local/lib/ddibuntu/console-start
 Restart=on-failure
 RestartSec=3

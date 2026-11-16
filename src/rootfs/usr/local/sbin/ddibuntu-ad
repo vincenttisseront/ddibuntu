@@ -156,7 +156,8 @@ PY
 cmd_install_keytab() {
   local src="${1:-}" tmp
   [ -n "$src" ] || die "usage : install-keytab FICHIER|-"
-  install -d -m 0700 "$STATE" 2>/dev/null || true
+  # jamais « install -d -m » sur un dossier existant : il en change les droits (régression 0.9.42 ; ici cela passait /var/lib/ddibuntu en 0700 et la console ne pouvait plus le traverser)
+  [ -d "$STATE" ] || install -d -m 0755 "$STATE" 2>/dev/null || true
   tmp="$(mktemp "${TMPDIR:-/tmp}/.ddikt.XXXXXX")"
   # shellcheck disable=SC2064
   trap "rm -f '$tmp'" EXIT

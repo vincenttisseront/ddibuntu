@@ -31,11 +31,11 @@ describe('diagnostic des NS sans adresse', () => {
   })
 })
 
-import { ktpassCommand } from '../app/utils/ktpass'
+import { ktpassCommand, ktNames, ktAccountScript, ktutilSteps } from '../app/utils/ktpass'
 describe('commande ktpass de l\'aide Kerberos', () => {
   it('pré-remplie avec le domaine et le nom de la console ; une seule ligne ; compte de service et mot de passe aléatoire', () => {
     const c = ktpassCommand('AR-SYSTEMS.FR', 'DDI-02.ar-systems.fr')
-    expect(c).toBe('ktpass -princ DNS/ddi-02.ar-systems.fr@AR-SYSTEMS.FR -mapuser AR-SYSTEMS\\svc-ddi-dns -pass +rndpass -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -out dns.keytab')
+    expect(c).toBe('ktpass -princ DNS/ddi-02.ar-systems.fr@AR-SYSTEMS.FR -mapuser AR-SYSTEMS\\svc_ddi_dns -pass +rndpass -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -out dns.keytab')
     expect(c).not.toContain('\n'); expect(c).not.toContain('^'); expect(c).not.toMatch(/\$ /)
   })
   it('adresse IP ou nom court dans la barre d\'adresse : nom d\'exemple dans le domaine ; domaine inconnu ou invalide : exemple', () => {
@@ -45,5 +45,26 @@ describe('commande ktpass de l\'aide Kerberos', () => {
   })
   it('le principal produit est accepté par l\'installation du keytab (DNS/<nom>@DOMAINE)', () => {
     expect(/DNS\/[A-Za-z0-9][A-Za-z0-9.-]{0,200}@AR-SYSTEMS\.FR/.test(ktpassCommand('AR-SYSTEMS.FR', 'ddi.ar-systems.fr'))).toBe(true)
+  })
+})
+
+describe('aide Kerberos : méthode ktutil et champs modifiables', () => {
+  it('nom du compte, NetBIOS et kvno sont pris en compte ; toute valeur invalide retombe sur un exemple sûr', () => {
+    expect(ktpassCommand('AR-SYSTEMS.FR', 'ddi.ar-systems.fr', { account: 'svc_x', netbios: 'arsys' })).toContain('-mapuser ARSYS\\svc_x ')
+    expect(ktNames('ar-systems.fr', 'ddi.ar-systems.fr', { account: 'a b; calc', netbios: 'x y', kvno: '2; rm' })).toMatchObject({ account: 'svc_ddi_dns', netbios: 'AR-SYSTEMS', kvno: '2' })
+    expect(ktNames('a-very-long-domain-name.example.com', 'h.example.com').netbios.length).toBeLessThanOrEqual(15)
+  })
+  it('étape PowerShell : compte dédié, SPN, kvno ; jamais de mot de passe en clair ni de réinitialisation', () => {
+    const c = ktAccountScript('AR-SYSTEMS.FR', 'ddi.ar-systems.fr', { account: 'svc_ddi_dns' })
+    expect(c).toContain('New-ADUser -Name svc_ddi_dns')
+    expect(c).toContain('setspn -S DNS/ddi.ar-systems.fr svc_ddi_dns')
+    expect(c).toContain('msDS-KeyVersionNumber')
+    expect(c).toContain('-KerberosEncryptionType AES256')
+    expect(c).not.toMatch(/Set-ADAccountPassword|-Reset/)
+  })
+  it('ktutil : principal, kvno, AES256 et salt AD (royaume + nom du compte, casse exacte) ; aucun secret dans la commande', () => {
+    const k = ktutilSteps('ar-systems.fr', 'DDI.ar-systems.fr', { account: 'svc_ddi_dns', kvno: '3' })
+    expect(k).toContain('addent -password -p DNS/ddi.ar-systems.fr@AR-SYSTEMS.FR -k 3 -e aes256-cts-hmac-sha1-96 -s AR-SYSTEMS.FRsvc_ddi_dns')
+    expect(k).toContain('wkt dns.keytab'); expect(k).toContain('klist -ket dns.keytab'); expect(k).not.toMatch(/\$pw|-pass /)
   })
 })
