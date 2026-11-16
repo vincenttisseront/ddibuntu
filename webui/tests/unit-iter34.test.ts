@@ -14,3 +14,13 @@ describe('sélecteurs', () => {
     expect(bad).toEqual([])
   })
 })
+
+import { parseBlocklist } from '~~/server/utils/blocklist'
+describe('listes de blocage', () => {
+  it('un fichier hosts déclaré « domains » donne les vrais domaines, pas les adresses IP', () => {
+    const txt = '# Title\n127.0.0.1 localhost\n255.255.255.255 broadcasthost\n0.0.0.0 ads.example.com\n0.0.0.0 track.example.org # c\n'
+    expect(parseBlocklist(txt, 'domains').domains).toEqual(['ads.example.com', 'track.example.org'])
+    expect(parseBlocklist(txt, 'hosts').domains).toEqual(['ads.example.com', 'track.example.org'])
+    expect(parseBlocklist('0.0.0.0\n1.2.3.4\nplain.example.com\n', 'domains').domains).toEqual(['plain.example.com'])
+  })
+})

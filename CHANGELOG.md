@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.12.27 — « Listes de blocage : fichiers hosts correctement lus »
+
+- **Correctif** : une liste au format hosts (ex. StevenBlack/hosts) enregistrée avec le format « domaines » ne donnait que 3 « domaines » (0.0.0.0, 127.0.0.1, 255.255.255.255). Les lignes commençant par une adresse IP sont désormais lues comme des lignes hosts quel que soit le format choisi, et une adresse IP seule n'est plus acceptée comme domaine. Relancer « Mettre à jour » sur la liste pour remplacer les entrées erronées.
+- Test unitaire.
+
 ## 0.12.26 — « Correctif : mise à jour d'une liste de filtrage »
 
 - **Correctif** : après « Mettre à jour » / « Importer » une liste de blocage (et après la réinitialisation MFA d'un utilisateur), la console levait `refresh is not a function` et le tableau n'était pas rafraîchi ; il utilise désormais `refreshNuxtData()`.
