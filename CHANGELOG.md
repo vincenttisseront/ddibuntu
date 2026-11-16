@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.12.21 — « Pools, baux et traçabilité visibles dans l'IPAM »
+
+- **IPAM › Pools** : affiche aussi les **plages des étendues DHCP** (importées d'AD ou créées dans DHCP), colonne « Origine » IPAM / DHCP, avec leur taux d'utilisation (adresses IPAM + baux actifs, sans double compte). Les plages DHCP sont en lecture seule ici (bouton vers la page DHCP).
+- **IPAM › Adresses** : les **baux DHCP actifs** (Kea, y compris ceux repris de Windows) apparaissent avec le statut « Bail DHCP » (filtrable) quand l'adresse n'est pas encore dans l'IPAM ; un bouton « Déclarer dans l'IPAM » ouvre le formulaire pré-rempli (IP, MAC, nom).
+- **Traçabilité** : la page s'ouvre sur les **associations les plus récentes** sans rien saisir (200 au plus), avec filtre Actifs / Terminés et colonne Réseau ; la recherche par IP, MAC ou nom reste inchangée.
+- Test : e2e-iter37 (pools DHCP et IPAM, baux actifs, doublons, filtres, historique).
+
 ## 0.12.20 — « Hôtes découverts : liste puis import »
 
 - L'alerte « N hôte(s) actif(s) absent(s) d'IPAM » mène maintenant à **IPAM › Découverte**, qui affiche **en premier la liste des hôtes trouvés** (IP, nom, MAC, sous-réseau, méthode de détection) au lieu de l'assistant de scan : on coche, on **importe**. Rien n'est créé sans accord ; un **point de restauration** précède l'import ; les noms invalides ne sont jamais enregistrés.

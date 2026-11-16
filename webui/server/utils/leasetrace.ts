@@ -39,8 +39,9 @@ export async function pruneTrace(days: number): Promise<number> {
 
 const likeEsc = (s: string) => s.replace(/[\\%_]/g, (m) => '\\' + m)
 
-/** Recherche par IP (entière ou début), MAC (tout format, début accepté) ou nom (fragment). */
-export async function searchTrace(q: string, limit: number) {
+/** Recherche par IP (entière ou début), MAC (tout format, début accepté) ou nom (fragment). Sans terme : les associations les plus récentes
+ *  (pour que la page serve sans rien taper). `state` : 'open' (baux actifs), 'closed' (terminés) ou tous. */
+export async function searchTrace(q: string, limit: number, state: 'all' | 'open' | 'closed' = 'all') {
   const term = q.trim().toLowerCase()
   const conds: string[] = [], args: unknown[] = []
   const add = (sql: string, v: unknown) => { args.push(v); conds.push(sql.replace('$#', '$' + args.length)) }
@@ -48,10 +49,12 @@ export async function searchTrace(q: string, limit: number) {
   const hex = term.replace(/[:.-]/g, '')
   if (/^[0-9a-f:.-]+$/.test(term) && /^[0-9a-f]{2,12}$/.test(hex)) add("replace(h.mac::text, ':', '') like $#", hex + '%')
   if (term) add("lower(h.hostname) like $# escape '\\'", '%' + likeEsc(term) + '%')
-  if (!conds.length) return []
+  if (term && !conds.length) return []
+  const where = [conds.length ? `(${conds.join(' or ')})` : '', state === 'open' ? 'h.open' : state === 'closed' ? 'not h.open' : ''].filter(Boolean).join(' and ')
   args.push(limit)
   return query<any>(`select h.id, host(h.ip) as ip, h.mac::text as mac, h.hostname, h.subnet_id, h.first_seen, h.last_seen, h.open,
-      a.hostname as ipam_hostname, a.description as ipam_description, a.status as ipam_status
+      a.hostname as ipam_hostname, a.description as ipam_description, a.status as ipam_status, text(sn.cidr) as subnet
     from lease_history h left join addresses a on a.ip = h.ip
-    where ${conds.join(' or ')} order by h.last_seen desc, h.id desc limit $${args.length}`, args)
+      left join dhcp_scopes ds on ds.id = h.subnet_id left join subnets sn on sn.id = ds.subnet_id
+    ${where ? 'where ' + where : ''} order by h.last_seen desc, h.id desc limit $${args.length}`, args)
 }

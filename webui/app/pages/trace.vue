@@ -5,14 +5,16 @@ const { t } = useT(); const api = useApi(); const toast = useToast()
 const { canWrite } = useRole()
 const route = useRoute()
 const q = ref(String(route.query.q ?? '')), term = ref(q.value)
-const { data, pending, refresh } = await useFetch<any>('/api/trace', { query: computed(() => ({ q: term.value })), watch: [term] })
+const state = ref<'all' | 'open' | 'closed'>('all')
+const stateItems = computed(() => [{ label: t('common.all'), value: 'all' }, { label: t('trace.active'), value: 'open' }, { label: t('trace.ended'), value: 'closed' }])
+const { data, pending, refresh } = await useFetch<any>('/api/trace', { query: computed(() => ({ q: term.value, state: state.value })), watch: [term, state] })
 const collecting = ref(false)
 const fmtDate = (v: string) => (v ? new Date(v).toLocaleString() : '')
 const cols = computed<DCol[]>(() => [
   { key: 'ip', label: 'IP', kind: 'mono' }, { key: 'mac', label: 'MAC', kind: 'mono' }, { key: 'hostname', label: t('ipam.hostname') },
   { key: 'first_seen', label: t('trace.first'), fmt: fmtDate }, { key: 'last_seen', label: t('trace.last'), fmt: fmtDate },
   { key: 'open', label: t('trace.state'), fmt: (v: boolean) => (v ? t('trace.active') : t('trace.ended')) },
-  { key: 'ipam_hostname', label: t('trace.ipam') },
+  { key: 'subnet', label: t('ipam.network'), kind: 'mono' }, { key: 'ipam_hostname', label: t('trace.ipam') },
 ])
 const search = () => { term.value = q.value.trim() }
 async function collect() {
@@ -30,10 +32,12 @@ async function collect() {
     <UAlert color="neutral" variant="subtle" icon="i-lucide-history" :description="t('trace.intro')" />
     <form class="flex gap-2" @submit.prevent="search">
       <UInput v-model="q" class="flex-1" icon="i-lucide-search" :placeholder="t('trace.placeholder')" :aria-label="t('trace.placeholder')" data-test="trace-q" />
+      <USelect v-model="state" :items="stateItems" class="w-36" :aria-label="t('trace.state')" data-test="trace-state" />
       <UButton type="submit" :label="t('common.search')" :loading="pending" />
       <UButton v-if="canWrite" icon="i-lucide-refresh-cw" color="neutral" variant="outline" :label="t('trace.collect')" :loading="collecting" @click="collect" />
     </form>
     <p class="text-xs text-muted" data-test="trace-stats">{{ t('trace.stats', { n: data?.stats?.total ?? 0, o: data?.stats?.open ?? 0 }) }}</p>
-    <DenseTable v-if="term" :rows="data?.items ?? []" :columns="cols" :loading="pending" export-name="tracabilite" />
+    <p v-if="!term" class="text-xs text-muted" data-test="trace-recent">{{ t('trace.recent') }}</p>
+    <DenseTable :rows="data?.items ?? []" :columns="cols" :loading="pending" export-name="tracabilite" />
   </div>
 </template>

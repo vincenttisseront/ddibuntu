@@ -743,7 +743,7 @@ const messages: Record<string, string> = {
   "cluster.pending.cancelled": "Request cancelled",
   "cluster.op.remove_needs_quorum": "Removal is not possible while the etcd quorum is lost (the change must be approved by the majority).",
   "nav.trace": "Traceability",
-  "trace.intro": "DHCP lease history: find who (MAC, name) held an IP address at a given time. Search by IP (or IP prefix), MAC (any format) or host name.",
+  "trace.intro": "DHCP lease history: find who (MAC, name) held an IP address at a given time. Search by IP (or IP prefix), MAC (any format) or host name; without a search, the most recent associations are shown.",
   "trace.placeholder": "IP, MAC or host name…",
   "trace.first": "First lease seen",
   "trace.last": "Last lease seen",
@@ -2538,5 +2538,12 @@ const messages: Record<string, string> = {
   "dfound.confirm": "Create {n} address(es) in IPAM with the discovered IP, name and MAC? A restore point is created first.",
   "dfound.done": "{n} address(es) imported.",
   "dfound.undo": "A restore point is created before the import (System › Restore points).",
+  "ipam.pool_source": "Source",
+  "ipam.pool_src.ipam": "IPAM",
+  "ipam.pool_src.dhcp": "DHCP",
+  "ipam.pool_manage_dhcp": "Manage this range in DHCP",
+  "ipam.status.lease": "DHCP lease",
+  "ipam.lease_add": "Declare in IPAM",
+  "trace.recent": "Most recent associations (up to 200). Enter an IP, a MAC or a name to search the whole history.",
 }
 export default messages

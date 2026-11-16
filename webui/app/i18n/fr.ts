@@ -743,7 +743,7 @@ const messages: Record<string, string> = {
   "cluster.pending.cancelled": "Demande annulée",
   "cluster.op.remove_needs_quorum": "Retrait impossible tant que le quorum etcd est perdu (la modification doit être validée par la majorité).",
   "nav.trace": "Traçabilité",
-  "trace.intro": "Historique des baux DHCP : retrouvez qui (MAC, nom) détenait une adresse IP à un instant donné. Recherchez par IP (ou début d’IP), MAC (tout format) ou nom d’hôte.",
+  "trace.intro": "Historique des baux DHCP : retrouvez qui (MAC, nom) détenait une adresse IP à un instant donné. Recherchez par IP (ou début d’IP), MAC (tout format) ou nom d’hôte ; sans recherche, les associations les plus récentes s’affichent.",
   "trace.placeholder": "IP, MAC ou nom d’hôte…",
   "trace.first": "Premier bail vu",
   "trace.last": "Dernier bail vu",
@@ -2538,5 +2538,12 @@ const messages: Record<string, string> = {
   "dfound.confirm": "Créer {n} adresse(s) dans l’IPAM avec l’IP, le nom et la MAC découverts ? Un point de restauration est créé avant.",
   "dfound.done": "{n} adresse(s) importée(s).",
   "dfound.undo": "Un point de restauration est créé avant l’import (Système › Points de restauration).",
+  "ipam.pool_source": "Origine",
+  "ipam.pool_src.ipam": "IPAM",
+  "ipam.pool_src.dhcp": "DHCP",
+  "ipam.pool_manage_dhcp": "Gérer cette plage dans DHCP",
+  "ipam.status.lease": "Bail DHCP",
+  "ipam.lease_add": "Déclarer dans l’IPAM",
+  "trace.recent": "Associations les plus récentes (200 au plus). Saisissez une IP, une MAC ou un nom pour chercher dans tout l’historique.",
 }
 export default messages

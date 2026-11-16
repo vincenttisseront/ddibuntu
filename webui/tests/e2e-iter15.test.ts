@@ -85,7 +85,7 @@ describe('traçabilité des baux', () => {
     expect((await viewer.get('/api/trace?q=alice')).json.items).toHaveLength(1)
     expect((await viewer.get('/api/trace?q=10.1.0.')).json.items).toHaveLength(3)
     expect((await viewer.get('/api/trace?q=%25')).json.items).toHaveLength(0)    // % n'est pas un joker
-    expect((await viewer.get('/api/trace')).json.items).toEqual([])
+    expect((await viewer.get('/api/trace')).json.items).toHaveLength(3)    // 0.12.21 : sans recherche, les associations les plus récentes (la page s'ouvre sur du contenu)
     expect((await viewer.get('/api/trace?q=pc')).json.stats).toMatchObject({ total: 3, open: 1 })
   })
   it('corrèle avec l\'IPAM', async () => {

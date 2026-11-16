@@ -93,7 +93,7 @@ function openPools(row: any) { poolFilter.value = row.id; tab.value = 'pools' }
 const poolFilter = ref(0)
 const poolRows = computed(() => (pools.value?.items ?? []).filter((p: any) => !poolFilter.value || p.subnet_id === poolFilter.value))
 const poolCols = computed<DCol[]>(() => [
-  { key: 'name', label: t('common.name') }, { key: 'cidr', label: t('ipam.network'), kind: 'mono' }, { key: 'start_ip', label: t('ipam.start'), kind: 'mono' }, { key: 'end_ip', label: t('ipam.end'), kind: 'mono' },
+  { key: 'name', label: t('common.name') }, { key: 'source', label: t('ipam.pool_source'), kind: 'badge', trans: 'ipam.pool_src' }, { key: 'cidr', label: t('ipam.network'), kind: 'mono' }, { key: 'start_ip', label: t('ipam.start'), kind: 'mono' }, { key: 'end_ip', label: t('ipam.end'), kind: 'mono' },
   { key: 'size', label: t('ipam.size'), kind: 'num' }, { key: 'used', label: t('ipam.used'), kind: 'num' }, { key: 'percent', label: t('ipam.used_pct'), kind: 'progress' },
   { key: 'description', label: t('common.description') }, { key: 'space', label: t('ipam.space'), hidden: !!spaceId.value },
 ])
@@ -128,11 +128,14 @@ const addrCols = computed<DCol[]>(() => [
   { key: 'description', label: t('common.description') }, { key: 'owner', label: t('ipam.owner') }, { key: 'cidr', label: t('ipam.network'), kind: 'mono' }, { key: 'space', label: t('ipam.space'), hidden: !!spaceId.value },
 ])
 const addrPrefill = ref('')
-watch(() => form.open, (o) => { if (!o) addrPrefill.value = '' })
+// Un bail DHCP actif n'est pas encore une adresse de l'IPAM : on ouvre le formulaire d'ajout pré-rempli (IP, MAC, nom) pour la déclarer
+function addFromLease(row: any) { addrPrefill.value = row.ip; addrSubnet.value = row.subnet_id; leasePrefill.value = { mac: row.mac, hostname: row.hostname }; openForm('addr') }
+const leasePrefill = ref<{ mac: string | null; hostname: string | null }>({ mac: null, hostname: null })
+watch(() => form.open, (o) => { if (!o) { addrPrefill.value = ''; leasePrefill.value = { mac: null, hostname: null } } })
 const addrFields = computed(() => [
   { key: 'subnet_id', label: t('ipam.network'), type: 'select', options: leafOptions.value, required: true, createOnly: true, default: addrSubnet.value || leafOptions.value[0]?.value },
   { key: 'ip', label: 'IP', type: 'text', required: true, createOnly: true, mono: true, default: addrPrefill.value }, { key: 'status', label: t('common.status'), type: 'select', options: statusOptions.value, default: 'used' },
-  { key: 'hostname', label: t('ipam.hostname'), type: 'text', placeholder: 'srv-app-01' }, { key: 'mac', label: 'MAC', type: 'text', placeholder: 'aa:bb:cc:dd:ee:ff' },
+  { key: 'hostname', label: t('ipam.hostname'), type: 'text', placeholder: 'srv-app-01', default: leasePrefill.value.hostname ?? '' }, { key: 'mac', label: 'MAC', type: 'text', placeholder: 'aa:bb:cc:dd:ee:ff', default: leasePrefill.value.mac ?? '' },
   { key: 'description', label: t('common.description'), type: 'text' }, { key: 'owner', label: t('ipam.owner'), type: 'text' },
   { key: 'dns_zone_id', label: t('ipam.dns_sync'), type: 'select', options: zoneOptions.value, default: 0, createOnly: true, hint: t('ipam.dns_sync_hint') },
 ] as any[])
@@ -292,10 +295,11 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
         <UButton v-if="poolFilter" size="xs" color="neutral" variant="ghost" icon="i-lucide-filter-x" :label="t('ipam.all_networks')" @click="poolFilter = 0" />
       </template>
       <template #actions="{ row }">
-        <UButton v-if="canWrite" size="xs" color="neutral" variant="ghost" icon="i-lucide-wand-sparkles" :aria-label="t('ipam.next_free')" @click="openNext(row.subnet_id, row.id)" />
+        <UButton v-if="canWrite && row.source !== 'dhcp'" size="xs" color="neutral" variant="ghost" icon="i-lucide-wand-sparkles" :aria-label="t('ipam.next_free')" @click="openNext(row.subnet_id, row.id)" />
         <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-list-ordered" :aria-label="t('ipam.addresses')" @click="openSubnet(row.subnet_id)" />
-        <UButton v-if="canWrite" size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t('common.edit')" @click="openForm('pool', row)" />
-        <UButton v-if="canWrite" size="xs" color="error" variant="ghost" icon="i-lucide-trash-2" :aria-label="t('common.delete')" @click="removePool(row)" />
+        <UButton v-if="row.source === 'dhcp'" size="xs" color="neutral" variant="ghost" icon="i-lucide-server-cog" :aria-label="t('ipam.pool_manage_dhcp')" :title="t('ipam.pool_manage_dhcp')" to="/dhcp" />
+        <UButton v-if="canWrite && row.source !== 'dhcp'" size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t('common.edit')" @click="openForm('pool', row)" />
+        <UButton v-if="canWrite && row.source !== 'dhcp'" size="xs" color="error" variant="ghost" icon="i-lucide-trash-2" :aria-label="t('common.delete')" @click="removePool(row)" />
       </template>
     </DenseTable>
 
@@ -304,16 +308,19 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
       <template #toolbar>
         <UInput v-model="addrQ" icon="i-lucide-search" size="sm" class="w-56" :placeholder="t('ipam.search_ph')" :aria-label="t('common.search')" />
         <USelect v-model="addrSubnet" size="sm" class="w-64" :items="[{ label: t('ipam.all_networks'), value: 0 }, ...leafOptions]" :aria-label="t('ipam.network')" />
-        <USelect :model-value="addrStatus || 'all'" size="sm" class="w-40" :items="[{ label: t('ipam.all_status'), value: 'all' }, ...statusOptions]" :aria-label="t('common.status')" @update:model-value="addrStatus = $event === 'all' ? '' : $event" />
+        <USelect :model-value="addrStatus || 'all'" size="sm" class="w-40" :items="[{ label: t('ipam.all_status'), value: 'all' }, ...statusOptions, { label: t('ipam.status.lease'), value: 'lease' }]" :aria-label="t('common.status')" @update:model-value="addrStatus = $event === 'all' ? '' : $event" />
         <UButton v-if="canWrite" icon="i-lucide-plus" size="sm" :label="t('common.add')" :disabled="!leafOptions.length" @click="openForm('addr')" />
         <UButton v-if="canWrite" icon="i-lucide-wand-sparkles" size="sm" color="neutral" variant="outline" :label="t('ipam.next_free')" :disabled="!leafOptions.length" @click="openNext()" />
         <UButton icon="i-lucide-download" size="sm" color="neutral" variant="ghost" :label="t('ipam.export')" href="/api/ipam/export/addresses" external />
       </template>
       <template #actions="{ row }">
-        <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-link" :aria-label="t('addrdns.open')" :title="t('addrdns.open')" data-test="addr-dns" @click="openDns(row)" />
-        <UButton v-if="canWrite" size="xs" color="neutral" variant="ghost" icon="i-lucide-radar" :aria-label="t('ipam.check')" :title="t('ipam.check')" @click="checkAddr(row)" />
-        <UButton v-if="canWrite" size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t('common.edit')" @click="openForm('addr', row)" />
-        <UButton v-if="canWrite" size="xs" color="error" variant="ghost" icon="i-lucide-trash-2" :aria-label="t('common.delete')" @click="removeAddr(row)" />
+        <template v-if="row.id">
+          <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-link" :aria-label="t('addrdns.open')" :title="t('addrdns.open')" data-test="addr-dns" @click="openDns(row)" />
+          <UButton v-if="canWrite" size="xs" color="neutral" variant="ghost" icon="i-lucide-radar" :aria-label="t('ipam.check')" :title="t('ipam.check')" @click="checkAddr(row)" />
+          <UButton v-if="canWrite" size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t('common.edit')" @click="openForm('addr', row)" />
+          <UButton v-if="canWrite" size="xs" color="error" variant="ghost" icon="i-lucide-trash-2" :aria-label="t('common.delete')" @click="removeAddr(row)" />
+        </template>
+        <UButton v-else-if="canWrite" size="xs" color="neutral" variant="ghost" icon="i-lucide-plus" :aria-label="t('ipam.lease_add')" :title="t('ipam.lease_add')" data-test="lease-add" @click="addFromLease(row)" />
       </template>
       <template #footer>
         <span v-if="addrs?.total > LIMIT">· {{ addrFrom }}–{{ addrTo }} / {{ addrs.total }}</span>

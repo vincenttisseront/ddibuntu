@@ -302,6 +302,13 @@ route('DELETE', '/ipam/addresses/:id', 'operator', async (c) => {
   return { ok: true }
 })
 
+// Baux actifs de Kea rattachés à un réseau IPAM (lease4.subnet_id = identifiant de l'étendue DHCP). Vide tant que Kea n'a pas de base de baux PostgreSQL.
+const leaseRows = async (): Promise<string> => {
+  const t = await one<any>("select to_regclass('public.lease4') is not null as ok")
+  if (!t?.ok) return "select null::inet as ip, null::bytea as hwaddr, null::text as hostname, null::int as subnet_id where false"
+  return `select ('0.0.0.0'::inet + l.address) as ip, l.hwaddr, nullif(trim(l.hostname), '') as hostname, ds.subnet_id from lease4 l join dhcp_scopes ds on ds.id = l.subnet_id where l.expire > now() and l.hwaddr is not null`
+}
+
 // ---- Pools d'adresses (plages nommées dans un réseau) ----
 const poolBody = z.object({ name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional(), start_ip: ipS, end_ip: ipS })
 const POOL_SQL = `select q.id, q.subnet_id, q.name, q.description, host(q.start_ip) as start_ip, host(q.end_ip) as end_ip, text(s.cidr) as cidr, s.name as network, s.space_id, sp.name as space, family(q.start_ip) as family,
@@ -311,9 +318,22 @@ const POOL_SQL = `select q.id, q.subnet_id, q.name, q.description, host(q.start_
 const withPct = (r: any) => ({ ...r, percent: r.size ? Math.min(100, Math.round((r.used / r.size) * 1000) / 10) : null })
 route('GET', '/ipam/pools', 'viewer', async (c) => {
   const sp = qint(c, 'space_id', 0), sid = qint(c, 'subnet_id', 0), q = qstr(c, 'q', 100)
-  const rows = await query<any>(`${POOL_SQL} where ($1::int = 0 or s.space_id = $1) and ($2::int = 0 or q.subnet_id = $2)
-    and ($3::text is null or q.name ilike $3 or host(q.start_ip) like $3 or text(s.cidr) like $3) order by s.space_id, s.cidr, q.start_ip limit 2000`, [sp, sid, q ? `%${q.replace(/[%_\\]/g, '\\$&')}%` : null])
-  return { items: rows.map(withPct) }
+  const like = q ? `%${q.replace(/[%_\\]/g, '\\$&')}%` : null
+  const mine = await query<any>(`${POOL_SQL} where ($1::int = 0 or s.space_id = $1) and ($2::int = 0 or q.subnet_id = $2)
+    and ($3::text is null or q.name ilike $3 or host(q.start_ip) like $3 or text(s.cidr) like $3) order by s.space_id, s.cidr, q.start_ip limit 2000`, [sp, sid, like])
+  // plages des étendues DHCP (lecture seule ici : elles se gèrent dans DHCP) ; « utilisées » = adresses IPAM + baux actifs de la plage
+  const dhcp = await query<any>(`with lse as (${await leaseRows()})
+    select -p.id as id, ds.subnet_id, coalesce(nullif(ds.name, ''), 'DHCP') as name, null::text as description, host(p.start_ip) as start_ip, host(p.end_ip) as end_ip, text(s.cidr) as cidr, s.name as network,
+      s.space_id, sp.name as space, family(p.start_ip) as family,
+      case when family(p.start_ip) = 4 then (p.end_ip - p.start_ip + 1)::float8 else null end as size,
+      (select count(*)::int from (select a.ip from addresses a where a.subnet_id = ds.subnet_id and a.ip between p.start_ip and p.end_ip
+        union select l.ip from lse l where l.subnet_id = ds.subnet_id and l.ip between p.start_ip and p.end_ip) u) as used
+    from dhcp_pools p join dhcp_scopes ds on ds.id = p.scope_id join subnets s on s.id = ds.subnet_id join ipam_spaces sp on sp.id = s.space_id
+    where ($1::int = 0 or s.space_id = $1) and ($2::int = 0 or ds.subnet_id = $2)
+      and ($3::text is null or coalesce(ds.name, '') ilike $3 or host(p.start_ip) like $3 or text(s.cidr) like $3) order by s.space_id, s.cidr, p.start_ip limit 2000`, [sp, sid, like])
+  const items = [...mine.map((r) => ({ ...r, source: 'ipam' })), ...dhcp.map((r) => ({ ...r, source: 'dhcp' }))]
+  items.sort((a, b) => a.space_id - b.space_id || String(a.cidr).localeCompare(String(b.cidr), 'en', { numeric: true }) || String(a.start_ip).localeCompare(String(b.start_ip), 'en', { numeric: true }))
+  return { items: items.map(withPct) }
 })
 route('POST', '/ipam/subnets/:id/pools', 'operator', async (c) => {
   await allowSubnet(c, Number(c.params.id))
@@ -349,11 +369,17 @@ route('GET', '/ipam/addresses', 'viewer', async (c) => {
   const sp = qint(c, 'space_id', 0), sid = qint(c, 'subnet_id', 0), fam = qint(c, 'family', 0), q = qstr(c, 'q', 100), st = qstr(c, 'status')
   const limit = qint(c, 'limit', 100, 1, 500), offset = qint(c, 'offset', 0, 0, 10_000_000)
   const args = [sp, sid, fam, q ? `%${q.replace(/[%_\\]/g, '\\$&')}%` : null, st ?? null]
-  const where = `where ($1::int = 0 or s.space_id = $1) and ($2::int = 0 or a.subnet_id = $2) and ($3::int = 0 or family(a.ip) = $3)
-    and ($4::text is null or a.hostname ilike $4 or host(a.ip) like $4 or a.mac::text ilike $4 or a.description ilike $4 or a.owner ilike $4) and ($5::text is null or a.status = $5)`
-  const total = (await one<any>(`select count(*)::int as n from addresses a join subnets s on s.id = a.subnet_id ${where}`, args)).n
-  const items = await query(`select a.id, a.subnet_id, host(a.ip) as ip, a.status, a.hostname, a.mac::text as mac, a.description, a.owner, a.reachable, a.checked_at, text(s.cidr) as cidr, s.name as network, sp.name as space
-    from addresses a join subnets s on s.id = a.subnet_id join ipam_spaces sp on sp.id = s.space_id ${where} order by s.space_id, a.ip limit ${limit} offset ${offset}`, args)
+  // adresses de l'IPAM + baux DHCP actifs qui n'y figurent pas (lignes « bail », en lecture seule : id nul)
+  const withAll = `with lse as (${await leaseRows()}), r as (
+    select a.id, a.subnet_id, a.ip, a.status::text as status, a.hostname, a.mac::text as mac, a.description, a.owner, a.reachable, a.checked_at from addresses a
+    union all
+    select null::int, l.subnet_id, l.ip, 'lease', l.hostname, regexp_replace(encode(l.hwaddr, 'hex'), '(..)(?=.)', '\\1:', 'g'), null::text, null::text, null::boolean, null::timestamptz
+      from lse l where l.subnet_id is not null and not exists (select 1 from addresses a where a.ip = l.ip and a.subnet_id = l.subnet_id))`
+  const where = `where ($1::int = 0 or s.space_id = $1) and ($2::int = 0 or r.subnet_id = $2) and ($3::int = 0 or family(r.ip) = $3)
+    and ($4::text is null or r.hostname ilike $4 or host(r.ip) like $4 or r.mac ilike $4 or r.description ilike $4 or r.owner ilike $4) and ($5::text is null or r.status = $5)`
+  const total = (await one<any>(`${withAll} select count(*)::int as n from r join subnets s on s.id = r.subnet_id ${where}`, args)).n
+  const items = await query(`${withAll} select r.id, r.subnet_id, host(r.ip) as ip, r.status, r.hostname, r.mac, r.description, r.owner, r.reachable, r.checked_at, text(s.cidr) as cidr, s.name as network, sp.name as space
+    from r join subnets s on s.id = r.subnet_id join ipam_spaces sp on sp.id = s.space_id ${where} order by s.space_id, r.ip limit ${limit} offset ${offset}`, args)
   const al = await aliasNames((items as any[]).map((i) => i.ip))
   return { items: (items as any[]).map((i) => ({ ...i, aliases: al.get(normIp(i.ip) ?? '') ?? [] })), total }
 })

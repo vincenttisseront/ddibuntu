@@ -8,9 +8,10 @@ export const registered = true
 
 route('GET', '/trace', 'viewer', async (c) => {
   const q = String(c.query.q ?? '').trim().slice(0, 100), limit = qint(c, 'limit', 200, 1, 1000)
-  const items = q ? await searchTrace(q, limit) : []
+  const state = ['open', 'closed'].includes(String(c.query.state)) ? (String(c.query.state) as 'open' | 'closed') : 'all'
+  const items = await searchTrace(q, limit, state)
   const st = (await query<any>("select count(*)::int as total, count(*) filter (where open)::int as open, min(first_seen) as since from lease_history"))[0]
-  return { q, items, stats: st }
+  return { q, state, items, stats: st }
 })
 
 // Passage immédiat (sans attendre le prochain tick) : utile après un changement DHCP et pour les tests.
