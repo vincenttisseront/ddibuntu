@@ -14,7 +14,7 @@ const props = defineProps<{
   updateUrl?: (row: any) => string; deleteUrl?: (row: any) => string; query?: Record<string, any>
   createLabel?: string; searchable?: boolean; transform?: (body: any, editing: boolean) => any; deleteName?: (row: any) => string; hideEdit?: boolean; itemsKey?: string
 }>()
-const emit = defineEmits<{ (e: 'changed'): void }>()
+const emit = defineEmits<{ (e: 'changed'): void; (e: 'saved', ev: { editing: boolean; result: any }): void }>()   // « saved » transmet la réponse du serveur (ex. un secret affiché une seule fois)
 const slots = useSlots()
 const { t } = useT()
 const api = useApi()
@@ -67,11 +67,11 @@ async function submit() {
   busy.value = true; error.value = null
   try {
     const body = props.transform ? props.transform(build(), !!editing.value) : build()
-    if (editing.value) await api.call('PUT', props.updateUrl!(editing.value), body)
-    else await api.call('POST', props.createUrl!, body)
+    const wasEditing = !!editing.value
+    const result = wasEditing ? await api.call('PUT', props.updateUrl!(editing.value), body) : await api.call('POST', props.createUrl!, body)
     open.value = false
     toast.add({ title: t('common.saved'), color: 'success', icon: 'i-lucide-check' })
-    await refresh(); emit('changed')
+    await refresh(); emit('changed'); emit('saved', { editing: wasEditing, result })
   } catch (e: any) { error.value = e.info ?? { message: t('err.internal'), issues: [] } } finally { busy.value = false }
 }
 async function remove(row: any) {

@@ -506,7 +506,38 @@ const SCHEMA_21 = String.raw`
 alter table vlans add column hostname_pattern text, add column name_format text;
 alter table network_templates add column name_format text;
 `
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }, { version: 19, sql: SCHEMA_19 }, { version: 20, sql: SCHEMA_20 }, { version: 21, sql: SCHEMA_21 }]
+// 0.13.0 : clients RADIUS (équipements réseau qui interrogent le service : contrôleurs Wi-Fi, passerelles VPN, commutateurs).
+// Le secret partagé est chiffré (AES-256-GCM) et n'est jamais renvoyé par l'API.
+const SCHEMA_22 = String.raw`
+create table radius_clients (
+  id serial primary key,
+  name text not null unique check (name ~ '^[a-z][a-z0-9-]{0,40}$' and name <> 'ddi-selftest'),
+  address cidr not null check (masklen(address) >= case when family(address) = 4 then 16 else 48 end),
+  usage text not null default 'other' check (usage in ('wifi','vpn','switch','other')),
+  secret_enc text not null,
+  enabled boolean not null default true,
+  comment text,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create unique index radius_clients_address on radius_clients (address);
+`
+// 0.13.3 : règles d'accès RADIUS (ordonnées, première correspondance, refus par défaut). Conditions et attributs de réponse en JSON : la forme est
+// validée par la console (zod) puis revalidée champ par champ par root avant toute génération de configuration.
+const SCHEMA_23 = String.raw`
+create table radius_rules (
+  id serial primary key,
+  rank int not null,
+  name text not null check (length(name) between 1 and 80),
+  enabled boolean not null default true,
+  action text not null check (action in ('accept','reject')),
+  conds jsonb not null default '{}'::jsonb,
+  reply jsonb not null default '{}'::jsonb,
+  comment text,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create index radius_rules_rank on radius_rules (rank, id);
+`
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }, { version: 19, sql: SCHEMA_19 }, { version: 20, sql: SCHEMA_20 }, { version: 21, sql: SCHEMA_21 }, { version: 22, sql: SCHEMA_22 }, { version: 23, sql: SCHEMA_23 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

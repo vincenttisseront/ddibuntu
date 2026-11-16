@@ -1,0 +1,383 @@
+{
+ "_comment": "Jeu de cas partagé : tests/unit-radius-rules.test.ts (moteur de la console, annuaire simulé) et tests/b30-radius-rules-live.sh (FreeRADIUS réel + Samba AD + eapol_test). Les comptes ci-dessous DOIVENT refléter ce que b30 crée dans l'annuaire d'essai ; toute divergence fait échouer l'une des deux batteries.",
+ "clients": [
+  {
+   "name": "wifi-ctrl",
+   "usage": "wifi",
+   "enabled": true
+  },
+  {
+   "name": "vpn-gw",
+   "usage": "vpn",
+   "enabled": true
+  },
+  {
+   "name": "sw1",
+   "usage": "switch",
+   "enabled": true
+  },
+  {
+   "name": "arret",
+   "usage": "wifi",
+   "enabled": false
+  }
+ ],
+ "rules": [
+  {
+   "name": "Refus machines VPN",
+   "action": "reject",
+   "kind": "computer",
+   "groups": [
+    {
+     "dn": "CN=grp-vpn,CN=Users,DC=lab,DC=test",
+     "name": "grp-vpn"
+    }
+   ]
+  },
+  {
+   "name": "Wi-Fi IT",
+   "action": "accept",
+   "kind": "user",
+   "groups": [
+    {
+     "dn": "CN=grp-wifi-it,CN=Users,DC=lab,DC=test",
+     "name": "grp-wifi-it"
+    }
+   ],
+   "clients": [
+    "wifi-ctrl"
+   ],
+   "ssids": [
+    "Corp Wifi"
+   ],
+   "reply": {
+    "vlan": 120,
+    "sessionTimeout": 3600,
+    "filterId": "ACL-IT",
+    "attrs": [
+     {
+      "name": "Aruba-User-Role",
+      "value": "it-staff"
+     }
+    ]
+   }
+  },
+  {
+   "name": "Wi-Fi tous",
+   "action": "accept",
+   "groups": [
+    {
+     "dn": "CN=grp-wifi,CN=Users,DC=lab,DC=test",
+     "name": "grp-wifi"
+    }
+   ],
+   "usages": [
+    "wifi"
+   ],
+   "reply": {
+    "vlan": 130,
+    "pool": "wifi-pool"
+   }
+  },
+  {
+   "name": "VPN utilisateurs",
+   "action": "accept",
+   "kind": "user",
+   "groups": [
+    {
+     "dn": "CN=grp-vpn,CN=Users,DC=lab,DC=test",
+     "name": "grp-vpn"
+    }
+   ],
+   "usages": [
+    "vpn"
+   ],
+   "reply": {
+    "pool": "vpn-pool"
+   }
+  },
+  {
+   "name": "Reseau d'essai (virgule, accent)",
+   "action": "accept",
+   "groups": [
+    {
+     "dn": "CN=Réseau\\, Wi-Fi d'essai,CN=Users,DC=lab,DC=test",
+     "name": "Réseau, Wi-Fi d'essai"
+    }
+   ],
+   "reply": {
+    "vlan": 140
+   }
+  },
+  {
+   "name": "Barre oblique inverse",
+   "action": "accept",
+   "groups": [
+    {
+     "dn": "CN=back\\\\slash,CN=Users,DC=lab,DC=test",
+     "name": "back\\slash"
+    }
+   ],
+   "reply": {
+    "vlan": 150
+   }
+  },
+  {
+   "name": "Regle desactivee",
+   "action": "accept",
+   "enabled": false,
+   "groups": [
+    {
+     "dn": "CN=grp-tout-acces,CN=Users,DC=lab,DC=test",
+     "name": "grp-tout-acces"
+    }
+   ]
+  },
+  {
+   "name": "Client disparu",
+   "action": "accept",
+   "clients": [
+    "ghost"
+   ],
+   "reply": {
+    "vlan": 160
+   }
+  }
+ ],
+ "accounts": {
+  "alice@lab.test": {
+   "kind": "user",
+   "state": "ok",
+   "groups": [
+    "CN=grp-wifi-it,CN=Users,DC=lab,DC=test",
+    "CN=grp-wifi,CN=Users,DC=lab,DC=test",
+    "CN=grp-tout-acces,CN=Users,DC=lab,DC=test",
+    "CN=grp-vpn,CN=Users,DC=lab,DC=test",
+    "CN=Réseau\\, Wi-Fi d'essai,CN=Users,DC=lab,DC=test",
+    "CN=back\\\\slash,CN=Users,DC=lab,DC=test"
+   ]
+  },
+  "bob@lab.test": {
+   "kind": "user",
+   "state": "disabled",
+   "groups": []
+  },
+  "carol@lab.test": {
+   "kind": "user",
+   "state": "expired",
+   "groups": []
+  },
+  "dave@lab.test": {
+   "kind": "user",
+   "state": "locked",
+   "groups": [
+    "CN=grp-wifi-it,CN=Users,DC=lab,DC=test",
+    "CN=grp-wifi,CN=Users,DC=lab,DC=test",
+    "CN=grp-tout-acces,CN=Users,DC=lab,DC=test"
+   ]
+  },
+  "erin@lab.test": {
+   "kind": "user",
+   "state": "ok",
+   "groups": []
+  },
+  "pc001.lab.test": {
+   "kind": "computer",
+   "state": "ok",
+   "groups": [
+    "CN=grp-wifi,CN=Users,DC=lab,DC=test",
+    "CN=grp-tout-acces,CN=Users,DC=lab,DC=test"
+   ]
+  },
+  "pc002.lab.test": {
+   "kind": "computer",
+   "state": "disabled",
+   "groups": []
+  },
+  "pc003.lab.test": {
+   "kind": "computer",
+   "state": "ok",
+   "groups": [
+    "CN=grp-vpn,CN=Users,DC=lab,DC=test",
+    "CN=grp-wifi,CN=Users,DC=lab,DC=test",
+    "CN=grp-tout-acces,CN=Users,DC=lab,DC=test"
+   ]
+  }
+ },
+ "cases": [
+  {
+   "id": "alice-it",
+   "who": "alice@lab.test",
+   "client": "wifi-ctrl",
+   "ssid": "Corp Wifi",
+   "expect": {
+    "decision": "accept",
+    "code": "rule_accept",
+    "rule": 2,
+    "vlan": 120,
+    "timeout": 3600,
+    "filter": "ACL-IT",
+    "attrs": {
+     "Aruba-User-Role": "it-staff"
+    }
+   }
+  },
+  {
+   "id": "alice-autre-ssid",
+   "who": "alice@lab.test",
+   "client": "wifi-ctrl",
+   "ssid": "Invites",
+   "expect": {
+    "decision": "accept",
+    "code": "rule_accept",
+    "rule": 3,
+    "vlan": 130,
+    "pool": "wifi-pool"
+   }
+  },
+  {
+   "id": "alice-sans-ssid",
+   "who": "alice@lab.test",
+   "client": "wifi-ctrl",
+   "ssid": null,
+   "expect": {
+    "decision": "accept",
+    "code": "rule_accept",
+    "rule": 3,
+    "vlan": 130,
+    "pool": "wifi-pool"
+   }
+  },
+  {
+   "id": "alice-ssid-casse",
+   "who": "alice@lab.test",
+   "client": "wifi-ctrl",
+   "ssid": "corp wifi",
+   "expect": {
+    "decision": "accept",
+    "code": "rule_accept",
+    "rule": 3,
+    "vlan": 130,
+    "pool": "wifi-pool"
+   }
+  },
+  {
+   "id": "alice-vpn",
+   "who": "alice@lab.test",
+   "client": "vpn-gw",
+   "ssid": null,
+   "expect": {
+    "decision": "accept",
+    "code": "rule_accept",
+    "rule": 4,
+    "pool": "vpn-pool"
+   }
+  },
+  {
+   "id": "alice-commutateur",
+   "who": "alice@lab.test",
+   "client": "sw1",
+   "ssid": null,
+   "expect": {
+    "decision": "accept",
+    "code": "rule_accept",
+    "rule": 5,
+    "vlan": 140
+   }
+  },
+  {
+   "id": "bob-desactive",
+   "who": "bob@lab.test",
+   "client": "wifi-ctrl",
+   "ssid": "Corp Wifi",
+   "expect": {
+    "decision": "reject",
+    "code": "account_disabled"
+   }
+  },
+  {
+   "id": "carol-expire",
+   "who": "carol@lab.test",
+   "client": "wifi-ctrl",
+   "ssid": "Corp Wifi",
+   "expect": {
+    "decision": "reject",
+    "code": "account_expired"
+   }
+  },
+  {
+   "id": "dave-verrouille",
+   "who": "dave@lab.test",
+   "client": "wifi-ctrl",
+   "ssid": "Corp Wifi",
+   "expect": {
+    "decision": "reject",
+    "code": "account_locked"
+   }
+  },
+  {
+   "id": "erin-aucune-regle",
+   "who": "erin@lab.test",
+   "client": "wifi-ctrl",
+   "ssid": "Corp Wifi",
+   "expect": {
+    "decision": "reject",
+    "code": "default_reject"
+   }
+  },
+  {
+   "id": "zoe-inconnue",
+   "who": "zoe@lab.test",
+   "client": "wifi-ctrl",
+   "ssid": null,
+   "expect": {
+    "decision": "reject",
+    "code": "account_not_found"
+   }
+  },
+  {
+   "id": "pc001-wifi",
+   "who": "pc001.lab.test",
+   "client": "wifi-ctrl",
+   "ssid": null,
+   "expect": {
+    "decision": "accept",
+    "code": "rule_accept",
+    "rule": 3,
+    "vlan": 130,
+    "pool": "wifi-pool"
+   }
+  },
+  {
+   "id": "pc001-vpn",
+   "who": "pc001.lab.test",
+   "client": "vpn-gw",
+   "ssid": null,
+   "expect": {
+    "decision": "reject",
+    "code": "default_reject"
+   }
+  },
+  {
+   "id": "pc002-desactivee",
+   "who": "pc002.lab.test",
+   "client": "wifi-ctrl",
+   "ssid": null,
+   "expect": {
+    "decision": "reject",
+    "code": "account_disabled"
+   }
+  },
+  {
+   "id": "pc003-refus-vpn",
+   "who": "pc003.lab.test",
+   "client": "wifi-ctrl",
+   "ssid": null,
+   "expect": {
+    "decision": "reject",
+    "code": "rule_reject",
+    "rule": 1
+   }
+  }
+ ]
+}

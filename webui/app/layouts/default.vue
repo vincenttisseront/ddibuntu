@@ -42,7 +42,10 @@ const navGroups = computed(() => {
       { label: t('nav.dhcp'), icon: 'i-lucide-server', to: '/dhcp' },
       { label: t('nav.trace'), icon: 'i-lucide-history', to: '/trace' },
     ] },
-    { label: t('nav.grp_security'), items: [{ label: t('nav.filtering'), icon: 'i-lucide-shield-ban', to: '/filtering' }] },
+    { label: t('nav.grp_security'), items: [
+      { label: t('nav.filtering'), icon: 'i-lucide-shield-ban', to: '/filtering' },
+      ...(['admin', 'operator'].includes(role.value) ? [{ label: t('nav.radius'), icon: 'i-lucide-radio-tower', to: '/radius' }] : []),
+    ] },
     { label: t('nav.grp_ops'), items: [
       { label: t('nav.import'), icon: 'i-lucide-file-input', to: '/import' },
       ...(['admin', 'operator'].includes(role.value) ? [{ label: t('nav.ad'), icon: 'i-lucide-building-2', to: '/ad' }] : []),
