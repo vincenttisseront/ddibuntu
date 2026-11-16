@@ -17,7 +17,7 @@ const zoneFilter = ref(0), typeFilter = ref('')
 useQueryId('zone', (id) => { zoneFilter.value = id })
 const zoneFilterOptions = computed(() => [{ label: t('common.all'), value: 0 }, ...(zones.value?.items ?? []).map((z: any) => ({ label: zlabel(z), value: z.id }))])
 const typeOptions = computed(() => (types.value?.items ?? []).map((v: string) => ({ label: v, value: v })))
-const typeFilterOptions = computed(() => [{ label: t('common.all'), value: '' }, ...typeOptions.value])
+const typeFilterOptions = computed(() => [{ label: t('common.all'), value: '__all' }, ...typeOptions.value])
 
 const zoneCols = computed(() => [
   { key: 'name', label: t('common.name'), kind: 'mono' }, ...(hasViews.value ? [{ key: 'view', label: t('dnsv.view'), kind: 'mono' }] : []), { key: 'type', label: t('common.type'), kind: 'badge', trans: 'dns.ztype' }, { key: 'records', label: t('dns.records'), kind: 'num' },
@@ -91,7 +91,7 @@ async function saveSettings() {
     </ResourceTable>
     <DnsViews v-else-if="tab === 'views'" :loose-zones="looseZones" @changed="viewsChanged" />
     <div v-else-if="tab === 'records'" class="flex flex-col gap-3">
-      <div class="flex gap-2 flex-wrap"><USelect v-model="zoneFilter" :items="zoneFilterOptions" class="w-64" :aria-label="t('dns.zone')" /><USelect v-model="typeFilter" :items="typeFilterOptions" class="w-36" :aria-label="t('common.type')" /></div>
+      <div class="flex gap-2 flex-wrap"><USelect v-model="zoneFilter" :items="zoneFilterOptions" class="w-64" :aria-label="t('dns.zone')" /><USelect :model-value="typeFilter || '__all'" @update:model-value="(v: string) => (typeFilter = v === '__all' ? '' : v)" :items="typeFilterOptions" class="w-36" :aria-label="t('common.type')" /></div>
       <ResourceTable :key="`${zoneFilter}-${typeFilter}`" endpoint="/dns/records" :query="recQuery" :columns="recCols" :fields="recFields" :can-write="canWrite" create-url="/dns/records" :update-url="(r: any) => `/dns/records/${r.id}`" :delete-url="(r: any) => `/dns/records/${r.id}`" :delete-name="(r: any) => `${r.name} ${r.type}`" :create-label="t('dns.add_record')" searchable @changed="refreshZones" />
     </div>
     <DnsReverse v-else-if="tab === 'reverse'" />

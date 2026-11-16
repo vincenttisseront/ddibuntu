@@ -165,7 +165,7 @@ const th = (r: any) => ({ a1: sec(r.thresholds.noPrimaryMs[0]), a2: sec(r.thresh
 
         <template v-if="stage === 'ready' && checkOk">
           <UFormField v-if="candidates.length > 1" :label="t('cluster.drill.candidate')">
-            <USelectMenu v-model="candidate" class="w-full" :items="[{ label: t('cluster.drill.candidate_auto', { n: chk.candidate }), value: '' }, ...candidates.map((c: any) => ({ label: c.name, value: c.name }))]" value-key="value" @update:model-value="runCheck" />
+            <USelectMenu :model-value="candidate || '__auto'" @update:model-value="(v: string) => { candidate = v === '__auto' ? '' : v; runCheck() }" class="w-full" :items="[{ label: t('cluster.drill.candidate_auto', { n: chk.candidate }), value: '__auto' }, ...candidates.map((c: any) => ({ label: c.name, value: c.name }))]" value-key="value" />
           </UFormField>
           <UCheckbox v-model="back" :label="t('cluster.drill.back')" :description="t('cluster.drill.back_hint')" />
           <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('cluster.drill.warn_title')" :description="t('cluster.drill.warn_desc')" />

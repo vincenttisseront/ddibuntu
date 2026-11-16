@@ -43,7 +43,7 @@ async function act(r: any, action: 'allow' | 'block') {
     <template #header>
       <div class="flex flex-wrap items-end gap-2">
         <span class="font-medium me-2">{{ t('cockpit.log') }}</span>
-        <USelect v-model="f.status" :items="[{ label: t('cockpit.all'), value: '' }, { label: t('cockpit.s_allowed'), value: 'allowed' }, { label: t('cockpit.s_blocked'), value: 'blocked' }]" :aria-label="t('cockpit.status')" class="w-36" />
+        <USelect :model-value="f.status || '__all'" @update:model-value="(v: string) => (f.status = v === '__all' ? '' : v)" :items="[{ label: t('cockpit.all'), value: '__all' }, { label: t('cockpit.s_allowed'), value: 'allowed' }, { label: t('cockpit.s_blocked'), value: 'blocked' }]" :aria-label="t('cockpit.status')" class="w-36" />
         <UInput v-model="f.client" :placeholder="t('cockpit.client')" :aria-label="t('cockpit.client')" class="w-36 font-mono" />
         <UInput v-model="f.domain" :placeholder="t('cockpit.domain')" :aria-label="t('cockpit.domain')" class="w-48 font-mono" icon="i-lucide-search" />
         <UInput v-model="f.qtype" :placeholder="t('cockpit.type')" :aria-label="t('cockpit.type')" class="w-24 font-mono" />

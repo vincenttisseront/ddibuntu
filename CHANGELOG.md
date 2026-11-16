@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.12.25 — « Correctif : Filtrage DNS (Cockpit) ne s'affichait plus »
+
+- **Correctif** : la page Filtrage DNS › Cockpit (journal des requêtes), le filtre de type de la page DNS et le choix du candidat du test de bascule utilisaient un item de sélecteur de valeur vide, refusé par le composant (erreur « SelectItem must have a value prop that is not an empty string », erreur 500). Remplacé par des valeurs sentinelles.
+- Test unitaire de non-régression : aucun sélecteur ne doit déclarer une valeur vide.
+
 ## 0.12.24 — « Filtrage DNS : les domaines des listes visibles dans Règles »
 
 - Onglet **Règles** : sous les règles manuelles, un tableau en lecture seule liste les domaines issus des listes de blocage (liste, catégorie, état), avec filtre par liste, recherche et pagination (utile pour des listes de plusieurs centaines de milliers de domaines).
