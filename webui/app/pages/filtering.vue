@@ -17,12 +17,12 @@ const importOpen = ref(false), importId = ref(0), importText = ref(''), importEr
 async function remoteUpdate(row: any) {
   try { const r: any = await api.call('POST', `/filter/lists/${row.id}/update`); toast.add({ title: t('filter.updated_n', { n: r.entries }), color: 'success', icon: 'i-lucide-check' }) }
   catch (e: any) { toast.add({ title: e.info?.message ?? t('err.internal'), color: 'error', icon: 'i-lucide-triangle-alert' }) }
-  await lists.value?.refresh()
+  await refreshNuxtData()
 }
 function openImport(row: any) { importId.value = row.id; importText.value = ''; importErr.value = ''; importOpen.value = true }
 async function doImport() {
   importErr.value = ''
-  try { const r: any = await api.call('POST', `/filter/lists/${importId.value}/import`, { content: importText.value }); toast.add({ title: t('filter.updated_n', { n: r.entries }), color: 'success', icon: 'i-lucide-check' }); importOpen.value = false; await lists.value?.refresh() }
+  try { const r: any = await api.call('POST', `/filter/lists/${importId.value}/import`, { content: importText.value }); toast.add({ title: t('filter.updated_n', { n: r.entries }), color: 'success', icon: 'i-lucide-check' }); importOpen.value = false; await refreshNuxtData() }
   catch (e: any) { importErr.value = e.info?.message ?? t('err.internal') }
 }
 async function pickFile(e: Event) { const f = (e.target as HTMLInputElement).files?.[0]; if (f) importText.value = await f.text() }

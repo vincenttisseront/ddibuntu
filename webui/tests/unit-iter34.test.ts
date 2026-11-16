@@ -9,4 +9,8 @@ describe('sélecteurs', () => {
     const bad = walk(join(__dirname, '..', 'app')).filter((f) => /value:\s*(''|"")/.test(readFileSync(f, 'utf8')))
     expect(bad).toEqual([])
   })
+  it("pas d'appel refresh() via une référence de composant (« refresh is not a function » en production) : refreshNuxtData()", () => {
+    const bad = walk(join(__dirname, '..', 'app')).filter((f) => /\.value\?\.refresh\(\)/.test(readFileSync(f, 'utf8')))
+    expect(bad).toEqual([])
+  })
 })

@@ -17,7 +17,7 @@ const toast = useToast(), api = useApi(), { ask } = useConfirm()
 const usersTable = ref<any>(null)
 async function resetMfa(row: any) {
   if (!(await ask(t('mfa.reset'), t('mfa.reset_confirm', { name: row.username })))) return
-  try { await api.call('POST', `/users/${row.id}/mfa/reset`, {}); toast.add({ title: t('mfa.reset_done'), color: 'success', icon: 'i-lucide-check' }); await usersTable.value?.refresh() } catch { /* message déjà affiché par api.call */ }
+  try { await api.call('POST', `/users/${row.id}/mfa/reset`, {}); toast.add({ title: t('mfa.reset_done'), color: 'success', icon: 'i-lucide-check' }); await refreshNuxtData() } catch { /* message déjà affiché par api.call */ }
 }
 const userBody = (b: any, editing: boolean) => { const o = { ...b }; if (!editing) delete o.disabled; o.space_ids = String(o.space_ids ?? '').split(/[\s,;]+/).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0); if (!o.space_ids.length) o.space_ids = null; return o }
 const auditCols = computed(() => [{ key: 'at', label: t('common.date'), kind: 'date' }, { key: 'username', label: t('system.user') }, { key: 'action', label: t('system.action'), kind: 'mono' }, { key: 'entity', label: t('system.entity') }, { key: 'entity_id', label: 'ID', kind: 'mono' }, { key: 'ip', label: 'IP', kind: 'mono' }])

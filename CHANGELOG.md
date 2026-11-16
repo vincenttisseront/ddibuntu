@@ -1,5 +1,10 @@
 # Journal des modifications
 
+## 0.12.26 — « Correctif : mise à jour d'une liste de filtrage »
+
+- **Correctif** : après « Mettre à jour » / « Importer » une liste de blocage (et après la réinitialisation MFA d'un utilisateur), la console levait `refresh is not a function` et le tableau n'était pas rafraîchi ; il utilise désormais `refreshNuxtData()`.
+- Test unitaire de non-régression.
+
 ## 0.12.25 — « Correctif : Filtrage DNS (Cockpit) ne s'affichait plus »
 
 - **Correctif** : la page Filtrage DNS › Cockpit (journal des requêtes), le filtre de type de la page DNS et le choix du candidat du test de bascule utilisaient un item de sélecteur de valeur vide, refusé par le composant (erreur « SelectItem must have a value prop that is not an empty string », erreur 500). Remplacé par des valeurs sentinelles.
