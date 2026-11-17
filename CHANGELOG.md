@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.13.6 — « Correctif : « à déployer » restait affiché après un déploiement »
+
+- **Correctif** : la mention « #N à déployer » (tableau de bord, Configuration) pouvait rester affichée après un déploiement réussi. Le compteur de génération est incrémenté par des déclencheurs « par instruction » : il l'est aussi par une écriture qui ne change rien (insertion ignorée par `on conflict do nothing`, mise à jour identique, tâche périodique).
+- L'état « à déployer » est désormais jugé sur le **contenu** : la configuration est en attente seulement si les fichiers rendus maintenant (zones, BIND, Kea, RPZ) diffèrent de ceux du dernier déploiement. Le verdict est mémorisé par génération (un seul rendu par changement du compteur). La zone RPZ, dont le numéro de série vient de l'horloge, est comparée sans ce numéro et sans tenir compte de l'ordre des lignes.
+- À savoir : l'ancien déploiement ayant enregistré une empreinte RPZ brute, un **nouveau déploiement** est nécessaire une fois après la mise à jour pour que l'indicateur retombe à zéro.
+- Test e2e-iter44.
+
 ## 0.13.5 — « IPAM : labels façon NetBox »
 
 - **Labels** sur les **espaces, réseaux, adresses et VLAN** (le champ « étiquettes » libre des réseaux devient un vrai système de labels) : saisie par pastilles (Entrée pour valider, labels existants proposés d'un clic), normalisation (minuscules, sans doublon, 20 par objet), style libre `env:prod`, `role:web`, `site:paris`.

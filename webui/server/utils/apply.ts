@@ -13,7 +13,7 @@ import { fail } from './router'
 import { uncoveredLocal } from './views'
 import type { ViewInfo } from './views'
 import { keaClasses } from './dhcp-classes'
-import { DNS_DEFAULTS, KEA_DEFAULTS, deployFiles, renderKea, renderNamedOptions, renderNamedZones, renderRpz, rpzBase, validateFiles, zoneFile } from './render'
+import { DNS_DEFAULTS, KEA_DEFAULTS, deployFiles, fileSums, renderKea, renderNamedOptions, renderNamedZones, renderRpz, rpzBase, validateFiles, zoneFile } from './render'
 import type { CheckResult, DnsSettings, KeaScope, KeaSettings, OutFile, ZoneRow } from './render'
 
 export async function loadDns(): Promise<DnsSettings> { return { ...DNS_DEFAULTS, ...(await getSetting<Partial<DnsSettings>>('dns', {})) } }
@@ -73,12 +73,36 @@ export async function buildConfig(): Promise<{ files: OutFile[]; bumps: Array<{ 
 
 /** Génération de configuration : compteur monotone tenu par des déclencheurs en base (toute écriture qui change DNS/DHCP/filtrage l'incrémente). */
 export interface ConfigState { generation: number; deployed: number; pending: boolean; changed_at: string | null; deployed_at: string | null }
-export async function configState(): Promise<ConfigState> {
+async function rawState(): Promise<ConfigState> {
   const r = await one<any>(`select (select generation::text from config_generation where id = 1) as g, (select changed_at from config_generation where id = 1) as at,
     coalesce((select max(generation) from deployments where ok and generation is not null), 0)::text as d,
     (select at from deployments where ok and generation is not null order by id desc limit 1) as dat`)
   const generation = Number(r?.g ?? 0), deployed = Number(r?.d ?? 0)
   return { generation, deployed, pending: generation > deployed, changed_at: r?.at ?? null, deployed_at: r?.dat ?? null }
+}
+
+// Le compteur de génération est incrémenté par des déclencheurs « par instruction » : il l'est aussi par une écriture qui ne change rien
+// (insertion ignorée par « on conflict do nothing », mise à jour identique, tâche périodique…). La configuration n'est donc « à déployer »
+// que si les fichiers rendus maintenant diffèrent de ceux du dernier déploiement ; le verdict est mémorisé par couple (génération, déploiement).
+let verdict: { gen: number; dep: number; changed: boolean } | null = null
+async function reallyChanged(gen: number, dep: number): Promise<boolean> {
+  if (verdict && verdict.gen === gen && verdict.dep === dep) return verdict.changed
+  let changed = true
+  try {
+    const last = await one<any>('select files from deployments where ok and generation is not null order by id desc limit 1')
+    if (last?.files && Object.keys(last.files).length) {
+      const now = fileSums((await buildConfig()).files, cfg().generatedDir, cfg().zonesRuntimeDir || undefined)
+      const was = last.files as Record<string, string>
+      changed = Object.keys(now).length !== Object.keys(was).length || Object.entries(now).some(([k, v]) => was[k] !== v)
+    }
+  } catch { changed = true }   // dans le doute : à déployer
+  verdict = { gen, dep, changed }
+  return changed
+}
+export async function configState(): Promise<ConfigState> {
+  const st = await rawState()
+  if (st.pending && !(await reallyChanged(st.generation, st.deployed))) st.pending = false
+  return st
 }
 
 // Copie des configurations pour le(s) nœud(s) secondaire(s) : sans mot de passe, baux en fichier local (le bloc HA est ajouté par root sur chaque nœud).
@@ -101,7 +125,7 @@ async function storeForFollowers(cl: { query: (t: string, p?: unknown[]) => Prom
 export interface ApplyOutcome { ok: boolean; deployed: boolean; results: CheckResult[]; warnings: string[]; files: string[]; generation: number }
 export async function applyConfig(opts: { deploy: boolean; username: string | null }): Promise<ApplyOutcome> {
   // lue AVANT le rendu : une modification survenue pendant le rendu laisse la configuration « en attente » (jamais l'inverse)
-  const generation = (await configState()).generation
+  const generation = (await rawState()).generation
   const { files, bumps, warnings } = await buildConfig()
   const results = await validateFiles(files)
   // le serveur doit se résoudre lui-même : sans vue pour 127.0.0.1 / ::1, contrôles de santé et mises à jour locales échoueraient
