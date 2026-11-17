@@ -95,7 +95,7 @@ await load()
 <template>
   <div class="flex flex-col gap-3">
     <UTabs v-model="tab" :items="tabs" :content="false" :aria-label="t('nav.pki')" />
-    <PkiCas v-if="tab === 'cas'" :status="status" :waiting="waiting" :settle="settle" @changed="load" />
+    <PkiCas v-if="tab === 'cas'" :status="status" :waiting="waiting" :settle="settle" :result="result" @changed="load" />
     <PkiCerts v-else-if="tab === 'certs'" :status="status" :waiting="waiting" />
     <PkiAd v-else-if="tab === 'ad'" />
     <template v-else>

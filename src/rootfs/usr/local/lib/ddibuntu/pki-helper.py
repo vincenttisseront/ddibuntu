@@ -12,6 +12,8 @@ Sous-commandes :
   check-leaf               contrôle le certificat final émis par EJBCA (clé de la demande, chaîne, CA:FALSE, validité), l'écrit en PEM canonique et en extrait les champs publics
   hex2dec                  numéro de série hexadécimal → décimal (la base d'EJBCA stocke les séries en décimal)
   check-chain              contrôle la chaîne de l'autorité qui signera (la racine auto-signée en dernier) et en extrait la racine
+  dn-find                  nom de l'autorité (lignes « nom<TAB>DN » sur l'entrée standard) qui porte un nom distinctif, quel que soit l'ordre de ses éléments
+  p12-check                contrôle le PKCS#12 d'une autorité existante (clé, certificat, chaîne), le « rhabille » avec un mot de passe aléatoire à usage unique
   check-crl                contrôle une CRL de racine (signature, validité) avant de l'importer
   publish-cas              construit pki-cas.json et les fichiers publics de chaque autorité
   urls                     adresses publiques (CRL, certificat) d'une autorité
@@ -33,6 +35,8 @@ import urllib.parse
 
 MAX_REQUEST = 4096
 MAX_DEPOSIT = 16384
+MAX_P12 = 65536          # PKCS#12 d'une autorité (clé + chaîne) : 64 Ko au plus
+MAX_P12_PW = 512         # mot de passe du PKCS#12 (octets UTF-8)
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,47}")
 RESERVED_NAMES = {"ManagementCA"}
 ALGS = ("rsa3072", "rsa4096", "ecp256", "ecp384")
@@ -168,6 +172,10 @@ def parse_request():
             if by != "external" and not valid_name(by):
                 return 1
             out.append(("signedBy", by))
+    elif a == "ca_import_p12":
+        if not valid_name(d.get("name")):
+            return 1
+        out = [("action", a), ("name", d["name"])]
     elif a in ("ca_import", "ca_crl"):
         if not valid_name(d.get("name")):
             return 1
@@ -201,14 +209,14 @@ def parse_request():
 
 
 # ---------- dépôts de la console ----------
-def read_deposit(path):
+def read_deposit(path, limit=MAX_DEPOSIT):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_DEPOSIT:
-            raise ValueError("dépôt refusé : fichier ordinaire de %d Ko au plus attendu" % (MAX_DEPOSIT // 1024))
-        data = os.read(fd, MAX_DEPOSIT + 1)
-        if len(data) > MAX_DEPOSIT:
+        if not stat.S_ISREG(st.st_mode) or st.st_size > limit:
+            raise ValueError("dépôt refusé : fichier ordinaire de %d Ko au plus attendu" % max(1, limit // 1024))
+        data = os.read(fd, limit + 1)
+        if len(data) > limit:
             raise ValueError("dépôt trop gros")
         return data
     finally:
@@ -478,6 +486,223 @@ def cmd_check_leaf(argv):
     return 0
 
 
+# ---------- PKCS#12 d'une autorité existante ----------
+KEY_RE = re.compile(r"-----BEGIN ([A-Z ]*PRIVATE KEY)-----\s*[A-Za-z0-9+/=\s]+?\s*-----END \1-----")
+
+
+def write_secret(path, data):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+
+
+def secret_tmpdir():
+    """Dossier temporaire 0700 en mémoire (tmpfs) quand c'est possible : la clé n'y reste que le temps du contrôle."""
+    for base in ("/dev/shm", None):
+        try:
+            return tempfile.TemporaryDirectory(dir=base)
+        except OSError:
+            continue
+    raise OSError("aucun dossier temporaire")
+
+
+def p12_dump(p12, pw):
+    """Contenu du PKCS#12 en PEM sans chiffrement (clé comprise). Le mot de passe ne passe que par l'environnement d'openssl."""
+    env = dict(os.environ, DDI_P12PW=pw)
+    for extra in ([], ["-legacy"]):   # anciens fichiers (RC2-40, 3DES) : openssl 3 demande le fournisseur « legacy »
+        p = subprocess.run(["openssl", "pkcs12", "-in", p12, "-passin", "env:DDI_P12PW", "-nodes"] + extra,
+                           capture_output=True, env=env, timeout=30)
+        if p.returncode == 0:
+            return p.stdout.decode("ascii", "replace")
+        err = p.stderr.decode("utf-8", "replace").lower()
+        if "mac verify" in err or "invalid password" in err:
+            raise ValueError("mot de passe du fichier PKCS#12 incorrect")
+    raise ValueError("fichier PKCS#12 illisible (format ou chiffrement non pris en charge)")
+
+
+def p12_alg(info):
+    if info["keyAlg"] == "RSA" and info["keyBits"] in RSA_BITS:
+        return "rsa%d" % info["keyBits"]
+    if info["keyAlg"] == "EC" and info["curve"] in EC_CURVES:
+        return {"prime256v1": "ecp256", "secp384r1": "ecp384"}[info["curve"]]
+    return None
+
+
+def cmd_p12_check(argv):
+    # p12-check P12 PWFILE OUT_DIR CHAIN_OUT : OUT_DIR/ca.p12 = fichier rhabillé (mot de passe aléatoire), OUT_DIR/root.pem = racine (si l'autorité n'est pas auto-signée),
+    # CHAIN_OUT = chaîne publique (intermédiaires puis racine). Sortie : OK<TAB>mot de passe à usage unique<TAB>root|issuing<TAB>alg<TAB>sha8 racine ou -<TAB>sujet<TAB>fin de validité<TAB>sujet de la racine ou -
+    p12_path, pw_path, out_dir, chain_out = argv[0], argv[1], argv[2], argv[3]
+    try:
+        raw = read_deposit(p12_path, MAX_P12)
+        pw_raw = read_deposit(pw_path, MAX_P12_PW)
+    except (OSError, ValueError) as e:
+        print("ERR\t%s" % e)
+        return 1
+    if raw[:1] != b"\x30":
+        print("ERR\tle fichier n'est pas un PKCS#12 (.p12 / .pfx) : format binaire attendu")
+        return 1
+    try:
+        pw = pw_raw.decode("utf-8")
+    except UnicodeDecodeError:
+        print("ERR\tmot de passe refusé : UTF-8 attendu")
+        return 1
+    if not pw or len(pw) > 128 or any(ord(c) < 0x20 or ord(c) == 0x7f for c in pw):
+        print("ERR\tmot de passe du fichier PKCS#12 absent ou refusé (1 à 128 caractères, sans caractère de contrôle)")
+        return 1
+    try:
+        with secret_tmpdir() as td:
+            src = os.path.join(td, "in.p12")
+            write_secret(src, raw)
+            dump = p12_dump(src, pw)
+            os.unlink(src)
+            keys = [m.group(0) for m in KEY_RE.finditer(dump)]
+            if len(keys) != 1:
+                raise ValueError("le fichier doit contenir une seule clé privée (%d trouvée(s))" % len(keys))
+            ders, seen = [], set()
+            for m in CERT_RE.finditer(dump):
+                try:
+                    der = base64.b64decode("".join(m.group(1).split()), validate=True)
+                except Exception:
+                    raise ValueError("certificat du fichier illisible")
+                if der and der[0] == 0x30 and len(der) <= 8192 and der not in seen:
+                    seen.add(der)
+                    ders.append(der)
+            if not ders or len(ders) > 8:
+                raise ValueError("le fichier doit contenir de 1 à 8 certificats (l'autorité, sa chaîne et sa racine)")
+            keyp = os.path.join(td, "key.pem")
+            write_secret(keyp, (keys[0] + "\n").encode())
+            rc, pub, _ = openssl(["pkey", "-in", keyp, "-pubout"])
+            if rc != 0 or not pub.strip():
+                raise ValueError("clé privée illisible")
+            paths, infos = [], []
+            for i, der in enumerate(ders):
+                if not cert_ok(der):
+                    raise ValueError("un certificat du fichier n'est pas lisible par openssl")
+                cp = os.path.join(td, "c%d.pem" % i)
+                with open(cp, "w") as f:
+                    f.write(pem_of(der))
+                paths.append(cp)
+                infos.append(describe_cert(der))
+            mine = [i for i, p in enumerate(paths) if pubkey_of("x509", p) == pub.strip()]
+            if not mine:
+                raise ValueError("aucun certificat du fichier ne correspond à la clé privée")
+            if len(mine) > 1:
+                raise ValueError("plusieurs certificats du fichier portent la même clé : fournir seulement l'autorité et sa chaîne")
+            li = mine[0]
+            leaf, linfo = paths[li], infos[li]
+            text = x509_text(leaf)
+            if "CA:TRUE" not in text:
+                raise ValueError("le certificat de la clé n'est pas un certificat d'autorité (basicConstraints CA:TRUE absent)")
+            m = re.search(r"Key Usage:[^\n]*\n\s*([^\n]*)", text)
+            if m and "Certificate Sign" not in m.group(1):
+                raise ValueError("le certificat n'autorise pas la signature de certificats (keyCertSign absent)")
+            alg = p12_alg(linfo)
+            if not alg:
+                raise ValueError("clé refusée (admis : RSA 2048 / 3072 / 4096, ECDSA P-256 / P-384)")
+            rc, _, _ = openssl(["x509", "-in", leaf, "-noout", "-checkend", "86400"])
+            if rc != 0:
+                raise ValueError("le certificat de l'autorité est expiré ou expire dans moins d'un jour")
+            mnb = re.search(r"Not Before\s*:\s*(.+)", text)
+            if mnb:
+                try:
+                    nb = calendar.timegm(time.strptime(re.sub(r"\s+", " ", mnb.group(1).strip()).replace(" GMT", ""), "%b %d %H:%M:%S %Y"))
+                    if nb - time.time() > 86400:
+                        raise ValueError("le certificat de l'autorité n'est pas encore valable (début : %s)" % mnb.group(1).strip())
+                except ValueError as e:
+                    if "pas encore valable" in str(e):
+                        raise
+            subject = linfo["subject"]
+            if not subject or len(subject) > 256 or any(ord(c) < 0x20 or ord(c) == 0x7f for c in subject):
+                raise ValueError("nom distinctif de l'autorité refusé")
+            # chaîne : de l'autorité jusqu'à une racine auto-signée, avec les seuls certificats du fichier
+            chain_idx, cur, guard = [], linfo, 0
+            while cur["subject"] != cur["issuer"]:
+                nxt = [i for i, inf in enumerate(infos) if i != li and i not in chain_idx and inf["subject"].lower() == cur["issuer"].lower()]
+                if not nxt or guard >= 5:
+                    raise ValueError("chaîne incomplète : le fichier doit contenir tous les certificats jusqu'à la racine auto-signée")
+                chain_idx.append(nxt[0])
+                cur = infos[nxt[0]]
+                guard += 1
+            for i in chain_idx:
+                if "CA:TRUE" not in x509_text(paths[i]):
+                    raise ValueError("un certificat de la chaîne n'est pas un certificat d'autorité")
+                rc, _, _ = openssl(["x509", "-in", paths[i], "-noout", "-checkend", "86400"])
+                if rc != 0:
+                    raise ValueError("un certificat de la chaîne est expiré ou expire dans moins d'un jour")
+            if chain_idx:
+                full = os.path.join(td, "all.pem")
+                with open(full, "w") as f:
+                    f.write("".join(pem_of(ders[i]) for i in [li] + chain_idx))
+                rc, _, e = openssl(["verify", "-CAfile", paths[chain_idx[-1]], "-untrusted", full, leaf])
+            else:
+                rc, _, e = openssl(["verify", "-CAfile", leaf, leaf])
+            if rc != 0:
+                raise ValueError("la chaîne ne valide pas ce certificat : %s" % (e.strip().splitlines()[-1] if e.strip() else "refusé"))
+            # fichier rhabillé : une seule clé, l'autorité et sa chaîne, mot de passe aléatoire que root seul connaît le temps de l'import
+            alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+            import secrets
+            newpw = "".join(secrets.choice(alphabet) for _ in range(32))
+            extra = os.path.join(td, "extra.pem")
+            with open(extra, "w") as f:
+                f.write("".join(pem_of(ders[i]) for i in chain_idx))
+            cmd = ["openssl", "pkcs12", "-export", "-inkey", keyp, "-in", leaf]
+            if chain_idx:
+                cmd += ["-certfile", extra]
+            cmd += ["-name", "ddi-ca", "-passout", "env:DDI_P12NEW", "-out", os.path.join(out_dir, "ca.p12")]
+            r = subprocess.run(cmd, capture_output=True, env=dict(os.environ, DDI_P12NEW=newpw), timeout=30)
+            if r.returncode != 0:
+                raise ValueError("fichier PKCS#12 impossible à reconstruire")
+            os.chmod(os.path.join(out_dir, "ca.p12"), 0o600)
+            rootsha, rootsubj = "-", "-"
+            if chain_idx:
+                root_der = ders[chain_idx[-1]]
+                rootsubj = infos[chain_idx[-1]]["subject"]
+                rootsha = hashlib.sha256(root_der).hexdigest()[:8]
+                write_secret(os.path.join(out_dir, "root.pem"), pem_of(root_der).encode())
+                fd = os.open(chain_out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o640)
+                with os.fdopen(fd, "w") as f:
+                    f.write("".join(pem_of(ders[i]) for i in chain_idx))
+            print("OK\t%s\t%s\t%s\t%s\t%s\t%s\t%s" % (newpw, "issuing" if chain_idx else "root", alg, rootsha, subject, linfo["notAfter"], rootsubj))
+            return 0
+    except ValueError as e:
+        print("ERR\t%s" % e)
+        return 1
+    except (OSError, subprocess.SubprocessError):
+        print("ERR\tfichier PKCS#12 refusé (lecture ou contrôle impossible)")
+        return 1
+
+
+
+def dn_key(dn):
+    """Nom distinctif → clé comparable quel que soit l'ordre des éléments (EJBCA garde CN,O,C ; openssl affiche l'ordre d'encodage) et la casse."""
+    parts, cur, esc = [], [], False
+    for c in dn:
+        if esc:
+            cur.append(c)
+            esc = False
+        elif c == "\\":
+            cur.append(c)
+            esc = True
+        elif c == ",":
+            parts.append("".join(cur).strip().lower())
+            cur = []
+        else:
+            cur.append(c)
+    parts.append("".join(cur).strip().lower())
+    return tuple(sorted(p for p in parts if p))
+
+
+def cmd_dn_find(argv):
+    # dn-find DN : stdin = lignes « nom<TAB>nom distinctif » (cadata) ; sortie = nom de la première autorité qui porte ce nom distinctif
+    want = dn_key(argv[0])
+    for line in sys.stdin:
+        name, _, dn = line.rstrip("\n").partition("\t")
+        if name and dn and dn_key(dn) == want:
+            print(name)
+            return 0
+    return 0
+
+
 def cmd_hex2dec(argv):
     if len(argv) != 1 or not SERIAL_RE.fullmatch(argv[0]):
         return 1
@@ -697,7 +922,7 @@ def cmd_publish_cas(argv):
             kind = "root" if info and info["subject"] == info["issuer"] else ("issuing" if info else "unknown")
         state = "active" if st == 1 else "waiting" if st == 2 else "external" if st == 6 else "other"
         item = {"name": name, "kind": kind, "state": state, "status": st, "dn": ca["dn"], "signedBy": meta.get("signedBy"),
-                "alg": meta.get("alg"), "createdAt": meta.get("createdAt"), "extRoot": meta.get("extRoot") if re.fullmatch(r"ExtRoot-[0-9a-f]{8}", str(meta.get("extRoot") or "")) else None,
+                "alg": meta.get("alg"), "createdAt": meta.get("createdAt"), "imported": bool(meta.get("imported")), "extRoot": meta.get("extRoot") if re.fullmatch(r"ExtRoot-[0-9a-f]{8}", str(meta.get("extRoot") or "")) else None,
                 "files": {"cert": False, "chain": False, "csr": False, "crl": False}}
         if info:
             item.update({"issuer": by_subject.get(info["issuer"].lower(), info["issuer"]), "selfSigned": info["subject"] == info["issuer"], "serial": info["serial"],
@@ -775,6 +1000,10 @@ def main():
         return cmd_hex2dec(args)
     if cmd == "check-chain":
         return cmd_check_chain(args)
+    if cmd == "p12-check":
+        return cmd_p12_check(args)
+    if cmd == "dn-find":
+        return cmd_dn_find(args)
     if cmd == "check-crl":
         return cmd_check_crl(args)
     if cmd == "publish-cas":

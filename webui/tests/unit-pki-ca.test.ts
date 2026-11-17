@@ -1,5 +1,6 @@
 // 0.14.1 — autorités de la PKI : validation des demandes de la console (la même que celle de root, vérifiée par un test différentiel), fichiers remis
-// (certificat, chaîne, CRL), dépôts pour root, lecture de la liste et des fichiers publics que root publie.
+// (certificat, chaîne, CRL), dépôts pour root, lecture de la liste et des fichiers publics que root publie. 0.14.4 : reprise d'une autorité depuis un PKCS#12
+// (corps, octets du fichier, dépôts SECRETS 0600, drapeau « importée »).
 import { spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -190,5 +191,76 @@ describe('état publié : champs de 0.14.1', () => {
     writeFileSync(process.env.DDI_PKI_STATUS!, JSON.stringify({ at: 1, casCount: -3, resetAllowed: 'oui', dataHostname: 'h'.repeat(400) }))
     expect(await pki.readPkiStatus()).toMatchObject({ dataPresent: false, secretsPresent: false, casCount: null, resetAllowed: false })
     expect((await pki.readPkiStatus())!.dataHostname.length).toBe(253)
+  })
+})
+
+describe('0.14.4 — reprise d\'une autorité depuis un PKCS#12 : corps de la demande', () => {
+  const b64 = (n: number, first = 0x30) => { const b = Buffer.alloc(n, 0x31); b[0] = first; return b.toString('base64') }
+  const ok = { name: 'Imp-Iss', p12: b64(2000), password: 'Pä55 "wörd\'$x', confirm: 'Imp-Iss' }
+  it('accepte une demande valide', () => { expect(ca.importP12Body.safeParse(ok).success).toBe(true) })
+  it('corps strict : champ inconnu refusé', () => { expect(ca.importP12Body.safeParse({ ...ok, extra: 1 }).success).toBe(false) })
+  it.each([
+    ['nom vide', { name: '' }], ['nom avec espace', { name: 'a b' }], ['nom ManagementCA', { name: 'ManagementCA' }], ['nom ExtRoot-…', { name: 'ExtRoot-0a1b2c3d' }], ['nom remontant l\'arborescence', { name: '../x' }],
+    ['fichier absent', { p12: undefined }], ['fichier trop court', { p12: 'AAAA' }], ['fichier qui n\'est pas du base64', { p12: 'pas du base64 !!' }],
+    ['mot de passe absent', { password: undefined }], ['mot de passe vide', { password: '' }], ['mot de passe de 129 caractères', { password: 'a'.repeat(129) }],
+    ['mot de passe avec retour à la ligne', { password: 'a\nb' }], ['mot de passe avec NUL', { password: 'a\u0000b' }], ['mot de passe avec DEL', { password: 'a\u007fb' }],
+    ['confirmation absente', { confirm: undefined }], ['mot de passe en nombre', { password: 1234 }],
+  ])('refuse : %s', (_n, patch) => { expect(ca.importP12Body.safeParse({ ...ok, ...patch }).success).toBe(false) })
+  it('le mot de passe garde ses espaces et ses caractères spéciaux (aucun nettoyage)', () => {
+    const r = ca.importP12Body.parse({ ...ok, password: '  Pä55 "wörd\'$x  ' }); expect(r.password).toBe('  Pä55 "wörd\'$x  ')
+  })
+  it('un mot de passe de 128 caractères passe', () => { expect(ca.importP12Body.safeParse({ ...ok, password: 'é'.repeat(128) }).success).toBe(true) })
+  it('octets du fichier : DER commençant par une SEQUENCE, 16 octets à 64 Ko', () => {
+    expect(ca.p12Bytes(b64(2000))!.length).toBe(2000)
+    expect(ca.p12Bytes(b64(ca.MAX_P12))!.length).toBe(65536)
+    expect(ca.p12Bytes(b64(ca.MAX_P12 + 1))).toBeNull()
+    expect(ca.p12Bytes(b64(15))).toBeNull(); expect(ca.p12Bytes(b64(16))!.length).toBe(16)
+    expect(ca.p12Bytes(b64(2000, 0x2d))).toBeNull()                       // « - » : un PEM, pas un PKCS#12
+    expect(ca.p12Bytes(b64(2000, 0x00))).toBeNull()
+    expect(ca.p12Bytes('')).toBeNull()
+  })
+  it('le base64 découpé en lignes (export de certains outils) est accepté', () => {
+    const wrapped = b64(2000).replace(/(.{64})/g, '$1\n'); expect(ca.importP12Body.safeParse({ ...ok, p12: wrapped }).success).toBe(true); expect(ca.p12Bytes(wrapped)!.length).toBe(2000)
+  })
+  it.each(['Imp-Iss', 'ExtRoot-0a1b2c3d', 'ManagementCA', 'a b', '../x', '.caché', 'x'.repeat(48), 'x'.repeat(49), 'Lab_1.2-3'])('même règle de nom que root : « %s »', (name) => {
+    expect(ca.importP12Body.safeParse({ ...ok, name, confirm: name }).success, 'console').toBe(rootAccepts({ action: 'ca_import_p12', name }))
+  })
+  it('ce que la console envoie à root ne contient ni le fichier ni le mot de passe', () => {
+    expect(rootLines({ action: 'ca_import_p12', name: 'Imp-Iss' })).toEqual(['action\tca_import_p12', 'name\tImp-Iss'])
+    expect(rootLines({ action: 'ca_import_p12', name: 'Imp-Iss', password: 'secret', p12: 'AAAA' }).join('')).not.toMatch(/secret|AAAA/)
+  })
+})
+
+describe('0.14.4 — dépôts SECRETS pour root', () => {
+  it('écrit en 0600 sous les noms attendus par root', async () => {
+    await ca.putSecretDeposit('Imp-Iss', 'p12', Buffer.from([0x30, 0x82, 1, 2])); await ca.putSecretDeposit('Imp-Iss', 'p12pw', Buffer.from('Pä55', 'utf8'))
+    for (const [f, mode] of [['Imp-Iss.p12', '600'], ['Imp-Iss.p12pw', '600']] as const) expect((statSync(join(TMP, 'pki-in', f)).mode & 0o777).toString(8), f).toBe(mode)
+    expect(readFileSync(join(TMP, 'pki-in', 'Imp-Iss.p12pw'), 'utf8')).toBe('Pä55'); expect(readFileSync(join(TMP, 'pki-in', 'Imp-Iss.p12')).equals(Buffer.from([0x30, 0x82, 1, 2]))).toBe(true)
+  })
+  it('remplace un ancien dépôt (même plus large) et ne suit jamais un lien symbolique', async () => {
+    const f = join(TMP, 'pki-in', 'Imp-Link.p12pw'), target = join(TMP, 'cible-secrete.txt')
+    writeFileSync(target, 'intact'); symlinkSync(target, f)
+    await ca.putSecretDeposit('Imp-Link', 'p12pw', Buffer.from('nouveau'))
+    expect(readFileSync(target, 'utf8')).toBe('intact'); expect(lstatSync(f).isSymbolicLink()).toBe(false); expect(readFileSync(f, 'utf8')).toBe('nouveau')
+    await ca.putSecretDeposit('Imp-Link', 'p12pw', Buffer.from('n')); expect(readFileSync(f, 'utf8')).toBe('n')   // pas de reste de l'ancien contenu
+  })
+  it('refuse un nom qui sortirait du dossier', async () => {
+    await expect(ca.putSecretDeposit('../evil', 'p12', Buffer.from('x'))).rejects.toThrow()
+    await expect(ca.putSecretDeposit('a/b', 'p12pw', Buffer.from('x'))).rejects.toThrow()
+    expect(existsSync(join(TMP, 'evil.p12'))).toBe(false)
+  })
+  it('dropDeposit retire aussi les dépôts secrets', async () => {
+    await ca.putSecretDeposit('Imp-Del', 'p12', Buffer.from('x')); await ca.putSecretDeposit('Imp-Del', 'p12pw', Buffer.from('y'))
+    await ca.dropDeposit('Imp-Del', 'p12'); await ca.dropDeposit('Imp-Del', 'p12pw')
+    expect(existsSync(join(TMP, 'pki-in', 'Imp-Del.p12'))).toBe(false); expect(existsSync(join(TMP, 'pki-in', 'Imp-Del.p12pw'))).toBe(false)
+  })
+})
+
+describe('0.14.4 — drapeau « importée » dans la liste publiée', () => {
+  it('lu tel que root le publie, faux par défaut et pour toute valeur douteuse', async () => {
+    const base = { kind: 'issuing', state: 'active', dn: 'CN=X', issuer: 'CN=Y', selfSigned: false, files: {} }
+    writeFileSync(CAS, JSON.stringify({ at: 1, cas: [{ ...base, name: 'A', imported: true }, { ...base, name: 'B' }, { ...base, name: 'C', imported: 'true' }, { ...base, name: 'D', imported: 1 }, { ...base, name: 'E', imported: false }] }))
+    const r = (await ca.readPkiCas())!
+    expect(r.cas.map((c) => [c.name, c.imported])).toEqual([['A', true], ['B', false], ['C', false], ['D', false], ['E', false]])
   })
 })

@@ -194,7 +194,7 @@ now_ms=$(( $(date +%s) * 1000 ))
   printf 'Morceau de base64 coupé\n'
 } > "$W/crls.tsv"
 RUNX="$T/pub"; CAX="$T/pubca"; mkdir -p "$RUNX/pki-ca/ancien" "$CAX/Lab-Sub" "$CAX/Lab-Wait"; echo x > "$RUNX/pki-ca/ancien/cert.pem"
-printf '{"kind":"issuing","signedBy":"Lab-Root","alg":"ecp256","createdAt":1700000000}' > "$CAX/Lab-Sub/meta.json"
+printf '{"kind":"issuing","signedBy":"Lab-Root","alg":"ecp256","createdAt":1700000000,"imported":true}' > "$CAX/Lab-Sub/meta.json"
 printf '{"kind":"issuing","signedBy":"external","alg":"rsa3072","createdAt":1700000100,"extRoot":"ExtRoot-0a1b2c3d"}' > "$CAX/Lab-Wait/meta.json"
 printf -- '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n' > "$CAX/Lab-Wait/chain.pem"
 openssl req -in "$W/iss.csr" -out "$CAX/Lab-Wait/csr.pem" 2>/dev/null
@@ -223,6 +223,8 @@ expect_eq "racine : adresse de CRL publiée" "http://pki.lab.test:8080/ejbca/pub
 expect_eq "émettrice : sorte issuing (meta.json)" issuing "$(jq_ Lab-Sub kind)"
 expect_eq "émettrice : signée par la racine du DDI (meta.json)" Lab-Root "$(jq_ Lab-Sub signedBy)"
 expect_eq "émettrice : pas auto-signée" false "$(jq_ Lab-Sub selfSigned)"
+expect_eq "émettrice reprise d'un PKCS#12 : drapeau « importée » publié" true "$(jq_ Lab-Sub imported)"
+expect_eq "autorité créée par le DDI : pas « importée »" false "$(jq_ Lab-Root imported)"
 expect_eq "émettrice : émetteur affiché avec le nom distinctif d'EJBCA de la racine" "CN=Lab Root CA,O=Laboratoire,C=FR" "$(jq_ Lab-Sub issuer)"
 expect_eq "émettrice : chaîne publiée avec la racine" true "$(jq_ Lab-Sub files.chain)"
 check "émettrice : le certificat se vérifie avec la chaîne publiée" openssl verify -CAfile "$RUNX/pki-ca/Lab-Sub/chain.pem" "$RUNX/pki-ca/Lab-Sub/cert.pem"
@@ -243,9 +245,106 @@ check "la CRL publiée est lisible" openssl crl -inform DER -in "$RUNX/pki-ca/La
 check "le certificat publié est de la bonne autorité" bash -c "openssl x509 -in '$RUNX/pki-ca/Lab-Root/cert.pem' -noout -subject | grep -q 'Lab Root CA'"
 check "aucun fichier public ne contient de clé privée" bash -c "! grep -rl 'PRIVATE KEY' '$RUNX/pki-ca'"
 
+echo "== Helper : contrôle d'un fichier PKCS#12 (0.14.4) =="
+P12PW='Tést P12 pass$1'
+mkec "$W/imp-root.key"; mkec "$W/impiss.key"; mkec "$W/impiss2.key"; mkec "$W/iss3.key"; mkec "$W/impiss3.key"; mkec "$W/other2.key"
+openssl req -x509 -new -key "$W/imp-root.key" -days 3650 -subj "/C=FR/O=Import/CN=Import Root" -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" -out "$W/imp-root.pem" 2>/dev/null
+openssl req -x509 -new -key "$W/other2.key" -days 3650 -subj "/C=FR/O=Autre/CN=Autre racine" -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" -out "$W/other2.pem" 2>/dev/null
+openssl req -new -key "$W/impiss.key" -subj "/C=FR/O=Import/CN=Import Issuing" -out "$W/impiss.csr" 2>/dev/null
+openssl req -new -key "$W/impiss2.key" -subj "/C=FR/O=Import/CN=Import Issuing 2" -out "$W/impiss2.csr" 2>/dev/null
+openssl req -new -key "$W/impiss3.key" -subj "/C=FR/O=Import/CN=Import Issuing 3" -out "$W/impiss3.csr" 2>/dev/null
+openssl req -new -key "$W/iss3.key" -subj "/C=FR/O=Laboratoire/CN=Import Sous Lab" -out "$W/iss3.csr" 2>/dev/null
+sign "$W/impiss.csr" "$W/imp-root.pem" "$W/imp-root.key" "$W/ca.ext" 1825 "$W/impiss.pem"
+sign "$W/impiss2.csr" "$W/imp-root.pem" "$W/imp-root.key" "$W/ca.ext" 1825 "$W/impiss2.pem"
+sign "$W/impiss3.csr" "$W/imp-root.pem" "$W/imp-root.key" "$W/ca.ext" 1825 "$W/impiss3.pem"
+sign "$W/iss3.csr" "$W/root.pem" "$W/root.key" "$W/ca.ext" 1825 "$W/iss3.pem"
+sign "$W/iss.csr" "$W/root.pem" "$W/root.key" "$W/ca.ext" 0 "$W/iss-short.pem"
+mkp12() {   # $1 = sortie, $2 = clé, $3 = certificat, $4 = autres certificats (facultatif), $5 = mot de passe (facultatif)
+  local a=(-export -inkey "$2" -in "$3" -out "$1" -passout "pass:${5-$P12PW}" -name ca)
+  [[ -n "${4:-}" ]] && a+=(-certfile "$4")
+  openssl pkcs12 "${a[@]}" 2>/dev/null
+}
+mkp12 "$W/imp-root.p12" "$W/imp-root.key" "$W/imp-root.pem"
+mkp12 "$W/impiss.p12" "$W/impiss.key" "$W/impiss.pem" "$W/imp-root.pem"
+mkp12 "$W/impiss2.p12" "$W/impiss2.key" "$W/impiss2.pem" "$W/imp-root.pem"
+mkp12 "$W/impiss3.p12" "$W/impiss3.key" "$W/impiss3.pem" "$W/imp-root.pem"
+mkp12 "$W/iss3.p12" "$W/iss3.key" "$W/iss3.pem" "$W/root.pem"
+mkp12 "$W/dup.p12" "$W/iss.key" "$W/iss.pem" "$W/root.pem"
+mkp12 "$W/root.p12" "$W/root.key" "$W/root.pem"
+mkp12 "$W/leaf.p12" "$W/iss.key" "$W/leaf.pem" "$W/root.pem"
+mkp12 "$W/nocs.p12" "$W/iss.key" "$W/nocs.pem" "$W/root.pem"
+mkp12 "$W/nochain.p12" "$W/impiss.key" "$W/impiss.pem"
+mkp12 "$W/badchain.p12" "$W/iss.key" "$W/iss-badchain.pem" "$W/other2.pem"
+mkp12 "$W/short.p12" "$W/iss.key" "$W/iss-short.pem" "$W/root.pem"
+openssl pkcs12 -export -nokeys -in "$W/iss.pem" -certfile "$W/root.pem" -out "$W/nokey.p12" -passout "pass:$P12PW" 2>/dev/null
+openssl pkcs12 -export -inkey "$W/impiss.key" -in "$W/impiss.pem" -certfile "$W/imp-root.pem" -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1 \
+  -out "$W/old.p12" -passout "pass:$P12PW" 2>/dev/null
+for f in imp-root impiss impiss2 impiss3 iss3 dup root leaf nocs nochain badchain short nokey old; do check "matériel PKCS#12 : $f.p12 fabriqué" test -s "$W/$f.p12"; done
+p12c() {   # $1 = fichier, $2 = mot de passe (par défaut le bon) ; sortie du helper, fichiers dans $W/p12out
+  rm -rf "$W/p12out" "$W/p12.chain"; mkdir -p "$W/p12out"; printf '%s' "${2-$P12PW}" > "$W/p12.pw"
+  ph p12-check "$1" "$W/p12.pw" "$W/p12out" "$W/p12.chain" 2>&1
+}
+fld() { printf '%s' "$1" | cut -f"$2"; }
+IMPSHA="$(openssl x509 -in "$W/imp-root.pem" -outform DER | sha256sum | cut -c1-8)"
+out="$(p12c "$W/impiss.p12")"
+expect_eq "émettrice : fichier accepté" OK "$(fld "$out" 1)"
+check "émettrice : mot de passe à usage unique de 32 caractères alphanumériques" bash -c "[[ '$(fld "$out" 2)' =~ ^[A-Za-z0-9]{32}\$ ]]"
+expect_eq "émettrice : sorte issuing" issuing "$(fld "$out" 3)"
+expect_eq "émettrice : algorithme ecp256" ecp256 "$(fld "$out" 4)"
+expect_eq "émettrice : empreinte (8 caractères) de la racine" "$IMPSHA" "$(fld "$out" 5)"
+check "émettrice : nom distinctif rendu" grep -q 'Import Issuing' <<< "$(fld "$out" 6)"
+check "émettrice : fin de validité rendue" grep -Eq '^20[0-9]{2}-' <<< "$(fld "$out" 7)"
+check "émettrice : nom distinctif de la racine rendu" grep -q 'Import Root' <<< "$(fld "$out" 8)"
+OT="$(fld "$out" 2)"
+check "fichier rhabillé : s'ouvre avec le mot de passe à usage unique" openssl pkcs12 -in "$W/p12out/ca.p12" -passin "pass:$OT" -nokeys -noout
+check "fichier rhabillé : ne s'ouvre PAS avec le mot de passe d'origine" bash -c "! openssl pkcs12 -in '$W/p12out/ca.p12' -passin 'pass:$P12PW' -nokeys -noout 2>/dev/null"
+expect_eq "fichier rhabillé : une clé et deux certificats" "1 2" "$(openssl pkcs12 -in "$W/p12out/ca.p12" -passin "pass:$OT" -nodes 2>/dev/null | awk '/BEGIN (EC |RSA )?PRIVATE KEY/{k++} /BEGIN CERTIFICATE/{c++} END{print k+0, c+0}')"
+check "racine extraite : celle du fichier" test "$(openssl x509 -in "$W/p12out/root.pem" -outform DER | sha256sum | cut -c1-8)" = "$IMPSHA"
+check "chaîne publique : la racine seule, sans clé" bash -c "grep -c 'BEGIN CERTIFICATE' '$W/p12.chain' | grep -qx 1 && ! grep -q PRIVATE '$W/p12.chain'"
+check "chaîne publique : lisible par le groupe (0640)" test "$(stat -c %a "$W/p12.chain")" = 640
+out="$(p12c "$W/imp-root.p12")"
+expect_eq "racine : fichier accepté" OK "$(fld "$out" 1)"
+expect_eq "racine : sorte root" root "$(fld "$out" 3)"
+expect_eq "racine : pas de racine supérieure" "-	-" "$(fld "$out" 5)	$(fld "$out" 8)"
+check "racine : pas de root.pem extrait" test ! -e "$W/p12out/root.pem"
+out="$(p12c "$W/old.p12")"; expect_eq "ancien chiffrement (3DES / SHA-1, comme l'export de Windows) : accepté" OK "$(fld "$out" 1)"
+out="$(p12c "$W/impiss.p12" 'mauvais mot de passe')"
+expect_eq "mauvais mot de passe : refusé" ERR "$(fld "$out" 1)"
+check "mauvais mot de passe : message clair, sans le mot de passe" bash -c "grep -qi 'mot de passe' <<< '$out' && ! grep -q 'mauvais mot de passe' <<< '$out'"
+check "mauvais mot de passe : aucun fichier rhabillé" test ! -e "$W/p12out/ca.p12"
+p12e() { out="$(p12c "$1" "${3-$P12PW}")"; expect_eq "refusé : $2" ERR "$(fld "$out" 1)"; check "refusé : $2 (message : $4)" grep -qi "$4" <<< "$out"; }
+p12e "$W/nokey.p12" "aucune clé privée" "$P12PW" "une seule clé"
+p12e "$W/leaf.p12" "certificat sans CA:TRUE" "$P12PW" "CA:TRUE"
+p12e "$W/nocs.p12" "autorité sans keyCertSign" "$P12PW" "keyCertSign"
+p12e "$W/nochain.p12" "chaîne incomplète (racine absente du fichier)" "$P12PW" "chaîne incomplète"
+p12e "$W/badchain.p12" "chaîne dont la signature ne valide pas" "$P12PW" "chaîne ne valide pas"
+p12e "$W/short.p12" "validité de moins d'un jour" "$P12PW" "moins d'un jour"
+p12e "$W/garbage" "fichier qui n'est pas un PKCS#12" "$P12PW" "PKCS#12"
+head -c 70000 /dev/zero | tr '\0' '0' > "$W/big.p12"; printf '\x30' | dd of="$W/big.p12" bs=1 conv=notrunc 2>/dev/null
+p12e "$W/big.p12" "fichier de plus de 64 Ko" "$P12PW" "64 Ko au plus"
+p12e "$W/impiss.p12" "mot de passe vide" "" "mot de passe"
+printf 'x\ny' > "$W/ctl.pw"; out="$(ph p12-check "$W/impiss.p12" "$W/ctl.pw" "$W/p12out" "$W/p12.chain" 2>&1)"; expect_eq "refusé : mot de passe avec caractère de contrôle" ERR "$(fld "$out" 1)"
+ln -sf "$W/impiss.p12" "$W/link.p12"; printf '%s' "$P12PW" > "$W/p12.pw"
+out="$(ph p12-check "$W/link.p12" "$W/p12.pw" "$W/p12out" "$W/p12.chain" 2>&1)"; expect_eq "refusé : fichier déposé par lien symbolique" ERR "$(fld "$out" 1)"
+out="$(ph p12-check "$W/absent.p12" "$W/p12.pw" "$W/p12out" "$W/p12.chain" 2>&1)"; expect_eq "refusé : fichier absent" ERR "$(fld "$out" 1)"
+check "aucun secret restant dans /dev/shm ni dans le dossier temporaire du helper" bash -c "! ls /dev/shm /tmp 2>/dev/null | grep -qi 'ddi-p12\|ddi-secret'"
+check "refus : le mot de passe d'origine n'est jamais écrit dans un message" bash -c "! grep -rl 'Tést P12 pass' '$W/p12out' 2>/dev/null"
+expect_eq "dn-find : même nom, éléments dans un autre ordre et casse différente" "A" "$(printf 'A\tCN=Test,O=Lab,C=FR\nB\tCN=Autre,O=Lab,C=FR\n' | ph dn-find 'c=fr,o=LAB,cn=test')"
+expect_eq "dn-find : nom différent" "" "$(printf 'A\tCN=Test,O=Lab,C=FR\n' | ph dn-find 'CN=Test,O=Lab,C=DE')"
+expect_eq "dn-find : élément supplémentaire = autre nom" "" "$(printf 'A\tCN=Test,O=Lab,C=FR\n' | ph dn-find 'CN=Test,OU=X,O=Lab,C=FR')"
+expect_eq "demande ca_import_p12 acceptée" "name	Imp-Iss" "$(pr '{"action":"ca_import_p12","name":"Imp-Iss"}' | grep '^name')"
+refuse "ca_import_p12 : nom ExtRoot-… réservé" '{"action":"ca_import_p12","name":"ExtRoot-0a1b2c3d"}'
+refuse "ca_import_p12 : nom ManagementCA" '{"action":"ca_import_p12","name":"ManagementCA"}'
+refuse "ca_import_p12 : nom qui remonte l'arborescence" '{"action":"ca_import_p12","name":"../x"}'
+refuse "ca_import_p12 : mot de passe glissé dans la demande (champ inconnu ignoré, mais nom invalide)" '{"action":"ca_import_p12","name":"a b","password":"x"}'
+out="$(pr '{"action":"ca_import_p12","name":"Imp-Iss","password":"secret-glisse"}')"
+check "ca_import_p12 : un champ supplémentaire (mot de passe) n'est pas relayé" bash -c "! grep -q 'secret-glisse' <<< '$out'"
+
 echo "== Racine : installation avec bouchons =="
 B="$T/bin"; mkdir -p "$B" "$T/etc" "$T/data" "$T/quad" "$T/run" "$T/gen/pki-in"
-LOG="$T/calls.log"; PLOG="$T/psql.log"; CADB="$T/cadb.tsv"; : > "$CADB"
+LOG="$T/calls.log"; PLOG="$T/psql.log"; CADB="$T/cadb.tsv"; : > "$CADB"; : > "$T/tokens.tsv"
 WORKH="$T/data/persistent/work"
 cat > "$B/podman" <<EOF
 #!/bin/bash
@@ -266,8 +365,28 @@ case "\$1" in
       "ca importcacert")
         if awk -F'\t' -v n="\$name" '\$1==n{f=1} END{exit !f}' "$CADB"; then
           awk -F'\t' -v OFS='\t' -v n="\$name" '\$1==n{\$2=1} {print}' "$CADB" > "$CADB.n" && mv "$CADB.n" "$CADB"
-        else printf '%s\t6\tCN=Racine hors ligne,O=Hors ligne,C=FR\t%s\n' "\$name" "\$((2000 + \$(wc -l < "$CADB")))" >> "$CADB"; fi
+        else
+          dn6="\$(openssl x509 -in "$WORKH/\${file##*/}" -noout -subject -nameopt RFC2253 2>/dev/null | sed 's/^subject=//')"
+          printf '%s\t6\t%s\t%s\n' "\$name" "\${dn6:-CN=Racine hors ligne,O=Hors ligne,C=FR}" "\$((2000 + \$(wc -l < "$CADB")))" >> "$CADB"
+        fi
         echo "importé depuis \$file" >> "$LOG" ;;
+      "ca importca")
+        p12=""; kspw=""
+        for ((j=2; j<\${#s[@]}; j++)); do case "\${s[\$j]}" in --p12) p12="\${s[\$((j+1))]}";; -kspassword) kspw="\${s[\$((j+1))]}";; esac; done
+        [ -f "$T/fail.importca" ] && { echo "échec de l'import, mot de passe \$kspw" >&2; exit 1; }
+        subj="\$(openssl pkcs12 -in "$WORKH/\${p12##*/}" -passin "pass:\$kspw" -nodes -clcerts -nokeys 2>/dev/null | openssl x509 -noout -subject -nameopt RFC2253 2>/dev/null | sed 's/^subject=//')"
+        [ -n "\$subj" ] || { echo "PKCS#12 illisible avec le mot de passe reçu" >&2; exit 1; }
+        printf '%s' "\$kspw" > "$T/onetime.pw"
+        printf '%s\t1\t%s\t%s\n' "\$name" "\$subj" "\$((2000 + \$(wc -l < "$CADB")))" >> "$CADB" 
+        # EJBCA 9.6.3 : le jeton de clés créé par l'import est « manuel » (pas de PIN d'activation automatique)
+        printf '%s\tImportedCryptoToken-%s\t0\n' "\$((7000 + \$(wc -l < "$T/tokens.tsv")))" "\$((100 + \$(wc -l < "$T/tokens.tsv")))" >> "$T/tokens.tsv" ;;
+      "cryptotoken setpin")
+        tk=""; oldp=""; upd=0
+        for ((j=2; j<\${#s[@]}; j++)); do case "\${s[\$j]}" in --token) tk="\${s[\$((j+1))]}";; --oldpin) oldp="\${s[\$((j+1))]}";; --update) upd=1;; esac; done
+        [ -f "$T/fail.setpin" ] && { echo "échec de setpin, PIN \$oldp" >&2; exit 1; }
+        [ "\$oldp" = "\$(cat "$T/onetime.pw" 2>/dev/null)" ] || { echo "mauvais PIN" >&2; exit 1; }
+        # sans --update : l'activation automatique est posée ; avec --update : seulement si le jeton l'avait déjà (cas réel observé)
+        [ "\$upd" = 0 ] && awk -F'\t' -v OFS='\t' -v t="\$tk" '\$2==t{\$3=1} {print}' "$T/tokens.tsv" > "$T/tokens.n" && mv "$T/tokens.n" "$T/tokens.tsv" ;;
       "ca createcrl") [ -f "$T/fail.crl" ] && exit 1 ;;
     esac ;;
 esac
@@ -288,10 +407,14 @@ cat > "$B/psql" <<EOF
 sql="\$(cat)"
 { echo "psql \$* [PKI_DB_PW=\${PKI_DB_PW:+défini}]"; printf '%s\n' "\$sql"; } >> "$PLOG"
 [ -f "$T/psql.fail" ] && exit 1
-n=""; while [ "\$#" -gt 0 ]; do case "\$1" in -v) shift; case "\$1" in n=*) n="\${1#n=}";; esac;; esac; shift; done
+n=""; ids=""; t=""; while [ "\$#" -gt 0 ]; do case "\$1" in -v) shift; case "\$1" in n=*) n="\${1#n=}";; ids=*) ids="\${1#ids=}";; t=*) t="\${1#t=}";; esac;; esac; shift; done
 case "\$sql" in
   *"pg_database where datname = 'ejbca'"*) [ -f "$T/db.exists" ] && echo exists ;;
   *information_schema.tables*) cat "$T/tables" 2>/dev/null || echo 0 ;;
+  *"select id from cryptotokendata"*) cut -f1 "$T/tokens.tsv" 2>/dev/null ;;
+  *"tokenname like 'ImportedCryptoToken%'"*) awk -F'\t' -v ids="\$ids" 'BEGIN{n=split(ids,a,","); for(i=1;i<=n;i++) k[a[i]]=1} !(\$1 in k){print \$2}' "$T/tokens.tsv" 2>/dev/null ;;
+  *"from cryptotokendata where tokenname = "*) awk -F'\t' -v t="\$t" '\$2==t && \$3==1{f=1} END{if(f) print 1}' "$T/tokens.tsv" 2>/dev/null ;;
+  *"select name, subjectdn from cadata"*) awk -F'\t' '{print \$1 "\t" \$3}' "$CADB" ;;
   *"from cadata where name <> 'ManagementCA'"*) awk -F'\t' '\$1!="ManagementCA" && \$2!=6' "$CADB" | wc -l ;;
   *"select 1 from cadata where name"*) awk -F'\t' -v n="\$n" '\$1==n{f=1} END{if(f) print 1}' "$CADB" ;;
   *"select status from cadata"*) awk -F'\t' -v n="\$n" '\$1==n{print \$2}' "$CADB" ;;
@@ -467,9 +590,113 @@ rm -f "$T/healthy"; : > "$LOG"; DDI_PKI_CRL_RENEW_AFTER=0 "$PKI" maintain >/dev/
 expect_eq "PKI qui ne répond pas : aucune commande envoyée" 0 "$(cas_n)"
 touch "$T/healthy"
 
+echo "== Reprise d'une autorité depuis un PKCS#12 (0.14.4) =="
+openssl req -x509 -new -key "$W/iss3.key" -days 3650 -subj "/C=FR/O=Import/CN=Import Root 2" -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" -out "$W/imp-root2.pem" 2>/dev/null
+mkp12 "$W/imp-root2.p12" "$W/iss3.key" "$W/imp-root2.pem"
+dep() { rm -f "$G/pki-in/$2.p12" "$G/pki-in/$2.p12pw"; cp "$1" "$G/pki-in/$2.p12"; printf '%s' "${3-$P12PW}" > "$G/pki-in/$2.p12pw"; chmod 600 "$G/pki-in/$2.p12" "$G/pki-in/$2.p12pw"; }
+nodep() { check "$1 : dépôts consommés (fichier et mot de passe)" test ! -e "$G/pki-in/$2.p12" -a ! -e "$G/pki-in/$2.p12pw"; }
+clean() { check "$1 : dossier de travail partagé vidé" test -z "$(ls -A "$WORKH" 2>/dev/null)"; check "$1 : aucun dossier d'autorité laissé" test ! -e "$T/data/ca/$2"; }
+nosecret() { check "$1 : le mot de passe du fichier n'apparaît ni dans la réponse, ni dans le résultat, ni dans les appels" bash -c "! grep -qF -- 'Tést P12 pass' '$T/req.out' '$R/pki-result.json' '$LOG' 2>/dev/null"; }
+echo "-- refus --"
+: > "$LOG"; dep "$W/impiss.p12" Imp-Bad 'mauvais mot de passe'; req '{"action":"ca_import_p12","name":"Imp-Bad"}'
+expect_eq "mauvais mot de passe : refusé" false "$RES_OK"; check "mauvais mot de passe : motif lisible" grep -qi "mot de passe" <<< "$RES_MSG"
+expect_eq "mauvais mot de passe : aucune commande envoyée à EJBCA" 0 "$(cas_n)"; nodep "mauvais mot de passe" Imp-Bad; clean "mauvais mot de passe" Imp-Bad
+check "mauvais mot de passe : le mot de passe essayé n'est pas répété dans le résultat" bash -c "! grep -qF 'mauvais mot de passe' '$R/pki-result.json'"
+dep "$W/garbage" Imp-Bad; req '{"action":"ca_import_p12","name":"Imp-Bad"}'
+expect_eq "fichier qui n'est pas un PKCS#12 : refusé" false "$RES_OK"; nodep "fichier illisible" Imp-Bad; clean "fichier illisible" Imp-Bad
+rm -f "$G/pki-in/Imp-Bad".*; req '{"action":"ca_import_p12","name":"Imp-Bad"}'
+expect_eq "aucun dépôt : refusé" false "$RES_OK"; clean "aucun dépôt" Imp-Bad
+dep "$W/dup.p12" Imp-Dup; : > "$LOG"; req '{"action":"ca_import_p12","name":"Imp-Dup"}'
+expect_eq "nom distinctif déjà porté par une autorité : refusé" false "$RES_OK"; check "doublon : l'autorité en place est nommée" grep -q "Lab-Ext" <<< "$RES_MSG"
+expect_eq "doublon : aucune commande envoyée à EJBCA" 0 "$(cas_n)"; nodep "doublon" Imp-Dup; clean "doublon" Imp-Dup
+dep "$W/imp-root.p12" Lab-Root; : > "$LOG"; req '{"action":"ca_import_p12","name":"Lab-Root"}'
+expect_eq "nom d'autorité déjà utilisé : refusé" false "$RES_OK"; expect_eq "nom déjà utilisé : aucune commande envoyée" 0 "$(cas_n)"; nodep "nom déjà utilisé" Lab-Root
+check "nom déjà utilisé : l'autorité existante est intacte" grep -q '"kind": "root"' "$T/data/ca/Lab-Root/meta.json"
+req '{"action":"ca_import_p12","name":"ExtRoot-0a1b2c3d"}'; expect_eq "nom réservé aux racines hors ligne : refusé" false "$RES_OK"
+dep "$W/leaf.p12" Imp-Leaf; req '{"action":"ca_import_p12","name":"Imp-Leaf"}'
+expect_eq "certificat sans CA:TRUE : refusé" false "$RES_OK"; nodep "sans CA:TRUE" Imp-Leaf; clean "sans CA:TRUE" Imp-Leaf
+dep "$W/nochain.p12" Imp-Nochain; req '{"action":"ca_import_p12","name":"Imp-Nochain"}'
+expect_eq "chaîne incomplète : refusé" false "$RES_OK"; nodep "chaîne incomplète" Imp-Nochain; clean "chaîne incomplète" Imp-Nochain
+echo "-- émettrice sous une racine nouvelle --"
+dep "$W/impiss.p12" Imp-Iss; : > "$LOG"; req '{"action":"ca_import_p12","name":"Imp-Iss"}'
+expect_eq "émettrice : importée" true "$RES_OK"
+check "émettrice : message de réussite (sorte et validité)" grep -q "reprise du fichier PKCS#12 (émettrice, valable jusqu" <<< "$RES_MSG"
+check "émettrice : le message rappelle que la clé est dans la base du DDI" grep -q "base du DDI" <<< "$RES_MSG"
+expect_grep "émettrice : sa racine est d'abord importée comme autorité externe sans clé" "ca importcacert --caname ExtRoot-$IMPSHA -f /mnt/persistent/work/root.pem\$" "$LOG"
+expect_grep "émettrice : ca importca avec le fichier rhabillé et un mot de passe à usage unique de 32 caractères" 'ca importca --caname Imp-Iss --p12 /mnt/persistent/work/ca.p12 -kspassword [A-Za-z0-9]{32}$' "$LOG"
+check "émettrice : la racine est importée AVANT l'autorité" bash -c "[ \$(grep -n 'importcacert --caname ExtRoot-$IMPSHA' '$LOG' | head -1 | cut -d: -f1) -lt \$(grep -n 'ca importca ' '$LOG' | head -1 | cut -d: -f1) ]"
+expect_grep "émettrice : adresse de CRL publiée" 'ca editca --caname Imp-Iss --field defaultCRLDistPoint ' "$LOG"
+expect_grep "émettrice : première CRL créée" 'ca createcrl --caname Imp-Iss$' "$LOG"
+M="$T/data/ca/Imp-Iss/meta.json"; mj() { python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1])).get(sys.argv[2])).lower())' "$M" "$1"; }
+expect_eq "mémoire : sorte issuing" issuing "$(mj kind)"; expect_eq "mémoire : signée par une racine externe" external "$(mj signedBy)"
+expect_eq "mémoire : racine hors ligne associée" "extroot-$IMPSHA" "$(mj extRoot)"; expect_eq "mémoire : drapeau importée" true "$(mj imported)"; expect_eq "mémoire : algorithme" ecp256 "$(mj alg)"
+check "mémoire : l'autorité du DDI n'a pas le drapeau importée" bash -c "! grep -q imported '$T/data/ca/Lab-Sub/meta.json'"
+expect_eq "mémoire de la racine importée : sorte extroot" extroot "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("kind"))' "$T/data/ca/ExtRoot-$IMPSHA/meta.json")"
+check "chaîne publique de l'autorité conservée (la racine, sans clé)" bash -c "grep -c 'BEGIN CERTIFICATE' '$T/data/ca/Imp-Iss/chain.pem' | grep -qx 1"
+check "la chaîne se vérifie : racine du fichier" openssl x509 -in "$T/data/ca/Imp-Iss/chain.pem" -noout -subject
+nodep "import réussi" Imp-Iss; clean "import réussi" ExtRoot-none; check "import réussi : dossier de l'autorité présent" test -d "$T/data/ca/Imp-Iss"
+nosecret "import réussi"
+OT="$(cat "$T/onetime.pw")"
+check "mot de passe à usage unique : jamais celui du fichier" test "$OT" != "$P12PW"
+check "mot de passe à usage unique : absent du résultat et de la sortie de la demande" bash -c "! grep -qF -- '$OT' '$R/pki-result.json' '$T/req.out'"
+check "aucune clé privée dans la mémoire des autorités ni dans les dépôts publics" bash -c "! grep -rl 'PRIVATE KEY' '$T/data' '$G/pki-in' '$R' 2>/dev/null"
+TK1="$(awk -F'\t' 'NR==1{print $2}' "$T/tokens.tsv")"
+expect_grep "jeton de clés : PIN d'activation automatique posé (setpin SANS --update, avec le mot de passe à usage unique)" "cryptotoken setpin --token $TK1 --oldpin [A-Za-z0-9]{32} --newpin [A-Za-z0-9]{32}\$" "$LOG"
+expect_nogrep "jeton de clés : jamais --update (il n'active pas un jeton resté manuel)" "setpin .*--update" "$LOG"
+check "jeton de clés : PIN ancien et nouveau identiques au mot de passe à usage unique" bash -c "grep -E 'cryptotoken setpin' '$LOG' | head -1 | grep -qF -- '--oldpin $OT --newpin $OT'"
+expect_eq "jeton de clés : devenu automatique" 1 "$(awk -F'\t' 'NR==1{print $3}' "$T/tokens.tsv")"
+check "jeton de clés : setpin passe après l'import et avant la première CRL" bash -c "[ \$(grep -n 'ca importca ' '$LOG' | head -1 | cut -d: -f1) -lt \$(grep -n 'cryptotoken setpin' '$LOG' | head -1 | cut -d: -f1) ] && [ \$(grep -n 'cryptotoken setpin' '$LOG' | head -1 | cut -d: -f1) -lt \$(grep -n 'ca createcrl --caname Imp-Iss' '$LOG' | head -1 | cut -d: -f1) ]"
+check "jeton de clés : le PIN n'apparaît ni dans le résultat ni dans la sortie de la demande" bash -c "! grep -qF -- '$OT' '$R/pki-result.json' '$T/req.out'"
+check "jeton de clés : message de réussite sans avertissement" bash -c '! grep -q AVERTISSEMENT <<< "$0"' "$RES_MSG"
+echo "-- échec de la CLI d'EJBCA --"
+dep "$W/impiss2.p12" Imp-Iss2; : > "$LOG"; touch "$T/fail.importca"; req '{"action":"ca_import_p12","name":"Imp-Iss2"}'; rm -f "$T/fail.importca"
+expect_eq "échec de ca importca : demande en échec" false "$RES_OK"
+check "échec : le mot de passe à usage unique est masqué dans le message" bash -c "! grep -qF -- '$(cat "$T/onetime.pw")' '$R/pki-result.json' '$T/req.out'; ! grep -q 'mot de passe [A-Za-z0-9]\{32\}' '$R/pki-result.json'"
+nodep "échec CLI" Imp-Iss2; clean "échec CLI" Imp-Iss2; nosecret "échec CLI"
+expect_nogrep "échec : la racine déjà importée n'est pas réimportée" "importcacert --caname ExtRoot" "$LOG"
+echo "-- échec de l'activation automatique du jeton --"
+dep "$W/impiss3.p12" Imp-Sub0; : > "$LOG"; touch "$T/fail.setpin"; req '{"action":"ca_import_p12","name":"Imp-Sub0"}'; rm -f "$T/fail.setpin"
+expect_eq "setpin en échec : l'autorité reste importée (elle fonctionne jusqu'au redémarrage)" true "$RES_OK"
+check "setpin en échec : AVERTISSEMENT explicite" grep -q "AVERTISSEMENT" <<< "$RES_MSG"
+check "setpin en échec : l'avertissement dit que l'autorité sera hors ligne au prochain redémarrage" grep -qi "hors ligne au prochain redémarrage" <<< "$RES_MSG"
+check "setpin en échec : le PIN est masqué dans le message" bash -c '! grep -qF -- "$0" <<< "$1"' "$(cat "$T/onetime.pw")" "$RES_MSG"
+expect_grep "setpin en échec : deux essais" "cryptotoken setpin --token" "$LOG"
+expect_eq "setpin en échec : deux tentatives exactement" 2 "$(grep -c 'cryptotoken setpin' "$LOG")"
+check "setpin en échec : le PIN n'est écrit nulle part (journal de la PKI, résultat)" bash -c "! grep -qF -- '$(cat "$T/onetime.pw")' '$R/pki-result.json' '$T/req.out' 2>/dev/null"
+expect_eq "setpin en échec : le jeton reste manuel" 0 "$(awk -F'\t' 'END{print $3}' "$T/tokens.tsv")"
+check "setpin en échec : mémoire écrite (l'autorité est gérée)" test -s "$T/data/ca/Imp-Sub0/meta.json"
+nodep "setpin en échec" Imp-Sub0
+echo "-- émettrice sous une racine déjà connue --"
+dep "$W/impiss2.p12" Imp-Iss2; : > "$LOG"; req '{"action":"ca_import_p12","name":"Imp-Iss2"}'
+expect_eq "deuxième émettrice sous la même racine : importée" true "$RES_OK"
+expect_nogrep "racine déjà connue : non réimportée" "importcacert" "$LOG"
+M="$T/data/ca/Imp-Iss2/meta.json"; expect_eq "mémoire : même racine hors ligne réutilisée" "extroot-$IMPSHA" "$(mj extRoot)"
+dep "$W/iss3.p12" Imp-Sub; : > "$LOG"; req '{"action":"ca_import_p12","name":"Imp-Sub"}'
+expect_eq "émettrice sous la racine du DDI (même nom distinctif que Lab-Root) : importée" true "$RES_OK"
+expect_nogrep "racine du DDI : rien à importer" "importcacert" "$LOG"
+M="$T/data/ca/Imp-Sub/meta.json"; expect_eq "mémoire : signée par la racine du DDI" lab-root "$(mj signedBy)"; expect_eq "mémoire : drapeau importée" true "$(mj imported)"
+echo "-- racine seule --"
+dep "$W/imp-root.p12" Imp-RootDup; : > "$LOG"; req '{"action":"ca_import_p12","name":"Imp-RootDup"}'
+expect_eq "racine déjà connue comme racine hors ligne : refusée (pas de promotion)" false "$RES_OK"; check "refus : l'autorité qui porte ce nom est nommée" grep -q "ExtRoot-$IMPSHA" <<< "$RES_MSG"
+nodep "racine déjà connue" Imp-RootDup; clean "racine déjà connue" Imp-RootDup
+dep "$W/imp-root2.p12" Imp-Root; : > "$LOG"; req '{"action":"ca_import_p12","name":"Imp-Root"}'
+expect_eq "racine : importée" true "$RES_OK"; check "racine : message" grep -q "reprise du fichier PKCS#12 (racine" <<< "$RES_MSG"
+expect_nogrep "racine : aucune autre racine importée" "importcacert" "$LOG"
+expect_grep "racine : ca importca" 'ca importca --caname Imp-Root --p12 /mnt/persistent/work/ca.p12 -kspassword [A-Za-z0-9]{32}$' "$LOG"
+M="$T/data/ca/Imp-Root/meta.json"; expect_eq "mémoire : sorte root" root "$(mj kind)"; expect_eq "mémoire : auto-signée" self "$(mj signedBy)"; expect_eq "mémoire : drapeau importée" true "$(mj imported)"
+check "racine : pas de chaîne publique à conserver" test ! -s "$T/data/ca/Imp-Root/chain.pem"
+nodep "racine" Imp-Root; nosecret "racine"
+echo "-- émission depuis une autorité reprise --"
+: > "$LOG"; req '{"action":"ca_import_p12","name":"Imp-Root"}'
+expect_eq "second import du même nom : refusé" false "$RES_OK"
+check "aucune clé privée nulle part dans la mémoire des autorités" bash -c "! grep -rl 'PRIVATE KEY' '$T/data' 2>/dev/null"
+check "purge : un dépôt orphelin de plus de 10 minutes est supprimé" bash -c "cp '$W/impiss.p12' '$G/pki-in/Orphelin.p12'; printf x > '$G/pki-in/Orphelin.p12pw'; touch -d '-30 minutes' '$G/pki-in/Orphelin.p12' '$G/pki-in/Orphelin.p12pw'; DDI_PKI_CRL_RENEW_AFTER=99999999 '$PKI' maintain >/dev/null 2>&1; test ! -e '$G/pki-in/Orphelin.p12' -a ! -e '$G/pki-in/Orphelin.p12pw'"
+check "purge : un dépôt récent est conservé" bash -c "cp '$W/impiss.p12' '$G/pki-in/Recent.p12'; DDI_PKI_CRL_RENEW_AFTER=99999999 '$PKI' maintain >/dev/null 2>&1; test -e '$G/pki-in/Recent.p12'; rm -f '$G/pki-in/Recent.p12'"
+
 echo "== Remise à zéro =="
 "$PKI" status >/dev/null 2>&1
-expect_eq "état : autorités avec clé comptées (3 : racine, interne, externe en attente devenue active, 2e en attente)" 4 "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("casCount"))' "$R/pki-status.json")"
+expect_eq "état : autorités avec clé comptées (racine, interne, 2 externes + 5 reprises d'un PKCS#12)" 9 "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("casCount"))' "$R/pki-status.json")"
 expect_eq "état : remise à zéro interdite" false "$(st resetAllowed)"
 : > "$PLOG"; req '{"action":"reset"}'
 expect_eq "remise à zéro refusée tant qu'il existe des autorités" false "$RES_OK"

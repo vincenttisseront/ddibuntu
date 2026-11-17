@@ -370,6 +370,133 @@ issue 1000000000000008 server "$CW/ext.csr" '"dns":["ext.lab.test"]' Lab-Ext
 expect_eq "émettrice sous racine hors ligne : certificat émis aussi" true "$RES_OK"
 check "…et sa chaîne remonte à la racine hors ligne" openssl verify -CAfile "$RUNP/pki-cert/1000000000000008/chain.pem" -untrusted "$RUNP/pki-ca/Lab-Ext/cert.pem" "$RUNP/pki-cert/1000000000000008/cert.pem"
 
+echo "== Reprise d'une autorité depuis un PKCS#12 (0.14.4) : EJBCA réel =="
+IW="$D/iw"; mkdir -p "$IW"
+LIVEPW='Pä55 "wörd'"'"'$x'
+printf 'basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n' > "$IW/ca.ext"
+printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n' > "$IW/leaf.ext"
+p12_root() {   # $1 base, $2 sujet, $3… options de clé de « openssl req » : racine auto-signée
+  local b="$1" subj="$2"; shift 2
+  openssl req -x509 -newkey "$@" -nodes -keyout "$IW/$b.key" -out "$IW/$b.pem" -days 3650 -subj "$subj" -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" -addext "subjectKeyIdentifier=hash" 2>/dev/null
+}
+p12_sub() {   # $1 base, $2 sujet, $3 racine (base), $4 extensions, $5… options de clé : certificat signé par la racine
+  local b="$1" subj="$2" r="$3" ext="$4"; shift 4
+  openssl req -new -newkey "$@" -nodes -keyout "$IW/$b.key" -out "$IW/$b.csr" -subj "$subj" 2>/dev/null
+  openssl x509 -req -in "$IW/$b.csr" -CA "$IW/$r.pem" -CAkey "$IW/$r.key" -CAcreateserial -days 1825 -sha256 -extfile "$ext" -out "$IW/$b.pem" 2>/dev/null
+}
+p12_pack() { local a=(-export -inkey "$IW/$2.key" -in "$IW/$2.pem" -out "$IW/$1.p12" -passout "pass:$LIVEPW" -name ca "${@:4}"); [ -n "${3:-}" ] && a+=(-certfile "$IW/$3.pem"); openssl pkcs12 "${a[@]}" 2>/dev/null; }
+p12_dep() { rm -f "$GEN/pki-in/$2.p12" "$GEN/pki-in/$2.p12pw"; cp "$IW/$1.p12" "$GEN/pki-in/$2.p12"; printf '%s' "${3-$LIVEPW}" > "$GEN/pki-in/$2.p12pw"; chmod 600 "$GEN/pki-in/$2.p12" "$GEN/pki-in/$2.p12pw"; }
+p12_none() { check "$1 : dépôts consommés (fichier et mot de passe)" test ! -e "$GEN/pki-in/$2.p12" -a ! -e "$GEN/pki-in/$2.p12pw"; }
+p12_req_ps() {   # $1 = JSON ; comme req, mais surveille la liste des processus pendant l'import : le vrai mot de passe ne doit jamais y figurer
+  printf '%s' "$1" > "$GEN/.pki-request"
+  ( "$PKI" request > "$D/req.out" 2>&1 ) & local bg=$!
+  PS_SEEN=0; PS_ONETIME=0
+  while kill -0 "$bg" 2>/dev/null; do
+    local l; l="$(ps -eww -o args= 2>/dev/null)"
+    grep -qF -- 'Pä55' <<< "$l" && PS_SEEN=1
+    grep -qE -- '-kspassword [A-Za-z0-9]{32}( |$)' <<< "$l" && PS_ONETIME=1
+    sleep 0.2
+  done
+  wait "$bg" 2>/dev/null || true
+  RES_OK="$(jget "$RUNP/pki-result.json" ok)"; RES_MSG="$(jget "$RUNP/pki-result.json" message)"
+}
+p12_root iroot "/C=FR/O=Import/CN=Import Root Live" rsa:3072
+p12_sub iiss "/C=FR/O=Import/CN=Import Issuing Live" iroot "$IW/ca.ext" rsa:3072
+p12_sub iiss2 "/C=FR/O=Import/CN=Import Issuing Live 2" iroot "$IW/ca.ext" ec -pkeyopt ec_paramgen_curve:prime256v1
+p12_sub ileaf "/C=FR/O=Import/CN=Import Leaf" iroot "$IW/leaf.ext" rsa:2048
+p12_root iroot2 "/C=FR/O=Import/CN=Import Root Live 2" ec -pkeyopt ec_paramgen_curve:secp384r1
+p12_root idup "/C=FR/O=Laboratoire/CN=Lab Root CA" ec -pkeyopt ec_paramgen_curve:prime256v1
+p12_pack iiss iiss iroot; p12_pack iiss2 iiss2 iroot -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1
+p12_pack ileaf ileaf iroot; p12_pack inochain iiss ""; p12_pack iroot2 iroot2 ""; p12_pack idup idup ""
+for f in iiss iiss2 ileaf inochain iroot2 idup; do check "matériel PKCS#12 : $f.p12 fabriqué" test -s "$IW/$f.p12"; done
+IROOTSHA="$(openssl x509 -in "$IW/iroot.pem" -outform DER | sha256sum | cut -c1-8)"
+"$PKI" status >/dev/null 2>&1; CAS0="$(jget "$RUNP/pki-status.json" casCount)"
+echo "-- refus (rien n'est importé dans EJBCA) --"
+p12_dep iiss Imp-Bad 'faux mot de passe'; req '{"action":"ca_import_p12","name":"Imp-Bad"}'
+expect_eq "mauvais mot de passe : refusé" false "$RES_OK"; check "mauvais mot de passe : motif lisible" grep -qi "mot de passe" <<< "$RES_MSG"; p12_none "mauvais mot de passe" Imp-Bad
+p12_dep ileaf Imp-Leaf; req '{"action":"ca_import_p12","name":"Imp-Leaf"}'
+expect_eq "certificat sans CA:TRUE : refusé" false "$RES_OK"; check "sans CA:TRUE : motif lisible" grep -q "CA:TRUE" <<< "$RES_MSG"; p12_none "sans CA:TRUE" Imp-Leaf
+p12_dep inochain Imp-Nochain; req '{"action":"ca_import_p12","name":"Imp-Nochain"}'
+expect_eq "chaîne incomplète : refusé" false "$RES_OK"; check "chaîne incomplète : motif lisible" grep -qi "chaîne incomplète" <<< "$RES_MSG"; p12_none "chaîne incomplète" Imp-Nochain
+p12_dep idup Imp-Dup; req '{"action":"ca_import_p12","name":"Imp-Dup"}'
+expect_eq "même nom distinctif qu'une autorité du DDI (ordre des éléments différent) : refusé" false "$RES_OK"; check "doublon : l'autorité en place est nommée" grep -q "Lab-Root" <<< "$RES_MSG"; p12_none "doublon" Imp-Dup
+p12_dep iiss Lab-Root; req '{"action":"ca_import_p12","name":"Lab-Root"}'
+expect_eq "nom déjà utilisé : refusé" false "$RES_OK"; p12_none "nom déjà utilisé" Lab-Root
+printf 'pas un PKCS#12' > "$IW/garbage.p12"; p12_dep garbage Imp-Garbage; req '{"action":"ca_import_p12","name":"Imp-Garbage"}'
+expect_eq "fichier qui n'est pas un PKCS#12 : refusé" false "$RES_OK"; p12_none "fichier illisible" Imp-Garbage
+expect_eq "refus : aucune autorité créée, aucune racine importée" "" "$(ca_get Imp-Bad name)$(ca_get Imp-Leaf name)$(ca_get "ExtRoot-$IROOTSHA" name)"
+check "refus : le dossier d'échange est vide" test -z "$(ls -A "$D/data/persistent/work")"
+echo "-- émettrice sous une racine nouvelle (RSA 3072) --"
+p12_dep iiss Imp-Iss; p12_req_ps '{"action":"ca_import_p12","name":"Imp-Iss"}'
+expect_eq "émettrice : importée" true "$RES_OK"
+echo "  (message : $RES_MSG)"
+"$PKI" status >/dev/null 2>&1
+expect_eq "émettrice : sorte" issuing "$(ca_get Imp-Iss kind)"; expect_eq "émettrice : active" active "$(ca_get Imp-Iss state)"
+expect_eq "émettrice : marquée importée" true "$(ca_get Imp-Iss imported)"; expect_eq "émettrice : signée par une racine externe" external "$(ca_get Imp-Iss signedBy)"
+expect_eq "émettrice : racine hors ligne associée" "ExtRoot-$IROOTSHA" "$(ca_get Imp-Iss extRoot)"
+expect_eq "émettrice : clé RSA 3072" "RSA 3072" "$(ca_get Imp-Iss keyAlg) $(ca_get Imp-Iss keyBits)"
+expect_eq "émettrice : nom distinctif d'EJBCA" "CN=Import Issuing Live,O=Import,C=FR" "$(ca_get Imp-Iss dn)"
+expect_eq "racine du fichier : connue comme racine externe sans clé" extroot "$(ca_get "ExtRoot-$IROOTSHA" kind)"
+expect_eq "racine du fichier : pas marquée importée (aucune clé)" false "$(ca_get "ExtRoot-$IROOTSHA" imported)"
+check "le certificat publié est celui du fichier" test "$(openssl x509 -in "$RUNP/pki-ca/Imp-Iss/cert.pem" -outform DER | sha256sum)" = "$(openssl x509 -in "$IW/iiss.pem" -outform DER | sha256sum)"
+check "la chaîne publiée remonte à la racine du fichier" openssl verify -CAfile "$IW/iroot.pem" -untrusted "$RUNP/pki-ca/Imp-Iss/chain.pem" "$RUNP/pki-ca/Imp-Iss/cert.pem"
+check "première CRL publiée" test -s "$RUNP/pki-ca/Imp-Iss/crl.der"
+code="$(fetch_url "$(ca_get Imp-Iss crlUrl)" "$IW/imp-iss.crl")"; expect_eq "CRL de l'autorité reprise servie en HTTP" 200 "$code"
+check "…et signée par l'autorité reprise (la bonne clé est dans EJBCA)" bash -c "openssl crl -inform DER -in '$IW/imp-iss.crl' -CAfile '$IW/iiss.pem' -noout -verify 2>&1 | grep -q 'verify OK'"
+check "adresse de CRL du DDI enregistrée dans l'autorité" bash -c "ca=\$(python3 -c 'import sys,json; print([c[\"crlUrl\"] for c in json.load(open(sys.argv[1]))[\"cas\"] if c[\"name\"]==\"Imp-Iss\"][0])' '$RUNP/pki-cas.json'); grep -q 'issuer=CN%3DImport%20Issuing%20Live' <<< \"\$ca\""
+expect_eq "le vrai mot de passe n'a jamais figuré dans la liste des processus" 0 "$PS_SEEN"
+note "mot de passe à usage unique vu dans la liste des processus pendant l'import : $PS_ONETIME (attendu : lui seul peut y figurer)"
+check "mot de passe du fichier : absent de la sortie, du résultat et des journaux du conteneur" bash -c "! grep -qF 'Pä55' '$D/req.out' '$RUNP/pki-result.json' && ! '$D/bin/podman' logs ddibuntu-ejbca 2>&1 | grep -qF 'Pä55'"
+check "mot de passe du fichier : absent de tous les fichiers du DDI" bash -c "! grep -rlF 'Pä55' '$D/data' '$GEN' '$D/etc' '$RUNP' 2>/dev/null"
+check "aucune clé privée dans les fichiers (elle est dans la base d'EJBCA)" bash -c "! grep -rl 'PRIVATE KEY' '$D/data' '$GEN' '$RUNP' 2>/dev/null"
+check "dépôts consommés" test ! -e "$GEN/pki-in/Imp-Iss.p12" -a ! -e "$GEN/pki-in/Imp-Iss.p12pw"
+check "dossier d'échange vidé (le fichier rhabillé et la racine ne restent pas)" test -z "$(ls -A "$D/data/persistent/work")"
+check "rien ne reste dans /dev/shm" bash -c "! ls /dev/shm 2>/dev/null | grep -qi 'ddi'"
+expect_eq "EJBCA : l'autorité est active (statut 1) avec son jeton de clés importé" "1 1" "$(ejpsql -c "select c.status, (select count(*) from cryptotokendata where tokenname like 'ImportedCryptoToken%') from cadata c where c.name = 'Imp-Iss'" | tr '|' ' ')"
+expect_eq "EJBCA : le jeton de clés importé a un PIN d'activation automatique (sinon hors ligne après redémarrage)" "1 1" "$(ejpsql -c "select count(*) filter (where convert_from(decode(tokenprops, 'base64'), 'UTF8') ~ '(^|\n)pin='), count(*) from cryptotokendata where tokenname like 'ImportedCryptoToken%'" | tr '|' ' ')"
+echo "-- émission et révocation depuis l'autorité reprise --"
+openssl req -newkey rsa:2048 -nodes -keyout "$CW/imp.key" -out "$CW/imp.csr" -subj "/CN=x" 2>/dev/null
+issue 1000000000000010 server "$CW/imp.csr" '"dns":["imp.lab.test"]' Imp-Iss
+expect_eq "certificat émis par l'autorité reprise" true "$RES_OK"
+C10="$RUNP/pki-cert/1000000000000010"
+check "le certificat se vérifie jusqu'à la racine du fichier (signé avec la clé importée)" openssl verify -CAfile "$IW/iroot.pem" -untrusted "$IW/iiss.pem" "$C10/cert.pem"
+check "…et porte l'adresse de CRL de l'autorité reprise" bash -c "openssl x509 -in '$C10/cert.pem' -noout -text | grep -q 'cmd=crl&issuer=CN%3DImport%20Issuing%20Live'"
+SER10="$(jget "$C10/meta.json" serial)"
+req "$(printf '{"action":"cert_revoke","ca":"Imp-Iss","serial":"%s","reason":5}' "$SER10")"
+expect_eq "révocation par l'autorité reprise" true "$RES_OK"
+code="$(fetch_url "$(ca_get Imp-Iss crlUrl)" "$IW/imp-iss2.crl")"; expect_eq "CRL servie après révocation" 200 "$code"
+check "la CRL contient le certificat révoqué (cessation d'activité)" bash -c "openssl crl -inform DER -in '$IW/imp-iss2.crl' -noout -text | grep -A4 -i '$SER10' | grep -q 'Cessation Of Operation'"
+"$PKI" status >/dev/null 2>&1; N1="$(ca_get Imp-Iss crl.number)"; DDI_PKI_CRL_RENEW_AFTER=0 "$PKI" maintain >/dev/null 2>&1
+check "le minuteur renouvelle aussi la CRL de l'autorité reprise (numéro $N1 → $(ca_get Imp-Iss crl.number))" test "$(ca_get Imp-Iss crl.number)" -gt "$N1"
+echo "-- deuxième émettrice (EC P-256, ancien chiffrement 3DES / SHA-1) sous la même racine --"
+p12_dep iiss2 Imp-Iss2; req '{"action":"ca_import_p12","name":"Imp-Iss2"}'
+expect_eq "fichier à l'ancien chiffrement : importé" true "$RES_OK"
+"$PKI" status >/dev/null 2>&1
+expect_eq "même racine hors ligne réutilisée" "ExtRoot-$IROOTSHA" "$(ca_get Imp-Iss2 extRoot)"
+expect_eq "une seule racine externe pour ce certificat" 1 "$(python3 -c 'import json,sys; print(sum(1 for c in json.load(open(sys.argv[1]))["cas"] if c["kind"]=="extroot" and c["name"]=="ExtRoot-'$IROOTSHA'"))' "$RUNP/pki-cas.json")"
+expect_eq "clé ECDSA P-256" "EC prime256v1" "$(ca_get Imp-Iss2 keyAlg) $(ca_get Imp-Iss2 curve)"
+nosecret_live() { check "$1 : mot de passe du fichier absent partout" bash -c "! grep -rlF 'Pä55' '$D/data' '$GEN' '$D/etc' '$RUNP' '$D/req.out' 2>/dev/null"; }
+nosecret_live "deuxième import"
+echo "-- racine seule (EC P-384), puis une autorité qu'elle signe depuis la console --"
+p12_dep iroot2 Imp-Root; req '{"action":"ca_import_p12","name":"Imp-Root"}'
+expect_eq "racine : importée" true "$RES_OK"
+"$PKI" status >/dev/null 2>&1
+expect_eq "racine : sorte root, auto-signée, importée" "root true true" "$(ca_get Imp-Root kind) $(ca_get Imp-Root selfSigned) $(ca_get Imp-Root imported)"
+expect_eq "racine : clé ECDSA P-384" "EC secp384r1" "$(ca_get Imp-Root keyAlg) $(ca_get Imp-Root curve)"
+code="$(fetch_url "$(ca_get Imp-Root crlUrl)" "$IW/imp-root.crl")"; expect_eq "CRL de la racine reprise servie" 200 "$code"
+check "…et signée par la racine reprise" bash -c "openssl crl -inform DER -in '$IW/imp-root.crl' -CAfile '$IW/iroot2.pem' -noout -verify 2>&1 | grep -q 'verify OK'"
+req '{"action":"ca_issuing","name":"Imp-Root-Sub","alg":"ecp256","days":1825,"cn":"Sous la racine reprise","o":"Import","c":"FR","signedBy":"Imp-Root"}'
+expect_eq "la racine reprise signe une nouvelle émettrice (sa clé est dans la base)" true "$RES_OK"
+check "…dont le certificat se vérifie avec la racine du fichier" openssl verify -CAfile "$IW/iroot2.pem" "$RUNP/pki-ca/Imp-Root-Sub/cert.pem"
+p12_dep iroot2 Imp-Root-Again; req '{"action":"ca_import_p12","name":"Imp-Root-Again"}'
+expect_eq "la même racine importée deux fois : refusée" false "$RES_OK"; check "…avec l'autorité en place nommée" grep -q "Imp-Root" <<< "$RES_MSG"
+"$PKI" status >/dev/null 2>&1
+expect_eq "état publié : 5 autorités avec clé de plus (Imp-Iss, Imp-Iss2, Imp-Root, Imp-Root-Sub ; la racine externe n'en a pas)" "$((CAS0 + 4))" "$(jget "$RUNP/pki-status.json" casCount)"
+expect_eq "EJBCA : tous les jetons importés sont automatiques (3 autorités reprises)" "3 3" "$(ejpsql -c "select count(*) filter (where convert_from(decode(tokenprops, 'base64'), 'UTF8') ~ '(^|\n)pin='), count(*) from cryptotokendata where tokenname like 'ImportedCryptoToken%'" | tr '|' ' ')"
+nosecret_live "fin de la reprise"
+check "aucune clé privée dans les fichiers à la fin" bash -c "! grep -rl 'PRIVATE KEY' '$D/data' '$GEN' '$RUNP' 2>/dev/null"
+
 echo "== Remise à zéro =="
 req '{"action":"reset"}'
 expect_eq "remise à zéro refusée tant qu'une autorité existe" false "$RES_OK"
@@ -391,5 +518,23 @@ expect_eq "les secrets restaurés sont inchangés" "$OLD_ENV" "$(sha256sum "$D/e
 check "les autorités sont de nouveau servies (santé « ALLOK »)" wait_health
 check "la racine est toujours là après réinstallation" bash -c "$PKI status >/dev/null 2>&1; test -n \"\$(python3 -c 'import json,sys; print([c for c in json.load(open(sys.argv[1]))[\"cas\"] if c[\"name\"]==\"Lab-Root\"] and 1 or \"\")' '$RUNP/pki-cas.json')\""
 code="$(fetch_url "$(ca_get Lab-Sub crlUrl)" "$W/after.crl")"; expect_eq "la CRL est servie après réinstallation" 200 "$code"
+echo "-- autorités reprises après redémarrage du conteneur --"
+expect_eq "EJBCA : les jetons importés sont en ligne (aucun « offline »)" 0 "$("$D/bin/podman" exec ddibuntu-ejbca /opt/keyfactor/bin/ejbca.sh cryptotoken list 2>&1 | grep -c 'ImportedCryptoToken.*offline')"
+expect_eq "EJBCA : et automatiques" 3 "$("$D/bin/podman" exec ddibuntu-ejbca /opt/keyfactor/bin/ejbca.sh cryptotoken list 2>&1 | grep 'ImportedCryptoToken' | grep -c 'active, auto')"
+code="$(fetch_url "$(ca_get Imp-Iss crlUrl)" "$IW/after-imp.crl")"; expect_eq "CRL de l'autorité reprise servie après redémarrage" 200 "$code"
+req '{"action":"ca_crl","name":"Imp-Iss"}'; expect_eq "l'autorité reprise signe une nouvelle CRL après redémarrage (sa clé est utilisable sans PIN saisi)" true "$RES_OK"
+openssl req -newkey rsa:2048 -nodes -keyout "$CW/after.key" -out "$CW/after.csr" -subj "/CN=x" 2>/dev/null
+issue 1000000000000011 server "$CW/after.csr" '"dns":["after.lab.test"]' Imp-Iss
+expect_eq "l'autorité reprise émet un certificat après redémarrage" true "$RES_OK"; [ "$RES_OK" = true ] || note "message de root : $RES_MSG"
+check "…vérifié jusqu'à la racine du fichier" openssl verify -CAfile "$IW/iroot.pem" -untrusted "$IW/iiss.pem" "$RUNP/pki-cert/1000000000000011/cert.pem"
+req '{"action":"ca_crl","name":"Imp-Root"}'; expect_eq "la racine reprise signe une CRL après redémarrage" true "$RES_OK"
+echo "-- renouvellement : même nom distinctif sur une même autorité (EJBCA impose « DN unique » par défaut) --"
+openssl req -newkey rsa:2048 -nodes -keyout "$CW/again.key" -out "$CW/again.csr" -subj "/CN=x" 2>/dev/null
+issue 1000000000000012 server "$CW/again.csr" '"dns":["again.lab.test"]'
+expect_eq "autorité du DDI (Lab-Sub) : même nom que le certificat n°1, nouvelle clé : accepté" true "$RES_OK"; [ "$RES_OK" = true ] || note "message de root : $RES_MSG"
+issue 1000000000000013 server "$CW/again.csr" '"dns":["again.lab.test"]'
+expect_eq "…mais la même clé publique reste refusée (unicité des clés conservée)" false "$RES_OK"
+check "…et le motif d'EJBCA est lisible" grep -qi "same key" <<< "$RES_MSG"
+expect_eq "EJBCA : « DN unique » retiré sur l'autorité du DDI et sur l'autorité reprise (f f)" "f f" "$(ejpsql -c "select (select data ~ 'doEnforceUniqueDistinguishedName</string>\\s*<boolean>true</boolean>' from cadata where name = 'Lab-Sub'), (select data ~ 'doEnforceUniqueDistinguishedName</string>\\s*<boolean>true</boolean>' from cadata where name = 'Imp-Iss')" | tr '|' ' ')"
 
 finish

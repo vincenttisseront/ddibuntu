@@ -116,7 +116,7 @@ export type PkiRequest =
   | { action: 'start' | 'stop' | 'restart' | 'status' | 'uninstall' | 'reset' }
   | ({ action: 'ca_root'; name: string; alg: string; days: number } & CaDn)
   | ({ action: 'ca_issuing'; name: string; alg: string; days: number; signedBy: string } & CaDn)
-  | { action: 'ca_import' | 'ca_crl' | 'ca_rootcrl'; name: string }
+  | { action: 'ca_import' | 'ca_import_p12' | 'ca_crl' | 'ca_rootcrl'; name: string }
   | ({ action: 'cert_issue'; id: string; ca: string; profile: string; dns?: string[]; ip?: string[]; mail?: string[]; upn?: string[] } & CaDn)
   | { action: 'cert_revoke'; ca: string; serial: string; reason: number }
 export async function depositPkiRequest(req: PkiRequest): Promise<{ requestedAt: number }> {

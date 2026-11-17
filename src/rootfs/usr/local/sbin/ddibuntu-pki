@@ -66,6 +66,7 @@ Usage : ddibuntu-pki <commande>
   ca-root NOM DN ALG JOURS               crée une racine auto-signée (laboratoire)
   ca-issuing NOM DN ALG JOURS [SIGNEUR]  crée une émettrice : « external » (défaut ; certificat de la racine déposé) ou une racine du DDI
   ca-import NOM              importe le certificat signé déposé pour une émettrice en attente
+  ca-import-p12 NOM          reprend une autorité existante : clé et chaîne du PKCS#12 déposé (pki-in/NOM.p12, mot de passe dans pki-in/NOM.p12pw)
   ca-crl NOM                 renouvelle la CRL d'une autorité
   ca-rootcrl NOM             importe la CRL déposée d'une racine externe
   cert-issue ID CA PROFIL DN [SAN]  émet un certificat pour la demande déposée (pki-in/ID.csr.pem) ; PROFIL = server | machine | user | network
@@ -222,6 +223,12 @@ ca_field() {    # $1 = colonne (subjectdn | caid | status), $2 = nom
   case "$1" in subjectdn|caid|status) ;; *) return 1 ;; esac
   sql ejbca -v n="$2" <<SQL 2>/dev/null | head -n1
 select $1 from cadata where name = :'n'
+SQL
+}
+
+ca_by_subject() {   # $1 = nom distinctif (ordre quelconque) → nom de l'autorité qui le porte déjà ; vide sinon
+  sql ejbca 2>/dev/null <<'SQL' | python3 "$HELPER" dn-find "$1" 2>/dev/null | head -n1
+select name, subjectdn from cadata
 SQL
 }
 
@@ -431,6 +438,13 @@ cli_run() {   # exécute la CLI ; en cas d'échec, les dernières lignes (sans s
   if [[ "$rc" -ne 0 ]]; then log "échec de « $1 $2 » : $(printf '%s' "$out" | clean_out | tail -n 2 | tr '\n' ' ' | cut -c1-240)"; return 1; fi
   printf '%s\n' "$out" | clean_out
 }
+cli_secret_run() {   # $1 = secret à masquer, puis la commande de la CLI : comme cli_run, mais le secret n'est jamais écrit dans le journal ni dans un message
+  local sec="$1" out rc=0; shift
+  out="$(cli "$@" 2>&1)" || rc=$?
+  out="${out//"$sec"/********}"
+  if [[ "$rc" -ne 0 ]]; then log "échec de « $1 $2 » : $(printf '%s' "$out" | clean_out | tail -n 2 | tr '\n' ' ' | cut -c1-240)"; return 1; fi
+  printf '%s\n' "$out" | clean_out
+}
 need_running() {
   [[ -f "$INST" && ! -L "$INST" ]] || { log "la PKI n'est pas installée"; return 1; }
   local h; h="$(health_body)"
@@ -448,13 +462,14 @@ alg_args() {   # $1 = alg → KS (taille ou courbe) et SIG (algorithme de signat
     *) return 1 ;;
   esac
 }
-write_meta() {   # $1 = nom, $2 = kind, $3 = signedBy, $4 = alg, $5 = racine hors ligne (ExtRoot-…) d'une émettrice externe
+write_meta() {   # $1 = nom, $2 = kind, $3 = signedBy, $4 = alg, $5 = racine hors ligne (ExtRoot-…) d'une émettrice externe, $6 = 1 pour une autorité importée (clé reprise d'un PKCS#12)
   install -d -m 0750 "$CAD/$1"
-  N="$1" K="$2" S="$3" A="$4" X="${5:-}" python3 -c '
+  N="$1" K="$2" S="$3" A="$4" X="${5:-}" I="${6:-}" python3 -c '
 import json, os, time
 e = os.environ
 d = {"kind": e["K"], "signedBy": e["S"], "alg": e["A"], "createdAt": int(time.time())}
 if e["X"]: d["extRoot"] = e["X"]
+if e["I"] == "1": d["imported"] = True
 print(json.dumps(d))' > "$CAD/$1/meta.json"
 }
 # réglages d'une autorité : adresses publiques gravées dans les certificats qu'elle signera (si le profil les utilise : voir 0.14.3), périodes de CRL
@@ -553,6 +568,89 @@ ca_import() {   # $1 = nom d'une émettrice en attente
   printf 'Certificat importé : l'\''émettrice « %s » est active et publie sa CRL.' "$name"
 }
 
+# Le jeton de clés créé par « ca importca » est « manuel » : sans PIN d'activation automatique, il reste hors ligne après chaque redémarrage du conteneur
+# et la santé d'EJBCA (donc celle de TOUTES les autorités) passe à « EJBCANOTOK ». Le mot de passe à usage unique, seul PIN connu, est donc posé comme PIN
+# d'activation automatique, comme pour ManagementCA (il reste dans la base d'EJBCA, chiffré, exactement comme celui de la PKI). « cryptotoken setpin »
+# SANS --update active l'automatisme ; avec --update il ne le ferait que pour un jeton qui l'avait déjà.
+crypto_token_ids() { sql ejbca 2>/dev/null <<'SQL' | paste -sd, -
+select id from cryptotokendata order by id
+SQL
+}
+new_import_token() {   # $1 = identifiants des jetons avant l'import → nom du seul jeton « ImportedCryptoToken… » apparu depuis ; vide s'il y en a zéro ou plusieurs
+  local out
+  out="$(sql ejbca -v ids="$1" <<'SQL' 2>/dev/null
+select tokenname from cryptotokendata where tokenname like 'ImportedCryptoToken%' and not (id = any(string_to_array(:'ids', ',')::bigint[])) order by id
+SQL
+)"
+  [[ "$(printf '%s\n' "$out" | grep -c .)" = 1 ]] && printf '%s' "$out"
+  return 0
+}
+token_is_auto() {   # $1 = nom du jeton → 0 si un PIN d'activation automatique est enregistré (propriété « pin= » des propriétés du jeton)
+  [[ "$(sql ejbca -v t="$1" <<'SQL' 2>/dev/null | head -n1
+select 1 from cryptotokendata where tokenname = :'t' and convert_from(decode(tokenprops, 'base64'), 'UTF8') ~ '(^|\n)pin='
+SQL
+)" = 1 ]]
+}
+token_set_auto() {   # $1 = PIN (mot de passe à usage unique), $2 = nom du jeton
+  [[ "$2" =~ ^ImportedCryptoToken-?[0-9]+$ ]] || return 1
+  cli_secret_run "$1" cryptotoken setpin --token "$2" --oldpin "$1" --newpin "$1" >/dev/null && token_is_auto "$2"
+}
+
+ca_import_p12() {   # $1 = nom ; dépôts de la console : pki-in/<nom>.p12 et pki-in/<nom>.p12pw (consommés quoi qu'il arrive)
+  local name="$1" info pw kind alg rootsha subject notafter rootsubj ext="" by="" dup rn warn="" mark tk0 tok
+  valid_ca_name "$name" || { log "nom d'autorité invalide"; return 1; }
+  need_running || return 1
+  ca_exists "$name" && { log "une autorité « $name » existe déjà"; return 1; }
+  prep_work
+  install -d -m 0750 "$CAD/$name"
+  # contrôle complet par pki-helper.py (clé ↔ certificat, CA:TRUE, chaîne jusqu'à la racine, algorithme, validité) puis fichier « rhabillé » avec un mot de passe
+  # aléatoire à usage unique : le vrai mot de passe du fichier n'apparaît jamais dans la ligne de commande de la CLI
+  info="$(python3 "$HELPER" p12-check "$IN_DIR/$name.p12" "$IN_DIR/$name.p12pw" "$WORK_HOST" "$CAD/$name/chain.pem" 2>&1)" || {
+    rm -f "$IN_DIR/$name.p12" "$IN_DIR/$name.p12pw"; done_work; rm -rf "${CAD:?}/$name"; log "fichier PKCS#12 refusé : ${info#ERR	}"; return 1; }
+  rm -f "$IN_DIR/$name.p12" "$IN_DIR/$name.p12pw"
+  pw="$(printf '%s' "$info" | cut -f2)"; kind="$(printf '%s' "$info" | cut -f3)"; alg="$(printf '%s' "$info" | cut -f4)"
+  rootsha="$(printf '%s' "$info" | cut -f5)"; subject="$(printf '%s' "$info" | cut -f6)"; notafter="$(printf '%s' "$info" | cut -f7)"; rootsubj="$(printf '%s' "$info" | cut -f8)"
+  info=""
+  [[ "$kind" = root || "$kind" = issuing ]] && [[ "$pw" =~ ^[A-Za-z0-9]{32}$ ]] || { done_work; rm -rf "${CAD:?}/$name"; log "réponse du contrôle du fichier illisible"; return 1; }
+  dup="$(ca_by_subject "$subject")"
+  [[ -z "$dup" ]] || { done_work; rm -rf "${CAD:?}/$name"; log "une autorité porte déjà ce nom distinctif : « $dup »"; return 1; }
+  own "$WORK_HOST/ca.p12"
+  if [[ "$kind" = issuing ]]; then
+    # la racine du fichier : déjà connue (autorité externe, ou racine du DDI) ou importée comme autorité externe sans clé, comme pour une émettrice sous racine hors ligne
+    rn="$(ca_by_subject "$rootsubj")"
+    if [[ -z "$rn" ]]; then
+      ext="ExtRoot-$rootsha"; valid_ext_name "$ext" || { done_work; rm -rf "${CAD:?}/$name"; log "racine du fichier illisible"; return 1; }
+      own "$WORK_HOST/root.pem"
+      cli_run ca importcacert --caname "$ext" -f "$WORK_CONT/root.pem" >/dev/null || { done_work; rm -rf "${CAD:?}/$name"; return 1; }
+      write_meta "$ext" extroot external ""
+      by=external
+    elif valid_ext_name "$rn"; then
+      # une racine hors ligne de même nom distinctif mais d'une autre empreinte est une AUTRE racine : on n'attache pas l'autorité à la mauvaise
+      [[ "$rn" = "ExtRoot-$rootsha" ]] || { done_work; rm -rf "${CAD:?}/$name"; log "une autre racine porte déjà le nom distinctif de la racine du fichier : « $rn »"; return 1; }
+      ext="$rn"; by=external
+    else by="$rn"; ext=""
+    fi
+  fi
+  tk0="$(crypto_token_ids)"
+  if ! cli_secret_run "$pw" ca importca --caname "$name" --p12 "$WORK_CONT/ca.p12" -kspassword "$pw" >/dev/null; then
+    pw=""; done_work; rm -rf "${CAD:?}/$name"; return 1
+  fi
+  [[ "$(ca_field status "$name")" = 1 ]] || { done_work; rm -rf "${CAD:?}/$name"; log "l'autorité n'est pas devenue active après l'import"; return 1; }
+  # activation automatique du jeton de clés (deux essais) : sans elle l'autorité serait hors ligne au prochain redémarrage de la PKI.
+  # Le résultat publié est limité à 300 caractères : les deux essais sont silencieux (leur échec est quand même journalisé), l'AVERTISSEMENT reste visible.
+  tok="$(new_import_token "$tk0")"
+  if token_set_auto "$pw" "$tok" 2>/dev/null || token_set_auto "$pw" "$tok" 2>/dev/null; then :
+  else
+    warn=" AVERTISSEMENT : activation automatique du jeton échouée (journal système) : autorité hors ligne au prochain redémarrage de la PKI."
+  fi
+  pw=""
+  if [[ "$kind" = root ]]; then write_meta "$name" root self "$alg" "" 1; else write_meta "$name" issuing "$by" "$alg" "$ext" 1; fi
+  ca_defaults "$name" || warn+=" AVERTISSEMENT : adresses publiques non enregistrées dans l'autorité."
+  mark=""; cli_run ca createcrl --caname "$name" >/dev/null || mark=" AVERTISSEMENT : première CRL non créée."
+  done_work
+  printf 'Autorité « %s » reprise du fichier PKCS#12 (%s, valable jusqu'\''au %s) : sa clé est maintenant dans la base du DDI.%s%s' "$name" "$([[ "$kind" = root ]] && echo 'racine' || echo 'émettrice')" "${notafter%%T*}" "$warn" "$mark"
+}
+
 ca_crl() {   # $1 = nom
   valid_ca_name "$1" || { log "nom d'autorité invalide"; return 1; }
   need_running || return 1
@@ -589,6 +687,18 @@ ca_meta_kind() { META_PATH="$CAD/$1/meta.json" python3 -c 'import json,os
 try: print(json.load(open(os.environ["META_PATH"])).get("kind", ""))
 except Exception: print("")'; }
 # Une demande déjà traitée (même identifiant) n'est jamais rejouée : ni dossier publié, ni entité finale d'EJBCA du même nom.
+# EJBCA refuse par défaut (« Enforce unique DN », réglage de CHAQUE autorité, vrai aussi pour celles créées par le DDI) un second certificat de même nom
+# distinctif sur une même autorité, révoqué ou non, et le refus survit à la suppression de l'entité finale (le nom d'utilisateur reste dans le certificat).
+# Or le DDI émet toujours par une entité temporaire « ddi-<id> » : renouveler ou remplacer un certificat (même nom) est le cas normal. Le réglage est donc
+# retiré, une fois par autorité, au premier passage (lecture SQL, puis « ca editca » seulement s'il est encore actif). L'unicité des clés publiques reste en place.
+ca_allow_same_dn() {   # $1 = nom
+  [[ "$(sql ejbca -v n="$1" <<'SQL' 2>/dev/null | head -n1
+select 1 from cadata where name = :'n' and data ~ 'doEnforceUniqueDistinguishedName</string>\s*<boolean>true</boolean>'
+SQL
+)" = 1 ]] || return 0
+  cli_run ca editca --caname "$1" --field doEnforceUniqueDistinguishedName --value false >/dev/null
+}
+
 cert_issue() {   # $1 identifiant, $2 autorité, $3 profil (server|machine|user|network), $4 nom distinctif, $5 SAN (facultatif)
   local id="$1" ca="$2" prof="$3" dn="$4" alt="${5:-}" user pw pname info bundle out meta serial sha nb na subj
   [[ "$id" =~ ^[0-9a-f]{16}$ ]] || { log "identifiant d'émission invalide"; return 1; }
@@ -602,6 +712,7 @@ cert_issue() {   # $1 identifiant, $2 autorité, $3 profil (server|machine|user|
   [[ -s "$RUN/pki-ca/$ca/cert.pem" && -s "$RUN/pki-ca/$ca/chain.pem" ]] || { cmd_status >/dev/null 2>&1 || true; }
   [[ -s "$RUN/pki-ca/$ca/cert.pem" && -s "$RUN/pki-ca/$ca/chain.pem" ]] || { log "certificat ou chaîne de « $ca » introuvables (état non publié)"; return 1; }
   ensure_profiles || return 1
+  ca_allow_same_dn "$ca" || return 1
   prep_work
   info="$(python3 "$HELPER" deposit "$IN_DIR/$id.csr.pem" "$WORK_HOST/req.csr" csr 2>&1)" || { done_work; log "demande de certificat refusée : ${info#ERR	}"; return 1; }
   own "$WORK_HOST/req.csr"
@@ -669,6 +780,8 @@ purge_certs() {
   # une demande de certificat déposée mais jamais traitée (demande JSON refusée, console arrêtée entre les deux) ne reste pas sur le disque
   if [[ -d "$IN_DIR" && ! -L "$IN_DIR" ]]; then
     find "$IN_DIR" -mindepth 1 -maxdepth 1 -type f -regextype posix-extended -regex '.*/[0-9a-f]{16}\.csr\.pem' -mmin "+$(( CERT_KEEP / 60 ))" -delete 2>/dev/null || true
+    # un PKCS#12 d'autorité (clé privée) et son mot de passe ne restent jamais : 10 minutes au plus s'ils n'ont pas été consommés
+    find "$IN_DIR" -mindepth 1 -maxdepth 1 -type f \( -name '*.p12' -o -name '*.p12pw' \) -mmin +10 -delete 2>/dev/null || true
   fi
 }
 
@@ -702,7 +815,7 @@ for c in d.get("cas", []):
 }
 
 # ---- Demande de la console (sans privilège) : revalidée ici en totalité par pki-helper.py ----
-# Formats : {"action":"apply",…} | {"action":"start|stop|restart|status|uninstall|reset"} | {"action":"ca_root|ca_issuing",…} | {"action":"ca_import|ca_crl|ca_rootcrl","name":"…"}
+# Formats : {"action":"apply",…} | {"action":"start|stop|restart|status|uninstall|reset"} | {"action":"ca_root|ca_issuing",…} | {"action":"ca_import|ca_import_p12|ca_crl|ca_rootcrl","name":"…"}
 #           | {"action":"cert_issue","id","ca","profile","cn","o","ou","c","dns","ip","mail","upn"} | {"action":"cert_revoke","ca","serial","reason"[,"id"]}
 cmd_request() {
   local rq="$GEN/.pki-request" raw="" out="" rc=0 ok=false k v action=""
@@ -723,6 +836,7 @@ cmd_request() {
     ca_root) out="$( ( ca_create_root "${R[name]}" "${R[dn]}" "${R[alg]}" "${R[days]}" ) 2>&1)" || rc=$? ;;
     ca_issuing) out="$( ( ca_create_issuing "${R[name]}" "${R[dn]}" "${R[alg]}" "${R[days]}" "${R[signedBy]:-external}" ) 2>&1)" || rc=$? ;;
     ca_import) out="$( ( ca_import "${R[name]}" ) 2>&1)" || rc=$? ;;
+    ca_import_p12) out="$( ( ca_import_p12 "${R[name]}" ) 2>&1)" || rc=$? ;;
     ca_crl) out="$( ( ca_crl "${R[name]}" ) 2>&1)" || rc=$? ;;
     ca_rootcrl) out="$( ( ca_rootcrl "${R[name]}" ) 2>&1)" || rc=$? ;;
     cert_issue) out="$( ( cert_issue "${R[id]}" "${R[ca]}" "${R[profile]}" "${R[dn]}" "${R[altname]:-}" ) 2>&1)" || rc=$? ;;
@@ -734,7 +848,7 @@ cmd_request() {
   log "demande de la console (${action:-invalide}) : ${out:-ok}"
   publish_result "${action:-invalide}" "$ok" "$out" "${R[id]:-}"
   # les dépôts de la console sont consommés quoi qu'il arrive : ils ne restent jamais sur le disque
-  [[ -z "${R[name]:-}" ]] || rm -f "$IN_DIR/${R[name]}.chain.pem" "$IN_DIR/${R[name]}.cert.pem" "$IN_DIR/${R[name]}.crl" 2>/dev/null || true
+  [[ -z "${R[name]:-}" ]] || rm -f "$IN_DIR/${R[name]}.chain.pem" "$IN_DIR/${R[name]}.cert.pem" "$IN_DIR/${R[name]}.crl" "$IN_DIR/${R[name]}.p12" "$IN_DIR/${R[name]}.p12pw" 2>/dev/null || true
   [[ -z "${R[id]:-}" ]] || rm -f "$IN_DIR/${R[id]}.csr.pem" 2>/dev/null || true
   cmd_status || true
   [[ "$ok" = true ]]
@@ -755,6 +869,7 @@ case "$cmd" in
   ca-root) ca_create_root "${1:-}" "${2:-}" "${3:-}" "${4:-}"; echo; cmd_status ;;
   ca-issuing) ca_create_issuing "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-external}"; echo; cmd_status ;;
   ca-import) ca_import "${1:-}"; echo; cmd_status ;;
+  ca-import-p12) ca_import_p12 "${1:-}"; echo; cmd_status ;;
   ca-crl) ca_crl "${1:-}"; echo; cmd_status ;;
   ca-rootcrl) ca_rootcrl "${1:-}"; echo; cmd_status ;;
   cert-issue) cert_issue "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}"; echo; cmd_status ;;
