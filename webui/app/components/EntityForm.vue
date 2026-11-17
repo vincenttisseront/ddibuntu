@@ -15,6 +15,7 @@ function init() {
   for (const f of props.fields) {
     let v = props.row ? props.row[f.key] : f.default
     if (f.type === 'list') v = Array.isArray(v) ? v.join(', ') : (v ?? '')
+    if (f.type === 'labels') v = Array.isArray(v) ? [...v] : []
     if (f.type === 'switch') v = !!v
     state[f.key] = v ?? (f.type === 'number' ? null : '')
   }
@@ -27,6 +28,7 @@ function build() {
   for (const f of visible.value) {
     let v = state[f.key]
     if (f.type === 'list') v = String(v ?? '').split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
+    else if (f.type === 'labels') v = Array.isArray(v) ? v : []
     else if (f.type === 'number') v = v === '' || v === null || v === undefined ? null : Number(v)
     else if (f.type === 'text' || f.type === 'textarea') v = typeof v === 'string' && v.trim() === '' && !f.required ? null : v
     out[f.key] = v
@@ -51,6 +53,7 @@ const hint = (f: Field) => (typeof f.hint === 'function' ? f.hint(state) : f.hin
         </UAlert>
         <UFormField v-for="f in visible" :key="f.key" :label="f.label" :required="f.required" :help="hint(f)">
           <USwitch v-if="f.type === 'switch'" v-model="state[f.key]" />
+          <LabelsInput v-else-if="f.type === 'labels'" v-model="state[f.key]" :aria-label="f.label" />
           <USelect v-else-if="f.type === 'select'" v-model="state[f.key]" :items="f.options ?? []" class="w-full" />
           <UTextarea v-else-if="f.type === 'textarea'" v-model="state[f.key]" :rows="f.rows ?? 3" class="w-full" :class="f.mono ? 'font-mono' : ''" :placeholder="f.placeholder" />
           <UInput v-else v-model="state[f.key]" :type="f.type === 'number' ? 'number' : 'text'" class="w-full" :class="f.mono ? 'font-mono' : ''" :placeholder="f.placeholder" autocomplete="off" />

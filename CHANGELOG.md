@@ -1,5 +1,14 @@
 # Journal des modifications
 
+## 0.13.5 — « IPAM : labels façon NetBox »
+
+- **Labels** sur les **espaces, réseaux, adresses et VLAN** (le champ « étiquettes » libre des réseaux devient un vrai système de labels) : saisie par pastilles (Entrée pour valider, labels existants proposés d'un clic), normalisation (minuscules, sans doublon, 20 par objet), style libre `env:prod`, `role:web`, `site:paris`.
+- **Catalogue** (onglet IPAM › Labels) : couleur et description, nombre d'objets par type, **renommage et suppression propagés** à tous les objets, ajout au catalogue d'un label déjà posé. Couleur automatique stable si aucune n'est choisie.
+- **Filtres** : sélecteur de label dans l'onglet Adresses (plusieurs labels = ET, `?label=a,b` côté API), colonne Labels filtrable dans tous les tableaux, recherche texte qui couvre aussi les labels, lien « voir les adresses » depuis le catalogue (`/ipam?label=…#addresses`).
+- **Pose en masse** : sélection de réseaux ou d'adresses puis « Labels (n)… » pour ajouter et/ou retirer des labels (`POST /api/ipam/labels/assign`, rôle opérateur, hors périmètre délégué).
+- Export CSV des adresses : colonne `labels`. Nouvelle migration de schéma (24) ; les étiquettes existantes des réseaux sont normalisées et reprises au catalogue.
+- Tests : e2e-iter43 (pose, filtre ET, catalogue, renommage, masse, suppression, droits), unit-iter35.
+
 ## 0.13.4 — « Listes de blocage : format adblock reconnu automatiquement »
 
 - **Correctif** : une liste au format adblock (ex. hagezi/dns-blocklists `tif.txt`, lignes `||domaine^`) enregistrée avec un autre format donnait 0 domaine. Les lignes `||domaine^` sont désormais reconnues quel que soit le format choisi.

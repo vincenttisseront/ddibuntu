@@ -537,7 +537,24 @@ create table radius_rules (
 );
 create index radius_rules_rank on radius_rules (rank, id);
 `
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }, { version: 19, sql: SCHEMA_19 }, { version: 20, sql: SCHEMA_20 }, { version: 21, sql: SCHEMA_21 }, { version: 22, sql: SCHEMA_22 }, { version: 23, sql: SCHEMA_23 }]
+const SCHEMA_24 = String.raw`
+-- Labels IPAM (comme les tags de NetBox) : stockés en tableau de texte sur chaque objet, catalogue facultatif pour la couleur et la description
+alter table addresses add column tags text[] default '{}';
+alter table vlans add column tags text[] default '{}';
+alter table ipam_spaces add column tags text[] default '{}';
+update subnets set tags = coalesce((select array_agg(distinct left(lower(btrim(x)), 40)) from unnest(tags) x where btrim(x) <> ''), '{}');
+create index subnets_tags_gin on subnets using gin (tags);
+create index addresses_tags_gin on addresses using gin (tags);
+create table ipam_labels (
+  id serial primary key,
+  name text not null unique check (length(name) between 1 and 40),
+  color text check (color ~ '^#[0-9a-f]{6}$'),
+  description text,
+  created_at timestamptz not null default now()
+);
+insert into ipam_labels (name) select distinct lower(x) from subnets, unnest(tags) as x where length(x) between 1 and 40 on conflict do nothing;
+`
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }, { version: 19, sql: SCHEMA_19 }, { version: 20, sql: SCHEMA_20 }, { version: 21, sql: SCHEMA_21 }, { version: 22, sql: SCHEMA_22 }, { version: 23, sql: SCHEMA_23 }, { version: 24, sql: SCHEMA_24 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

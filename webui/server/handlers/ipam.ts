@@ -10,6 +10,7 @@ import { aliasNames } from '../utils/alias-db'
 import { formatError, formatName } from '../utils/naming'
 import { namingOfSubnet, hostnameMatches } from '../utils/smartddi'
 import { checkHostnameRule, patternError, resolveDnsZone, syncReservation } from '../utils/smartddi'
+import { ensureLabels, labelsS, normLabel } from '../utils/labels'
 
 const cidrS = z.string().trim().refine((v) => !!parseCidr(v), 'cidr')
 const ipS = z.string().trim().refine((v) => !!normIp(v), 'ip')
@@ -18,7 +19,7 @@ const host = z.string().trim().toLowerCase().refine(isHostname, 'hostname')
 const mac = z.string().trim().refine((v) => !!normMac(v), 'mac')
 
 const SUBNET_SQL = `select s.id, s.space_id, sp.name as space, s.kind, text(s.cidr) as cidr, family(s.cidr) as family, s.name, s.description, s.vlan_id, v.vlan_id as vlan, s.site,
-  host(s.gateway) as gateway, s.tags,
+  host(s.gateway) as gateway, coalesce(s.tags, '{}') as tags,
   (select count(*)::int from addresses a where a.subnet_id = s.id) as used,
   (select p.id from subnets p where p.space_id = s.space_id and p.cidr >> s.cidr order by masklen(p.cidr) desc limit 1) as parent_id,
   (select coalesce(sum(case when family(q.start_ip) = 4 then q.end_ip - q.start_ip + 1 else 0 end), 0)::float8 from ipam_pools q where q.subnet_id = s.id) as pooled,
@@ -64,14 +65,15 @@ route('GET', '/ipam/subnets', 'viewer', async (c) => {
 // ---- Espaces ----
 import { assertNoDhcpOverlap } from '../utils/dhcp-space'
 import { allowAddress, allowPool, allowSpace, allowSubnet, denyScoped } from '../utils/scope'
-const spaceBody = z.object({ name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional() })
-route('GET', '/ipam/spaces', 'viewer', async () => ({ items: await query(`select sp.id, sp.name, sp.description,
+const spaceBody = z.object({ name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional(), tags: labelsS.optional() })
+route('GET', '/ipam/spaces', 'viewer', async () => ({ items: await query(`select sp.id, sp.name, sp.description, coalesce(sp.tags, '{}') as tags,
   (select count(*)::int from subnets s where s.space_id = sp.id) as subnets,
   (select count(*)::int from addresses a join subnets s on s.id = a.subnet_id where s.space_id = sp.id) as addresses from ipam_spaces sp order by sp.id`) }))
 route('POST', '/ipam/spaces', 'operator', async (c) => {
   denyScoped(c)
   const b = await c.body(spaceBody)
-  const r = await one<any>('insert into ipam_spaces (name, description) values ($1,$2) returning id', [b.name, b.description ?? null])
+  const r = await one<any>('insert into ipam_spaces (name, description, tags) values ($1,$2,$3) returning id', [b.name, b.description ?? null, b.tags ?? []])
+  await ensureLabels(b.tags)
   await audit(c, 'space_create', 'space', r.id, { name: b.name })
   return { id: r.id }
 })
@@ -79,7 +81,8 @@ route('PUT', '/ipam/spaces/:id', 'operator', async (c) => {
   allowSpace(c, Number(c.params.id))
   const id = intParam(c, 'id')
   const b = await c.body(spaceBody.partial())
-  const r = await query('update ipam_spaces set name = coalesce($2, name), description = coalesce($3, description), updated_at = now() where id = $1 returning id', [id, b.name ?? null, b.description ?? null])
+  const r = await query('update ipam_spaces set name = coalesce($2, name), description = coalesce($3, description), tags = coalesce($4, tags), updated_at = now() where id = $1 returning id', [id, b.name ?? null, b.description ?? null, b.tags ?? null])
+  await ensureLabels(b.tags)
   if (!r.length) fail(404, 'not_found')
   await audit(c, 'space_update', 'space', id)
   return { ok: true }
@@ -98,7 +101,7 @@ route('DELETE', '/ipam/spaces/:id', 'operator', async (c) => {
 const subnetBody = z.object({
   cidr: cidrS, name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional(),
   vlan_id: z.number().int().nullable().optional(), site: z.string().max(100).nullable().optional(),
-  gateway: ipS.nullable().optional(), tags: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
+  gateway: ipS.nullable().optional(), tags: labelsS.optional(),
   space_id: z.number().int().min(1).optional(), kind: z.enum(['network', 'container']).optional(), template_id: z.number().int().min(1).nullable().optional(),
 })
 async function checkSpace(id: number) { if (!(await one('select 1 from ipam_spaces where id = $1', [id]))) fail(400, 'space_not_found') }
@@ -122,6 +125,7 @@ route('POST', '/ipam/subnets', 'operator', async (c) => {
     if (b.template_id && !tpl) fail(400, 'template_not_found')
     const r = (await cl.query('insert into subnets (cidr, name, description, vlan_id, site, gateway, tags, space_id, kind, template_id) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id',
       [cidr, b.name, b.description ?? null, b.vlan_id ?? null, b.site ?? null, b.gateway ? normIp(b.gateway) : null, b.tags ?? [], spaceId, kind, b.template_id ?? null])).rows[0].id as number
+    await ensureLabels(b.tags, cl)
     if (b.gateway) await cl.query("insert into addresses (subnet_id, ip, status, hostname, description) values ($1,$2,'gateway','gateway','Passerelle') on conflict do nothing", [r, normIp(b.gateway)])
     // gabarit : l'étendue DHCP naît avec le réseau, dans la même transaction (IPv4, réseau, espace par défaut : Kea ne distingue pas les espaces)
     let dhcp: 'scope_created' | 'scope_skipped' | null = null
@@ -153,6 +157,7 @@ route('PUT', '/ipam/subnets/:id', 'operator', async (c) => {
   await query(`update subnets set name = coalesce($2, name), description = coalesce($3, description), vlan_id = $4, site = coalesce($5, site),
     gateway = coalesce($6, gateway), tags = coalesce($7, tags), space_id = coalesce($8, space_id), kind = coalesce($9, kind), template_id = case when $10::boolean then $11::int else template_id end, updated_at = now() where id = $1`,
     [id, b.name ?? null, b.description ?? null, b.vlan_id === undefined ? (await one<any>('select vlan_id from subnets where id = $1', [id]))?.vlan_id ?? null : b.vlan_id, b.site ?? null, b.gateway ? normIp(b.gateway) : null, b.tags ?? null, b.space_id ?? null, b.kind ?? null, b.template_id !== undefined, b.template_id ?? null])
+  await ensureLabels(b.tags)
   await audit(c, 'subnet_update', 'subnet', id)
   return { ok: true }
 })
@@ -167,16 +172,21 @@ route('DELETE', '/ipam/subnets/:id', 'operator', async (c) => {
 })
 
 // ---- Adresses ----
+/** Filtre « label » : un ou plusieurs labels séparés par des virgules ; l'objet doit les porter tous. */
+function labelFilter(c: any): string[] {
+  const v = qstr(c, 'label', 400)
+  return v ? [...new Set(v.split(',').map(normLabel).filter(Boolean))].slice(0, 20) : []
+}
 route('GET', '/ipam/subnets/:id/addresses', 'viewer', async (c) => {
   const id = intParam(c, 'id'), q = qstr(c, 'q'), st = qstr(c, 'status')
-  const items = await query(`select id, host(ip) as ip, status, hostname, mac::text as mac, description, owner, reachable, checked_at from addresses
-    where subnet_id = $1 and ($2::text is null or hostname ilike $2 or host(ip) like $2 or mac::text ilike $2 or description ilike $2)
-      and ($3::text is null or status = $3) order by ip`, [id, q ? `%${q}%` : null, st ?? null])
+  const items = await query(`select id, host(ip) as ip, status, hostname, mac::text as mac, description, owner, coalesce(tags, '{}') as tags, reachable, checked_at from addresses
+    where subnet_id = $1 and ($2::text is null or hostname ilike $2 or host(ip) like $2 or mac::text ilike $2 or description ilike $2 or exists (select 1 from unnest(tags) x where x ilike $2))
+      and ($3::text is null or status = $3) and (cardinality($4::text[]) = 0 or coalesce(tags, '{}') @> $4::text[]) order by ip`, [id, q ? `%${q}%` : null, st ?? null, labelFilter(c)])
   const al = await aliasNames((items as any[]).map((i) => i.ip))
   return { items: (items as any[]).map((i) => ({ ...i, aliases: al.get(normIp(i.ip) ?? '') ?? [] })) }
 })
 
-const addrBody = z.object({ ip: ipS, status: status.default('used'), hostname: host.nullable().optional(), mac: mac.nullable().optional(), description: z.string().max(500).nullable().optional(), owner: z.string().max(100).nullable().optional(), dns_zone_id: z.number().int().nullable().optional() })
+const addrBody = z.object({ ip: ipS, status: status.default('used'), hostname: host.nullable().optional(), mac: mac.nullable().optional(), description: z.string().max(500).nullable().optional(), owner: z.string().max(100).nullable().optional(), dns_zone_id: z.number().int().nullable().optional(), tags: labelsS.optional() })
 
 async function classlessZone(cl: PoolClient, ip: string, viewId: number | null): Promise<{ id: number; name: string; parent: string } | null> {
   const [a, b, c, d] = ip.split('.').map(Number) as [number, number, number, number]
@@ -226,8 +236,9 @@ route('POST', '/ipam/subnets/:id/addresses', 'operator', async (c) => {
   if ((await one<any>('select kind from subnets where id = $1', [sid]))?.kind === 'container') fail(400, 'container_no_addresses')
   const out = await tx(async (cl) => {
     await checkHostnameRule(cl, sid, b.hostname)
-    const r = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, mac, description, owner) values ($1,$2,$3,$4,$5,$6,$7) returning id',
-      [sid, ip, b.status, b.hostname ?? null, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null])).rows[0].id as number
+    const r = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, mac, description, owner, tags) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id',
+      [sid, ip, b.status, b.hostname ?? null, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null, b.tags ?? []])).rows[0].id as number
+    await ensureLabels(b.tags, cl)
     const zone = b.hostname ? await resolveDnsZone(cl, sid, b.dns_zone_id) : null
     if (zone && b.hostname) await syncDns(cl, ip, b.hostname, zone)
     return { id: r, dhcp: await syncReservation(cl, r), dns: !!zone }
@@ -240,7 +251,7 @@ route('POST', '/ipam/subnets/:id/addresses', 'operator', async (c) => {
 route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
   await allowSubnet(c, Number(c.params.id))
   const sid = intParam(c, 'id')
-  const b = await c.body(z.object({ status: status.default('used'), hostname: host.nullable().optional(), description: z.string().max(500).nullable().optional(), dns_zone_id: z.number().int().nullable().optional(), pool_id: z.number().int().optional(), auto_name: z.boolean().default(false) }))
+  const b = await c.body(z.object({ status: status.default('used'), hostname: host.nullable().optional(), description: z.string().max(500).nullable().optional(), dns_zone_id: z.number().int().nullable().optional(), pool_id: z.number().int().optional(), auto_name: z.boolean().default(false), tags: labelsS.optional() }))
   const out = await tx(async (cl) => {
     await cl.query('select 1 from subnets where id = $1 for update', [sid])
     const s = (await cl.query('select text(cidr) as cidr, kind from subnets where id = $1', [sid])).rows[0]
@@ -269,7 +280,8 @@ route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
       if (n!.pattern && !hostnameMatches(n!.pattern, g)) fail(400, 'hostname_rule', 'hostname_rule', { pattern: n!.pattern })
       hostname = g
     }
-    const id = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, description) values ($1,$2,$3,$4,$5) returning id', [sid, ip, b.status, hostname, b.description ?? null])).rows[0].id
+    const id = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, description, tags) values ($1,$2,$3,$4,$5,$6) returning id', [sid, ip, b.status, hostname, b.description ?? null, b.tags ?? []])).rows[0].id
+    await ensureLabels(b.tags, cl)
     const zone = hostname ? await resolveDnsZone(cl, sid, b.dns_zone_id) : null
     if (zone && hostname) await syncDns(cl, ip!, hostname, zone)
     return { id: id as number, ip, hostname, dhcp: await syncReservation(cl, id as number), dns: !!zone }
@@ -287,8 +299,9 @@ route('PUT', '/ipam/addresses/:id', 'operator', async (c) => {
     if (!cur) fail(404, 'not_found')
     if (b.hostname) await checkHostnameRule(cl, cur.subnet_id, b.hostname)
     await cl.query(`update addresses set status = coalesce($2, status), hostname = case when $3::boolean then $4 else hostname end, mac = case when $5::boolean then $6::macaddr else mac end,
-      description = coalesce($7, description), owner = coalesce($8, owner), updated_at = now() where id = $1`,
-      [id, b.status ?? null, b.hostname !== undefined, b.hostname ?? null, b.mac !== undefined, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null])
+      description = coalesce($7, description), owner = coalesce($8, owner), tags = coalesce($9, tags), updated_at = now() where id = $1`,
+      [id, b.status ?? null, b.hostname !== undefined, b.hostname ?? null, b.mac !== undefined, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null, b.tags ?? null])
+    await ensureLabels(b.tags, cl)
     return syncReservation(cl, id)
   })
   await audit(c, 'address_update', 'address', id)
@@ -368,17 +381,18 @@ route('DELETE', '/ipam/pools/:id', 'operator', async (c) => {
 route('GET', '/ipam/addresses', 'viewer', async (c) => {
   const sp = qint(c, 'space_id', 0), sid = qint(c, 'subnet_id', 0), fam = qint(c, 'family', 0), q = qstr(c, 'q', 100), st = qstr(c, 'status')
   const limit = qint(c, 'limit', 100, 1, 500), offset = qint(c, 'offset', 0, 0, 10_000_000)
-  const args = [sp, sid, fam, q ? `%${q.replace(/[%_\\]/g, '\\$&')}%` : null, st ?? null]
+  const args = [sp, sid, fam, q ? `%${q.replace(/[%_\\]/g, '\\$&')}%` : null, st ?? null, labelFilter(c)]
   // adresses de l'IPAM + baux DHCP actifs qui n'y figurent pas (lignes « bail », en lecture seule : id nul)
   const withAll = `with lse as (${await leaseRows()}), r as (
-    select a.id, a.subnet_id, a.ip, a.status::text as status, a.hostname, a.mac::text as mac, a.description, a.owner, a.reachable, a.checked_at from addresses a
+    select a.id, a.subnet_id, a.ip, a.status::text as status, a.hostname, a.mac::text as mac, a.description, a.owner, coalesce(a.tags, '{}') as tags, a.reachable, a.checked_at from addresses a
     union all
-    select null::int, l.subnet_id, l.ip, 'lease', l.hostname, regexp_replace(encode(l.hwaddr, 'hex'), '(..)(?=.)', '\\1:', 'g'), null::text, null::text, null::boolean, null::timestamptz
+    select null::int, l.subnet_id, l.ip, 'lease', l.hostname, regexp_replace(encode(l.hwaddr, 'hex'), '(..)(?=.)', '\\1:', 'g'), null::text, null::text, '{}'::text[], null::boolean, null::timestamptz
       from lse l where l.subnet_id is not null and not exists (select 1 from addresses a where a.ip = l.ip and a.subnet_id = l.subnet_id))`
   const where = `where ($1::int = 0 or s.space_id = $1) and ($2::int = 0 or r.subnet_id = $2) and ($3::int = 0 or family(r.ip) = $3)
-    and ($4::text is null or r.hostname ilike $4 or host(r.ip) like $4 or r.mac ilike $4 or r.description ilike $4 or r.owner ilike $4) and ($5::text is null or r.status = $5)`
+    and ($4::text is null or r.hostname ilike $4 or host(r.ip) like $4 or r.mac ilike $4 or r.description ilike $4 or r.owner ilike $4 or exists (select 1 from unnest(r.tags) x where x ilike $4)) and ($5::text is null or r.status = $5)
+    and (cardinality($6::text[]) = 0 or r.tags @> $6::text[])`
   const total = (await one<any>(`${withAll} select count(*)::int as n from r join subnets s on s.id = r.subnet_id ${where}`, args)).n
-  const items = await query(`${withAll} select r.id, r.subnet_id, host(r.ip) as ip, r.status, r.hostname, r.mac, r.description, r.owner, r.reachable, r.checked_at, text(s.cidr) as cidr, s.name as network, sp.name as space
+  const items = await query(`${withAll} select r.id, r.subnet_id, host(r.ip) as ip, r.status, r.hostname, r.mac, r.description, r.owner, r.tags, r.reachable, r.checked_at, text(s.cidr) as cidr, s.name as network, sp.name as space
     from r join subnets s on s.id = r.subnet_id join ipam_spaces sp on sp.id = s.space_id ${where} order by s.space_id, r.ip limit ${limit} offset ${offset}`, args)
   const al = await aliasNames((items as any[]).map((i) => i.ip))
   return { items: (items as any[]).map((i) => ({ ...i, aliases: al.get(normIp(i.ip) ?? '') ?? [] })), total }
@@ -427,17 +441,18 @@ route('DELETE', '/ipam/templates/:id', 'operator', async (c) => {
 })
 
 // ---- VLAN ----
-const vlanBody = z.object({ vlan_id: z.number().int().min(1).max(4094), name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional(), hostname_pattern: z.string().trim().nullable().optional(), name_format: z.string().trim().nullable().optional() })
+const vlanBody = z.object({ vlan_id: z.number().int().min(1).max(4094), name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional(), hostname_pattern: z.string().trim().nullable().optional(), name_format: z.string().trim().nullable().optional(), tags: labelsS.optional() })
 function checkNaming(b: { hostname_pattern?: string | null; name_format?: string | null }) {
   if (b.hostname_pattern) { const e = patternError(b.hostname_pattern); if (e) fail(400, e) }
   if (b.name_format) { const e = formatError(b.name_format); if (e) fail(400, e) }
 }
-route('GET', '/ipam/vlans', 'viewer', async () => ({ items: await query('select v.id, v.vlan_id, v.name, v.description, v.hostname_pattern, v.name_format, (select count(*)::int from subnets s where s.vlan_id = v.id) as subnets from vlans v order by v.vlan_id') }))
+route('GET', '/ipam/vlans', 'viewer', async () => ({ items: await query('select v.id, v.vlan_id, v.name, v.description, coalesce(v.tags, array[]::text[]) as tags, v.hostname_pattern, v.name_format, (select count(*)::int from subnets s where s.vlan_id = v.id) as subnets from vlans v order by v.vlan_id') }))
 route('POST', '/ipam/vlans', 'operator', async (c) => {
   denyScoped(c)
   const b = await c.body(vlanBody)
   checkNaming(b)
-  const r = await one<any>('insert into vlans (vlan_id, name, description, hostname_pattern, name_format) values ($1,$2,$3,$4,$5) returning id', [b.vlan_id, b.name, b.description ?? null, b.hostname_pattern || null, b.name_format || null])
+  const r = await one<any>('insert into vlans (vlan_id, name, description, hostname_pattern, name_format, tags) values ($1,$2,$3,$4,$5,$6) returning id', [b.vlan_id, b.name, b.description ?? null, b.hostname_pattern || null, b.name_format || null, b.tags ?? []])
+  await ensureLabels(b.tags)
   await audit(c, 'vlan_create', 'vlan', r.id)
   return { id: r.id }
 })
@@ -447,6 +462,7 @@ route('PUT', '/ipam/vlans/:id', 'operator', async (c) => {
   const b = await c.body(vlanBody.partial())
   checkNaming(b)
   await query('update vlans set vlan_id = coalesce($2, vlan_id), name = coalesce($3, name), description = coalesce($4, description) where id = $1', [id, b.vlan_id ?? null, b.name ?? null, b.description ?? null])
+  if (b.tags !== undefined) { await query('update vlans set tags = $2 where id = $1', [id, b.tags]); await ensureLabels(b.tags) }
   if (b.hostname_pattern !== undefined) await query('update vlans set hostname_pattern = $2 where id = $1', [id, b.hostname_pattern || null])
   if (b.name_format !== undefined) await query('update vlans set name_format = $2 where id = $1', [id, b.name_format || null])
   await audit(c, 'vlan_update', 'vlan', id)
@@ -472,10 +488,10 @@ route('GET', '/ipam/search', 'viewer', async (c) => {
 })
 const csvq = (v: unknown) => { const s = v === null || v === undefined ? '' : String(v); return /^[=+\-@]/.test(s) ? `"'${s.replace(/"/g, '""')}"` : /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s }
 route('GET', '/ipam/export/addresses', 'viewer', async (c) => {
-  const rows = await query<any>(`select text(s.cidr) as cidr, host(a.ip) as ip, a.status, a.hostname, a.mac::text as mac, a.description from addresses a join subnets s on s.id = a.subnet_id order by s.cidr, a.ip`)
+  const rows = await query<any>(`select text(s.cidr) as cidr, host(a.ip) as ip, a.status, a.hostname, a.mac::text as mac, a.description, array_to_string(a.tags, ';') as tags from addresses a join subnets s on s.id = a.subnet_id order by s.cidr, a.ip`)
   setResponseHeader(c.event, 'Content-Type', 'text/csv; charset=utf-8')
   setResponseHeader(c.event, 'Content-Disposition', 'attachment; filename="ipam-addresses.csv"')
-  return ['cidr,ip,status,hostname,mac,description', ...rows.map((r) => [r.cidr, r.ip, r.status, r.hostname, r.mac, r.description].map(csvq).join(','))].join('\n') + '\n'
+  return ['cidr,ip,status,hostname,mac,description,labels', ...rows.map((r) => [r.cidr, r.ip, r.status, r.hostname, r.mac, r.description, r.tags].map(csvq).join(','))].join('\n') + '\n'
 })
 
 // Valeur exportée et lue par le point d'entrée : empêche l'élimination du module par l'optimiseur

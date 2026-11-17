@@ -4,11 +4,11 @@ import type { DCol } from '~/components/DenseTable.vue'
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm()
 const { canWrite, isAdmin } = useRole()
 // « subnets » reste l'identifiant de l'onglet Réseaux : les liens existants (#subnets) continuent de fonctionner.
-const tab = useHashTab('subnets', ['spaces', 'subnets', 'pools', 'addresses', 'templates', 'vlans', 'naming', 'ghosts', 'search', 'discovery', 'sources'])
+const tab = useHashTab('subnets', ['spaces', 'subnets', 'pools', 'addresses', 'templates', 'vlans', 'naming', 'ghosts', 'search', 'discovery', 'sources', 'labels'])
 const baseTabs = computed(() => [
   { label: t('ipam.spaces'), value: 'spaces', icon: 'i-lucide-layers' }, { label: t('ipam.networks'), value: 'subnets', icon: 'i-lucide-network' },
   { label: t('ipam.pools'), value: 'pools', icon: 'i-lucide-brackets' }, { label: t('ipam.addresses'), value: 'addresses', icon: 'i-lucide-list-ordered' },
-  { label: t('ipam.templates'), value: 'templates', icon: 'i-lucide-file-sliders' }, { label: t('nam.title'), value: 'naming', icon: 'i-lucide-spell-check' }, { label: t('ipam.vlans'), value: 'vlans', icon: 'i-lucide-tags' }, { label: t('ghost.title'), value: 'ghosts', icon: 'i-lucide-ghost' }, { label: t('common.search'), value: 'search', icon: 'i-lucide-search' }])
+  { label: t('ipam.templates'), value: 'templates', icon: 'i-lucide-file-sliders' }, { label: t('nam.title'), value: 'naming', icon: 'i-lucide-spell-check' }, { label: t('ipam.vlans'), value: 'vlans', icon: 'i-lucide-tags' }, { label: t('label.title'), value: 'labels', icon: 'i-lucide-bookmark' }, { label: t('ghost.title'), value: 'ghosts', icon: 'i-lucide-ghost' }, { label: t('common.search'), value: 'search', icon: 'i-lucide-search' }])
 const tabs = computed(() => [...baseTabs.value, ...(canWrite.value ? [{ label: t('disc.title'), value: 'discovery', icon: 'i-lucide-radar' }] : []), ...(isAdmin.value ? [{ label: t('nbw.title'), value: 'sources', icon: 'i-lucide-database-zap' }] : [])])
 
 // ---- Contexte partagé : espace et famille d'adresses (comme les boutons V4/V6 d'une console IPAM) ----
@@ -42,8 +42,8 @@ const ok = () => toast.add({ title: t('common.saved'), color: 'success', icon: '
 
 
 // ---- Espaces ----
-const spaceCols = computed<DCol[]>(() => [{ key: 'name', label: t('common.name') }, { key: 'description', label: t('common.description') }, { key: 'subnets', label: t('ipam.networks'), kind: 'num' }, { key: 'addresses', label: t('ipam.addresses'), kind: 'num' }])
-const spaceFields = computed(() => [{ key: 'name', label: t('common.name'), type: 'text', required: true }, { key: 'description', label: t('common.description'), type: 'text' }] as any[])
+const spaceCols = computed<DCol[]>(() => [{ key: 'name', label: t('common.name') }, { key: 'description', label: t('common.description') }, { key: 'subnets', label: t('ipam.networks'), kind: 'num' }, { key: 'addresses', label: t('ipam.addresses'), kind: 'num' }, { key: 'tags', label: t('label.title'), kind: 'labels' }])
+const spaceFields = computed(() => [{ key: 'name', label: t('common.name'), type: 'text', required: true }, { key: 'description', label: t('common.description'), type: 'text' }, { key: 'tags', label: t('label.title'), type: 'labels' }] as any[])
 const form = reactive<{ open: boolean; kind: string; row: any | null }>({ open: false, kind: '', row: null })
 const openForm = (kind: string, row: any | null = null) => { form.kind = kind; form.row = row; form.open = true }
 
@@ -52,7 +52,7 @@ const netCols = computed<DCol[]>(() => [
   { key: 'cidr', label: t('ipam.address_prefix'), kind: 'mono', width: '15rem' }, { key: 'name', label: t('common.name') },
   { key: 'size_label', label: t('ipam.size'), kind: 'num' }, { key: 'allocated', label: t('ipam.allocated_pct'), kind: 'progress' }, { key: 'percent', label: t('ipam.used_pct'), kind: 'progress' },
   { key: 'site', label: t('ipam.site') }, { key: 'vlan', label: 'VLAN', kind: 'num' }, { key: 'has_dhcp', label: 'DHCP', kind: 'bool' },
-  { key: 'template', label: t('ipam.template') }, { key: 'parent.name', label: t('ipam.container') }, { key: 'space', label: t('ipam.space'), hidden: !!spaceId.value },
+  { key: 'template', label: t('ipam.template') }, { key: 'tags', label: t('label.title'), kind: 'labels' }, { key: 'parent.name', label: t('ipam.container') }, { key: 'space', label: t('ipam.space'), hidden: !!spaceId.value },
 ])
 const netFields = computed(() => [
   { key: 'cidr', label: 'CIDR', type: 'text', required: true, createOnly: true, placeholder: '10.20.0.0/24', mono: true }, { key: 'name', label: t('common.name'), type: 'text', required: true },
@@ -61,7 +61,7 @@ const netFields = computed(() => [
   { key: 'template_id', label: t('ipam.template'), type: 'select', options: templateOptions.value, default: 0, hint: t('ipam.template_hint') },
   { key: 'description', label: t('common.description'), type: 'text' }, { key: 'site', label: t('ipam.site'), type: 'text' },
   { key: 'gateway', label: t('ipam.gateway'), type: 'text', placeholder: '10.20.0.1' }, { key: 'vlan_id', label: 'VLAN', type: 'select', options: vlanOptions.value, default: 0 },
-  { key: 'tags', label: t('ipam.tags'), type: 'list', hint: t('common.list_hint') },
+  { key: 'tags', label: t('label.title'), type: 'labels' },
 ] as any[])
 const netBody = (b: any) => { const o = { ...b, vlan_id: b.vlan_id || null, template_id: b.template_id || null }; if (o.kind === 'container') delete o.gateway; return o }
 const netSelected = ref<number[]>([])
@@ -108,10 +108,14 @@ async function removePool(row: any) {
 }
 
 // ---- Adresses (vue transverse, pagination côté serveur) ----
-const addrSubnet = ref(0), addrQ = ref(''), addrStatus = ref(''), addrOffset = ref(0)
+const addrSubnet = ref(0), addrQ = ref(''), addrStatus = ref(''), addrOffset = ref(0), addrLabel = ref((() => { const l = useRoute().query.label; return typeof l === 'string' ? l.slice(0, 80) : '' })())
+const addrSelected = ref<number[]>([]), bulkKind = ref<'subnet' | 'address'>('address'), bulkOpen = ref(false)
+const { items: labelItems } = useLabels()
+const labelOptions = computed(() => [{ label: t('label.all'), value: 'all' }, ...labelItems.value.map((l: any) => ({ label: l.name as string, value: l.name as string }))])
+const openBulk = (k: 'subnet' | 'address') => { bulkKind.value = k; bulkOpen.value = true }
 useQueryId('subnet', (id) => { addrSubnet.value = id; addrOffset.value = 0 })
 const LIMIT = 200
-const addrQuery = computed(() => ({ limit: LIMIT, offset: addrOffset.value, ...(spaceId.value ? { space_id: spaceId.value } : {}), ...(fam.value ? { family: fam.value } : {}), ...(addrSubnet.value ? { subnet_id: addrSubnet.value } : {}), ...(addrQ.value ? { q: addrQ.value } : {}), ...(addrStatus.value ? { status: addrStatus.value } : {}) }))
+const addrQuery = computed(() => ({ limit: LIMIT, offset: addrOffset.value, ...(spaceId.value ? { space_id: spaceId.value } : {}), ...(fam.value ? { family: fam.value } : {}), ...(addrSubnet.value ? { subnet_id: addrSubnet.value } : {}), ...(addrQ.value ? { q: addrQ.value } : {}), ...(addrStatus.value ? { status: addrStatus.value } : {}), ...(addrLabel.value ? { label: addrLabel.value } : {}) }))
 const { data: addrs, pending: addrsPending, refresh: refreshAddrs } = await useFetch<any>('/api/ipam/addresses', { query: addrQuery, watch: [addrQuery] })
 // Grille d'occupation : recalculée à chaque rechargement des adresses ; un clic filtre le tableau sur l'IP, ou ouvre la création si elle est libre
 const gridKey = ref(0)
@@ -120,12 +124,12 @@ function pickCell(c: { ip: string; state: string; item: unknown }) {
   const free = ['.', 'o', 'p'].includes(c.state)
   if (free && canWrite.value) { addrPrefill.value = c.ip; openForm('addr') } else { addrQ.value = c.ip; addrOffset.value = 0 }
 }
-watch([spaceId, fam, addrSubnet, addrQ, addrStatus], () => { addrOffset.value = 0 })
+watch([spaceId, fam, addrSubnet, addrQ, addrStatus, addrLabel], () => { addrOffset.value = 0 })
 const addrCols = computed<DCol[]>(() => [
   { key: 'ip', label: 'IP', kind: 'mono' }, { key: 'status', label: t('common.status'), kind: 'badge', trans: 'ipam.status' }, { key: 'hostname', label: t('ipam.hostname') }, { key: 'mac', label: 'MAC', kind: 'mono' },
   { key: 'reachable', label: t('ipam.reach.col'), fmt: (v: boolean | null, r: any) => (v === null || v === undefined ? t('ipam.reach.unknown') : `${v ? t('ipam.reach.up') : t('ipam.reach.down')} · ${new Date(r.checked_at).toLocaleDateString()}`) },
   { key: 'aliases', label: t('addrdns.col'), fmt: (v: string[] | null) => (v?.length ? (v.length > 2 ? `${v.slice(0, 2).join(', ')} +${v.length - 2}` : v.join(', ')) : '') },
-  { key: 'description', label: t('common.description') }, { key: 'owner', label: t('ipam.owner') }, { key: 'cidr', label: t('ipam.network'), kind: 'mono' }, { key: 'space', label: t('ipam.space'), hidden: !!spaceId.value },
+  { key: 'description', label: t('common.description') }, { key: 'tags', label: t('label.title'), kind: 'labels' }, { key: 'owner', label: t('ipam.owner') }, { key: 'cidr', label: t('ipam.network'), kind: 'mono' }, { key: 'space', label: t('ipam.space'), hidden: !!spaceId.value },
 ])
 const addrPrefill = ref('')
 // Un bail DHCP actif n'est pas encore une adresse de l'IPAM : on ouvre le formulaire d'ajout pré-rempli (IP, MAC, nom) pour la déclarer
@@ -136,7 +140,7 @@ const addrFields = computed(() => [
   { key: 'subnet_id', label: t('ipam.network'), type: 'select', options: leafOptions.value, required: true, createOnly: true, default: addrSubnet.value || leafOptions.value[0]?.value },
   { key: 'ip', label: 'IP', type: 'text', required: true, createOnly: true, mono: true, default: addrPrefill.value }, { key: 'status', label: t('common.status'), type: 'select', options: statusOptions.value, default: 'used' },
   { key: 'hostname', label: t('ipam.hostname'), type: 'text', placeholder: 'srv-app-01', default: leasePrefill.value.hostname ?? '' }, { key: 'mac', label: 'MAC', type: 'text', placeholder: 'aa:bb:cc:dd:ee:ff', default: leasePrefill.value.mac ?? '' },
-  { key: 'description', label: t('common.description'), type: 'text' }, { key: 'owner', label: t('ipam.owner'), type: 'text' },
+  { key: 'description', label: t('common.description'), type: 'text' }, { key: 'owner', label: t('ipam.owner'), type: 'text' }, { key: 'tags', label: t('label.title'), type: 'labels' },
   { key: 'dns_zone_id', label: t('ipam.dns_sync'), type: 'select', options: zoneOptions.value, default: 0, createOnly: true, hint: t('ipam.dns_sync_hint') },
 ] as any[])
 // Libération d'une adresse (0.10.2) : récapitulatif de ce qui disparaît (noms DNS, alias, réservation DHCP), puis suppression en tout-ou-rien.
@@ -206,9 +210,9 @@ const formFields = computed(() => ({ tpl: tplFields.value, space: spaceFields.va
 const formTitle = computed(() => ({ tpl: t('ipam.add_template'), space: t('ipam.add_space'), net: t('ipam.add_subnet'), container: t('ipam.add_container'), pool: t('ipam.add_pool'), addr: t('common.add'), vlan: t('common.add') } as Record<string, string>)[form.kind] ?? '')
 
 // ---- VLAN ----
-const vlanCols = computed(() => [{ key: 'vlan_id', label: 'VLAN ID', kind: 'num' }, { key: 'name', label: t('common.name') }, { key: 'description', label: t('common.description') }, { key: 'hostname_pattern', label: t('ipam.tpl_pattern'), kind: 'mono' }, { key: 'name_format', label: t('nam.format'), kind: 'mono' }, { key: 'subnets', label: t('ipam.subnets'), kind: 'num' }])
+const vlanCols = computed(() => [{ key: 'vlan_id', label: 'VLAN ID', kind: 'num' }, { key: 'name', label: t('common.name') }, { key: 'description', label: t('common.description') }, { key: 'hostname_pattern', label: t('ipam.tpl_pattern'), kind: 'mono' }, { key: 'name_format', label: t('nam.format'), kind: 'mono' }, { key: 'subnets', label: t('ipam.subnets'), kind: 'num' }, { key: 'tags', label: t('label.title'), kind: 'labels' }])
 const vlanFields = computed(() => [{ key: 'vlan_id', label: 'VLAN ID', type: 'number', required: true }, { key: 'name', label: t('common.name'), type: 'text', required: true }, { key: 'description', label: t('common.description'), type: 'text' },
-  { key: 'hostname_pattern', label: t('ipam.tpl_pattern'), type: 'text', mono: true, placeholder: 'srv-###', hint: t('nam.vlan_pattern_hint') }, { key: 'name_format', label: t('nam.format'), type: 'text', mono: true, placeholder: 'v{vlan}-{o4:3}', hint: t('nam.format_hint') }] as any[])
+  { key: 'hostname_pattern', label: t('ipam.tpl_pattern'), type: 'text', mono: true, placeholder: 'srv-###', hint: t('nam.vlan_pattern_hint') }, { key: 'name_format', label: t('nam.format'), type: 'text', mono: true, placeholder: 'v{vlan}-{o4:3}', hint: t('nam.format_hint') }, { key: 'tags', label: t('label.title'), type: 'labels' }] as any[])
 
 // ---- IP suivante libre (réseau et pool au choix) ----
 // ---- Contrôle d'une adresse : nom DNS + test de présence ----
@@ -277,6 +281,7 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
         <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-chevrons-up-down" :label="t('ipam.expand_all')" @click="netTable?.expandAll()" />
         <template v-if="canWrite && netSelected.length">
           <UButton size="xs" color="neutral" variant="outline" icon="i-lucide-arrow-right-left" :label="t('ipam.move_to_space')" @click="moveTo = spaceOptions[0]?.value ?? 1; moveErr = ''; moveOpen = true" />
+          <UButton size="xs" color="neutral" variant="outline" icon="i-lucide-bookmark-plus" :label="t('label.bulk_btn', { n: netSelected.length })" @click="openBulk('subnet')" />
           <UButton size="xs" color="error" variant="outline" icon="i-lucide-trash-2" :label="t('ipam.delete_selected', { n: netSelected.length })" @click="bulkDelete" />
         </template>
       </template>
@@ -304,12 +309,14 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
     </DenseTable>
 
     <!-- Adresses : toutes, tous réseaux -->
-    <DenseTable v-else-if="tab === 'addresses'" :rows="addrs?.items ?? []" :columns="addrCols" :loading="addrsPending" export-name="ipam-adresses">
+    <DenseTable v-else-if="tab === 'addresses'" v-model:selected="addrSelected" :rows="addrs?.items ?? []" :columns="addrCols" :loading="addrsPending" :selectable="canWrite" :can-select="(r: any) => !!r.id" export-name="ipam-adresses">
       <template #toolbar>
         <UInput v-model="addrQ" icon="i-lucide-search" size="sm" class="w-56" :placeholder="t('ipam.search_ph')" :aria-label="t('common.search')" />
         <USelect v-model="addrSubnet" size="sm" class="w-64" :items="[{ label: t('ipam.all_networks'), value: 0 }, ...leafOptions]" :aria-label="t('ipam.network')" />
         <USelect :model-value="addrStatus || 'all'" size="sm" class="w-40" :items="[{ label: t('ipam.all_status'), value: 'all' }, ...statusOptions, { label: t('ipam.status.lease'), value: 'lease' }]" :aria-label="t('common.status')" @update:model-value="addrStatus = $event === 'all' ? '' : $event" />
+        <USelect :model-value="addrLabel || 'all'" size="sm" class="w-44" icon="i-lucide-bookmark" :items="labelOptions" :aria-label="t('label.title')" @update:model-value="addrLabel = $event === 'all' ? '' : $event" />
         <UButton v-if="canWrite" icon="i-lucide-plus" size="sm" :label="t('common.add')" :disabled="!leafOptions.length" @click="openForm('addr')" />
+        <UButton v-if="canWrite && addrSelected.length" size="xs" color="neutral" variant="outline" icon="i-lucide-bookmark-plus" :label="t('label.bulk_btn', { n: addrSelected.length })" @click="openBulk('address')" />
         <UButton v-if="canWrite" icon="i-lucide-wand-sparkles" size="sm" color="neutral" variant="outline" :label="t('ipam.next_free')" :disabled="!leafOptions.length" @click="openNext()" />
         <UButton icon="i-lucide-download" size="sm" color="neutral" variant="ghost" :label="t('ipam.export')" href="/api/ipam/export/addresses" external />
       </template>
@@ -343,6 +350,7 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
     <GhostAddresses v-else-if="tab === 'ghosts'" />
     <div v-else-if="tab === 'discovery' && canWrite" class="flex flex-col gap-4"><DiscoveryFound @changed="reloadData" /><DiscoveryWizard @changed="reloadData" /><DiscoverySchedule /></div>
     <NetboxWizard v-else-if="tab === 'sources' && isAdmin" @changed="reloadData" />
+    <LabelsAdmin v-else-if="tab === 'labels'" :can-write="canWrite" />
     <div v-else-if="tab === 'search'" class="flex flex-col gap-3">
       <UInput v-model="sq" icon="i-lucide-search" :placeholder="t('ipam.search_ph')" :aria-label="t('common.search')" class="w-96" autofocus />
       <div class="grid gap-4 lg:grid-cols-2">
@@ -354,6 +362,7 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
     </div>
 
     <!-- Formulaires -->
+    <LabelsBulk v-model:open="bulkOpen" :kind="bulkKind" :ids="bulkKind === 'address' ? addrSelected : netSelected" @done="async () => { addrSelected = []; netSelected = []; await refreshAll(); await refreshVlans() }" />
     <EntityForm v-model:open="form.open" :title="form.row ? t('common.edit') : formTitle" :fields="formFields" :row="form.row" :submit="submitForm" />
     <UModal v-model:open="chk.open" :title="t('ipam.check_title', { ip: chk.row?.ip ?? '' })" :description="t('ipam.check_desc')">
       <template #body>

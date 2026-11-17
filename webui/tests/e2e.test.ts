@@ -203,7 +203,7 @@ describe('IPAM', () => {
     expect(f.addresses.length).toBe(1)
     expect((await admin.get('/api/ipam/search?q=' + encodeURIComponent("' OR 1=1 --"))).status).toBe(200)
     const csv = await admin.get('/api/ipam/export/addresses')
-    expect(csv.headers.get('content-type')).toContain('text/csv'); expect(csv.text.split('\n')[0]).toBe('cidr,ip,status,hostname,mac,description')
+    expect(csv.headers.get('content-type')).toContain('text/csv'); expect(csv.text.split('\n')[0]).toBe('cidr,ip,status,hostname,mac,description,labels')
     expect(csv.text).toContain(`"'=HYPERLINK(""http://x"")"`); expect(csv.text).not.toMatch(/,=HYPERLINK/)
     const s = await admin.post('/api/ipam/subnets', { cidr: '172.20.0.0/24', name: 'tmp' })
     await admin.post(`/api/ipam/subnets/${s.json.id}/addresses`, { ip: '172.20.0.5' }); await admin.post(`/api/ipam/subnets/${s.json.id}/addresses`, { ip: '172.20.0.6' })
