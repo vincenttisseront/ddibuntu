@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.13.7 — « DHCP : baux compacts, filtres, tris et réservation en un clic »
+
+- Onglet **DHCP › Baux** : tableau compact (DenseTable) avec filtre par colonne, tris sur les valeurs brutes, colonnes adresse, MAC, nom d'hôte, réseau, expiration et état (« Dynamique » / « Réservé »).
+- Bouton **réserver** sur chaque ligne : crée la réservation IP ↔ MAC dans le scope du bail (nom d'hôte repris du bail s'il est valide). Désactivé si le bail n'a pas de MAC, pas de scope, ou si l'adresse/le poste est déjà réservé. La réservation s'applique après « Valider et déployer ».
+- API : `GET /dhcp/leases` renvoie `scope_id`, `network`, `reservation_id` ; `POST /dhcp/leases/reserve`.
+- Test e2e-iter45.
+
 ## 0.13.6 — « Correctif : « à déployer » restait affiché après un déploiement »
 
 - **Correctif** : la mention « #N à déployer » (tableau de bord, Configuration) pouvait rester affichée après un déploiement réussi. Le compteur de génération est incrémenté par des déclencheurs « par instruction » : il l'est aussi par une écriture qui ne change rien (insertion ignorée par `on conflict do nothing`, mise à jour identique, tâche périodique).

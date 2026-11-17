@@ -40,8 +40,23 @@ const classFields = computed(() => [
 ] as any[])
 const classBody = (b: any) => ({ ...b, option43: b.option43 || null, tftp_server: b.tftp_server || null, boot_file: b.boot_file || null, comment: b.comment || null })
 
-const { data: leases } = await useFetch<any>('/api/dhcp/leases')
-const leaseCols = computed(() => [{ key: 'ip', label: 'IP', kind: 'mono' }, { key: 'mac', label: 'MAC', kind: 'mono' }, { key: 'hostname', label: t('ipam.hostname') }, { key: 'expire', label: t('dhcp.expires'), kind: 'date' }])
+const { data: leases, refresh: refreshLeases, pending: leasesPending } = await useFetch<any>('/api/dhcp/leases')
+const { dateTime } = useFmt()
+const leaseCols = computed(() => [
+  { key: 'ip', label: 'IP', kind: 'mono' }, { key: 'mac', label: 'MAC', kind: 'mono' }, { key: 'hostname', label: t('ipam.hostname') },
+  { key: 'network', label: t('ipam.network'), kind: 'mono' }, { key: 'expire', label: t('dhcp.expires'), fmt: (v: string) => (v ? dateTime(v) : '') },
+  { key: 'reservation_id', label: t('dhcp.lease_status'), fmt: (v: number | null) => (v ? t('dhcp.lease_reserved') : t('dhcp.lease_dynamic')) },
+])
+const reserving = ref<string | null>(null)
+async function reserveLease(row: any) {
+  reserving.value = row.ip
+  try {
+    await api.call('POST', '/dhcp/leases/reserve', { ip: row.ip })
+    toast.add({ title: t('dhcp.lease_reserve_ok', { ip: row.ip }), color: 'success', icon: 'i-lucide-check' })
+    await refreshLeases()
+  } catch { /* message déjà affiché */ } finally { reserving.value = null }
+}
+const canReserve = (r: any) => canWrite.value && !r.reservation_id && !!r.mac && !!r.scope_id
 
 // Paramètres globaux (administrateur)
 const { data: ds, refresh: refreshDs } = await useFetch<any>('/api/dhcp/settings')
@@ -78,7 +93,16 @@ async function saveSettings() {
     </div>
     <div v-else-if="tab === 'leases'" class="flex flex-col gap-3">
       <UAlert v-if="!leases?.available" color="neutral" variant="subtle" icon="i-lucide-info" :title="t('dhcp.leases_unavailable')" />
-      <ResourceTable endpoint="/dhcp/leases" :columns="leaseCols" />
+      <DenseTable :rows="leases?.items ?? []" :columns="leaseCols" :loading="leasesPending" export-name="dhcp-baux">
+        <template #cell-reservation_id="{ row }">
+          <UBadge v-if="row.reservation_id" color="success" variant="subtle" size="sm">{{ t('dhcp.lease_reserved') }}</UBadge>
+          <span v-else class="text-muted">{{ t('dhcp.lease_dynamic') }}</span>
+        </template>
+        <template v-if="canWrite" #actions="{ row }">
+          <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-bookmark-plus" :loading="reserving === row.ip" :disabled="!canReserve(row) || reserving !== null"
+            :aria-label="t('dhcp.lease_reserve')" :title="row.reservation_id ? t('dhcp.lease_reserved') : !row.mac ? t('dhcp.lease_no_mac') : t('dhcp.lease_reserve')" @click="reserveLease(row)" />
+        </template>
+      </DenseTable>
     </div>
     <UCard v-else-if="tab === 'settings'" class="max-w-3xl">
       <form class="grid gap-3 md:grid-cols-2" @submit.prevent="saveSettings">

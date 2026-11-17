@@ -3021,5 +3021,14 @@ const messages: Record<string, string> = {
   "label.assigned": "{n} item(s) updated",
   "err.label_exists": "This label already exists.",
   "err.nothing_to_do": "Nothing to do: give labels to add or remove.",
+  "dhcp.lease_status": "State",
+  "dhcp.lease_reserved": "Reserved",
+  "dhcp.lease_dynamic": "Dynamic",
+  "dhcp.lease_reserve": "Reserve this address for this device (MAC + IP)",
+  "dhcp.lease_no_mac": "Cannot reserve: the lease has no MAC address",
+  "dhcp.lease_reserve_ok": "{ip} is now reserved for this device (to deploy).",
+  "err.reservation_exists": "A reservation already exists for this IP or MAC in this scope.",
+  "err.lease_without_mac": "This lease has no MAC address: cannot reserve.",
+  "err.no_scope": "This lease does not belong to any DHCP scope known to the console.",
 }
 export default messages
