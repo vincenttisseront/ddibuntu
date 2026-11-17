@@ -3,6 +3,8 @@
 import type { ClusterState } from './cluster'
 import type { NodeHealth } from './health'
 import type { BackupResult, BackupStatus } from './backup'
+import type { PkiStatus } from './pki'
+import { pkiProtection } from './pki-protection'
 
 export type Severity = 'critical' | 'warning' | 'info'
 export const SEVERITY_RANK: Record<Severity, number> = { info: 0, warning: 1, critical: 2 }
@@ -23,6 +25,7 @@ export interface Snapshot {
   localHealth: NodeHealth | null
   backup: BackupStatus | null
   backupResult: BackupResult | null
+  pki?: PkiStatus | null                         // état de la PKI de CE nœud (absent = non évalué)
   subnets: SubnetUsage[]
   hygiene?: Hygiene                              // absent = non évalué (ex. nœud secondaire)
 }
@@ -39,6 +42,7 @@ export const RULES: Record<string, Severity> = {
   'node.health_stale': 'critical', 'node.service_down': 'critical', 'node.postgres_down': 'critical', 'node.disk_low': 'warning', 'node.cert_expiry': 'warning',
   'node.time_unsynced': 'warning', 'node.memory_low': 'warning',
   'backup.state_stale': 'warning', 'backup.none': 'warning', 'backup.too_old': 'warning', 'backup.archiver_failing': 'critical', 'backup.run_failed': 'warning', 'backup.verify_failed': 'critical',
+  'pki.no_recovery_key': 'warning', 'pki.backup_disabled': 'warning', 'pki.bundle_missing': 'warning',
   'ipam.subnet_full': 'warning', 'ipam.ghosts': 'info', 'ipam.unknown_hosts': 'warning', 'ipam.mac_changed': 'warning',
 }
 export const RULE_IDS = Object.keys(RULES)
@@ -163,6 +167,17 @@ export function evaluate(s: Snapshot, th: Thresholds, memory: Memory): { finding
   }
   const r = s.backupResult
   if (r && r.action === 'run' && !r.ok && s.now - r.at < 86400) out.push(f('backup.run_failed', 'warning', b?.node ?? '', '', { message: r.message.slice(0, 120) }))
+
+  // ------------------------------------------------------------ PKI : les secrets qui rendent lisibles les clés des autorités sont-ils sauvegardés ? (0.14.5)
+  // Seulement quand la PKI porte au moins une autorité : avant, il n'y a rien à perdre. « pending » (clé enregistrée après la dernière sauvegarde) n'alerte pas : la prochaine suffit.
+  const pk = s.pki
+  if (pk && (pk.casCount ?? 0) > 0) {
+    const node = b?.node ?? ''
+    const pr = pkiProtection(pk, b)
+    if (pr.state === 'no_key') out.push(f('pki.no_recovery_key', 'warning', node, '', { cas: pk.casCount ?? 0 }))
+    else if (pr.state === 'backup_off') out.push(f('pki.backup_disabled', 'warning', node, '', { cas: pk.casCount ?? 0 }))
+    else if (pr.state === 'no_bundle') out.push(f('pki.bundle_missing', 'warning', node, '', { reason: pr.reason }))
+  }
 
   // ------------------------------------------------------------ IPAM : sous-réseaux presque pleins (les très petits sont ignorés : un /30 plein est normal)
   for (const u of s.subnets) {

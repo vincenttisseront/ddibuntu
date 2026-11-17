@@ -9,6 +9,10 @@
 #   configure K=V...            KEEP_FULL, KEEP_DAYS, INTERVAL_HOURS, START_HOUR, MIRROR_DIR, VERIFY_AFTER
 #   restore --latest|--at T|--id ID --yes     restaure (T = « 2026-11-11 10:00:00+00 »)
 #   request                     demande JSON déposée par la console (.backup-request), revalidée ici
+#   pki-verify [--id ID] --key CLÉ            essai : déchiffre le lot des secrets de la PKI d'une sauvegarde (la plus récente qui en contient un par défaut)
+#   pki-restore [--id ID] --key CLÉ [--force] [--no-start]   réinstalle les secrets, les métadonnées des autorités et le volume de la PKI (APRÈS la restauration de la base)
+# 0.14.5 : chaque sauvegarde contient, si la PKI est installée et qu'une clé de récupération est enregistrée, « pki-secrets.cms » (secrets d'EJBCA chiffrés pour la clé PUBLIQUE de
+# récupération) : mêmes empreintes, même rétention, même copie externe. La clé privée n'est jamais sur l'appliance : sans elle, la base « ejbca » restaurée est inutilisable.
 # Outils standards uniquement : pg_basebackup, archive_command (wal-archive.sh), restore_command (gunzip). Dépôt : DIR, propriété de postgres.
 set -u
 ROOT="${DDI_ROOT:-}"
@@ -23,6 +27,8 @@ PGSOCK="${DDI_PG_SOCKET_DIR:-/var/run/postgresql}"
 CLCONF="$ROOT/etc/ddibuntu-cluster/cluster.conf"
 CLCMD="${DDI_CLUSTER_CMD:-/usr/local/sbin/ddibuntu-cluster}"
 PATRONI_CFG="$ROOT/etc/patroni/config.yml"
+PKICMD="${DDI_PKI_CMD:-/usr/local/sbin/ddibuntu-pki}"
+SYSCTL="${DDI_BACKUP_SYSCTL:-systemctl}"
 CLUSTER="" NODE="" NROLE="" CLNAME=""
 
 log() { printf 'ddibuntu-backup: %s\n' "$*" >&2; }
@@ -157,6 +163,34 @@ pg_restart_cluster() {   # recharge la configuration Patroni de CE nœud, puis r
   "${pc[@]}" restart "$CLNAME" "$NODE" --pending --force >/dev/null 2>&1 9>&-
 }
 
+# ---------------------------------------------------------------- lot des secrets de la PKI (0.14.5)
+# La PKI (EJBCA) garde les clés de ses autorités dans la base « ejbca » : elles sont donc déjà dans la sauvegarde de PostgreSQL, mais illisibles sans les secrets d'ejbca.env.
+# ddibuntu-pki en fait un lot chiffré pour la clé PUBLIQUE de récupération ; ici il rejoint la sauvegarde (empreintes, rétention, copie externe). Un échec du lot ne fait JAMAIS
+# échouer la sauvegarde de la base : il est dit dans meta.json (« pki ») et la console l'alerte.
+pki_bundle() {   # $1 = dossier de la sauvegarde en cours → objet JSON « pki » sur la sortie standard
+  local d="$1" j="$1/.pki-result.json" rc=0 err="" out
+  : > "$j"
+  if [ -x "$PKICMD" ]; then err="$(timeout 700 "$PKICMD" secrets-pack "$d/pki-secrets.cms" 2>&1 >"$j" 9>&-)" || rc=$?
+  else printf '{"secrets":false,"reason":"none"}' > "$j"; fi
+  [ "$rc" -eq 0 ] || log "AVERTISSEMENT : secrets de la PKI non sauvegardés : $(printf '%s' "${err##*$'\n'}" | tr -cd '[:print:]' | head -c 200)"
+  out="$(python3 -c '
+import json, re, sys
+try: d = json.loads(open(sys.argv[1]).read())
+except Exception: d = {}
+r = {"secrets": False, "reason": "error"}
+if isinstance(d, dict) and d.get("secrets") is True and isinstance(d.get("recoveryFp"), str) and re.fullmatch(r"[0-9a-f]{64}", d["recoveryFp"]):
+    r = {"secrets": True, "recoveryFp": d["recoveryFp"]}
+    for k in ("bytes", "cas", "files"):
+        r[k] = d[k] if isinstance(d.get(k), int) and not isinstance(d.get(k), bool) else 0
+    r["tag"] = d["tag"][:24] if isinstance(d.get("tag"), str) else ""
+elif isinstance(d, dict) and d.get("secrets") is False and d.get("reason") in ("none", "no-recovery-key", "error"):
+    r = {"secrets": False, "reason": d["reason"]}
+print(json.dumps(r))' "$j" 2>/dev/null)" || out='{"secrets":false,"reason":"error"}'
+  rm -f -- "$j"
+  case "$out" in *'"secrets": true'*) ;; *) rm -f -- "$d/pki-secrets.cms" ;; esac
+  printf '%s' "$out"
+}
+
 # ---------------------------------------------------------------- sauvegarde complète
 meta_list() { find "$REPO/base" -maxdepth 2 -name meta.json 2>/dev/null | sort; }
 cmd_run() {
@@ -187,13 +221,16 @@ print(r["Timeline"], r["Start-LSN"], r["End-LSN"])' "$tmp/backup_manifest") || {
   # le dernier segment de la sauvegarde doit être archivé pour qu'elle serve de base à une restauration jusqu'à « maintenant »
   psql_pg -c 'select pg_switch_wal()' >/dev/null 2>&1 || true
   local archived=false i; for i in $(seq 90); do [ -f "$REPO/wal/$eseg.gz" ] && { archived=true; break; }; sleep 1; done
+  local pkimeta; pkimeta="$(pki_bundle "$tmp")"
   local size; size="$(du -sb "$tmp" | cut -f1)"
-  ID="$id" NODE="${NODE:-$(hostname -s)}" TLI="$tli" SLSN="$lsn_start" ELSN="$lsn_end" SSEG="$sseg" ESEG="$eseg" SIZE="$size" ARCH="$archived" T0="$t0" T1="$(now)" python3 -c '
+  ID="$id" NODE="${NODE:-$(hostname -s)}" TLI="$tli" SLSN="$lsn_start" ELSN="$lsn_end" SSEG="$sseg" ESEG="$eseg" SIZE="$size" ARCH="$archived" T0="$t0" T1="$(now)" PKIMETA="$pkimeta" python3 -c '
 import json, os
 e = os.environ
 print(json.dumps({"id": e["ID"], "node": e["NODE"], "type": "full", "startedAt": int(e["T0"]), "finishedAt": int(e["T1"]), "sizeBytes": int(e["SIZE"]), "timeline": int(e["TLI"]),
-  "startLsn": e["SLSN"], "endLsn": e["ELSN"], "startSegment": e["SSEG"], "endSegment": e["ESEG"], "walArchived": e["ARCH"] == "true", "pgMajor": 16}))' > "$tmp/meta.json"
-  ( cd "$tmp" && sha256sum base.tar.gz pg_wal.tar.gz backup_manifest meta.json > SHA256SUMS ) 2>/dev/null || ( cd "$tmp" && sha256sum base.tar.gz backup_manifest meta.json > SHA256SUMS )
+  "startLsn": e["SLSN"], "endLsn": e["ELSN"], "startSegment": e["SSEG"], "endSegment": e["ESEG"], "walArchived": e["ARCH"] == "true", "pgMajor": 16, "pki": json.loads(e["PKIMETA"])}))' > "$tmp/meta.json"
+  local sums=(base.tar.gz backup_manifest meta.json); [ ! -f "$tmp/pg_wal.tar.gz" ] || sums=(base.tar.gz pg_wal.tar.gz backup_manifest meta.json)
+  [ ! -f "$tmp/pki-secrets.cms" ] || sums+=(pki-secrets.cms)
+  ( cd "$tmp" && sha256sum "${sums[@]}" > SHA256SUMS )
   chown -R postgres:postgres "$tmp" 2>/dev/null || true
   mv -- "$tmp" "$REPO/base/$id"
   sync -- "$REPO/base" 2>/dev/null || true
@@ -209,7 +246,7 @@ cmd_verify() {
   for m in $(meta_list); do
     d="$(dirname "$m")"; id="$(basename "$d")"; [ -z "$want" ] || [ "$want" = "$id" ] || continue
     n=$((n + 1))
-    if ( cd "$d" && sha256sum --quiet -c SHA256SUMS >/dev/null 2>&1 ) && gzip -t "$d"/*.tar.gz 2>/dev/null; then log "sauvegarde $id : intègre"
+    if ( cd "$d" && sha256sum --quiet -c SHA256SUMS >/dev/null 2>&1 ) && gzip -t "$d"/*.tar.gz 2>/dev/null && pki_bundle_ok "$d"; then log "sauvegarde $id : intègre"
     else log "sauvegarde $id : CORROMPUE (empreinte ou archive invalide)"; bad=$((bad + 1)); fi
   done
   [ "$n" -gt 0 ] || die "aucune sauvegarde${want:+ $want}"
@@ -218,6 +255,9 @@ cmd_verify() {
   if [ "$bad" -ne 0 ] || [ "$wbad" -ne 0 ]; then record_verify false "$n" "$bad" "$wbad"; die "$bad sauvegarde(s) et $wbad journal(aux) corrompu(s)"; fi
   record_verify true "$n" 0 0
   log "contrôle terminé : $n sauvegarde(s) et journaux WAL intègres"
+}
+pki_bundle_ok() {   # le lot des secrets de la PKI, s'il existe, est une structure CMS lisible (le contenu ne se lit qu'avec la clé de récupération : « pki-verify »)
+  [ ! -e "$1/pki-secrets.cms" ] || openssl cms -cmsout -inform DER -in "$1/pki-secrets.cms" -noout >/dev/null 2>&1
 }
 # Dernier contrôle d'intégrité (manuel ou automatique) : publié dans l'état et surveillé par la console (alerte si corrompu).
 record_verify() {   # record_verify OK N MAUVAISES WAL_MAUVAIS
@@ -273,6 +313,41 @@ mirror_sync() {
   if command -v rsync >/dev/null 2>&1; then rsync -a --delete "$REPO/base" "$REPO/wal" "$dst/" || { log "AVERTISSEMENT : copie externe incomplète"; return 1; }
   else mkdir -p "$dst/base" "$dst/wal"; cp -au "$REPO/base/." "$dst/base/" && cp -au "$REPO/wal/." "$dst/wal/" || { log "AVERTISSEMENT : copie externe incomplète"; return 1; }; fi
   date +%s > "$dst/.ddibuntu-last-sync" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------- lot de la PKI : essai et restauration (ligne de commande uniquement : la clé privée ne passe jamais par la console)
+pki_pick() {   # $1 = identifiant ou vide (la plus récente sauvegarde qui contient un lot) → chemin du lot
+  local id="${1:-}" m d best=""
+  if [ -n "$id" ]; then
+    d="$REPO/base/$id"; [ -f "$d/meta.json" ] || die "sauvegarde inconnue : $id"
+    [ -f "$d/pki-secrets.cms" ] || die "la sauvegarde $id ne contient pas de lot de la PKI ($(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])).get("pki", {}).get("reason", "inconnue"); print({"none": "PKI non installée", "no-recovery-key": "aucune clé de récupération enregistrée", "error": "échec de la création du lot"}.get(r, r))' "$d/meta.json" 2>/dev/null))"
+    best="$d"
+  else
+    for m in $(meta_list); do d="$(dirname "$m")"; [ ! -f "$d/pki-secrets.cms" ] || best="$d"; done
+    [ -n "$best" ] || die "aucune sauvegarde ne contient de lot de la PKI"
+  fi
+  ( cd "$best" && sha256sum --quiet -c SHA256SUMS >/dev/null 2>&1 ) || die "la sauvegarde $(basename "$best") est corrompue : lot de la PKI refusé"
+  printf '%s' "$best/pki-secrets.cms"
+}
+pki_args() {   # pki_args ARG... → PK_ID, PK_KEY, PK_REST
+  PK_ID="" PK_KEY="" PK_REST=()
+  while [ $# -gt 0 ]; do case "$1" in
+    --id) PK_ID="${2:-}"; shift 2 ;; --key) PK_KEY="${2:-}"; shift 2 ;; --force|--no-start) PK_REST+=("$1"); shift ;; *) die "option inconnue : $1" ;; esac; done
+  [ -n "$PK_KEY" ] || die "préciser --key <fichier de la clé privée de récupération>"
+  [ -z "$PK_ID" ] || [[ "$PK_ID" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "identifiant invalide"
+  [ -x "$PKICMD" ] || die "ddibuntu-pki est introuvable"
+}
+cmd_pki_verify() {
+  load_conf; pki_args "$@"; lock; LOCKED=1
+  local f; f="$(pki_pick "$PK_ID")" || exit 1
+  log "lot de la PKI : ${f#"$REPO"/}"
+  "$PKICMD" secrets-verify --file "$f" --key "$PK_KEY" 9>&-
+}
+cmd_pki_restore() {
+  load_conf; pki_args "$@"; lock; LOCKED=1
+  local f; f="$(pki_pick "$PK_ID")" || exit 1
+  log "lot de la PKI : ${f#"$REPO"/}"
+  "$PKICMD" secrets-restore --file "$f" --key "$PK_KEY" "${PK_REST[@]}" 9>&-
 }
 
 # ---------------------------------------------------------------- minuteur
@@ -389,6 +464,22 @@ pick_backup() {   # pick_backup MODE ARG → id sur la sortie standard
   esac
   [ -n "$best" ] && echo "$best"
 }
+EJBCA_WAS=0
+ejbca_stop() {   # la PKI garde des connexions et un cache de la base : arrêtée pendant la restauration, relancée avec la base restaurée
+  EJBCA_WAS=0
+  { [ -z "${DDI_TEST:-}" ] || [ -n "${DDI_BACKUP_SYSCTL:-}" ]; } || return 0
+  if "$SYSCTL" is-active --quiet ddibuntu-ejbca.service 2>/dev/null; then EJBCA_WAS=1; "$SYSCTL" stop ddibuntu-ejbca.service 9>&- 2>/dev/null || true; fi
+}
+ejbca_start() {
+  [ "$EJBCA_WAS" -eq 1 ] || return 0
+  "$SYSCTL" start --no-block ddibuntu-ejbca.service 9>&- 2>/dev/null || log "AVERTISSEMENT : la PKI n'a pas redémarré (systemctl start ddibuntu-ejbca)"
+  EJBCA_WAS=0
+}
+pki_restore_hint() {   # $1 = identifiant de la sauvegarde restaurée
+  local m="$REPO/base/$1/meta.json"
+  python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("pki", {}).get("secrets") is True else 1)' "$m" 2>/dev/null || return 0
+  log "PKI : la base « ejbca » est celle de la sauvegarde ; si les secrets de la PKI manquent sur cette machine (machine neuve), les réinstaller avec : ddibuntu-backup pki-restore --id $1 --key <clé privée de récupération>"
+}
 PGLOGF=""   # journal du PostgreSQL démarré par la restauration d'un cluster (sinon : journal du service)
 recovery_hint() {   # indice lisible quand la cible n'est pas atteinte (journal de PostgreSQL, si lisible)
   local lf="${PGLOGF:-${DDI_PG_LOG:-$ROOT/var/log/postgresql/postgresql-$PGVER-main.log}}" last
@@ -424,6 +515,7 @@ cmd_restore() {
   ( cd "$bdir" && sha256sum --quiet -c SHA256SUMS >/dev/null 2>&1 ) || die "la sauvegarde $id est corrompue : restauration refusée"
   if [ -n "$tt" ]; then log "restauration depuis la sauvegarde $id, jusqu’à $tt"; else log "restauration depuis la sauvegarde $id"; fi
   if [ -n "$CLUSTER" ]; then restore_cluster "$id" "$mode" "$tt"; else restore_standalone "$id" "$mode" "$tt"; fi
+  pki_restore_hint "$id"
 }
 extract_base() {   # extract_base DIR_SAUVEGARDE
   local b="$1"
@@ -445,8 +537,9 @@ restore_standalone() {
   local console_was=0; if [ -z "${DDI_TEST:-}" ] && systemctl is-active --quiet ddibuntu-console.service 2>/dev/null; then console_was=1; fi
   phase stopping "arrêt de PostgreSQL"
   [ "$console_was" -eq 0 ] || systemctl stop ddibuntu-console.service
-  pg_do stop || { [ "$console_was" -eq 0 ] || systemctl start ddibuntu-console.service; phase failed "arrêt de PostgreSQL impossible"; die "arrêt de PostgreSQL impossible"; }
-  mv -- "$PGDATA" "$aside" || { pg_do start; phase failed "déplacement de la base actuelle impossible"; die "déplacement de la base actuelle impossible"; }
+  ejbca_stop
+  pg_do stop || { [ "$console_was" -eq 0 ] || systemctl start ddibuntu-console.service; ejbca_start; phase failed "arrêt de PostgreSQL impossible"; die "arrêt de PostgreSQL impossible"; }
+  mv -- "$PGDATA" "$aside" || { pg_do start; ejbca_start; phase failed "déplacement de la base actuelle impossible"; die "déplacement de la base actuelle impossible"; }
   phase extracting "extraction de la sauvegarde $id"
   local fail=""
   extract_base "$REPO/base/$id" || fail="extraction impossible"
@@ -462,10 +555,12 @@ restore_standalone() {
     phase rollback "$fail"
     pg_do stop >/dev/null 2>&1 || true; sleep 1; rm -rf -- "$PGDATA"; mv -- "$aside" "$PGDATA"; pg_do start >/dev/null 2>&1 || true
     [ "$console_was" -eq 0 ] || systemctl start ddibuntu-console.service
+    ejbca_start
     phase failed "$fail"; die "$fail ; la base précédente est remise en service"
   fi
   reset_recovery_settings
   [ "$console_was" -eq 0 ] || systemctl start ddibuntu-console.service
+  ejbca_start
   phase "done" "base restaurée ; ancienne base conservée : $aside"
   log "restauration terminée ; l'ancienne base est conservée dans $aside (supprimée automatiquement après 14 jours)"
   post_restore_backup
@@ -506,9 +601,10 @@ restore_cluster() {
   "${pc[@]}" pause --wait >/dev/null 2>&1 || die "mise en pause de Patroni impossible"
   local console_was=0; if [ -z "${DDI_TEST:-}" ] && systemctl is-active --quiet ddibuntu-console.service 2>/dev/null; then console_was=1; fi
   [ "$console_was" -eq 0 ] || systemctl stop ddibuntu-console.service
+  ejbca_stop
   phase stopping "arrêt de PostgreSQL"
-  as_pg "$PGBIN/pg_ctl" -D "$PGDATA" -m fast -w stop >/dev/null 2>&1 || { "${pc[@]}" resume --wait >/dev/null 2>&1; die "arrêt de PostgreSQL impossible"; }
-  mv -- "$PGDATA" "$aside" || { "${pc[@]}" resume --wait >/dev/null 2>&1; die "déplacement de la base actuelle impossible"; }
+  as_pg "$PGBIN/pg_ctl" -D "$PGDATA" -m fast -w stop >/dev/null 2>&1 || { "${pc[@]}" resume --wait >/dev/null 2>&1; ejbca_start; die "arrêt de PostgreSQL impossible"; }
+  mv -- "$PGDATA" "$aside" || { "${pc[@]}" resume --wait >/dev/null 2>&1; ejbca_start; die "déplacement de la base actuelle impossible"; }
   phase extracting "extraction de la sauvegarde $id"
   local fail=""
   extract_base "$REPO/base/$id" || fail="extraction impossible"
@@ -528,6 +624,7 @@ restore_cluster() {
     as_pg "$PGBIN/pg_ctl" -D "$PGDATA" -m immediate -w stop >/dev/null 2>&1 || true; rm -rf -- "$PGDATA"; mv -- "$aside" "$PGDATA"
     "${pc[@]}" resume --wait >/dev/null 2>&1 || true
     [ "$console_was" -eq 0 ] || systemctl start ddibuntu-console.service
+    ejbca_start
     phase failed "$fail"; die "$fail ; la base précédente est conservée et Patroni reprend la main"
   fi
   reset_recovery_settings
@@ -542,6 +639,7 @@ restore_cluster() {
     "${pc[@]}" reinit "$CLNAME" "$m" --force --wait >/dev/null 2>&1 || log "AVERTISSEMENT : réinitialisation de $m à relancer (patronictl reinit $CLNAME $m)"
   done
   [ "$console_was" -eq 0 ] || systemctl start ddibuntu-console.service
+  ejbca_start
   phase "done" "base restaurée ; ancienne base conservée : $aside"
   log "restauration du cluster terminée ; ancienne base conservée dans $aside (supprimée après 14 jours)"
   post_restore_backup
@@ -636,5 +734,7 @@ case "${1:-}" in
   configure) shift; cmd_configure "$@" ;;
   restore) shift; cmd_restore "$@" ;;
   request) cmd_request ;;
-  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  pki-verify) shift; cmd_pki_verify "$@" ;;
+  pki-restore) shift; cmd_pki_restore "$@" ;;
+  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

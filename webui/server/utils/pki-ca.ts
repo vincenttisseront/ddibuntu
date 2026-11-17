@@ -15,6 +15,8 @@ export const ROOT_DAYS = { min: 365, max: 7305 } as const
 export const ISSUING_DAYS = { min: 365, max: 3650 } as const
 /** Taille maximale d'un fichier déposé (une chaîne de 5 certificats tient largement) : même limite que root. */
 export const MAX_DEPOSIT = 16384
+/** PKCS#12 d'une autorité existante (clé + chaîne) : 64 Ko au plus, comme root ; mot de passe de 1 à 128 caractères. */
+export const MAX_P12 = 65536
 // élément de nom distinctif : aucun séparateur (virgule, plus, égal, barre oblique inverse, guillemets, <, >, ;, #, /), aucun caractère de contrôle
 export const DN_VALUE_RE = /^[^\x00-\x1f\x7f,+=\\"<>;#/\s]([^\x00-\x1f\x7f,+=\\"<>;#/]{0,62}[^\x00-\x1f\x7f,+=\\"<>;#/\s])?$/
 
@@ -41,6 +43,12 @@ export const issuingBody = z.object({
 export type RootBody = z.infer<typeof rootBody>
 export type IssuingBody = z.infer<typeof issuingBody>
 export const importBody = z.object({ certificate: blob }).strict()
+/** Autorité existante (0.14.4) : fichier PKCS#12 en base64 et son mot de passe. Rien de tout cela n'est gardé : root les consomme puis les efface. */
+export const importP12Body = z.object({
+  name: caName, p12: z.string().min(8).max(Math.ceil(MAX_P12 / 3) * 4 + 8).regex(B64_RE),
+  password: z.string().min(1).max(128).refine((p) => !/[\x00-\x1f\x7f]/.test(p)), confirm: z.string().max(80),
+}).strict()
+export type ImportP12Body = z.infer<typeof importP12Body>
 export const rootCrlBody = z.object({ crl: blob }).strict()
 export const resetBody = z.object({ confirm: z.string().trim().toLowerCase().max(253) }).strict()
 
@@ -53,7 +61,7 @@ export function dnOf(b: { cn: string; ou?: string; o?: string; c?: string }): { 
   return out
 }
 
-export type DepositKind = 'chain.pem' | 'cert.pem' | 'crl' | 'csr.pem'
+export type DepositKind = 'chain.pem' | 'cert.pem' | 'crl' | 'csr.pem' | 'p12' | 'p12pw'
 export type BlobKind = 'certs' | 'crl' | 'csr'
 /** Octets d'un fichier remis, ou null s'il n'a pas la forme attendue (certificat / CRL en PEM ou en DER, ≤ 16 Ko). Root refait tous les contrôles. */
 export function blobBytes(b: Blob, kind: BlobKind): Buffer | null {
@@ -69,7 +77,21 @@ export function blobBytes(b: Blob, kind: BlobKind): Buffer | null {
   return buf.length > 0 && buf.length <= MAX_DEPOSIT ? buf : null
 }
 
+/** Octets d'un PKCS#12 remis en base64, ou null s'il n'a pas la forme attendue (DER commençant par une SEQUENCE, 64 Ko au plus). Root refait tous les contrôles. */
+export function p12Bytes(b64: string): Buffer | null {
+  const buf = Buffer.from(b64.replace(/\s+/g, ''), 'base64')
+  return buf.length >= 16 && buf.length <= MAX_P12 && buf[0] === 0x30 ? buf : null
+}
+
 const inDir = () => join(cfg().generatedDir, 'pki-in')
+/** Dépôt SECRET (PKCS#12 d'une autorité et son mot de passe) pour root : 0600, supprimé avant d'être réécrit ; root l'efface aussitôt lu, quoi qu'il arrive. */
+export async function putSecretDeposit(name: string, kind: 'p12' | 'p12pw', data: Buffer): Promise<void> {
+  if (!CA_NAME_RE.test(name)) throw new Error('nom de dépôt invalide')
+  await fs.mkdir(inDir(), { recursive: true, mode: 0o750 })
+  const p = join(inDir(), `${name}.${kind}`)
+  await fs.rm(p, { force: true })
+  await fs.writeFile(p, data, { mode: 0o600, flag: 'wx' })
+}
 /** Dépose un fichier public pour root (jamais de secret ici) : l'ancien dépôt est supprimé avant, pour ne jamais écrire à travers un lien. */
 export async function putDeposit(name: string, kind: DepositKind, data: Buffer): Promise<void> {
   if (!CA_NAME_RE.test(name)) throw new Error('nom de dépôt invalide')
@@ -89,6 +111,8 @@ export interface PkiCa {
   name: string; kind: CaKind; state: CaState; dn: string; issuer: string; selfSigned: boolean; serial: string; notBefore: string; notAfter: string
   keyAlg: string; keyBits: number; curve: string; sigAlg: string; pathLen: number | null; sha256: string
   signedBy: string; alg: string; createdAt: number | null; crlUrl: string; certUrl: string
+  /** Autorité reprise d'un fichier PKCS#12 (0.14.4) : sa clé est dans la base du DDI, comme celle d'une racine de laboratoire. */
+  imported: boolean
   /** Émettrice sous une racine hors ligne : la racine (ExtRoot-…) dont les adresses CRL / certificat vont dans le certificat à faire signer. */
   extRoot: string
   crl: { number: number; thisUpdate: string; nextUpdate: string; bytes: number } | null
@@ -111,7 +135,7 @@ export async function readPkiCas(): Promise<{ at: number; cas: PkiCa[] } | null>
       name, kind: KINDS.includes(c.kind) ? c.kind : 'unknown', state: CA_STATES.includes(c.state) ? c.state : 'other',
       dn: str(c.dn, 512), issuer: str(c.issuer, 512), selfSigned: c.selfSigned === true, serial: str(c.serial, 80), notBefore: str(c.notBefore, 24), notAfter: str(c.notAfter, 24),
       keyAlg: str(c.keyAlg, 12), keyBits: Number(c.keyBits) || 0, curve: str(c.curve, 24), sigAlg: str(c.sigAlg, 40), pathLen: Number.isInteger(c.pathLen) ? c.pathLen : null,
-      sha256: /^[0-9a-f]{64}$/.test(c.sha256 ?? '') ? c.sha256 : '', signedBy: str(c.signedBy, 80), alg: str(c.alg, 12),
+      sha256: /^[0-9a-f]{64}$/.test(c.sha256 ?? '') ? c.sha256 : '', signedBy: str(c.signedBy, 80), alg: str(c.alg, 12), imported: c.imported === true,
       createdAt: Number.isInteger(c.createdAt) ? c.createdAt : null, extRoot: EXTROOT_RE.test(c.extRoot ?? '') ? c.extRoot : '', crlUrl: str(c.crlUrl, 1024), certUrl: str(c.certUrl, 1024), crl,
       files: { cert: f.cert === true, chain: f.chain === true, csr: f.csr === true, crl: f.crl === true },
       managed: CA_NAME_RE.test(name) && name !== 'ManagementCA',

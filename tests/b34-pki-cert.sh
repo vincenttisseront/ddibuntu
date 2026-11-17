@@ -214,6 +214,10 @@ case "\${s[0]} \${s[1]}" in
     openssl x509 -in "$WORKH/issued.pem" -noout -serial | cut -d= -f2 > "$T/leaf.serial"; python3 -c 'print(int(open("$T/leaf.serial").read().strip(), 16))' > "$T/leaf.dec"; echo 20 > "$T/leaf.status" ;;
   "ra revokecert") [ -f "$T/fail.revoke" ] || echo 40 > "$T/leaf.status" ;;
   "ca createcrl") [ -f "$T/fail.crl" ] && exit 1 ;;
+  "ca editca")
+    [ -f "$T/fail.editca" ] && { echo "boom editca" >&2; exit 1; }
+    en=""; ef=""; ev=""; for ((j=2; j<\${#s[@]}; j++)); do case "\${s[\$j]}" in --caname) en="\${s[\$((j+1))]}";; --field) ef="\${s[\$((j+1))]}";; --value) ev="\${s[\$((j+1))]}";; esac; done
+    [ "\$ef" = doEnforceUniqueDistinguishedName ] && [ "\$ev" = false ] && touch "$T/dnoff.\$en" ;;
 esac
 exit 0
 EOF
@@ -235,6 +239,7 @@ case "\$sql" in
   *"pg_database where datname = 'ejbca'"*) echo exists ;;
   *information_schema.tables*) cat "$T/tables" ;;
   *"from cadata where name <> 'ManagementCA'"*) wc -l < "$T/cadb.tsv" ;;
+  *"doEnforceUniqueDistinguishedName"*) [ -f "$T/dnoff.\$n" ] || echo 1 ;;
   *"select 1 from cadata where name"*) awk -F'\t' -v n="\$n" '\$1==n{f=1} END{if(f) print 1}' "$T/cadb.tsv" ;;
   *"select status from cadata"*) awk -F'\t' -v n="\$n" '\$1==n{print \$2}' "$T/cadb.tsv" ;;
   *"select subjectdn from cadata"*) awk -F'\t' -v n="\$n" '\$1==n{print \$3}' "$T/cadb.tsv" ;;
@@ -252,9 +257,10 @@ cat > "$B/curl" <<EOF
 exit 22
 EOF
 printf '#!/bin/bash\n' > "$B/fw"; chmod +x "$B"/*
+PKI_UID="$(id -u)"
 export DDI_PKI_ALLOW_USER=1 DDI_LIBDIR="$RFS/usr/local/lib/ddibuntu" DDI_GENERATED_DIR="$T/gen" DDI_RUN_DIR="$T/run"
 export DDI_PKI_ETC="$T/etc" DDI_PKI_DATA="$T/data" DDI_PKI_QUADLET_DIR="$T/quad" DDI_PKI_PODMAN="$B/podman" DDI_PKI_PROFILE_DIR="$T/profiles"
-export DDI_PKI_SYSTEMCTL="$B/systemctl" DDI_PKI_CURL="$B/curl" DDI_FW_BIN="$B/fw" DDI_PKI_PSQL="$B/psql" DDI_PKI_LOCK="$T/lock" DDI_PKI_UID="$(id -u)"
+export DDI_PKI_SYSTEMCTL="$B/systemctl" DDI_PKI_CURL="$B/curl" DDI_FW_BIN="$B/fw" DDI_PKI_PSQL="$B/psql" DDI_PKI_LOCK="$T/lock" DDI_PKI_UID="$PKI_UID"
 G="$T/gen"; R="$T/run"
 req() { printf '%s' "$1" > "$G/.pki-request"; "$PKI" request >"$T/req.out" 2>&1; RES_OK="$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["ok"]).lower())' "$R/pki-result.json")"; RES_MSG="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["message"])' "$R/pki-result.json")"; RES_REF="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("ref",""))' "$R/pki-result.json")"; [ -z "${DEBUG_REQ:-}" ] || { cat "$T/req.out" >&2; cat "$T/ejbca.log" >&2; }; }
 reset_ee() { rm -f "$T"/fail.* "$T"/leaf.wrongkey "$T"/leaf.isca "$T/ee.exists"; : > "$T/ejbca.log"; }
@@ -281,6 +287,8 @@ check "entité finale : SAN du formulaire" grep -q -- "--altname dNSName=radius1
 check "entité finale : jeton géré par l'utilisateur (clé fabriquée hors d'EJBCA)" grep -q -- "--token USERGENERATED" <<< "$AE"
 check "le certificat est demandé avec le fichier déposé par root" grep -q "createcert --username ddi-$ID1 --password [A-Za-z0-9]\{40\} -c /mnt/persistent/work/req.csr" "$T/ejbca.log"
 check "l'entité finale est supprimée après l'émission (mot de passe à usage unique)" bash -c "grep -q 'ra delendentity --username ddi-$ID1' '$T/ejbca.log' && [ ! -e '$T/ee.exists' ]"
+check "DN unique : retiré sur l'autorité (ca editca) AVANT la création de l'entité finale" bash -c "[ \$(grep -n 'ca editca --caname Lab-Sub --field doEnforceUniqueDistinguishedName --value false' '$T/ejbca.log' | head -1 | cut -d: -f1) -lt \$(grep -n 'ra addendentity' '$T/ejbca.log' | head -1 | cut -d: -f1) ]"
+check "DN unique : désactivé pour cette autorité seulement" bash -c "test -e '$T/dnoff.Lab-Sub' -a ! -e '$T/dnoff.Lab-Root'"
 CD="$R/pki-cert/$ID1"
 check "certificat publié (lisible par la console)" bash -c "[ \"\$(stat -c %a '$CD')\" = 755 ] && [ \"\$(stat -c %a '$CD/cert.pem')\" = 644 ] && [ \"\$(stat -c %a '$CD/chain.pem')\" = 644 ] && [ \"\$(stat -c %a '$CD/meta.json')\" = 644 ]"
 check "le certificat publié est un PEM propre, vérifiable avec la chaîne publiée" openssl verify -CAfile "$CD/chain.pem" -untrusted "$R/pki-ca/Lab-Sub/cert.pem" "$CD/cert.pem"
@@ -290,6 +298,15 @@ check "le dépôt de la demande de certificat est consommé" test ! -e "$G/pki-i
 check "le dossier d'échange est vidé" bash -c "[ -z \"\$(ls -A '$WORKH')\" ]"
 check "le dossier d'échange ne conserve aucune demande (le mot de passe n'est jamais écrit sur le disque)" bash -c "! grep -rq 'password' '$WORKH' '$CD' 2>/dev/null"
 
+echo "== Émission : DN unique (renouvellement du même nom) =="
+reset_ee; ID1B=aaaaaaaaaaaaaa1b; dep $ID1B; req "$(ISS $ID1B)"
+expect_eq "deuxième certificat de même nom sur la même autorité : accepté" true "$RES_OK"
+expect_eq "DN unique déjà retiré : aucun nouveau « ca editca »" 0 "$(grep -c 'ca editca' "$T/ejbca.log")"
+reset_ee; rm -f "$T/dnoff.Lab-Sub"; touch "$T/fail.editca"; ID1C=aaaaaaaaaaaaaa1c; dep $ID1C; req "$(ISS $ID1C)"
+expect_eq "ca editca en échec : émission refusée (jamais d'émission sur une autorité qui refuserait un renouvellement)" false "$RES_OK"
+check "ca editca en échec : aucune entité finale créée" bash -c "! grep -q addendentity '$T/ejbca.log'"
+rm -f "$T/fail.editca"; reset_ee; ID1D=aaaaaaaaaaaaaa1d; dep $ID1D; req "$(ISS $ID1D)"
+expect_eq "après l'échec : le réglage est retenté et l'émission réussit" true "$RES_OK"
 echo "== Émission : profils déjà présents =="
 : > "$T/imported.log"; reset_ee; ID2=aaaaaaaaaaaaaaa2; dep $ID2 "$W/ec.csr"
 req "$(ISS $ID2)"; expect_eq "seconde émission acceptée" true "$RES_OK"

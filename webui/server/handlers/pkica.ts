@@ -6,7 +6,8 @@ import { audit, fail, route } from '../utils/router'
 import { depositPkiRequest, pkiRequestPending, readPkiStatus } from '../utils/pki'
 import type { PkiRequest } from '../utils/pki'
 import {
-  blobBytes, caName, CA_NAME_RE, dnOf, dropDeposit, EXTROOT_RE, FILES, importBody, issuingBody, putDeposit, readCaFile, readPkiCas, resetBody, rootBody, rootCrlBody,
+  blobBytes, caName, CA_NAME_RE, dnOf, dropDeposit, EXTROOT_RE, FILES, importBody, importP12Body, issuingBody, p12Bytes, putDeposit, putSecretDeposit, readCaFile, readPkiCas,
+  resetBody, rootBody, rootCrlBody,
 } from '../utils/pki-ca'
 import type { DepositKind, FileKey, PkiCa } from '../utils/pki-ca'
 import { loadAd, publicationMap } from '../utils/pki-ad-store'
@@ -65,6 +66,24 @@ route('POST', '/pki/cas/issuing', 'admin', async (c) => {
   try {
     return await send(c, { action: 'ca_issuing', name: b.name, alg: b.alg, days: b.days, signedBy: b.signedBy, ...dnOf(b) }, { name: b.name, alg: b.alg, days: b.days, cn: b.cn, signedBy: b.signedBy })
   } catch (e) { await dropDeposit(b.name, 'chain.pem'); throw e }
+})
+
+// Reprise d'une autorité EXISTANTE (0.14.4) : fichier PKCS#12 (clé + chaîne) et son mot de passe. Ici la clé d'une autorité ENTRE dans la PKI : elle ne traverse la console
+// que le temps de la requête (jamais écrite ailleurs que dans deux dépôts 0600 que root efface dès qu'il les a lus), jamais dans l'audit ni dans un journal. Root contrôle tout
+// (clé ↔ certificat, CA:TRUE, chaîne jusqu'à la racine, algorithme, validité), « rhabille » le fichier avec un mot de passe aléatoire à usage unique, puis l'importe.
+// La confirmation par saisie du nom rappelle que la clé est désormais dans la base du DDI (pas hors ligne).
+route('POST', '/pki/cas/p12', 'admin', async (c) => {
+  const b = await c.body(importP12Body)
+  if (b.confirm !== b.name) fail(400, 'pki_p12_confirm')
+  const bytes = p12Bytes(b.p12); if (!bytes) fail(400, 'pki_bad_p12')
+  await needHealthy(); await idle()
+  const all = (await readPkiCas())?.cas ?? []
+  if (all.some((x) => x.name.toLowerCase() === b.name.toLowerCase())) fail(409, 'pki_ca_exists')
+  await putSecretDeposit(b.name, 'p12', bytes)
+  try {
+    await putSecretDeposit(b.name, 'p12pw', Buffer.from(b.password, 'utf8'))
+    return await send(c, { action: 'ca_import_p12', name: b.name }, { name: b.name, bytes: bytes.length })
+  } catch (e) { await dropDeposit(b.name, 'p12'); await dropDeposit(b.name, 'p12pw'); throw e }
 })
 
 const NAME_PARAM = (v: string | undefined) => { const n = caName.safeParse(v); return n.success ? n.data : null }

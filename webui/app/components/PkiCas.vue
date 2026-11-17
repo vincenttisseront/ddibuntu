@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Autorités de la PKI du DDI (0.14.1) : liste (lue dans ce que root publie), création d'une racine de laboratoire ou d'une émettrice (signée par une racine du
 // DDI ou par une racine HORS LIGNE), import du certificat signé, CRL. La console ne touche à aucune clé : elle dépose des demandes que root revalide.
-const props = defineProps<{ status: any; waiting: boolean; settle: () => Promise<void> }>()
+const props = defineProps<{ status: any; waiting: boolean; settle: () => Promise<void>; result?: { at: number; action: string; ok: boolean; message: string } | null }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
 const { t } = useT(); const api = useApi(); const toast = useToast(); const fmt = useFmt()
 
@@ -10,6 +10,8 @@ const cas = computed<any[]>(() => data.value?.cas ?? [])
 const byName = computed<Record<string, any>>(() => Object.fromEntries(cas.value.map((c) => [c.name, c])))
 const ready = computed(() => props.status?.state === 'healthy')
 const locked = computed(() => props.waiting || !!busy.value)
+// Dernier résultat de root pour une action sur les autorités, tant qu'il est récent : sans lui, un fichier PKCS#12 refusé (mauvais mot de passe, chaîne incomplète…) ne dirait rien
+const lastResult = computed(() => (props.result && props.result.action.startsWith('ca_') && Date.now() / 1000 - props.result.at < 900 ? props.result : null))
 async function load() { try { data.value = await api.call('GET', '/pki/cas', undefined, { silent: true }) } catch (e: any) { err.value = e?.info?.message ?? '' } }
 async function done() { await props.settle(); await load(); emit('changed') }
 const errOf = (e: any) => e?.info?.message ?? t('err.internal')
@@ -76,6 +78,22 @@ async function createCa() {
   } catch (e: any) { cr.err = errOf(e) } finally { cr.busy = false }
 }
 
+// ---- Reprise d'une autorité existante (PKCS#12) : le fichier et son mot de passe ne sont gardés que le temps de la requête, puis effacés de l'écran ----
+const pk = reactive({ open: false, name: '', file: null as File | null, password: '', confirm: '', err: '', busy: false })
+function openP12() { Object.assign(pk, { open: true, name: '', file: null, password: '', confirm: '', err: '', busy: false }) }
+function pickP12(ev: Event) { pk.file = (ev.target as HTMLInputElement).files?.[0] ?? null }
+const pkValid = computed(() => !!pk.name.trim() && !!pk.file && !!pk.password && pk.confirm.trim() === pk.name.trim())
+async function importP12() {
+  pk.busy = true; pk.err = ''
+  try {
+    const u = new Uint8Array(await pk.file!.arrayBuffer())
+    let s = ''
+    for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000))
+    await api.call('POST', '/pki/cas/p12', { name: pk.name.trim(), p12: btoa(s), password: pk.password, confirm: pk.confirm.trim() })
+    pk.open = false; toast.add({ title: t('pki.sent'), color: 'success' }); await done()
+  } catch (e: any) { pk.err = errOf(e) } finally { pk.busy = false; pk.password = ''; pk.file = null }
+}
+
 // ---- Import du certificat signé / CRL de la racine hors ligne ----
 const im = reactive({ open: false, ca: null as any, pem: '', err: '', busy: false })
 function openImport(c: any) { Object.assign(im, { open: true, ca: c, pem: '', err: '', busy: false }); files.cert = null }
@@ -104,11 +122,15 @@ defineExpose({ load })
   <div class="flex flex-col gap-3">
     <p class="text-sm text-muted">{{ t('pki.ca.intro') }}</p>
     <UAlert v-if="!ready" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('pki.ca.not_ready')" role="status" data-test="pki-ca-notready" />
+    <UAlert v-if="status && status.installed && !status.recovery" color="warning" variant="subtle" icon="i-lucide-archive-restore" :title="t('pki.ca.no_recovery_title')" :description="t('pki.ca.no_recovery_body')" :actions="[{ label: t('pki.ca.no_recovery_go'), color: 'warning', variant: 'outline', to: '/pki#recovery' }]" data-test="pki-ca-norecovery" />
     <p v-if="err" class="text-sm text-error" role="alert" data-test="pki-ca-error">{{ err }}</p>
+    <UAlert v-if="lastResult && !lastResult.ok" color="error" variant="subtle" icon="i-lucide-circle-x" :title="lastResult.message" :description="`${t('radius.last')} ${fmt.dateTime(lastResult.at * 1000)}`" role="alert" data-test="pki-ca-result-error" />
+    <p v-else-if="lastResult" class="text-xs text-muted" role="status" data-test="pki-ca-result">{{ t('radius.last') }} {{ fmt.dateTime(lastResult.at * 1000) }} — ✔ {{ lastResult.message }}</p>
 
     <div class="flex flex-wrap gap-2">
       <UButton icon="i-lucide-plus" :label="t('pki.ca.add_issuing')" :disabled="!ready || locked" data-test="pki-ca-add-issuing" @click="openCreate('issuing')" />
       <UButton icon="i-lucide-flask-conical" color="neutral" variant="outline" :label="t('pki.ca.add_root')" :disabled="!ready || locked" data-test="pki-ca-add-root" @click="openCreate('root')" />
+      <UButton icon="i-lucide-file-key" color="neutral" variant="outline" :label="t('pki.ca.add_p12')" :disabled="!ready || locked" data-test="pki-ca-add-p12" @click="openP12" />
     </div>
 
     <p v-if="!cas.length" class="text-sm text-muted" data-test="pki-ca-empty">{{ t('pki.ca.empty') }}</p>
@@ -118,6 +140,7 @@ defineExpose({ load })
           <span class="font-medium font-mono break-all">{{ c.name }}</span>
           <div class="flex gap-2">
             <UBadge color="neutral" variant="subtle" :label="t(`pki.ca.kind.${c.kind}`)" />
+            <UBadge v-if="c.imported" color="warning" variant="subtle" :label="t('pki.ca.imported')" data-test="pki-ca-imported-badge" />
             <UBadge :color="(stateColor(c.state) as any)" variant="subtle" :label="t(`pki.ca.state.${c.state}`)" data-test="pki-ca-state" />
           </div>
         </div>
@@ -143,6 +166,7 @@ defineExpose({ load })
         <template v-else-if="data?.adEnabled"><UBadge color="info" variant="subtle" :label="t('pki.ad.st.pending')" data-test="pki-ca-ad-state" /></template>
         <template v-else><span class="text-muted" data-test="pki-ca-ad-off">{{ t('pki.ad.card_off') }}</span><a href="#ad" class="text-primary underline" data-test="pki-ca-ad-link">{{ t('pki.ad.card_off_link') }}</a></template>
       </div>
+      <UAlert v-if="c.imported" class="mt-3" color="info" variant="subtle" icon="i-lucide-file-key" :title="t('pki.ca.imported_note')" data-test="pki-ca-imported" />
       <UAlert v-if="c.kind === 'root' && c.selfSigned" class="mt-3" color="info" variant="subtle" icon="i-lucide-flask-conical" :title="t('pki.ca.lab_root')" data-test="pki-ca-lab" />
       <UAlert v-for="(w, i) in warnings(c)" :key="i" class="mt-3" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="w" data-test="pki-ca-warn" />
 
@@ -194,6 +218,25 @@ defineExpose({ load })
           <div class="flex justify-end gap-2">
             <UButton color="neutral" variant="outline" :label="t('common.cancel')" @click="cr.open = false" />
             <UButton type="submit" :loading="cr.busy" :disabled="!crValid" :label="t('pki.ca.create')" data-test="pki-ca-create" />
+          </div>
+        </form>
+      </template>
+    </UModal>
+
+    <!-- Reprise d'une autorité existante (PKCS#12) -->
+    <UModal v-model:open="pk.open" :title="t('pki.ca.p12_title')" :description="t('pki.ca.p12_desc')">
+      <template #body>
+        <form class="flex flex-col gap-3" autocomplete="off" @submit.prevent="importP12">
+          <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('pki.ca.p12_warn')" data-test="pki-ca-p12-warn" />
+          <p class="text-xs text-dimmed">{{ t('pki.ca.p12_limits') }}</p>
+          <UFormField :label="t('pki.ca.name')" :help="t('pki.ca.name_help')"><UInput v-model="pk.name" class="w-full font-mono" maxlength="48" placeholder="Ancienne-Emettrice" data-test="pki-ca-p12-name" /></UFormField>
+          <UFormField :label="t('pki.ca.p12_file')"><input type="file" accept=".p12,.pfx" class="text-sm" data-test="pki-ca-p12-file" @change="pickP12"></UFormField>
+          <UFormField :label="t('pki.ca.p12_password')"><UInput v-model="pk.password" type="password" autocomplete="new-password" class="w-full" maxlength="128" data-test="pki-ca-p12-password" /></UFormField>
+          <UFormField :label="t('pki.ca.p12_confirm')"><UInput v-model="pk.confirm" class="w-full font-mono" maxlength="48" autocomplete="off" data-test="pki-ca-p12-confirm" /></UFormField>
+          <UAlert v-if="pk.err" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="pk.err" role="alert" data-test="pki-ca-p12-error" />
+          <div class="flex justify-end gap-2">
+            <UButton color="neutral" variant="outline" :label="t('common.cancel')" @click="pk.open = false" />
+            <UButton type="submit" :loading="pk.busy" :disabled="!pkValid" :label="t('pki.ca.p12_go')" data-test="pki-ca-p12-go" />
           </div>
         </form>
       </template>
