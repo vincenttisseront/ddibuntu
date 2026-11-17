@@ -3,10 +3,11 @@
 import { h, resolveComponent } from 'vue'
 const { dateTime } = useFmt()
 
-export interface Col { key: string; label: string; kind?: 'text' | 'mono' | 'badge' | 'bool' | 'list' | 'date' | 'progress' | 'num'; trans?: string; fmt?: (v: any, row: any) => string }
+export interface Col { key: string; label: string; kind?: 'text' | 'mono' | 'badge' | 'bool' | 'list' | 'labels' | 'date' | 'progress' | 'num'; trans?: string; fmt?: (v: any, row: any) => string }
 export interface Field {
-  key: string; label: string; type: 'text' | 'number' | 'select' | 'textarea' | 'switch' | 'list' | 'password'
+  key: string; label: string; type: 'text' | 'number' | 'select' | 'textarea' | 'switch' | 'list' | 'labels' | 'password'
   required?: boolean; options?: Array<{ label: string; value: string | number }>; createOnly?: boolean; editHidden?: boolean
+  autoFrom?: string; autoFn?: (v: string) => string
   hint?: string | ((state: any) => string); placeholder?: string; default?: any; rows?: number; mono?: boolean
 }
 const props = defineProps<{
@@ -43,12 +44,15 @@ function init(row: any | null) {
   for (const f of props.fields ?? []) {
     let v = row ? getPath(row, f.key) : f.default
     if (f.type === 'list') v = Array.isArray(v) ? v.join(', ') : (v ?? '')
+    if (f.type === 'labels') v = Array.isArray(v) ? [...v] : []
     if (f.type === 'switch') v = !!v
     if (f.type === 'password') v = ''
     setPath(state, f.key, v ?? (f.type === 'number' ? null : ''))
   }
   error.value = null
+  auto.reset()
 }
+const auto = useAutoFields(() => props.fields ?? [], state)
 function openCreate() { editing.value = null; init(null); open.value = true }
 function openEdit(row: any) { editing.value = row; init(row); open.value = true }
 function build() {
@@ -56,6 +60,7 @@ function build() {
   for (const f of visible.value) {
     let v = getPath(state, f.key)
     if (f.type === 'list') v = String(v ?? '').split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
+    else if (f.type === 'labels') v = Array.isArray(v) ? v : []
     else if (f.type === 'number') v = v === '' || v === null || v === undefined ? null : Number(v)
     else if (f.type === 'text' || f.type === 'textarea') v = typeof v === 'string' && v.trim() === '' && !f.required ? null : v
     else if (f.type === 'password' && !v) continue
@@ -82,7 +87,7 @@ async function remove(row: any) {
 }
 
 // ---- Colonnes ----
-const UBadge = resolveComponent('UBadge'), UButton = resolveComponent('UButton'), UProgress = resolveComponent('UProgress')
+const LabelBadges = resolveComponent('LabelBadges'), UBadge = resolveComponent('UBadge'), UButton = resolveComponent('UButton'), UProgress = resolveComponent('UProgress')
 const cols = computed(() => {
   const out: any[] = props.columns.map((c) => ({
     accessorKey: c.key, header: c.label,
@@ -94,6 +99,7 @@ const cols = computed(() => {
         case 'mono': return h('span', { class: 'font-mono text-xs break-all' }, v == null ? '' : String(v))
         case 'num': return h('span', { class: 'num' }, v == null ? '' : String(v))
         case 'list': return h('span', { class: 'font-mono text-xs' }, Array.isArray(v) ? v.join(', ') : '')
+        case 'labels': return h(LabelBadges, { labels: Array.isArray(v) ? v : [] })
         case 'date': return v ? dateTime(v) : ''
         case 'progress': return v == null ? '—' : h('div', { class: 'flex items-center gap-2 min-w-28' }, [h(UProgress, { modelValue: v, max: 100, size: 'sm', color: v >= 80 ? 'warning' : 'primary', 'aria-label': c.label }), h('span', { class: 'num text-xs w-10 text-right' }, `${v}%`)])
         default: return c.fmt ? c.fmt(v, row.original) : v == null ? '' : String(v)
@@ -134,6 +140,7 @@ const hint = (f: Field) => (typeof f.hint === 'function' ? f.hint(state) : f.hin
           </UAlert>
           <UFormField v-for="f in visible" :key="f.key" :label="f.label" :required="f.required" :help="hint(f)">
             <USwitch v-if="f.type === 'switch'" :model-value="getPath(state, f.key)" @update:model-value="setPath(state, f.key, $event)" />
+            <LabelsInput v-else-if="f.type === 'labels'" :model-value="getPath(state, f.key)" :aria-label="f.label" @update:model-value="setPath(state, f.key, $event)" />
             <USelect v-else-if="f.type === 'select'" :model-value="getPath(state, f.key)" :items="f.options ?? []" class="w-full" @update:model-value="setPath(state, f.key, $event)" />
             <UTextarea v-else-if="f.type === 'textarea'" :model-value="getPath(state, f.key)" :rows="f.rows ?? 3" class="w-full" :class="f.mono ? 'font-mono' : ''" :placeholder="f.placeholder" @update:model-value="setPath(state, f.key, $event)" />
             <UInput v-else :model-value="getPath(state, f.key)" :type="f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'" class="w-full" :placeholder="f.placeholder" :autocomplete="f.type === 'password' ? 'new-password' : 'off'" @update:model-value="setPath(state, f.key, $event)" />

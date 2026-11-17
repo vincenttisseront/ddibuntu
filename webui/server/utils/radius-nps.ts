@@ -1,4 +1,4 @@
-// Import d'un NPS Windows (0.13.4, itération 5) : lecture de l'export `netsh nps export … exportPSK=YES` (ou `Export-NpsConfiguration`), puis PLAN d'import
+// Import d'un NPS Windows (0.13.10, itération 5) : lecture de l'export `netsh nps export … exportPSK=YES` (ou `Export-NpsConfiguration`), puis PLAN d'import
 // (clients RADIUS → clients DDI-Buntu, stratégies réseau → règles d'accès) avec, pour chaque élément, un statut :
 //   imported : repris tel quel · adapted : repris avec une adaptation ou à contrôler · skipped : non pris en charge (avec la raison).
 // Ce fichier est PUR (aucune base, aucun annuaire, aucun réseau) : le plan se calcule sur ce qu'on lui donne (clients et règles existants, groupes déjà

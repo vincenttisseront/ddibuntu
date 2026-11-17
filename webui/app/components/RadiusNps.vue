@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Accès réseau — import d'un NPS Windows (0.13.4, itération 5). Trois temps : (1) exporter la configuration du NPS (script PowerShell à exécuter sur le serveur),
+// Accès réseau — import d'un NPS Windows (0.13.10, itération 5). Trois temps : (1) exporter la configuration du NPS (script PowerShell à exécuter sur le serveur),
 // (2) déposer le fichier : la console en tire un PLAN — clients et stratégies réseau, chacun « repris », « adapté » ou « non pris en charge », avec la raison —
 // et n'écrit rien, (3) valider : le même plan est refait sous verrou, puis écrit en une transaction. Rien n'est déployé : clients et règles attendent « Déployer ».
 import { PS_NPS } from '~/utils/migration-scripts'

@@ -2,10 +2,10 @@
 // Tableau dense façon console IPAM : ligne de filtres par colonne, tri, sélection multiple, arborescence repliable,
 // compteur de résultats et export CSV de la vue filtrée. Les données sont fournies déjà chargées (filtrage côté client).
 export interface DCol {
-  key: string; label: string; kind?: 'text' | 'mono' | 'num' | 'badge' | 'progress' | 'bool'; trans?: string
+  key: string; label: string; kind?: 'text' | 'mono' | 'num' | 'badge' | 'progress' | 'bool' | 'labels'; trans?: string
   width?: string; nofilter?: boolean; nosort?: boolean; fmt?: (v: any, row: any) => string; hidden?: boolean
 }
-const props = defineProps<{ rows: any[]; columns: DCol[]; selectable?: boolean; tree?: boolean; exportName?: string; loading?: boolean; rowClass?: (row: any) => string }>()
+const props = defineProps<{ rows: any[]; columns: DCol[]; selectable?: boolean; canSelect?: (row: any) => boolean; tree?: boolean; exportName?: string; loading?: boolean; rowClass?: (row: any) => string }>()
 const selected = defineModel<number[]>('selected', { default: () => [] })
 const emit = defineEmits<{ (e: 'row-click', row: any): void; (e: 'visible', rows: any[]): void }>()
 const { t } = useT()
@@ -23,6 +23,7 @@ const text = (c: DCol, row: any): string => {
   if (c.kind === 'bool') return v ? t('common.yes') : t('common.no')
   if (c.kind === 'badge' && c.trans) return t(`${c.trans}.${v}`)
   if (c.kind === 'progress') return `${v}%`
+  if (c.kind === 'labels') return Array.isArray(v) ? v.join(' ') : ''
   return String(v)
 }
 const filtering = computed(() => Object.values(filters).some((v) => v.trim() !== ''))
@@ -63,8 +64,9 @@ function collapseAll() { collapsed.value = new Set(props.rows.filter((r) => r.ch
 function clearFilters() { for (const k of Object.keys(filters)) filters[k] = '' }
 defineExpose({ expandAll, collapseAll, clearFilters, visible })
 
-const allSelected = computed(() => visible.value.length > 0 && visible.value.every((r) => selected.value.includes(r.id)))
-function toggleAll() { selected.value = allSelected.value ? selected.value.filter((id) => !visible.value.some((r) => r.id === id)) : [...new Set([...selected.value, ...visible.value.map((r) => r.id)])] }
+const pickable = computed(() => visible.value.filter((r) => !props.canSelect || props.canSelect(r)))
+const allSelected = computed(() => pickable.value.length > 0 && pickable.value.every((r) => selected.value.includes(r.id)))
+function toggleAll() { selected.value = allSelected.value ? selected.value.filter((id) => !pickable.value.some((r) => r.id === id)) : [...new Set([...selected.value, ...pickable.value.map((r) => r.id)])] }
 function toggleOne(id: number) { selected.value = selected.value.includes(id) ? selected.value.filter((x) => x !== id) : [...selected.value, id] }
 
 // Export CSV de la vue (neutralise l'injection de formule dans un tableur)
@@ -110,7 +112,7 @@ const pctColor = (v: number) => (v >= 90 ? 'bg-error' : v >= 75 ? 'bg-warning' :
         </thead>
         <tbody>
           <tr v-for="r in visible" :key="r.id" class="border-b border-default/60 hover:bg-elevated/60" :class="[selected.includes(r.id) ? 'bg-primary/10' : '', rowClass?.(r) ?? '']" @click="emit('row-click', r)">
-            <td v-if="selectable" class="px-2 py-1 text-center" @click.stop><input type="checkbox" :checked="selected.includes(r.id)" :aria-label="t('ipam.select_row')" @change="toggleOne(r.id)"></td>
+            <td v-if="selectable" class="px-2 py-1 text-center" @click.stop><input v-if="!canSelect || canSelect(r)" type="checkbox" :checked="selected.includes(r.id)" :aria-label="t('ipam.select_row')" @change="toggleOne(r.id)"></td>
             <td v-for="(c, ci) in cols" :key="c.key" class="px-2 py-1 align-middle whitespace-nowrap" :class="c.kind === 'num' ? 'text-right tabular-nums' : ''">
               <slot :name="`cell-${c.key}`" :row="r" :col="c">
                 <span v-if="ci === 0 && tree && !flat" class="inline-flex items-center gap-1" :style="{ paddingLeft: `${(r.depth ?? 0) * 14}px` }">
@@ -123,6 +125,7 @@ const pctColor = (v: number) => (v >= 90 ? 'bg-error' : v >= 75 ? 'bg-warning' :
                 </span>
                 <template v-else>
                   <UBadge v-if="c.kind === 'badge' && getPath(r, c.key)" variant="subtle" color="neutral" size="sm" :label="text(c, r)" />
+                  <LabelBadges v-else-if="c.kind === 'labels'" :labels="getPath(r, c.key)" />
                   <UBadge v-else-if="c.kind === 'bool'" variant="subtle" size="sm" :color="getPath(r, c.key) ? 'success' : 'neutral'" :label="text(c, r)" />
                   <span v-else-if="c.kind === 'progress'" class="flex items-center gap-1.5 min-w-24">
                     <template v-if="getPath(r, c.key) == null"><span class="text-muted">—</span></template>

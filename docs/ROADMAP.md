@@ -77,8 +77,8 @@ Un NPS Windows n'existe pas sous Linux : le service est **FreeRADIUS** intégré
 | 2 | 0.13.1 | Annuaire : liaison LDAPS en lecture seule, état du compte et groupes imbriqués, test de recherche | ✅ 0.13.1 (vrai Samba AD en LDAPS ; pas encore testé sur un AD Microsoft) |
 | 3 | 0.13.2 | PKI : autorité de confiance des certificats clients, certificat du serveur, EAP-TLS, révocation (CRL / OCSP) | ✅ 0.13.2 (vrai FreeRADIUS + `eapol_test` en TLS 1.2 et 1.3 ; CRL seulement, **OCSP reporté** ; pas encore essayé avec AD CS) |
 | 4 | 0.13.3 | Règles d'accès : groupe AD → décision, VLAN, pool ; ordre d'évaluation, simulation avant publication | ✅ 0.13.3 (vrai FreeRADIUS + `eapol_test` + Samba AD, mêmes décisions que la simulation sur 15 cas ; **jamais essayé sur un AD Microsoft** ; DN de groupe à échappement hexadécimal refusés) |
-| 5 | 0.13.4 | Import d'un NPS existant (`netsh nps export`) : clients, stratégies, rapport « repris / adapté / non pris en charge » | ✅ 0.13.4 (par fichier ; vrai Samba AD pour la résolution des groupes par SID ; **format non vérifié sur un export réel**, lecture directe par WinRM **reportée**) |
-| 6 | 0.13.5 | Comptabilité (1813), journal des authentifications, alertes | ⬜ |
+| 5 | 0.13.10 | Import d'un NPS existant (`netsh nps export`) : clients, stratégies, rapport « repris / adapté / non pris en charge » | ✅ 0.13.10 (par fichier ; vrai Samba AD pour la résolution des groupes par SID ; **format non vérifié sur un export réel**, lecture directe par WinRM **reportée**) |
+| 6 | à planifier | Comptabilité (1813), journal des authentifications, alertes | ⬜ |
 | 7 | 0.13.6 | Cluster : deux nœuds actifs, mêmes clients et règles, sans adresse virtuelle | ⬜ |
 | 8 | 0.13.7 | Liens IPAM / DHCP : VLAN et pools issus de l'IPAM, session ↔ bail ↔ utilisateur dans la traçabilité | ⬜ |
 

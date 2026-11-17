@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Accès réseau — service RADIUS de CE nœud (0.13.0, itération 1) : état du service, déploiement, arrêt, test d'un Access-Request,
 // clients (contrôleurs Wi-Fi, passerelles VPN, commutateurs) et, pour l'administrateur, l'annuaire Active Directory (0.13.1, composant RadiusDirectory)
-// les certificats EAP-TLS (0.13.2, composant RadiusPki) les règles d'accès (0.13.3, composant RadiusRules) et l'import d'un NPS (0.13.4, composant RadiusNps). Le service est piloté par root (ddibuntu-radius) à partir d'une demande
+// les certificats EAP-TLS (0.13.2, composant RadiusPki) les règles d'accès (0.13.3, composant RadiusRules) et l'import d'un NPS (0.13.10, composant RadiusNps). Le service est piloté par root (ddibuntu-radius) à partir d'une demande
 // déposée par la console : après chaque action on attend la publication du résultat (même mécanique que le pare-feu).
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm(); const fmt = useFmt()
 const { isAdmin } = useRole()

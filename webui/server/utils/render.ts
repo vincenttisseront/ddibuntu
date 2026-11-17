@@ -261,6 +261,18 @@ export async function validateFiles(files: OutFile[]): Promise<CheckResult[]> {
 }
 
 /** Écriture atomique (fichier temporaire puis renommage). Les fichiers de secrets sont en 0640. */
+/** Contenu servant à l'empreinte : la zone RPZ porte un numéro de série tiré de l'horloge et son ordre n'est pas garanti, ils ne comptent pas comme un changement. */
+function canonical(f: OutFile, content: string): string {
+  if (f.kind !== 'rpz') return content
+  const l = content.split('\n')
+  return [...l.slice(0, 4).map((x) => x.replace(/\(\s*\d+\s/, '( 0 ')), ...l.slice(4).sort()].join('\n')
+}
+const sumOf = (f: OutFile, zdir: string) => createHash('sha256').update(canonical(f, sub(f.content, zdir))).digest('hex')
+/** Empreinte (sha256) de chaque fichier tel qu'il serait déployé : sert à savoir si la configuration a réellement changé. */
+export function fileSums(files: OutFile[], target: string, runtimeZonesDir?: string): Record<string, string> {
+  const zdir = runtimeZonesDir || join(target, 'zones')
+  return Object.fromEntries(files.map((f) => [f.path, sumOf(f, zdir)]))
+}
 export async function deployFiles(files: OutFile[], target: string, runtimeZonesDir?: string): Promise<Record<string, string>> {
   const sums: Record<string, string> = {}
   const zdir = runtimeZonesDir || join(target, 'zones')   // chemin écrit dans named.conf ; les fichiers restent déposés sous target/
@@ -272,7 +284,7 @@ export async function deployFiles(files: OutFile[], target: string, runtimeZones
     const content = sub(f.content, zdir)
     await fs.writeFile(tmp, content, { mode: f.mode })
     await fs.rename(tmp, p)
-    sums[f.path] = createHash('sha256').update(content).digest('hex')
+    sums[f.path] = sumOf(f, zdir)
   }
   return sums
 }

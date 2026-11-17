@@ -44,6 +44,7 @@ export function cfg() {
     // photographie de santé de CE nœud (ddibuntu-health, root, chaque minute) ; alertes : intervalle d'évaluation
     healthStatusFile: e.DDI_HEALTH_STATUS ?? '/run/ddibuntu/health.json',
     alertIntervalMs: num(e.DDI_ALERT_INTERVAL_MS, 60_000),
+    siemIntervalMs: num(e.DDI_SIEM_INTERVAL_MS, 10_000),
     // une alerte n'est résolue qu'après N évaluations consécutives sans constat (évite les rebonds) ; 1 en test
     alertResolveMisses: Math.max(1, num(e.DDI_ALERT_RESOLVE_MISSES, 2)),
     reloadStatusFile: e.DDI_RELOAD_STATUS ?? '/var/lib/ddibuntu/reload-status',

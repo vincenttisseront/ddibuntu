@@ -1,4 +1,4 @@
-// Accès réseau — import d'un NPS Windows (0.13.4, itération 5). L'administrateur dépose l'export `netsh nps export … exportPSK=YES` ; la console en tire un PLAN
+// Accès réseau — import d'un NPS Windows (0.13.10, itération 5). L'administrateur dépose l'export `netsh nps export … exportPSK=YES` ; la console en tire un PLAN
 // (clients → clients DDI-Buntu, stratégies réseau → règles d'accès) avec le sort de chaque élément (repris / adapté / non pris en charge) et la raison.
 // L'aperçu n'écrit RIEN. La validation recalcule le plan, vérifie qu'il est identique à celui qui a été présenté (empreinte), puis écrit en UNE transaction.
 // Rien n'est appliqué au service : les clients et règles créés attendent « Déployer » comme n'importe quel autre. Les règles ne sont actives que si l'administrateur le

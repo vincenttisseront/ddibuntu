@@ -141,7 +141,7 @@ export async function findGroups(s: DirSettings, bindPassword: string, factory: 
   })
 }
 
-// ---- Résolution de groupes par SID (0.13.4, import d'un NPS : les stratégies désignent leurs groupes par SID) ----
+// ---- Résolution de groupes par SID (0.13.10, import d'un NPS : les stratégies désignent leurs groupes par SID) ----
 const SID_RE = /^S-1-\d{1,3}(?:-\d{1,10}){1,15}$/
 /** Base de recherche « <SID=S-1-5-21-…> » (DN étendu d'Active Directory et de Samba) : le SID est écrit en clair, sans filtre binaire — essayé contre un vrai Samba AD,
  *  où un filtre `objectSid=\01\05…` passé par ldapts ne trouve rien (la valeur est lue comme du texte). Le SID est validé : rien d'autre ne peut entrer dans la base. */

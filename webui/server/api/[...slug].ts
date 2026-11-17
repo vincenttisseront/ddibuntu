@@ -1,5 +1,6 @@
 import * as auth from '../handlers/auth'
 import * as ipam from '../handlers/ipam'
+import * as ipamLabels from '../handlers/ipam-labels'
 import * as dns from '../handlers/dns'
 import * as dhcp from '../handlers/dhcp'
 import * as filtering from '../handlers/filtering'
@@ -17,6 +18,7 @@ import * as hygiene from '../handlers/hygiene'
 import * as tunnel from '../handlers/tunnel'
 import * as backup from '../handlers/backup'
 import * as alerts from '../handlers/alerts'
+import * as siem from '../handlers/siem'
 import * as trace from '../handlers/trace'
 import * as tokens from '../handlers/tokens'
 import * as addrcheck from '../handlers/addrcheck'
@@ -41,7 +43,7 @@ import * as pkiad from '../handlers/pkiad'
 import { dispatch, routeCount } from '../utils/router'
 
 // Chaque module enregistre ses routes à l'évaluation ; on vérifie ici qu'ils ont tous été inclus.
-const modules = [auth, ipam, dns, dhcp, filtering, importer, system, snapshots, adimport, netbox, discovery, cockpit, cluster, adkrb, search, hygiene, tunnel, backup, alerts, trace, tokens, addrcheck, mfa, sso, ldap, aliases, leasedns, dnshealth, migration, dhcpclasses, reverse, firewall, radius, radiusdir, radiuspki, radiusrules, radiusnps, pki, pkica, pkiad]
+const modules = [auth, ipam, ipamLabels, dns, dhcp, filtering, importer, system, snapshots, adimport, netbox, discovery, cockpit, cluster, adkrb, search, hygiene, tunnel, backup, alerts, trace, tokens, addrcheck, mfa, sso, ldap, aliases, leasedns, dnshealth, migration, dhcpclasses, reverse, firewall, radius, radiusdir, radiuspki, radiusrules, siem, radiusnps, pki, pkica, pkiad]
 if (!modules.every((m) => m.registered) || routeCount() < 50) throw new Error(`[api] routes non enregistrées (${routeCount()})`)
 
 export default defineEventHandler((event) => dispatch(event))

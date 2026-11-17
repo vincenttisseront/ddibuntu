@@ -2,7 +2,10 @@
 // Indicateur d'attente global : toute action un peu longue (écriture, déploiement, import, mise à jour…) affiche un spinner.
 // Il n'apparaît qu'après 400 ms pour ne pas clignoter sur les actions instantanées, et reste visible au moins 500 ms une fois affiché.
 const { t } = useT()
-const busy = useState<number>('busy', () => 0)
+const busyApi = useState<number>('busy', () => 0)
+// changement de page : les pages qui chargent leurs données avant de s'afficher laissaient l'écran figé sans retour visuel
+const { isLoading: navigating } = useLoadingIndicator()
+const busy = computed(() => busyApi.value + (navigating.value ? 1 : 0))
 const shown = ref(false)
 let showTimer: ReturnType<typeof setTimeout> | undefined, hideTimer: ReturnType<typeof setTimeout> | undefined, since = 0
 watch(busy, (n) => {
