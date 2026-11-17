@@ -165,6 +165,40 @@ describe('règles : sauvegardes et IPAM', () => {
   })
 })
 
+describe('règles : secrets de la PKI dans les sauvegardes (0.14.5)', () => {
+  const FP = 'a'.repeat(64), FP2 = 'b'.repeat(64)
+  const pki = (over: Record<string, unknown> = {}): any => ({ at: NOW - 5, podman: true, installed: true, active: true, state: 'healthy', hostname: 'pki.lab', version: '9', digest: '', nets: [], health: 'ok', port: 8443,
+    dataPresent: true, secretsPresent: true, dataHostname: 'pki.lab', casCount: 2, resetAllowed: false, recovery: { fingerprint: FP, bits: 4096, notAfter: NOW + 9e8, subject: 'CN=x', registeredAt: NOW - 90000 }, ...over })
+  const bk = (over: Record<string, unknown> = {}, bundle: Record<string, unknown> | null = { secrets: true, recoveryFp: FP, bytes: 10, cas: 2, tag: '9' }) => parseBackupStatus(JSON.stringify({
+    at: NOW - 60, enabled: true, role: 'primary', node: 'n1', hostname: 'h', cluster: 'lab', repo: '/r', keepFull: 3, intervalHours: 24, startHour: 2, mirrorDir: null, archiveMode: 'on',
+    archiver: { archived_count: 5, last_archived_wal: 'A', last_archived_at: NOW - 30, failed_count: 0, last_failed_wal: null, last_failed_at: null },
+    diskFreeBytes: 1e9, preRestoreDirs: 0, walFiles: 1, walBytes: 1, lastWalAt: NOW, pitrFrom: NOW - 7200,
+    backups: [{ id: '20261111T080000Z', node: 'n1', startedAt: NOW - 3700, finishedAt: NOW - 3600, sizeBytes: 5, timeline: 1, walArchived: true, ...(bundle ? { pki: bundle } : {}) }], ...over }), NOW)!
+  const pr = (p: any, b: any) => rules(snap({ backup: b, pki: p })).filter((k) => k.startsWith('pki.'))
+  it('clé enregistrée et dernière sauvegarde chiffrée pour elle : rien', () => { expect(pr(pki(), bk())).toEqual([]) })
+  it('aucune clé de récupération alors que la PKI porte des autorités : avertissement', () => {
+    expect(pr(pki({ recovery: null }), bk())).toEqual(['pki.no_recovery_key|n1|'])
+    expect(run(snap({ backup: bk(), pki: pki({ recovery: null }) })).findings.find((f) => f.rule === 'pki.no_recovery_key')?.severity).toBe('warning')
+  })
+  it('PKI sans autorité, désinstallée sans secrets ou non évaluée : aucune alerte', () => {
+    expect(pr(pki({ recovery: null, casCount: 0 }), bk())).toEqual([]); expect(pr(pki({ recovery: null, casCount: null }), bk())).toEqual([])
+    expect(pr(pki({ recovery: null, installed: false, secretsPresent: false, dataPresent: false }), bk())).toEqual([])
+    expect(pr(null, bk())).toEqual([]); expect(rules(snap({ backup: bk() })).filter((k) => k.startsWith('pki.'))).toEqual([])
+  })
+  it('sauvegardes désactivées : avertissement dédié', () => { expect(pr(pki(), bk({ enabled: false }))).toEqual(['pki.backup_disabled|n1|']) })
+  it('dernière sauvegarde sans lot, ou chiffré pour une autre clé, alors que la clé est plus ancienne : avertissement', () => {
+    expect(pr(pki(), bk({}, { secrets: false, reason: 'error' }))).toEqual(['pki.bundle_missing|n1|'])
+    expect(pr(pki(), bk({}, null))).toEqual(['pki.bundle_missing|n1|'])
+    expect(pr(pki(), bk({}, { secrets: true, recoveryFp: FP2, bytes: 1, cas: 1, tag: '9' }))).toEqual(['pki.bundle_missing|n1|'])
+  })
+  it('clé enregistrée APRÈS la dernière sauvegarde : la prochaine suffit, pas d\'alerte', () => {
+    expect(pr(pki({ recovery: { fingerprint: FP2, bits: 4096, notAfter: NOW + 9e8, subject: 'CN=y', registeredAt: NOW - 100 } }), bk())).toEqual([])
+  })
+  it('état des sauvegardes périmé ou absent : pas de fausse alerte PKI (c\'est l\'alerte « sauvegardes » qui parle)', () => {
+    expect(pr(pki(), bk({ at: NOW - 7200 }))).toEqual([]); expect(pr(pki(), null)).toEqual([])
+  })
+})
+
 describe('catalogue', () => {
   it('chaque règle a un texte français ET anglais, jamais l’identifiant brut', () => {
     for (const id of Object.keys(RULES)) for (const l of ['fr', 'en'] as const) { const t = text(id, 'n1', 'sujet', { ageSeconds: 5, healthy: 1, needed: 2, voters: 3, lagMiB: 9, state: 'x', days: 3, percent: 90, freeMiB: 5, hours: 5, maxHours: 4, failed: 1, wal: 'W', message: 'm', used: 1, capacity: 2, name: 'N', from: 'a', to: 'b', address: '1.2.3.4' }, l); expect(t).not.toBe(id); expect(t.length).toBeGreaterThan(10) }

@@ -84,10 +84,18 @@ export interface PkiStatus {
   at: number; podman: boolean; installed: boolean; active: boolean; state: PkiState; hostname: string; version: string; digest: string; nets: string[]; health: string; port: number
   /** La base « ejbca » contient des données (même si le conteneur est désinstallé), nom public de ces données, nombre d'autorités avec clé, et remise à zéro permise. */
   dataPresent: boolean; secretsPresent: boolean; dataHostname: string; casCount: number | null; resetAllowed: boolean
+  /** Clé de récupération (0.14.5) : certificat PUBLIC enregistré par root ; la clé privée correspondante n'est jamais sur l'appliance. null = aucune. */
+  recovery: PkiRecovery | null
 }
+export interface PkiRecovery { fingerprint: string; bits: number; notAfter: number; subject: string; registeredAt: number }
 /** `ref` : identifiant de la demande d'émission à laquelle ce résultat répond (root le recopie ; vide pour les autres actions). */
 export interface PkiResult { at: number; action: string; ok: boolean; message: string; ref?: string }
 
+export function parseRecovery(r: any): PkiRecovery | null {
+  if (!r || typeof r !== 'object' || !/^[0-9a-f]{64}$/.test(r.fingerprint ?? '')) return null
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : 0)
+  return { fingerprint: r.fingerprint, bits: n(r.bits), notAfter: n(r.notAfter), subject: String(r.subject ?? '').replace(/[^\x20-\x7e]/g, '').slice(0, 100), registeredAt: n(r.registeredAt) }
+}
 export async function readPkiStatus(): Promise<PkiStatus | null> {
   try {
     const j = JSON.parse(await fs.readFile(cfg().pkiStatusFile, 'utf8'))
@@ -97,7 +105,7 @@ export async function readPkiStatus(): Promise<PkiStatus | null> {
       hostname: String(j.hostname ?? '').slice(0, 253), version: String(j.version ?? '').slice(0, 24), digest: String(j.digest ?? '').slice(0, 80),
       nets: (Array.isArray(j.nets) ? j.nets : []).slice(0, MAX_NETS).map((x: unknown) => String(x).slice(0, 64)), health: String(j.health ?? '').slice(0, 64),
       port: Number(j.port) || PUBLIC_PORT, dataPresent: j.dataPresent === true, secretsPresent: j.secretsPresent === true, dataHostname: String(j.dataHostname ?? '').slice(0, 253),
-      casCount: Number.isInteger(j.casCount) && j.casCount >= 0 ? j.casCount : null, resetAllowed: j.resetAllowed === true }
+      casCount: Number.isInteger(j.casCount) && j.casCount >= 0 ? j.casCount : null, resetAllowed: j.resetAllowed === true, recovery: parseRecovery(j.recovery) }
   } catch { return null }
 }
 export async function readPkiResult(): Promise<PkiResult | null> {
@@ -113,7 +121,7 @@ export async function pkiRequestPending(): Promise<boolean> {
 export interface CaDn { cn: string; ou?: string; o?: string; c?: string }
 export type PkiRequest =
   | { action: 'apply'; image: string; hostname: string; nets: string[] }
-  | { action: 'start' | 'stop' | 'restart' | 'status' | 'uninstall' | 'reset' }
+  | { action: 'start' | 'stop' | 'restart' | 'status' | 'uninstall' | 'reset' | 'recovery_set' }
   | ({ action: 'ca_root'; name: string; alg: string; days: number } & CaDn)
   | ({ action: 'ca_issuing'; name: string; alg: string; days: number; signedBy: string } & CaDn)
   | { action: 'ca_import' | 'ca_import_p12' | 'ca_crl' | 'ca_rootcrl'; name: string }

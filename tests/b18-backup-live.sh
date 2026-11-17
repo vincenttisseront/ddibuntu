@@ -2,7 +2,8 @@
 # Batterie 18 — sauvegarde et restauration à un instant donné (PITR) avec un VRAI PostgreSQL 16 :
 # archivage des journaux (archive_command), sauvegarde complète (pg_basebackup), restauration à une heure précise, à la dernière
 # sauvegarde et à une sauvegarde donnée, restaurations successives (branches de timelines), détection de corruption,
-# échec de restauration avec retour à la base précédente, rétention, copie externe, planification et demandes JSON hostiles.
+# échec de restauration avec retour à la base précédente, rétention, copie externe, planification et demandes JSON hostiles,
+# puis (0.14.5) le lot chiffré des secrets de la PKI : présence, empreintes, altération, essai et restauration par la clé de récupération, copie externe, rétention.
 set -u
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
@@ -328,6 +329,133 @@ sql "insert into t(lot) select 'L' from generate_series(1,3)" >/dev/null; sql "c
 req '{"action":"restore","mode":"at","at":"'"${T_K/ /T}"'Z","confirm":"'"$HOST"'"}'
 expect_eq "restauration à l'heure demandée par la console" "True" "$(res 'd["ok"]')"
 expect_eq "les 3 lignes postérieures à l'heure visée ont disparu" "$CNT_K" "$(count)"
+
+echo "== PKI : lot chiffré des secrets dans chaque sauvegarde (0.14.5) =="
+if command -v openssl >/dev/null 2>&1; then
+PK="$B/pki"; mkdir -p "$PK/bin" "$PK/p1/etc" "$PK/p1/data" "$PK/p1/gen/pki-in" "$PK/p1/run" "$PK/p1/quad" "$PK/p2/etc" "$PK/p2/data" "$PK/p2/gen" "$PK/p2/run" "$PK/p2/quad"
+openssl req -x509 -newkey rsa:3072 -nodes -keyout "$PK/rec.key" -out "$PK/rec.pem" -days 36500 -subj "/CN=recuperation b18" 2>/dev/null
+openssl req -x509 -newkey rsa:3072 -nodes -keyout "$PK/other.key" -out "$PK/other.pem" -days 36500 -subj "/CN=autre cle" 2>/dev/null
+echo 0 > "$PK/tables"
+cat > "$PK/bin/psql" <<EOF
+#!/bin/bash
+sql="\$(cat)"
+case "\$sql" in
+  *"pg_database where datname = 'ejbca'"*) echo exists ;;
+  *information_schema.tables*) cat "$PK/tables" ;;
+  *"from cadata where name <> 'ManagementCA'"*) echo 1 ;;
+esac
+exit 0
+EOF
+printf '#!/bin/bash\ncase "$1 $2" in "image exists") exit 0;; "image inspect") echo sha256:%s;; esac\nexit 0\n' "$(printf 'c%.0s' $(seq 64))" > "$PK/bin/podman"
+printf '#!/bin/bash\ncase "$1" in is-active) exit 3;; esac\nexit 0\n' > "$PK/bin/systemctl"
+printf '#!/bin/bash\nexit 22\n' > "$PK/bin/curl"; printf '#!/bin/bash\nexit 0\n' > "$PK/bin/fw"
+chmod 755 "$PK/bin"/*
+mkpki() {   # mkpki NOM RACINE : enveloppe qui lance le VRAI ddibuntu-pki dans un dossier d'essai (le lot est demandé par ddibuntu-backup)
+  cat > "$B/$1.sh" <<EOF
+#!/bin/bash
+export DDI_PKI_ALLOW_USER=1 DDI_LIBDIR="$RFS/usr/local/lib/ddibuntu" DDI_GENERATED_DIR="$2/gen" DDI_RUN_DIR="$2/run" DDI_PKI_ETC="$2/etc" DDI_PKI_DATA="$2/data" DDI_PKI_QUADLET_DIR="$2/quad"
+export DDI_PKI_PODMAN="$PK/bin/podman" DDI_PKI_SYSTEMCTL="$PK/bin/systemctl" DDI_PKI_CURL="$PK/bin/curl" DDI_FW_BIN="$PK/bin/fw" DDI_PKI_PSQL="$PK/bin/psql" DDI_PKI_LOCK="$2/lock" DDI_PKI_UID=$(id -u)
+exec "$RFS/usr/local/sbin/ddibuntu-pki" "\$@"
+EOF
+  chmod 755 "$B/$1.sh"
+}
+mkpki pkiw "$PK/p1"; mkpki pkiw2 "$PK/p2"
+bkp() { DDI_PKI_CMD="$B/pkiw.sh" bk "$@"; }
+meta() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["pki"]
+for k in sys.argv[2].split("."): d = d.get(k) if isinstance(d, dict) else None
+print(str(d).lower() if isinstance(d, bool) else ("" if d is None else d))' "$REPO/base/$1/meta.json" "$2"; }
+lastid() { local d last=""; for d in "$REPO"/base/*; do case "${d##*/}" in [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z) last="${d##*/}" ;; esac; done; printf '%s\n' "$last"; }
+
+# 1. PKI absente (ddibuntu-pki introuvable) : la sauvegarde ne change pas
+IDN="$(bk run 2>/dev/null | tail -n1)"
+expect_eq "PKI absente : raison « none »" none "$(meta "$IDN" reason)"
+check_fail "PKI absente : aucun lot" test -e "$REPO/base/$IDN/pki-secrets.cms"
+check "PKI absente : sauvegarde intègre" bk verify "$IDN"
+
+# 2. PKI installée sans clé de récupération
+mkdir -p "$PK/p1/data/ca/Lab-Root" "$PK/p1/data/persistent/secrets/tls" "$PK/p1/data/persistent/work"
+"$B/pkiw.sh" apply docker.io/keyfactor/ejbca-ce:9.6.3 pki.lab.test 10.0.0.0/8 >/dev/null 2>&1
+check "PKI de l'essai installée (secrets créés)" test -f "$PK/p1/etc/ejbca.env"
+echo 12 > "$PK/tables"   # la base « ejbca » contient désormais des données : une restauration sur une machine neuve est permise
+echo '{"kind":"root","signedBy":"","alg":"rsa4096","createdAt":1}' > "$PK/p1/data/ca/Lab-Root/meta.json"
+head -c 1500 /dev/urandom > "$PK/p1/data/persistent/secrets/tls/server.p12"; echo scratch > "$PK/p1/data/persistent/work/x"
+PWKEY="$(sed -n 's/^PASSWORD_ENCRYPTION_KEY=//p' "$PK/p1/etc/ejbca.env")"
+ID1="$(bkp run 2>/dev/null | tail -n1)"
+expect_eq "sans clé de récupération : raison « no-recovery-key »" no-recovery-key "$(meta "$ID1" reason)"
+check_fail "sans clé de récupération : aucun lot (rien de lisible n'est écrit)" test -e "$REPO/base/$ID1/pki-secrets.cms"
+expect_eq "sans clé de récupération : la sauvegarde de la base réussit" True "$([ -s "$REPO/base/$ID1/base.tar.gz" ] && echo True || echo False)"
+
+# 3. clé de récupération enregistrée : lot dans la sauvegarde
+"$B/pkiw.sh" recovery-set "$PK/rec.pem" >/dev/null 2>&1
+REC_FP="$(openssl x509 -in "$PK/rec.pem" -noout -fingerprint -sha256 | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f')"
+ID2="$(bkp run 2>/dev/null | tail -n1)"
+check "avec clé de récupération : lot présent" test -s "$REPO/base/$ID2/pki-secrets.cms"
+expect_eq "meta : secrets sauvegardés" true "$(meta "$ID2" secrets)"
+expect_eq "meta : empreinte de la clé de récupération" "$REC_FP" "$(meta "$ID2" recoveryFp)"
+expect_eq "meta : version d'EJBCA" 9.6.3 "$(meta "$ID2" tag)"
+expect_eq "meta : une autorité" 1 "$(meta "$ID2" cas)"
+expect_grep "SHA256SUMS couvre le lot" 'pki-secrets\.cms' "$REPO/base/$ID2/SHA256SUMS"
+check "lot : propriété de postgres comme le reste de la sauvegarde" test "$(stat -c %U "$REPO/base/$ID2/pki-secrets.cms")" = postgres
+check_fail "aucun fichier de travail laissé dans la sauvegarde" bash -c "ls -a '$REPO/base/$ID2' | grep -q 'pki-result'"
+check "lot : aucun secret lisible (PASSWORD_ENCRYPTION_KEY absente en clair)" bash -c '! grep -aq "$1" "$2"' _ "$PWKEY" "$REPO/base/$ID2/pki-secrets.cms"
+check "verify : sauvegarde avec lot intègre" bk verify "$ID2"
+expect_eq "état publié : le lot est annoncé dans le catalogue" True "$(st 'd["backups"][-1]["pki"]["secrets"]')"
+check "taille de la sauvegarde incluant le lot" bash -c "test \"$(st 'd["backups"][-1]["sizeBytes"]')\" -ge \"$(stat -c %s "$REPO/base/$ID2/base.tar.gz")\""
+
+# 4. altération du lot : détectée
+cp "$REPO/base/$ID2/pki-secrets.cms" "$T_TMP/cms.keep"
+printf '\xff' | dd of="$REPO/base/$ID2/pki-secrets.cms" bs=1 seek=300 conv=notrunc 2>/dev/null
+check_fail "verify : lot altéré détecté" bk verify "$ID2"
+check_fail "pki-verify : lot altéré refusé (empreinte)" bkp pki-verify --id "$ID2" --key "$PK/rec.key"
+check_fail "restauration de la base refusée : sauvegarde corrompue" bk restore --id "$ID2" --yes
+cp "$T_TMP/cms.keep" "$REPO/base/$ID2/pki-secrets.cms"; chown postgres:postgres "$REPO/base/$ID2/pki-secrets.cms"
+check "verify : lot rétabli, sauvegarde de nouveau intègre" bk verify "$ID2"
+: > "$REPO/base/$ID2/pki-secrets.cms.t"; rm -f "$REPO/base/$ID2/pki-secrets.cms.t"
+
+# 5. essai de restauration du lot (ligne de commande)
+out="$(bkp pki-verify --key "$PK/rec.key" 2>&1)"; rc=$?
+expect_eq "pki-verify : bonne clé, dernier lot" 0 "$rc"
+check "pki-verify : résumé lisible" bash -c 'grep -q "Lab-Root" <<< "$0" && grep -q "pki.lab.test" <<< "$0"' "$out"
+out="$(bkp pki-verify --key "$PK/other.key" 2>&1)"; rc=$?
+expect_eq "pki-verify : mauvaise clé refusée" 1 "$rc"
+out="$(bkp pki-verify --id "$ID1" --key "$PK/rec.key" 2>&1)"; rc=$?
+expect_eq "pki-verify : sauvegarde sans lot refusée" 1 "$rc"
+check "pki-verify : motif lisible (aucune clé de récupération enregistrée)" bash -c 'grep -q "aucune clé de récupération" <<< "$0"' "$out"
+check_fail "pki-verify : identifiant invalide" bkp pki-verify --id '../x' --key "$PK/rec.key"
+check_fail "pki-verify : sans clé" bkp pki-verify
+check_fail "pki-verify : sauvegarde inconnue" bkp pki-verify --id 20200101T000000Z --key "$PK/rec.key"
+
+# 6. restauration sur une machine neuve : les secrets reviennent à l'identique
+out="$(DDI_PKI_CMD="$B/pkiw2.sh" bk pki-restore --key "$PK/rec.key" --no-start 2>&1)"; rc=$?
+expect_eq "pki-restore --no-start : réussi" 0 "$rc"
+check "secrets restaurés identiques" cmp -s "$PK/p1/etc/ejbca.env" "$PK/p2/etc/ejbca.env"
+check "métadonnées des autorités restaurées" cmp -s "$PK/p1/data/ca/Lab-Root/meta.json" "$PK/p2/data/ca/Lab-Root/meta.json"
+check "volume restauré" cmp -s "$PK/p1/data/persistent/secrets/tls/server.p12" "$PK/p2/data/persistent/secrets/tls/server.p12"
+check "dossier d'échange : rien n'est restauré, mais il est recréé vide (la CLI d'EJBCA s'y place à chaque appel)" bash -c 'test -d "$0" && test -z "$(ls -A "$0")"' "$PK/p2/data/persistent/work"
+out="$(DDI_PKI_CMD="$B/pkiw2.sh" bk pki-restore --key "$PK/other.key" --no-start 2>&1)"; rc=$?
+expect_eq "pki-restore : mauvaise clé refusée" 1 "$rc"
+
+# 7. la restauration de la base rappelle la commande pour les secrets de la PKI
+out="$(bkp restore --id "$ID2" --yes 2>&1)"; rc=$?
+expect_eq "restauration de la base d'une sauvegarde avec lot : réussie" 0 "$rc"
+check "indication : pki-restore --id $ID2" bash -c 'grep -q "pki-restore --id $1" <<< "$0"' "$out" "$ID2"
+wait_for 30 "base en service après la restauration" sql "select 1"
+
+# 8. copie externe : le lot suit la sauvegarde
+bk configure KEEP_FULL=5 INTERVAL_HOURS=24 START_HOUR=0 MIRROR_DIR=/mirror >/dev/null 2>&1
+bkp auto >/dev/null 2>&1
+check "copie externe : le lot de la PKI est copié" bash -c "compgen -G '$B/mirror/base/*/pki-secrets.cms' >/dev/null"
+bk configure KEEP_FULL=2 INTERVAL_HOURS=24 START_HOUR=0 MIRROR_DIR= >/dev/null 2>&1
+rm -rf "$B/mirror/base" "$B/mirror/wal"
+
+# 9. rétention : le lot disparaît avec sa sauvegarde
+bk configure KEEP_FULL=1 KEEP_DAYS=0 INTERVAL_HOURS=24 START_HOUR=0 MIRROR_DIR= >/dev/null 2>&1
+bkp prune >/dev/null 2>&1
+check_fail "rétention : l'ancien lot est supprimé avec sa sauvegarde" bash -c "ls '$REPO/base/$ID2/pki-secrets.cms' 2>/dev/null | grep -q ."
+bk configure KEEP_FULL=3 INTERVAL_HOURS=24 START_HOUR=0 MIRROR_DIR= >/dev/null 2>&1
+else
+  note "openssl absent : section PKI ignorée"
+fi
 
 echo "== Désactivation =="
 check "disable" bk disable

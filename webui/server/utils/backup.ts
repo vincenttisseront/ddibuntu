@@ -6,7 +6,9 @@ import { cfg } from './config'
 export const BACKUP_ID_RE = /^\d{8}T\d{6}Z$/
 export const MIRROR_RE = /^\/[A-Za-z0-9._/@:+-]{1,200}$/
 
-export interface BackupItem { id: string; node: string; startedAt: number; finishedAt: number; sizeBytes: number; timeline: number; walArchived: boolean }
+/** Lot chiffré des secrets de la PKI rangé dans la sauvegarde (0.14.5) : `bundle` vrai = présent (lu dans le champ `secrets` de meta.json ; renommé ici : l'API ne laisse passer aucun champ au nom évocateur d'un secret) (chiffré pour la clé de récupération d'empreinte `recoveryFp`) ; sinon `reason` dit pourquoi. */
+export interface BackupPki { bundle: boolean; recoveryFp: string; reason: 'none' | 'no-recovery-key' | 'error' | 'unknown'; bytes: number; cas: number; tag: string }
+export interface BackupItem { id: string; node: string; startedAt: number; finishedAt: number; sizeBytes: number; timeline: number; walArchived: boolean; pki: BackupPki }
 export interface ArchiverState { archivedCount: number; lastArchivedWal: string | null; lastArchivedAt: number | null; failedCount: number; lastFailedWal: string | null; lastFailedAt: number | null }
 export interface BackupStatus {
   at: number; ageSeconds: number; stale: boolean
@@ -25,6 +27,14 @@ const str = (v: unknown, max = 128) => (typeof v === 'string' ? v.slice(0, max) 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 const nint = (v: unknown, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : d)
 
+/** Une sauvegarde d'avant 0.14.5 n'a pas de champ « pki » : raison « unknown » (ni lot, ni explication). */
+export function parseBackupPki(p: any): BackupPki {
+  if (!p || typeof p !== 'object') return { bundle: false, recoveryFp: '', reason: 'unknown', bytes: 0, cas: 0, tag: '' }
+  const bundle = p.secrets === true && /^[0-9a-f]{64}$/.test(p.recoveryFp ?? '')
+  const reason = ['none', 'no-recovery-key', 'error'].includes(p.reason) ? p.reason : 'unknown'
+  return { bundle, recoveryFp: bundle ? p.recoveryFp : '', reason: bundle ? 'unknown' : reason, bytes: nint(p.bytes), cas: nint(p.cas), tag: str(p.tag, 24) }
+}
+
 export function parseBackupStatus(raw: string, nowSec = Date.now() / 1000): BackupStatus | null {
   let j: any
   try { j = JSON.parse(raw) } catch { return null }
@@ -33,6 +43,7 @@ export function parseBackupStatus(raw: string, nowSec = Date.now() / 1000): Back
   const a = j.archiver && typeof j.archiver === 'object' ? j.archiver : null
   const backups: BackupItem[] = j.backups.slice(0, 64).filter((b: any) => b && typeof b.id === 'string' && BACKUP_ID_RE.test(b.id)).map((b: any) => ({
     id: b.id, node: str(b.node, 63), startedAt: nint(b.startedAt), finishedAt: nint(b.finishedAt), sizeBytes: nint(b.sizeBytes), timeline: nint(b.timeline), walArchived: b.walArchived === true,
+    pki: parseBackupPki(b.pki),
   }))
   const at = nint(j.at)
   const age = Math.max(0, Math.round(nowSec - at))

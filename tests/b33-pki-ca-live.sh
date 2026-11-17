@@ -2,7 +2,8 @@
 # Batterie 33 — autorités (0.14.1) et certificats (0.14.3) de la PKI du DDI sur le VRAI conteneur EJBCA Community (Podman, unité Quadlet relue par le vrai générateur, vraie
 # base PostgreSQL) : installation réelle, racine auto-signée, émettrice signée par une racine du DDI, émettrice sous une racine « hors ligne »
 # (demande de certificat → signature openssl avec les adresses CDP / AIA publiées → import), CRL servies en HTTP et vérifiées par openssl, CRL de
-# la racine hors ligne, renouvellement des CRL, refus (clé qui ne correspond pas, certificat sans CA:TRUE, dépôt piégé, noms piégés), remise à zéro.
+# la racine hors ligne, renouvellement des CRL, refus (clé qui ne correspond pas, certificat sans CA:TRUE, dépôt piégé, noms piégés), remise à zéro, et (0.14.5)
+# sinistre : lot chiffré des secrets pour la clé de récupération, destruction des secrets et du volume, restauration, les autorités émettent de nouveau.
 # DESTRUCTIVE : supprime la base « ejbca » et le conteneur « ddibuntu-ejbca » de la machine ; exige DDI_TEST_PKI_LIVE=1.
 # Prérequis : root, podman + image docker.io/keyfactor/ejbca-ce:9.6.3 déjà présente (aucun tirage), PostgreSQL local (runuser postgres), openssl,
 # curl, port 8080 libre, ~2 Go de mémoire libre ; sinon la batterie est ignorée. Durée : environ 7 minutes (chaque commande de la CLI d'EJBCA
@@ -536,5 +537,73 @@ issue 1000000000000013 server "$CW/again.csr" '"dns":["again.lab.test"]'
 expect_eq "…mais la même clé publique reste refusée (unicité des clés conservée)" false "$RES_OK"
 check "…et le motif d'EJBCA est lisible" grep -qi "same key" <<< "$RES_MSG"
 expect_eq "EJBCA : « DN unique » retiré sur l'autorité du DDI et sur l'autorité reprise (f f)" "f f" "$(ejpsql -c "select (select data ~ 'doEnforceUniqueDistinguishedName</string>\\s*<boolean>true</boolean>' from cadata where name = 'Lab-Sub'), (select data ~ 'doEnforceUniqueDistinguishedName</string>\\s*<boolean>true</boolean>' from cadata where name = 'Imp-Iss')" | tr '|' ' ')"
+
+echo "== Sinistre : secrets et volume perdus, restauration depuis le lot chiffré (0.14.5) =="
+RW="$D/rw"; mkdir -p "$RW"
+RECPW='phrase de récupération de test 0.14.5'
+openssl req -x509 -newkey rsa:3072 -nodes -keyout "$RW/rec.plain.key" -out "$RW/rec.pem" -days 3650 -subj "/CN=DDI-Buntu recovery live" \
+  -addext "basicConstraints=critical,CA:FALSE" -addext "keyUsage=critical,keyEncipherment,dataEncipherment" 2>/dev/null
+openssl pkcs8 -topk8 -v2 aes-256-cbc -v2prf hmacWithSHA256 -iter 100000 -in "$RW/rec.plain.key" -out "$RW/rec.key" -passout "pass:$RECPW" 2>/dev/null
+rm -f "$RW/rec.plain.key"
+"$PKI" status >/dev/null 2>&1
+expect_eq "sans clé de récupération : état publié « recovery » vide" "" "$(jget "$RUNP/pki-status.json" recovery.fingerprint)"
+"$PKI" secrets-pack "$RW/lot0.cms" > "$RW/pack0.json" 2>/dev/null
+expect_eq "sans clé : aucun lot, raison lisible" "false no-recovery-key" "$(jget "$RW/pack0.json" secrets) $(jget "$RW/pack0.json" reason)"
+check "…et aucun fichier de lot n'a été écrit" test ! -e "$RW/lot0.cms"
+install -m 0640 "$RW/rec.pem" "$GEN/pki-in/recovery.pem"; req '{"action":"recovery_set"}'
+expect_eq "clé de récupération enregistrée par la demande de la console" true "$RES_OK"; [ "$RES_OK" = true ] || note "message de root : $RES_MSG"
+check "le dépôt de la console est consommé" test ! -e "$GEN/pki-in/recovery.pem"
+"$PKI" status >/dev/null 2>&1
+REC_FP="$(openssl x509 -in "$RW/rec.pem" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')"
+expect_eq "état publié : empreinte de la clé de récupération" "$REC_FP" "$(jget "$RUNP/pki-status.json" recovery.fingerprint)"
+expect_eq "état publié : 3072 bits" 3072 "$(jget "$RUNP/pki-status.json" recovery.bits)"
+check "seul le certificat PUBLIC est sur l'appareil" bash -c "! grep -rl 'PRIVATE KEY' '$D/etc' '$GEN' 2>/dev/null"
+CAS_BEFORE="$(jget "$RUNP/pki-status.json" casCount)"; SUB_SHA="$(ca_get Lab-Sub sha256)"; IISS_SHA="$(ca_get Imp-Iss sha256)"; ENV_SHA="$(sha256sum "$D/etc/ejbca.env" | cut -c1-16)"
+"$PKI" secrets-pack "$RW/lot.cms" > "$RW/pack.json" 2>"$RW/pack.err"; expect_eq "lot créé" 0 "$?"
+expect_eq "lot : secrets inclus, chiffrés pour la clé enregistrée" "true $REC_FP" "$(jget "$RW/pack.json" secrets) $(jget "$RW/pack.json" recoveryFp)"
+check "lot : au moins une autorité, plusieurs fichiers" bash -c "[ \"$(jget "$RW/pack.json" cas)\" -ge 1 ] && [ \"$(jget "$RW/pack.json" files)\" -ge 3 ]"
+check "lot en DER chiffré, mode 0600" bash -c "[ \"\$(stat -c %a '$RW/lot.cms')\" = 600 ] && openssl cms -cmsout -inform DER -in '$RW/lot.cms' -print 2>/dev/null | grep -q 'pkcs7-envelopedData'"
+check "aucun secret en clair dans le lot (ni mot de passe EJBCA, ni nom d'hôte, ni PEM)" bash -c "! grep -aE 'PASSWORD_ENCRYPTION_KEY|BEGIN|pki\.lab\.test' '$RW/lot.cms'"
+check "la clé privée n'est pas sur l'appareil, le lot est ouvrable ailleurs" bash -c "DDI_RECOVERY_PASS='$RECPW' '$PKI' secrets-verify --file '$RW/lot.cms' --key '$RW/rec.key' > '$RW/verify.out' 2>&1 && grep -q 'Lot lisible' '$RW/verify.out'"
+check_fail "mauvaise phrase secrète : lot refusé" env DDI_RECOVERY_PASS='mauvaise' "$PKI" secrets-verify --file "$RW/lot.cms" --key "$RW/rec.key"
+openssl req -x509 -newkey rsa:3072 -nodes -keyout "$RW/autre.key" -out "$RW/autre.pem" -days 30 -subj "/CN=autre" 2>/dev/null
+check_fail "autre clé privée : lot refusé" "$PKI" secrets-verify --file "$RW/lot.cms" --key "$RW/autre.key"
+check "essai de restauration (verify) : rien n'a été modifié" test "$(sha256sum "$D/etc/ejbca.env" | cut -c1-16)" = "$ENV_SHA"
+
+echo "-- la machine est reconstruite : plus de secrets, plus de métadonnées, plus de volume (la base « ejbca » est celle restaurée) --"
+req '{"action":"uninstall"}'; expect_eq "désinstallation (conteneur supprimé)" true "$RES_OK"
+rm -rf "$D/etc/ejbca.env" "$D/etc/instance.json" "$D/etc/recovery.pem" "$D/data"/* "$RUNP/pki-status.json" "$RUNP/pki-cas.json"
+check "tout a disparu : ni secrets ni volume" bash -c "[ ! -e '$D/etc/ejbca.env' ] && [ -z \"\$(ls -A '$D/data')\" ]"
+"$PKI" apply "$IMG" pki.lab.test 10.0.0.0/8 > "$D/apply4.out" 2>&1; expect_eq "sans le lot : une installation sur la base existante reste refusée" 1 "$?"
+check_fail "restauration avec la mauvaise clé : refusée, rien installé" env DDI_RECOVERY_PASS='mauvaise' "$PKI" secrets-restore --file "$RW/lot.cms" --key "$RW/rec.key"
+check "…aucun secret n'a été créé" test ! -e "$D/etc/ejbca.env"
+DDI_RECOVERY_PASS="$RECPW" "$PKI" secrets-restore --file "$RW/lot.cms" --key "$RW/rec.key" > "$RW/restore.out" 2>&1; expect_eq "restauration acceptée" 0 "$?"
+[ -s "$RW/restore.out" ] && note "restauration : $(tail -n 3 "$RW/restore.out" | tr '\n' ' ' | cut -c1-300)"
+expect_eq "secrets retrouvés à l'identique" "$ENV_SHA" "$(sha256sum "$D/etc/ejbca.env" | cut -c1-16)"
+check "secrets en 0600, volume en 0700" bash -c "[ \"\$(stat -c %a '$D/etc/ejbca.env')\" = 600 ] && [ \"\$(stat -c %a '$D/data/persistent')\" = 700 ]"
+check "instance retrouvée (nom public et version)" bash -c "grep -q 'pki.lab.test' '$D/etc/instance.json' && grep -q '9.6.3' '$D/etc/instance.json'"
+check "le conteneur redémarre sur la base restaurée (santé « ALLOK »)" wait_health
+"$PKI" status >/dev/null 2>&1
+expect_eq "toutes les autorités avec clé sont de nouveau là" "$CAS_BEFORE" "$(jget "$RUNP/pki-status.json" casCount)"
+expect_eq "…identiques (empreinte de Lab-Sub)" "$SUB_SHA" "$(ca_get Lab-Sub sha256)"
+expect_eq "…identiques (empreinte de l'autorité reprise Imp-Iss)" "$IISS_SHA" "$(ca_get Imp-Iss sha256)"
+expect_eq "la clé de récupération n'est pas restaurée (elle vit hors du lot) : à réenregistrer" "" "$(jget "$RUNP/pki-status.json" recovery.fingerprint)"
+code="$(fetch_url "$(ca_get Lab-Sub crlUrl)" "$W/dr.crl")"; expect_eq "CRL servie après restauration" 200 "$code"
+req '{"action":"ca_crl","name":"Lab-Sub"}'; expect_eq "l'autorité du DDI signe une CRL (sa clé est lisible grâce aux secrets restaurés)" true "$RES_OK"; [ "$RES_OK" = true ] || note "message de root : $RES_MSG"
+openssl req -newkey rsa:2048 -nodes -keyout "$CW/dr.key" -out "$CW/dr.csr" -subj "/CN=x" 2>/dev/null
+issue 1000000000000020 server "$CW/dr.csr" '"dns":["dr.lab.test"]'
+expect_eq "l'autorité du DDI émet un certificat après restauration" true "$RES_OK"; [ "$RES_OK" = true ] || note "message de root : $RES_MSG"
+check "…vérifié jusqu'à la racine" openssl verify -CAfile "$RUNP/pki-ca/Lab-Root/cert.pem" -untrusted "$RUNP/pki-ca/Lab-Sub/cert.pem" "$RUNP/pki-cert/1000000000000020/cert.pem"
+openssl req -newkey rsa:2048 -nodes -keyout "$CW/dr2.key" -out "$CW/dr2.csr" -subj "/CN=x" 2>/dev/null
+issue 1000000000000021 server "$CW/dr2.csr" '"dns":["dr2.lab.test"]' Imp-Iss
+expect_eq "l'autorité reprise (clé importée) émet aussi après restauration" true "$RES_OK"; [ "$RES_OK" = true ] || note "message de root : $RES_MSG"
+check "aucune clé privée dans les fichiers du DDI après restauration (hors volume du conteneur)" bash -c "! grep -rl 'PRIVATE KEY' '$GEN' '$RUNP' '$D/etc' 2>/dev/null"
+echo "-- restaurer par-dessus d'autres secrets exige --force, et les anciens sont gardés à côté --"
+openssl rand -hex 8 > "$D/etc/marque"; cp "$D/etc/ejbca.env" "$RW/ejbca.env.keep"; printf '\nDDI_AUTRE=1\n' >> "$D/etc/ejbca.env"
+DDI_RECOVERY_PASS="$RECPW" "$PKI" secrets-restore --file "$RW/lot.cms" --key "$RW/rec.key" --no-start > "$RW/restore2.out" 2>&1; expect_eq "secrets différents déjà présents : refusé sans --force" 1 "$?"
+check "…les secrets présents n'ont pas bougé" grep -q 'DDI_AUTRE=1' "$D/etc/ejbca.env"
+DDI_RECOVERY_PASS="$RECPW" "$PKI" secrets-restore --file "$RW/lot.cms" --key "$RW/rec.key" --force --no-start > "$RW/restore3.out" 2>&1; expect_eq "avec --force : accepté" 0 "$?"
+check "…les anciens fichiers sont mis de côté (pre-restore.*)" bash -c "grep -rq 'DDI_AUTRE=1' '$D/etc'/pre-restore.*/ejbca.env"
+expect_eq "…et les secrets du lot sont de nouveau en place" "$ENV_SHA" "$(sha256sum "$D/etc/ejbca.env" | cut -c1-16)"
 
 finish

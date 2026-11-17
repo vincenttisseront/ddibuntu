@@ -122,6 +122,7 @@ defineExpose({ load })
   <div class="flex flex-col gap-3">
     <p class="text-sm text-muted">{{ t('pki.ca.intro') }}</p>
     <UAlert v-if="!ready" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('pki.ca.not_ready')" role="status" data-test="pki-ca-notready" />
+    <UAlert v-if="status && status.installed && !status.recovery" color="warning" variant="subtle" icon="i-lucide-archive-restore" :title="t('pki.ca.no_recovery_title')" :description="t('pki.ca.no_recovery_body')" :actions="[{ label: t('pki.ca.no_recovery_go'), color: 'warning', variant: 'outline', to: '/pki#recovery' }]" data-test="pki-ca-norecovery" />
     <p v-if="err" class="text-sm text-error" role="alert" data-test="pki-ca-error">{{ err }}</p>
     <UAlert v-if="lastResult && !lastResult.ok" color="error" variant="subtle" icon="i-lucide-circle-x" :title="lastResult.message" :description="`${t('radius.last')} ${fmt.dateTime(lastResult.at * 1000)}`" role="alert" data-test="pki-ca-result-error" />
     <p v-else-if="lastResult" class="text-xs text-muted" role="status" data-test="pki-ca-result">{{ t('radius.last') }} {{ fmt.dateTime(lastResult.at * 1000) }} — ✔ {{ lastResult.message }}</p>

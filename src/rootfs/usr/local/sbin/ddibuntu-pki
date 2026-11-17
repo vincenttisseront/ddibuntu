@@ -12,7 +12,8 @@
 # 0.14.3 : émission de certificats depuis une demande (CSR) déposée par la console, révocation, profils fournis (importés au besoin), lecture
 # de la liste des certificats par la console (droit de lecture sur deux tables d'EJBCA, public seulement). La clé privée d'un certificat ne passe
 # JAMAIS ici : la console fabrique la clé et la demande, root ne reçoit et ne rend que des données publiques.
-# Mise à jour de l'image : 0.14.5.
+# 0.14.5 : clé de récupération (certificat PUBLIC enregistré ici, clé privée jamais sur l'appliance) et lot chiffré des secrets et du volume, ajouté à chaque sauvegarde
+# de ddibuntu-backup ; essai et restauration par commande root (la clé privée est fournie par l'administrateur). Mise à jour de l'image : 0.14.6.
 set -euo pipefail
 umask 077
 
@@ -36,6 +37,7 @@ SERVICE="$UNIT_NAME.service"
 QUADLET="$QDIR/$UNIT_NAME.container"
 ENVF="$PETC/ejbca.env"
 INST="$PETC/instance.json"
+RECOVERY="$PETC/recovery.pem"                                  # certificat PUBLIC de récupération (0.14.5) : la clé privée correspondante n'est jamais ici
 IMAGE_REPO="docker.io/keyfactor/ejbca-ce"
 CONT_UID="${DDI_PKI_UID:-10001}"                              # utilisateur du processus dans l'image officielle
 PUBLIC_PORT=8080
@@ -72,6 +74,10 @@ Usage : ddibuntu-pki <commande>
   cert-issue ID CA PROFIL DN [SAN]  émet un certificat pour la demande déposée (pki-in/ID.csr.pem) ; PROFIL = server | machine | user | network
   cert-revoke CA SÉRIE MOTIF  révoque un certificat (série en hexadécimal ; motif 0, 1, 3, 4 ou 5) et renouvelle la CRL tout de suite
   maintain                   publie l'état, renouvelle les CRL trop anciennes, importe les profils fournis, purge les certificats relevés (minuteur)
+  recovery-set [CERT.pem]    enregistre le certificat PUBLIC de récupération (défaut : celui que la console dépose) ; la clé privée reste chez l'administrateur
+  secrets-pack FICHIER       (appelé par ddibuntu-backup) chiffre les secrets, les métadonnées des autorités et le volume pour la clé de récupération
+  secrets-verify --file LOT --key CLÉ      essai de restauration : déchiffre et contrôle un lot sans rien installer (phrase secrète : variable DDI_RECOVERY_PASS)
+  secrets-restore --file LOT --key CLÉ [--force] [--no-start]   réinstalle secrets, métadonnées et volume depuis un lot, puis remet la PKI en service
   request                    traite la demande déposée par la console (.pki-request)
   render IMAGE NOM           affiche l'unité Quadlet qui serait écrite (sans rien installer)
   check IMAGE NOM [RÉSEAUX]  valide les paramètres (sans rien installer)
@@ -307,7 +313,7 @@ SQL
 cmd_status() {
   local installed=false active=false health="" state=absent host tag digest nets since="" now age
   local pm=false; have_podman && pm=true
-  local data=false dhost="" ncas="" reset_ok=false dbs secrets=false
+  local data=false dhost="" ncas="" reset_ok=false dbs secrets=false rec=""
   [[ -f "$INST" && ! -L "$INST" ]] && installed=true
   host="$(instance_get hostname)"; tag="$(instance_get tag)"; digest="$(instance_get digest)"; nets="$(instance_get nets)"
   if [[ "$installed" = true ]]; then
@@ -326,14 +332,16 @@ cmd_status() {
   dbs="$(db_state)"
   if [[ -f "$ENVF" && ! -L "$ENVF" ]]; then data=true; secrets=true; dhost="$(env_get HTTPSERVER_HOSTNAME)"; fi
   [[ "$dbs" = data ]] && data=true
+  rec="$(recovery_info || true)"
   if [[ "$dbs" = data ]]; then ncas="$(count_user_cas || true)"; [[ "$ncas" =~ ^[0-9]+$ ]] || ncas=""; fi
   if [[ "$data" = true && ( "$dbs" != data || "$ncas" = 0 ) && "$dbs" != error ]]; then reset_ok=true; fi
-  publish pki-status.json "$(PM="$pm" INS="$installed" ACT="$active" ST="$state" H="$host" T="$tag" D="$digest" N="$nets" HB="$health" PORT="$PUBLIC_PORT" DATA="$data" SEC="$secrets" DH="$dhost" NC="$ncas" RO="$reset_ok" python3 -c '
+  publish pki-status.json "$(PM="$pm" INS="$installed" ACT="$active" ST="$state" H="$host" T="$tag" D="$digest" N="$nets" HB="$health" PORT="$PUBLIC_PORT" DATA="$data" SEC="$secrets" DH="$dhost" NC="$ncas" RO="$reset_ok" REC="$rec" python3 -c '
 import json, os, time
 e = os.environ
 print(json.dumps({"at": int(time.time()), "podman": e["PM"] == "true", "installed": e["INS"] == "true", "active": e["ACT"] == "true", "state": e["ST"],
   "hostname": e["H"], "version": e["T"], "digest": e["D"], "nets": [x for x in e["N"].split(",") if x], "health": e["HB"][:64], "port": int(e["PORT"]),
-  "dataPresent": e["DATA"] == "true", "secretsPresent": e["SEC"] == "true", "dataHostname": e["DH"], "casCount": int(e["NC"]) if e["NC"].isdigit() else None, "resetAllowed": e["RO"] == "true"}, ensure_ascii=False))')"
+  "dataPresent": e["DATA"] == "true", "secretsPresent": e["SEC"] == "true", "dataHostname": e["DH"], "casCount": int(e["NC"]) if e["NC"].isdigit() else None, "resetAllowed": e["RO"] == "true",
+  "recovery": json.loads(e["REC"]) if e["REC"] else None}, ensure_ascii=False))')"
   publish_cas
   if [[ "$dbs" = data ]]; then grant_console_read; fi
 }
@@ -430,7 +438,8 @@ SQL
 }
 
 # ---- Autorités : tout passe par la CLI d'EJBCA dans le conteneur, avec des arguments jamais interprétés par un shell ----
-cli() { timeout "${DDI_PKI_CLI_TIMEOUT:-600}" "$PODMAN" exec -w "$WORK_CONT" "$UNIT_NAME" "$EJBCA_SH" "$@"; }
+# le dossier d'échange est le répertoire de travail de chaque appel : sans lui « podman exec » échoue (volume restauré, dossier effacé à la main)
+cli() { [[ -d "$WORK_HOST" ]] || { install -d -m 0700 "$WORK_HOST"; own "$WORK_HOST"; }; timeout "${DDI_PKI_CLI_TIMEOUT:-600}" "$PODMAN" exec -w "$WORK_CONT" "$UNIT_NAME" "$EJBCA_SH" "$@"; }
 clean_out() { sed -e 's/\x1b\[[0-9;]*m//g' -e 's/^[0-9-]* [0-9:,+]* [A-Z]* *\[[^]]*\] ([^)]*) //' | grep -v '^[[:space:]]*at ' || true; }
 cli_run() {   # exécute la CLI ; en cas d'échec, les dernières lignes (sans secret : la CLI n'en reçoit aucun) expliquent pourquoi
   local out rc=0
@@ -785,10 +794,147 @@ purge_certs() {
   fi
 }
 
+# ---- Clé de récupération et sauvegarde des secrets (0.14.5) ----
+# Les clés des autorités sont dans la base « ejbca » (sauvegardée avec le reste de PostgreSQL par ddibuntu-backup), mais elles n'y sont lisibles qu'avec les secrets d'ejbca.env
+# (PASSWORD_ENCRYPTION_KEY surtout) : sans eux, la base restaurée est inutilisable. Ces secrets, les métadonnées des autorités et le volume du conteneur sont donc ajoutés à
+# CHAQUE sauvegarde sous forme d'un lot chiffré avec le certificat PUBLIC de récupération (openssl cms). La clé privée correspondante n'est jamais sur l'appliance : l'administrateur
+# la garde ailleurs ; sans elle le lot est indéchiffrable, et c'est voulu. Le lot est rangé dans le dépôt de ddibuntu-backup (mêmes empreintes, rétention, copie externe).
+secure_tmpdir() { mktemp -d /dev/shm/ddi-pki.XXXXXX 2>/dev/null || mktemp -d "${TMPDIR:-/tmp}/ddi-pki.XXXXXX"; }
+recovery_info() { [[ -f "$RECOVERY" && ! -L "$RECOVERY" ]] && python3 "$HELPER" recovery-info "$RECOVERY" 2>/dev/null; }
+json_get() { K="$1" python3 -c 'import json,sys,os
+try: v = json.load(sys.stdin)[os.environ["K"]]
+except Exception: v = ""
+print(v if isinstance(v, (str, int)) else "")' 2>/dev/null; }
+
+# $1 = certificat PEM public (dépôt de la console, ou fichier donné en ligne de commande pour une clé fabriquée ailleurs)
+recovery_set() {
+  local src="${1:-$IN_DIR/recovery.pem}" tmp out fp
+  [[ -f "$src" && ! -L "$src" ]] || { log "certificat de récupération introuvable : $src"; return 1; }
+  install -d -m 0750 "$PETC"
+  tmp="$(mktemp "$PETC/.rec.XXXXXX")"
+  out="$(python3 "$HELPER" recovery-check "$src" "$tmp" 2>&1)" || { rm -f "$tmp"; log "certificat de récupération refusé : ${out#ERR	}"; return 1; }
+  chmod 0644 "$tmp"; mv -f "$tmp" "$RECOVERY"
+  fp="$(recovery_info | json_get fingerprint || true)"
+  printf 'Clé de récupération enregistrée (empreinte %s…). Les prochaines sauvegardes y chiffreront les secrets de la PKI : gardez la clé PRIVÉE hors de cette machine.' "${fp:0:16}"
+}
+
+# $1 = fichier de sortie. Imprime UNE ligne JSON : {"secrets":true,…} ou {"secrets":false,"reason":"none|no-recovery-key|error"} ; code 0 sauf erreur
+secrets_pack() {
+  local out="${1:-}" td j fp cas files tag bytes
+  [[ -n "$out" ]] || { log "usage : secrets-pack FICHIER"; return 1; }
+  if [[ ! -f "$ENVF" || -L "$ENVF" ]]; then printf '{"secrets":false,"reason":"none"}\n'; return 0; fi
+  fp="$(recovery_info | json_get fingerprint || true)"
+  if [[ -z "$fp" ]]; then printf '{"secrets":false,"reason":"no-recovery-key"}\n'; return 0; fi
+  td="$(secure_tmpdir)" || { log "dossier temporaire impossible"; printf '{"secrets":false,"reason":"error"}\n'; return 1; }
+  if ! j="$(python3 "$HELPER" bundle-pack "$td/plain.tgz" "$PETC" "$PDATA" 2>&1)"; then
+    rm -rf "$td"; log "lot des secrets non créé : ${j#ERR	}"; printf '{"secrets":false,"reason":"error"}\n'; return 1
+  fi
+  if ! openssl cms -encrypt -aes256 -binary -outform DER -in "$td/plain.tgz" -out "$out.part" -recip "$RECOVERY" -keyopt rsa_padding_mode:oaep -keyopt rsa_oaep_md:sha256 2>/dev/null; then
+    rm -rf "$td"; rm -f "$out.part"; log "chiffrement du lot impossible (certificat de récupération ?)"; printf '{"secrets":false,"reason":"error"}\n'; return 1
+  fi
+  rm -rf "$td"; chmod 0600 "$out.part"; mv -f "$out.part" "$out"
+  files="$(printf '%s' "$j" | json_get files)"; tag="$(printf '%s' "$j" | json_get tag)"
+  cas="$(printf '%s' "$j" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("cas", [])))' 2>/dev/null || echo 0)"
+  bytes="$(stat -c %s "$out")"
+  FP="$fp" B="$bytes" T="$tag" C="$cas" F="$files" python3 -c '
+import json, os
+e = os.environ
+print(json.dumps({"secrets": True, "recoveryFp": e["FP"], "bytes": int(e["B"]), "tag": e["T"], "cas": int(e["C"] or 0), "files": int(e["F"] or 0)}))'
+}
+
+# $1 = lot chiffré, $2 = clé privée de récupération, $3 = dossier à créer : déchiffre, revalide et extrait ; imprime le manifeste (JSON)
+bundle_open() {
+  local f="$1" key="$2" dest="$3" td out
+  [[ -f "$f" && ! -L "$f" ]] || { log "lot introuvable : $f"; return 1; }
+  [[ -f "$key" && ! -L "$key" ]] || { log "clé de récupération introuvable : $key"; return 1; }
+  [[ "$(stat -c %s "$f")" -le 134217728 ]] || { log "lot trop gros pour être un lot de la PKI"; return 1; }
+  td="$(secure_tmpdir)" || { log "dossier temporaire impossible"; return 1; }
+  local pass=(); [[ -z "${DDI_RECOVERY_PASS:-}" ]] || pass=(-passin env:DDI_RECOVERY_PASS)
+  if ! openssl cms -decrypt -inform DER -in "$f" -inkey "$key" "${pass[@]}" -out "$td/plain.tgz" 2>"$td/err"; then
+    rm -rf "$td"; log "déchiffrement impossible : ce n'est pas la bonne clé de récupération, la phrase secrète est fausse (variable DDI_RECOVERY_PASS) ou le lot est corrompu"; return 1
+  fi
+  out="$(python3 "$HELPER" bundle-extract "$td/plain.tgz" "$dest" 2>&1)" || { rm -rf "$td" "$dest"; log "${out#ERR	}"; return 1; }
+  rm -rf "$td"
+  printf '%s\n' "$out"
+}
+
+# options : --file LOT --key CLÉ_PRIVÉE
+secrets_args() {   # définit SA_FILE et SA_KEY, SA_FORCE, SA_NOSTART
+  SA_FILE="" SA_KEY="" SA_FORCE=0 SA_NOSTART=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --file) SA_FILE="${2:-}"; shift 2 ;;
+      --key) SA_KEY="${2:-}"; shift 2 ;;
+      --force) SA_FORCE=1; shift ;;
+      --no-start) SA_NOSTART=1; shift ;;
+      *) log "option inconnue : $1"; return 1 ;;
+    esac
+  done
+  [[ -n "$SA_FILE" && -n "$SA_KEY" ]] || { log "usage : --file LOT --key CLÉ_PRIVÉE_DE_RÉCUPÉRATION [--force] [--no-start]"; return 1; }
+}
+bundle_summary() {   # $1 = manifeste JSON
+  printf '%s' "$1" | python3 -c '
+import json, sys, time
+m = json.load(sys.stdin)
+print("Lot lisible : créé le %s, nom public %s, EJBCA %s, %d fichier(s), autorité(s) : %s." % (time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(m.get("createdAt") or 0)), m.get("hostname") or "?", m.get("tag") or "?", int(m.get("files") or 0), ", ".join(m.get("cas") or []) or "aucune"))'
+}
+
+secrets_verify() {   # essai de restauration : déchiffre et contrôle le lot sans rien installer
+  secrets_args "$@" || return 1
+  local td mf; td="$(secure_tmpdir)" || return 1
+  mf="$(bundle_open "$SA_FILE" "$SA_KEY" "$td/x")" || { rm -rf "$td"; return 1; }
+  rm -rf "$td"
+  bundle_summary "$mf"
+}
+
+secrets_restore() {
+  secrets_args "$@" || return 1
+  local td mf dbs ts aside host tag nets x
+  td="$(secure_tmpdir)" || return 1
+  x="$td/x"
+  mf="$(bundle_open "$SA_FILE" "$SA_KEY" "$x")" || { rm -rf "$td"; return 1; }
+  bundle_summary "$mf" >&2
+  if [[ -f "$ENVF" && ! -L "$ENVF" ]] && ! cmp -s "$ENVF" "$x/etc/ejbca.env" && [[ "$SA_FORCE" -ne 1 ]]; then
+    rm -rf "$td"; log "d'autres secrets existent déjà ($ENVF) : les remplacer rendrait illisibles les autorités de la base actuelle. Si c'est bien voulu, ajouter --force (les anciens fichiers sont gardés à côté 14 jours)"; return 1
+  fi
+  dbs="$(db_state)"
+  case "$dbs" in
+    data) ;;
+    error) rm -rf "$td"; log "PostgreSQL est injoignable : restauration refusée"; return 1 ;;
+    *) if [[ "$SA_FORCE" -ne 1 ]]; then rm -rf "$td"; log "la base « ejbca » est vide ou absente : restaurez d'abord la base du DDI (ddibuntu-backup restore) ; sans elle ces secrets ne servent à rien (--force pour les installer quand même)"; return 1; fi ;;
+  esac
+  "$SYSCTL" stop "$SERVICE" >/dev/null 2>&1 || true
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"; aside="$PETC/pre-restore.$ts"
+  [[ ! -e "$aside" ]] || aside="$aside.$$"   # deux restaurations dans la même seconde ne s'écrasent jamais l'une l'autre
+  install -d -m 0750 "$PETC" "$PDATA"; install -d -m 0700 "$aside"
+  local p; for p in "$ENVF" "$INST"; do [[ ! -e "$p" ]] || mv -f "$p" "$aside/"; done
+  for p in "$CAD" "$PDATA/persistent"; do [[ ! -e "$p" ]] || mv "$p" "$aside/$(basename "$p")"; done
+  rmdir "$aside" 2>/dev/null || true   # vide : rien n'était à mettre de côté
+  install -m 0600 "$x/etc/ejbca.env" "$ENVF"
+  [[ ! -f "$x/etc/instance.json" ]] || install -m 0600 "$x/etc/instance.json" "$INST"
+  [[ ! -d "$x/data/ca" ]] || cp -a "$x/data/ca" "$CAD"
+  if [[ -d "$x/data/persistent" ]]; then cp -a "$x/data/persistent" "$PDATA/persistent"; else install -d -m 0700 "$PDATA/persistent"; fi
+  install -d -m 0700 "$WORK_HOST"   # le lot n'emporte pas le dossier d'échange : il est recréé vide (la CLI d'EJBCA s'y place à chaque appel)
+  chmod 0700 "$PDATA/persistent"; if [[ "$(id -u)" -eq 0 ]]; then chown -R "$CONT_UID:$CONT_UID" "$PDATA/persistent"; fi
+  rm -rf "$td"
+  if [[ -d "$aside" ]]; then log "secrets, métadonnées des autorités et volume restaurés (anciens fichiers mis de côté dans $aside, supprimés après 14 jours)"; else log "secrets, métadonnées des autorités et volume restaurés"; fi
+  if [[ "$SA_NOSTART" -eq 1 || ! -f "$INST" ]]; then
+    printf 'Secrets restaurés. Démarrage non demandé : « ddibuntu-pki apply » remet la PKI en service (nom public et version se lisent dans instance.json).'; return 0
+  fi
+  host="$(instance_get hostname)"; tag="$(instance_get tag)"; nets="$(instance_get nets)"
+  if cmd_apply "$IMAGE_REPO:$tag" "$host" "$nets" >/dev/null; then
+    printf 'PKI restaurée (EJBCA %s) : démarrage en cours ; les autorités et leurs clés sont celles de la base restaurée.' "$tag"
+  else
+    printf 'Secrets restaurés, mais le démarrage a échoué : corriger la cause indiquée ci-dessus puis relancer « ddibuntu-pki apply %s %s ».' "$IMAGE_REPO:$tag" "$host"; return 1
+  fi
+}
+
 # minuteur : publie l'état et renouvelle les CRL des autorités du DDI (EJBCA n'a aucun service qui le fasse : sans cela elles expirent)
 cmd_maintain() {
   cmd_status || true
   purge_certs
+  # secrets mis de côté par une restauration (--force) : 14 jours, pas plus (ce sont des secrets)
+  find "$PETC" -mindepth 1 -maxdepth 1 -type d -name 'pre-restore.*' -mtime +14 -exec rm -rf --one-file-system {} + 2>/dev/null || true
   [[ -f "$INST" && ! -L "$INST" && "$(health_body)" = ALLOK ]] || return 0
   ensure_profiles || true   # une instance saine reçoit ses profils tout de suite, pas seulement à la première émission
   [[ -f "$RUN/pki-cas.json" ]] || return 0
@@ -841,6 +987,7 @@ cmd_request() {
     ca_rootcrl) out="$( ( ca_rootcrl "${R[name]}" ) 2>&1)" || rc=$? ;;
     cert_issue) out="$( ( cert_issue "${R[id]}" "${R[ca]}" "${R[profile]}" "${R[dn]}" "${R[altname]:-}" ) 2>&1)" || rc=$? ;;
     cert_revoke) out="$( ( cert_revoke "${R[ca]}" "${R[serial]}" "${R[reason]}" ) 2>&1)" || rc=$? ;;
+    recovery_set) out="$( ( recovery_set "$IN_DIR/recovery.pem" ) 2>&1)" || rc=$? ;;
     *) out="demande invalide"; rc=1 ;;
   esac
   [[ "$rc" -eq 0 ]] && ok=true
@@ -850,6 +997,7 @@ cmd_request() {
   # les dépôts de la console sont consommés quoi qu'il arrive : ils ne restent jamais sur le disque
   [[ -z "${R[name]:-}" ]] || rm -f "$IN_DIR/${R[name]}.chain.pem" "$IN_DIR/${R[name]}.cert.pem" "$IN_DIR/${R[name]}.crl" "$IN_DIR/${R[name]}.p12" "$IN_DIR/${R[name]}.p12pw" 2>/dev/null || true
   [[ -z "${R[id]:-}" ]] || rm -f "$IN_DIR/${R[id]}.csr.pem" 2>/dev/null || true
+  [[ "$action" != recovery_set ]] || rm -f "$IN_DIR/recovery.pem" 2>/dev/null || true
   cmd_status || true
   [[ "$ok" = true ]]
 }
@@ -874,6 +1022,10 @@ case "$cmd" in
   ca-rootcrl) ca_rootcrl "${1:-}"; echo; cmd_status ;;
   cert-issue) cert_issue "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}"; echo; cmd_status ;;
   cert-revoke) cert_revoke "${1:-}" "${2:-}" "${3:-}"; echo; cmd_status ;;
+  recovery-set) recovery_set "${1:-$IN_DIR/recovery.pem}"; echo; cmd_status ;;
+  secrets-pack) secrets_pack "${1:-}" ;;
+  secrets-verify) secrets_verify "$@" ;;
+  secrets-restore) secrets_restore "$@"; echo; cmd_status ;;
   maintain) cmd_maintain ;;
   status) cmd_status ;;
   request) cmd_request ;;

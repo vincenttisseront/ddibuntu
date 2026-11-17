@@ -18,10 +18,15 @@ Sous-commandes :
   publish-cas              construit pki-cas.json et les fichiers publics de chaque autorité
   urls                     adresses publiques (CRL, certificat) d'une autorité
   b64pem                   certificat DER en base64 (entrée standard) → PEM
+  bundle-pack              (0.14.5) archive les secrets, les métadonnées des autorités et le volume (avant chiffrement par la clé publique de récupération)
+  bundle-extract           (0.14.5) revalide et extrait une telle archive (types, noms, tailles, ejbca.env et instance.json) sous un dossier temporaire
+  recovery-check           (0.14.5) contrôle le certificat de récupération déposé par la console (RSA, 3072 bits au moins, chiffrement possible)
+  recovery-info            (0.14.5) empreinte, taille et fin de validité du certificat de récupération enregistré
 """
 import base64
 import calendar
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -150,7 +155,7 @@ def parse_request():
         return 1
     a = d.get("action")
     out = []
-    if a in ("start", "stop", "restart", "status", "uninstall", "reset"):
+    if a in ("start", "stop", "restart", "status", "uninstall", "reset", "recovery_set") and set(d) == {"action"}:
         out = [("action", a)]
     elif a == "apply":
         img, host, nets = d.get("image"), d.get("hostname"), d.get("nets", [])
@@ -985,6 +990,323 @@ def cmd_publish_cas(argv):
     return 0
 
 
+# ---------- 0.14.5 : sauvegarde des secrets et du volume de la PKI (lot chiffré par la clé PUBLIQUE de récupération) ----------
+# Le lot (archive tar.gz) contient les secrets d'EJBCA (ejbca.env, instance.json), les métadonnées des autorités (ca/) et le volume du conteneur (persistent/, sans work/).
+# root le chiffre avec le certificat de récupération (openssl cms) : la clé privée correspondante n'existe jamais sur l'appliance. À la restauration, tout ce qui sort du lot
+# est traité comme hostile : types de fichiers, noms, tailles et contenu des deux fichiers de secrets sont revalidés avant que quoi que ce soit ne soit installé.
+BUNDLE_FORMAT = 1
+BUNDLE_MAX_PLAIN = 64 << 20        # 64 Mio de données avant compression, au total
+BUNDLE_MAX_FILE = 32 << 20
+BUNDLE_MAX_FILES = 5000
+RECOVERY_MIN_BITS = 3072
+RECOVERY_MIN_LEFT = 365 * 86400    # le certificat de récupération doit rester valable au moins un an
+ENV_SECRET_RE = re.compile(r"[A-Za-z0-9]{20,64}")
+ENV_LINE_RE = re.compile(r"([A-Z][A-Z0-9_]{0,63})=([A-Za-z0-9._:/@+-]{0,200})")
+ENV_REQUIRED = ("PASSWORD_ENCRYPTION_KEY", "CA_KEYSTOREPASS", "EJBCA_CLI_DEFAULTPASSWORD", "DATABASE_USER", "DATABASE_PASSWORD", "DATABASE_JDBC_URL", "HTTPSERVER_HOSTNAME", "TLS_SETUP_ENABLED")
+ENV_SECRETS = ("PASSWORD_ENCRYPTION_KEY", "CA_KEYSTOREPASS", "EJBCA_CLI_DEFAULTPASSWORD", "DATABASE_PASSWORD")
+CA_DIR_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,47}")
+CA_FILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+PERSIST_PART_RE = re.compile(r"[^\x00-\x1f\x7f/\\]{1,200}")
+DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
+TAG_RE = re.compile(r"[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{1,3}")
+
+
+def validate_env(text):
+    """ejbca.env restauré : mêmes formes que celles que ddibuntu-pki écrit ; sinon ValueError. Retourne le dictionnaire."""
+    d = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        m = ENV_LINE_RE.fullmatch(line)
+        if not m:
+            raise ValueError("ejbca.env : ligne illisible")
+        if m.group(1) in d:
+            raise ValueError("ejbca.env : clé en double (%s)" % m.group(1))
+        d[m.group(1)] = m.group(2)
+    for k in ENV_REQUIRED:
+        if k not in d:
+            raise ValueError("ejbca.env : %s manquante" % k)
+    for k in ENV_SECRETS:
+        if not ENV_SECRET_RE.fullmatch(d[k]):
+            raise ValueError("ejbca.env : %s invalide" % k)
+    if d["DATABASE_USER"] != "ejbca" or d["DATABASE_JDBC_URL"] != "jdbc:postgresql://127.0.0.1:5432/ejbca" or d["TLS_SETUP_ENABLED"] != "true":
+        raise ValueError("ejbca.env : réglages de base inattendus")
+    if not (HOST_RE.fullmatch(d["HTTPSERVER_HOSTNAME"]) and not re.search(r"\.[0-9]+$", d["HTTPSERVER_HOSTNAME"])):
+        raise ValueError("ejbca.env : nom public invalide")
+    return d
+
+
+def validate_instance(text):
+    try:
+        d = json.loads(text)
+    except Exception:
+        raise ValueError("instance.json illisible")
+    if not isinstance(d, dict):
+        raise ValueError("instance.json invalide")
+    host, tag, dig, nets = d.get("hostname"), d.get("tag"), d.get("digest"), d.get("nets", "")
+    if not (isinstance(host, str) and HOST_RE.fullmatch(host) and not re.search(r"\.[0-9]+$", host)):
+        raise ValueError("instance.json : nom public invalide")
+    if not (isinstance(tag, str) and TAG_RE.fullmatch(tag)):
+        raise ValueError("instance.json : version invalide")
+    if not (isinstance(dig, str) and (dig == "" or DIGEST_RE.fullmatch(dig))):
+        raise ValueError("instance.json : empreinte invalide")
+    if not (isinstance(nets, str) and len(nets) <= 4096 and all(NET_RE.fullmatch(n) for n in nets.split(",") if n)):
+        raise ValueError("instance.json : réseaux invalides")
+    return d
+
+
+def _bundle_sources(petc, pdata):
+    """(chemin source, nom dans le lot, type) ; ni lien symbolique ni fichier spécial. Le dossier d'échange de la CLI (persistent/work) n'est jamais sauvegardé."""
+    out, skipped = [], 0
+    for n in ("ejbca.env", "instance.json"):
+        p = os.path.join(petc, n)
+        st = os.lstat(p) if os.path.lexists(p) else None
+        if st is None:
+            if n == "ejbca.env":
+                raise ValueError("ejbca.env absent : rien à sauvegarder")
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("%s n'est pas un fichier ordinaire" % n)
+        out.append((p, "etc/" + n, "f"))
+    for sub in ("ca", "persistent"):
+        base = os.path.join(pdata, sub)
+        if not os.path.isdir(base) or os.path.islink(base):
+            continue
+        out.append((base, "data/" + sub, "d"))
+        for root, dirs, files in os.walk(base, followlinks=False):
+            if sub == "persistent" and os.path.normpath(root) == os.path.normpath(base):
+                dirs[:] = [x for x in dirs if x != "work"]
+            dirs.sort()
+            for x in list(dirs):
+                p = os.path.join(root, x)
+                if os.path.islink(p):
+                    dirs.remove(x)
+                    skipped += 1
+                    continue
+                out.append((p, "data/" + sub + "/" + os.path.relpath(p, base).replace(os.sep, "/"), "d"))
+            for x in sorted(files):
+                p = os.path.join(root, x)
+                st = os.lstat(p)
+                if not stat.S_ISREG(st.st_mode):
+                    skipped += 1
+                    continue
+                out.append((p, "data/" + sub + "/" + os.path.relpath(p, base).replace(os.sep, "/"), "f"))
+    return out, skipped
+
+
+def cmd_bundle_pack(argv):
+    # bundle-pack SORTIE.tgz PETC PDATA → JSON de synthèse sur la sortie standard (ERR<TAB>message et code 1 en cas d'échec)
+    import tarfile
+    out, petc, pdata = argv[0], argv[1], argv[2]
+    try:
+        items, skipped = _bundle_sources(petc, pdata)
+        files = [i for i in items if i[2] == "f"]
+        if len(items) > BUNDLE_MAX_FILES:
+            raise ValueError("trop de fichiers (%d)" % len(items))
+        total = 0
+        for p, _, _ in files:
+            sz = os.lstat(p).st_size
+            if sz > BUNDLE_MAX_FILE:
+                raise ValueError("fichier trop gros : %s" % os.path.basename(p))
+            total += sz
+        if total > BUNDLE_MAX_PLAIN:
+            raise ValueError("volume trop gros (%d Mio ; limite %d)" % (total >> 20, BUNDLE_MAX_PLAIN >> 20))
+        inst = {}
+        try:
+            with open(os.path.join(petc, "instance.json"), encoding="utf-8") as f:
+                inst = json.load(f)
+        except (OSError, ValueError):
+            pass
+        if not isinstance(inst, dict):
+            inst = {}
+        cas = sorted(n for n in (os.listdir(os.path.join(pdata, "ca")) if os.path.isdir(os.path.join(pdata, "ca")) else []) if CA_DIR_RE.fullmatch(n))
+        manifest = {"format": BUNDLE_FORMAT, "createdAt": int(time.time()), "hostname": str(inst.get("hostname", ""))[:253], "tag": str(inst.get("tag", ""))[:24],
+                    "cas": cas[:200], "files": len(files), "bytes": total}
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz", compresslevel=6) as tf:
+            data = (json.dumps(manifest) + "\n").encode()
+            ti = tarfile.TarInfo("MANIFEST.json")
+            ti.size, ti.mode, ti.mtime = len(data), 0o600, manifest["createdAt"]
+            tf.addfile(ti, io.BytesIO(data))
+            for p, arc, kind in items:
+                ti = tf.gettarinfo(p, arc)
+                ti.uid = ti.gid = 0
+                ti.uname = ti.gname = ""
+                ti.mode &= 0o777
+                if kind == "d":
+                    tf.addfile(ti)
+                else:
+                    with open(p, "rb") as f:
+                        tf.addfile(ti, f)
+        manifest["skipped"] = skipped
+        print(json.dumps(manifest))
+        return 0
+    except (OSError, ValueError, tarfile.TarError) as e:
+        print("ERR\t%s" % e)
+        return 1
+
+
+def _bundle_name_ok(name):
+    parts = name.split("/")
+    if name == "MANIFEST.json":
+        return "manifest"
+    if name in ("etc/ejbca.env", "etc/instance.json"):
+        return "secret"
+    if len(parts) >= 2 and parts[0] == "etc":
+        return None
+    if parts[:1] == ["data"] and len(parts) >= 2 and parts[1] in ("ca", "persistent"):
+        if len(parts) > 14 or any(p in ("", ".", "..") for p in parts):
+            return None
+        if parts[1] == "ca":
+            if len(parts) == 2:
+                return "dir"
+            if not CA_DIR_RE.fullmatch(parts[2]) or len(parts) > 4:
+                return None
+            if len(parts) == 4 and not CA_FILE_RE.fullmatch(parts[3]):
+                return None
+            return "ca"
+        if parts[2:3] == ["work"]:
+            return None
+        return "persist" if all(PERSIST_PART_RE.fullmatch(p) for p in parts[2:]) else None
+    return None
+
+
+def cmd_bundle_extract(argv):
+    # bundle-extract ARCHIVE.tgz DEST : revalide chaque entrée, extrait sous DEST (etc/ et data/), valide les secrets ; imprime le manifeste (JSON) ou ERR<TAB>message
+    import tarfile
+    src, dest = argv[0], argv[1]
+    manifest = None
+    try:
+        total = count = 0
+        with tarfile.open(src, mode="r:gz") as tf:
+            members = []
+            for m in tf:
+                count += 1
+                if count > BUNDLE_MAX_FILES + 8:
+                    raise ValueError("lot refusé : trop d'entrées")
+                if not (m.isfile() or m.isdir()):
+                    raise ValueError("lot refusé : entrée de type interdit (%s)" % m.name[:60])
+                kind = _bundle_name_ok(m.name)
+                if kind is None or (m.isdir() and kind in ("manifest", "secret")) or (m.isfile() and kind == "dir"):
+                    raise ValueError("lot refusé : nom inattendu (%s)" % m.name[:60])
+                if m.isfile():
+                    if m.size > BUNDLE_MAX_FILE:
+                        raise ValueError("lot refusé : fichier trop gros")
+                    total += m.size
+                    if total > BUNDLE_MAX_PLAIN + (1 << 20):
+                        raise ValueError("lot refusé : volume excessif")
+                members.append(m)
+            names = [m.name for m in members]
+            if len(set(names)) != len(names):
+                raise ValueError("lot refusé : entrées en double")
+            if "MANIFEST.json" not in names or "etc/ejbca.env" not in names:
+                raise ValueError("lot incomplet (manifeste ou ejbca.env absent)")
+            os.makedirs(dest, mode=0o700, exist_ok=True)
+            dmodes = []
+            for m in members:
+                target = os.path.join(dest, m.name)
+                if m.isdir():
+                    os.makedirs(target, mode=0o700, exist_ok=True)
+                    dmodes.append((target, m.mode & 0o777))
+                    continue
+                os.makedirs(os.path.dirname(target), mode=0o700, exist_ok=True)
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "wb") as f:
+                    r = tf.extractfile(m)
+                    left = m.size
+                    while left > 0:
+                        chunk = r.read(min(left, 1 << 20))
+                        if not chunk:
+                            raise ValueError("lot tronqué")
+                        f.write(chunk)
+                        left -= len(chunk)
+                os.chmod(target, m.mode & 0o777)
+            for t, mode in reversed(dmodes):
+                os.chmod(t, mode | 0o700)   # root doit pouvoir descendre partout ; les modes d'origine sont rétablis à l'installation
+        with open(os.path.join(dest, "MANIFEST.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+        if not isinstance(manifest, dict) or manifest.get("format") != BUNDLE_FORMAT:
+            raise ValueError("format de lot inconnu (%s) : cette version ne sait relire que le format %d" % (str(manifest.get("format"))[:8] if isinstance(manifest, dict) else "?", BUNDLE_FORMAT))
+        with open(os.path.join(dest, "etc/ejbca.env"), encoding="utf-8") as f:
+            env = validate_env(f.read())
+        ip = os.path.join(dest, "etc/instance.json")
+        if os.path.exists(ip):
+            with open(ip, encoding="utf-8") as f:
+                inst = validate_instance(f.read())
+            if inst["hostname"] != env["HTTPSERVER_HOSTNAME"]:
+                raise ValueError("le nom public d'instance.json ne correspond pas à celui d'ejbca.env")
+        out = {k: manifest.get(k) for k in ("format", "createdAt", "hostname", "tag", "cas", "files", "bytes")}
+        out["hasInstance"] = os.path.exists(ip)
+        print(json.dumps(out))
+        return 0
+    except (OSError, ValueError, tarfile.TarError, EOFError, json.JSONDecodeError) as e:
+        print("ERR\t%s" % e)
+        return 1
+
+
+def _recovery_facts(der):
+    """Certificat de récupération (DER) → (empreinte SHA-256, bits RSA, fin de validité en secondes, sujet) ; ValueError s'il ne convient pas."""
+    rc, text, _ = openssl(["x509", "-inform", "DER", "-noout", "-text"], der)
+    if rc != 0:
+        raise ValueError("certificat illisible")
+    if "rsaEncryption" not in text:
+        raise ValueError("clé RSA attendue (la clé de récupération est une clé RSA de %d bits au moins)" % RECOVERY_MIN_BITS)
+    m = re.search(r"Public-Key:\s*\((\d+) bit\)", text)
+    bits = int(m.group(1)) if m else 0
+    if bits < RECOVERY_MIN_BITS:
+        raise ValueError("clé RSA de %d bits refusée (%d bits au moins)" % (bits, RECOVERY_MIN_BITS))
+    rc, out, _ = openssl(["x509", "-inform", "DER", "-noout", "-enddate"], der)
+    mm = re.search(r"notAfter=(.+)", out)
+    try:
+        end = calendar.timegm(time.strptime(mm.group(1).strip(), "%b %d %H:%M:%S %Y %Z")) if mm else 0
+    except ValueError:
+        end = 0
+    if end <= 0:
+        raise ValueError("date de fin de validité illisible")
+    rc, sub, _ = openssl(["x509", "-inform", "DER", "-noout", "-subject", "-nameopt", "RFC2253"], der)
+    subject = "".join(ch for ch in sub.strip().replace("subject=", "", 1) if ch.isprintable())[:100]
+    return hashlib.sha256(der).hexdigest(), bits, end, subject
+
+
+def cmd_recovery_check(argv):
+    # recovery-check SRC DEST : le dépôt de la console doit être UN certificat RSA (3072 bits au moins, valable un an au moins) avec lequel openssl sait chiffrer ; écrit le PEM canonique
+    src, dest = argv[0], argv[1]
+    try:
+        data = read_deposit(src, 8192)
+        ders = parse_certs(data)
+        if len(ders) != 1:
+            raise ValueError("un seul certificat est attendu")
+        fp, bits, end, subject = _recovery_facts(ders[0])
+        if end - time.time() < RECOVERY_MIN_LEFT:
+            raise ValueError("le certificat expire dans moins d'un an")
+        pem = pem_of(ders[0])
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "c.pem")
+            write_secret(p, pem.encode())
+            rc, _, err = openssl(["cms", "-encrypt", "-aes256", "-binary", "-outform", "DER", "-recip", p, "-keyopt", "rsa_padding_mode:oaep", "-keyopt", "rsa_oaep_md:sha256"], b"ddibuntu-recovery-test")
+            if rc != 0:
+                raise ValueError("ce certificat ne permet pas de chiffrer")
+        write_secret(dest, pem.encode())
+        print("OK\t%s\t%d\t%d" % (fp, bits, end))
+        return 0
+    except (OSError, ValueError) as e:
+        print("ERR\t%s" % e)
+        return 1
+
+
+def cmd_recovery_info(argv):
+    # recovery-info CERT.pem → JSON {fingerprint, bits, notAfter, subject, registeredAt} ; code 1 s'il est absent ou illisible
+    try:
+        with open(argv[0], "rb") as f:
+            ders = parse_certs(f.read(8192))
+        fp, bits, end, subject = _recovery_facts(ders[0])
+        at = int(os.stat(argv[0]).st_mtime)
+    except (OSError, ValueError, IndexError):
+        return 1
+    print(json.dumps({"fingerprint": fp, "bits": bits, "notAfter": end, "subject": subject, "registeredAt": at}))
+    return 0
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     args = sys.argv[2:]
@@ -1012,6 +1334,14 @@ def main():
         return cmd_urls(args)
     if cmd == "b64pem":
         return cmd_b64pem(args)
+    if cmd == "bundle-pack":
+        return cmd_bundle_pack(args)
+    if cmd == "bundle-extract":
+        return cmd_bundle_extract(args)
+    if cmd == "recovery-check":
+        return cmd_recovery_check(args)
+    if cmd == "recovery-info":
+        return cmd_recovery_info(args)
     sys.stderr.write(__doc__)
     return 2
 
