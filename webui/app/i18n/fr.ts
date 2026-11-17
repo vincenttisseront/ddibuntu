@@ -3030,5 +3030,10 @@ const messages: Record<string, string> = {
   "err.reservation_exists": "Une réservation existe déjà pour cette adresse IP ou cette MAC dans cette étendue.",
   "err.lease_without_mac": "Ce bail n'a pas d'adresse MAC : réservation impossible.",
   "err.no_scope": "Ce bail n'appartient à aucune étendue DHCP connue de la console.",
+  "dash.unavailable": "Tableau de bord indisponible pour le moment…",
+  "label.pick": "Choisir",
+  "label.picked": "{n} choisi(s)",
+  "label.search": "Filtrer les labels",
+  "nam.format_auto": "Rempli automatiquement depuis la règle de nommage (modifiable).",
 }
 export default messages

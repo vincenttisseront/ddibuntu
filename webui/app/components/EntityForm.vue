@@ -20,7 +20,9 @@ function init() {
     state[f.key] = v ?? (f.type === 'number' ? null : '')
   }
   error.value = null
+  auto.reset()
 }
+const auto = useAutoFields(() => props.fields, state)
 watch(open, (o) => { if (o) init() }, { immediate: true })
 
 function build() {

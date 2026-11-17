@@ -99,6 +99,19 @@ async function reallyChanged(gen: number, dep: number): Promise<boolean> {
   verdict = { gen, dep, changed }
   return changed
 }
+/** Variante pour le tableau de bord (interrogé souvent) : ne bloque jamais sur un rendu complet des fichiers.
+ *  Verdict connu pour cette génération → exact ; sinon on répond avec le dernier verdict connu et le rendu se fait en arrière-plan
+ *  (le prochain rafraîchissement du tableau de bord, 30 s plus tard, est exact). Sans aucun verdict connu, on attend le rendu une fois. */
+let refreshing: Promise<unknown> | null = null
+export async function configStateFast(): Promise<ConfigState> {
+  const st = await rawState()
+  if (!st.pending) return st
+  if (verdict && verdict.gen === st.generation && verdict.dep === st.deployed) { st.pending = verdict.changed; return st }
+  if (!verdict) { st.pending = await reallyChanged(st.generation, st.deployed); return st }
+  if (!refreshing) refreshing = reallyChanged(st.generation, st.deployed).catch(() => undefined).finally(() => { refreshing = null })
+  st.pending = verdict.changed
+  return st
+}
 export async function configState(): Promise<ConfigState> {
   const st = await rawState()
   if (st.pending && !(await reallyChanged(st.generation, st.deployed))) st.pending = false

@@ -2,7 +2,8 @@
 const { t } = useT()
 const { isAdmin } = useRole()
 const { dateTime, time } = useFmt()
-const { data, refresh } = await useFetch<any>('/api/dashboard')
+// non bloquant : la page s'affiche aussitôt (indicateur d'attente), les données arrivent ensuite
+const { data, refresh, pending } = useFetch<any>('/api/dashboard', { lazy: true, server: false })
 // le tableau de bord se tient à jour seul (état des services, quorum, alertes) ; l'heure de la dernière mise à jour est affichée
 const updatedAt = ref(Date.now())
 let timer: ReturnType<typeof setInterval> | undefined
@@ -62,6 +63,11 @@ const quorumOk = computed(() => cl.value?.quorum?.hasQuorum === true)
 
 <template>
   <div class="flex flex-col gap-4">
+    <div v-if="!data" class="flex flex-col gap-4" role="status" aria-live="polite" data-testid="dash-loading">
+      <p class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin text-primary" />{{ pending ? t('common.loading') : t('dash.unavailable') }}</p>
+      <div class="grid gap-4 lg:grid-cols-3"><USkeleton v-for="i in 3" :key="i" class="h-32 w-full" /></div>
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><USkeleton v-for="i in 8" :key="i" class="h-16 w-full" /></div>
+    </div>
     <UAlert v-if="sys?.update?.available && !sys.update.busy" color="primary" variant="subtle" icon="i-lucide-circle-arrow-up" :title="t('dash.update_available', { v: sys.update.latest, cur: sys.version })">
       <template #actions><UButton to="/system#updates" size="xs" color="primary" variant="outline" :label="t('dash.update_go')" /></template>
     </UAlert>

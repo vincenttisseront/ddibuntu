@@ -170,7 +170,7 @@ const tplFields = computed(() => [
   { key: 'opt_ntp', label: t('ipam.tpl_ntp'), type: 'list', hint: t('common.list_hint') },
   { key: 'dns_zone_id', label: t('ipam.tpl_zone'), type: 'select', options: tplZoneOptions.value, default: 0, hint: t('ipam.tpl_zone_hint') },
   { key: 'hostname_pattern', label: t('ipam.tpl_pattern'), type: 'text', mono: true, placeholder: 'srv-###', hint: t('ipam.tpl_pattern_hint') },
-  { key: 'name_format', label: t('nam.format'), type: 'text', mono: true, placeholder: 'srv-{o4:3}', hint: t('nam.format_hint') },
+  { key: 'name_format', label: t('nam.format'), type: 'text', mono: true, autoFrom: 'hostname_pattern', autoFn: deriveNameFormat, placeholder: 'srv-{o4:3}', hint: t('nam.format_hint') + ' ' + t('nam.format_auto') },
 ] as any[])
 const tplBody = (b: any) => {
   const o: Record<string, any> = {}
@@ -212,7 +212,7 @@ const formTitle = computed(() => ({ tpl: t('ipam.add_template'), space: t('ipam.
 // ---- VLAN ----
 const vlanCols = computed(() => [{ key: 'vlan_id', label: 'VLAN ID', kind: 'num' }, { key: 'name', label: t('common.name') }, { key: 'description', label: t('common.description') }, { key: 'hostname_pattern', label: t('ipam.tpl_pattern'), kind: 'mono' }, { key: 'name_format', label: t('nam.format'), kind: 'mono' }, { key: 'subnets', label: t('ipam.subnets'), kind: 'num' }, { key: 'tags', label: t('label.title'), kind: 'labels' }])
 const vlanFields = computed(() => [{ key: 'vlan_id', label: 'VLAN ID', type: 'number', required: true }, { key: 'name', label: t('common.name'), type: 'text', required: true }, { key: 'description', label: t('common.description'), type: 'text' },
-  { key: 'hostname_pattern', label: t('ipam.tpl_pattern'), type: 'text', mono: true, placeholder: 'srv-###', hint: t('nam.vlan_pattern_hint') }, { key: 'name_format', label: t('nam.format'), type: 'text', mono: true, placeholder: 'v{vlan}-{o4:3}', hint: t('nam.format_hint') }, { key: 'tags', label: t('label.title'), type: 'labels' }] as any[])
+  { key: 'hostname_pattern', label: t('ipam.tpl_pattern'), type: 'text', mono: true, placeholder: 'srv-###', hint: t('nam.vlan_pattern_hint') }, { key: 'name_format', label: t('nam.format'), type: 'text', mono: true, autoFrom: 'hostname_pattern', autoFn: deriveNameFormat, placeholder: 'v{vlan}-{o4:3}', hint: t('nam.format_hint') + ' ' + t('nam.format_auto') }, { key: 'tags', label: t('label.title'), type: 'labels' }] as any[])
 
 // ---- IP suivante libre (réseau et pool au choix) ----
 // ---- Contrôle d'une adresse : nom DNS + test de présence ----

@@ -3030,5 +3030,10 @@ const messages: Record<string, string> = {
   "err.reservation_exists": "A reservation already exists for this IP or MAC in this scope.",
   "err.lease_without_mac": "This lease has no MAC address: cannot reserve.",
   "err.no_scope": "This lease does not belong to any DHCP scope known to the console.",
+  "dash.unavailable": "Dashboard unavailable for now…",
+  "label.pick": "Pick",
+  "label.picked": "{n} selected",
+  "label.search": "Filter labels",
+  "nam.format_auto": "Filled in automatically from the naming rule (editable).",
 }
 export default messages

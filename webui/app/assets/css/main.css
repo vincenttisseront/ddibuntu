@@ -62,3 +62,9 @@ input[type="file"]::file-selector-button {
   cursor: pointer;
 }
 input[type="file"]::file-selector-button:hover { background: var(--color-brand-700); }
+
+/* Tableaux compacts partout (UTable, tableaux HTML des panneaux) : cellules serrées, texte réduit, lignes de séparation fines.
+   Hors couche Tailwind volontairement : prime sur les marges des composants (p-4, py-3.5…). Les tableaux « sr-only » (accessibilité) sont ignorés. */
+table:not(.sr-only) :is(th, td) { padding: 0.25rem 0.5rem; font-size: 0.8125rem; line-height: 1.25rem; }
+table:not(.sr-only) :is(th, td) :is(button, a):not([class*="size-"]) { vertical-align: middle; }
+table:not(.sr-only) tbody tr { height: auto; }

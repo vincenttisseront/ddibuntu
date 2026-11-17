@@ -7,6 +7,7 @@ export interface Col { key: string; label: string; kind?: 'text' | 'mono' | 'bad
 export interface Field {
   key: string; label: string; type: 'text' | 'number' | 'select' | 'textarea' | 'switch' | 'list' | 'labels' | 'password'
   required?: boolean; options?: Array<{ label: string; value: string | number }>; createOnly?: boolean; editHidden?: boolean
+  autoFrom?: string; autoFn?: (v: string) => string
   hint?: string | ((state: any) => string); placeholder?: string; default?: any; rows?: number; mono?: boolean
 }
 const props = defineProps<{
@@ -49,7 +50,9 @@ function init(row: any | null) {
     setPath(state, f.key, v ?? (f.type === 'number' ? null : ''))
   }
   error.value = null
+  auto.reset()
 }
+const auto = useAutoFields(() => props.fields ?? [], state)
 function openCreate() { editing.value = null; init(null); open.value = true }
 function openEdit(row: any) { editing.value = row; init(row); open.value = true }
 function build() {

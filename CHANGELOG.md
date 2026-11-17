@@ -1,5 +1,15 @@
 # Journal des modifications
 
+## 0.13.8 — « Retour visuel pendant les chargements, tableaux compacts »
+
+- **Changement de page** : l'indicateur d'attente global (barre + pastille « Traitement en cours ») s'affiche désormais aussi pendant la navigation, quand une page charge ses données avant de s'afficher (auparavant l'écran restait figé sans rien montrer).
+- **Tableau de bord** : la page s'ouvre aussitôt avec un spinner et des squelettes, les données arrivent ensuite (chargement non bloquant). Côté serveur, les requêtes du tableau de bord (comptages, état du système, supervision, état de la configuration) sont lancées en parallèle au lieu de l'une après l'autre.
+- **Tableaux compacts partout** (VLAN, zones, enregistrements, étendues, listes, utilisateurs, audit, journaux de requêtes, cluster, sauvegardes…) : cellules serrées et texte réduit, appliqués globalement à tous les tableaux (hauteur de ligne divisée par deux environ).
+- **Formulaires VLAN / gabarits** : le « format de nom généré » se remplit tout seul à partir de la règle de nommage (`srv-###` → `srv-{o4:3}`, `vmdmz-*` → `vmdmz-{o4:3}`), tant qu'on ne l'a pas modifié à la main.
+- **Labels** : menu déroulant à choix multiples (cases à cocher, filtre) en plus de la saisie libre et des suggestions.
+- Le tableau de bord n'attend plus un rendu complet des fichiers pour afficher « à déployer » (dernier verdict connu, recalculé en arrière-plan).
+- Tests unitaires ajoutés.
+
 ## 0.13.7 — « DHCP : baux compacts, filtres, tris et réservation en un clic »
 
 - Onglet **DHCP › Baux** : tableau compact (DenseTable) avec filtre par colonne, tris sur les valeurs brutes, colonnes adresse, MAC, nom d'hôte, réseau, expiration et état (« Dynamique » / « Réservé »).

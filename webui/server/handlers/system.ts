@@ -1,7 +1,7 @@
 import { audit, fail, qstr, route } from '../utils/router'
 import { one, query } from '../utils/db'
 import { cfg } from '../utils/config'
-import { applyConfig, buildConfig, configState } from '../utils/apply'
+import { applyConfig, buildConfig, configState, configStateFast } from '../utils/apply'
 import { capacity, parseCidr } from '../utils/net'
 import { RECORD_TYPES } from '../utils/dns'
 import { z } from 'zod'
@@ -20,21 +20,25 @@ import { fileUpdateRequest, installedVersion, isBusy, readUpdateStatus } from '.
 route('GET', '/system/config-generation', 'viewer', async () => configState())
 
 route('GET', '/dashboard', 'viewer', async (c) => {
-  const counts = await one<any>(`select (select count(*)::int from subnets) subnets, (select count(*)::int from addresses) addresses, (select count(*)::int from dns_zones) zones,
-    (select count(*)::int from dns_records) records, (select count(*)::int from dhcp_scopes) scopes, (select count(*)::int from dhcp_reservations) reservations,
-    (select count(*)::int from block_lists where enabled) lists, (select coalesce(sum(entries),0)::int from block_lists where enabled) blocked_domains,
-    (select count(*)::int from dns_zones where dirty) dirty_zones`)
-  const subs = await query<any>(`select s.id, text(s.cidr) as cidr, s.name, (select count(*)::int from addresses a where a.subnet_id = s.id) as used from subnets s`)
-  const top = subs.map((s) => { const cap = capacity(parseCidr(s.cidr)!); return { ...s, capacity: cap > 1_000_000_000n ? null : Number(cap), percent: cap > 1_000_000_000n ? null : Math.round((s.used / Number(cap)) * 1000) / 10 } })
-    .filter((s) => s.percent !== null).sort((a, b) => b.percent - a.percent).slice(0, 8)
-  const byType = await query<any>('select type, count(*)::int as n from dns_records group by type order by n desc')
-  const last = await one<any>('select id, at, ok, username from deployments order by id desc limit 1')
-  const day = await query<any>("select kind, coalesce(sum(count),0)::bigint::text as n from dns_stats where bucket >= now() - interval '24 hours' group by kind")
   // état du système : lecture seule ; l'information de mise à jour n'est donnée qu'aux administrateurs
   const isAdmin = (ROLE_RANK[c.user?.role as keyof typeof ROLE_RANK] ?? 0) >= ROLE_RANK.admin
-  const upd = isAdmin ? await readUpdateStatus() : null
-  const system = { version: installedVersion(), host: await hostInfo(), lastApply: await readReloadStatus(), update: upd ? { available: upd.available, latest: upd.latest, busy: isBusy(upd), state: upd.state } : null }
-  return { counts, top, byType, lastDeployment: last, day, system, config: await configState(), ...(await supervision()) }
+  // requêtes indépendantes lancées ensemble : le tableau de bord s'ouvre en un temps de requête, pas en leur somme
+  const [counts, subs, byType, last, day, upd, host, lastApply, config, sup] = await Promise.all([
+    one<any>(`select (select count(*)::int from subnets) subnets, (select count(*)::int from addresses) addresses, (select count(*)::int from dns_zones) zones,
+    (select count(*)::int from dns_records) records, (select count(*)::int from dhcp_scopes) scopes, (select count(*)::int from dhcp_reservations) reservations,
+    (select count(*)::int from block_lists where enabled) lists, (select coalesce(sum(entries),0)::int from block_lists where enabled) blocked_domains,
+    (select count(*)::int from dns_zones where dirty) dirty_zones`),
+    query<any>(`select s.id, text(s.cidr) as cidr, s.name, (select count(*)::int from addresses a where a.subnet_id = s.id) as used from subnets s`),
+    query<any>('select type, count(*)::int as n from dns_records group by type order by n desc'),
+    one<any>('select id, at, ok, username from deployments order by id desc limit 1'),
+    query<any>("select kind, coalesce(sum(count),0)::bigint::text as n from dns_stats where bucket >= now() - interval '24 hours' group by kind"),
+    isAdmin ? readUpdateStatus() : Promise.resolve(null),
+    hostInfo(), readReloadStatus(), configStateFast(), supervision(),
+  ])
+  const top = subs.map((s) => { const cap = capacity(parseCidr(s.cidr)!); return { ...s, capacity: cap > 1_000_000_000n ? null : Number(cap), percent: cap > 1_000_000_000n ? null : Math.round((s.used / Number(cap)) * 1000) / 10 } })
+    .filter((s) => s.percent !== null).sort((a, b) => b.percent - a.percent).slice(0, 8)
+  const system = { version: installedVersion(), host, lastApply, update: upd ? { available: upd.available, latest: upd.latest, busy: isBusy(upd), state: upd.state } : null }
+  return { counts, top, byType, lastDeployment: last, day, system, config, ...sup }
 })
 
 // Version et mise à jour disponible, pour la barre latérale (la mise à jour n'est révélée qu'aux administrateurs)
