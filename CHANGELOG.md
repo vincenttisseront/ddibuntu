@@ -1,5 +1,13 @@
 # Journal des modifications
 
+## 0.13.9 — « Export des journaux vers un SIEM »
+
+- **Système › SIEM** (administrateurs) : jusqu'à 10 destinations, chacune avec son **protocole** (syslog UDP, TCP, TLS, ou HTTPS — webhook, Splunk HEC, Elastic…), son **format** (syslog RFC 5424, RFC 3164, CEF, LEEF 2.0, JSON une ligne par événement) et ses **flux choisis** : journal d'audit, toutes les requêtes DNS, requêtes DNS bloquées seulement, alertes, déploiements.
+- Fiabilité : un curseur par destination et par flux garantit « ni oubli, ni doublon » ; un envoi échoué est retenté au passage suivant (toutes les 10 s) à partir du même point ; les événements antérieurs à la création d'une destination (ou à l'ajout d'un flux) ne sont pas renvoyés. Seul le nœud principal du cluster envoie.
+- Détails : délimitation par ligne ou par comptage d'octets (RFC 6587), facility syslog réglable, vérification du certificat pour TLS/HTTPS, en-tête d'autorisation (schéma + jeton chiffré, jamais renvoyé par l'API) pour HTTPS, bouton « Envoyer un événement de test », « Envoyer maintenant », suspension d'une destination. Les adresses de lien local et du service de métadonnées sont refusées.
+- API : `GET/POST /siem/targets`, `PUT/DELETE /siem/targets/:id`, `POST /siem/targets/:id/test`, `POST /siem/run` ; réglage `DDI_SIEM_INTERVAL_MS` (0 = désactivé).
+- Migration 25 ; tests unitaires (formats) et e2e-iter46.
+
 ## 0.13.8 — « Retour visuel pendant les chargements, tableaux compacts »
 
 - **Changement de page** : l'indicateur d'attente global (barre + pastille « Traitement en cours ») s'affiche désormais aussi pendant la navigation, quand une page charge ses données avant de s'afficher (auparavant l'écran restait figé sans rien montrer).

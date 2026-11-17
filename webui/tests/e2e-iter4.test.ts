@@ -90,7 +90,7 @@ const mk = async () => {
   return { vlan, s1, s2, z }
 }
 let W: Awaited<ReturnType<typeof mk>>
-const MIGRATIONS_LAST = 24   // dernière migration du schéma (24 : labels IPAM ; 23 : règles d'accès RADIUS ; 22 : clients RADIUS ; 21 : nommage par VLAN)
+const MIGRATIONS_LAST = 25   // dernière migration du schéma (24 : labels IPAM ; 23 : règles d'accès RADIUS ; 22 : clients RADIUS ; 21 : nommage par VLAN)
 
 describe('points de restauration des données', () => {
   it('migration 2 appliquée, version 0.4.0', async () => {
