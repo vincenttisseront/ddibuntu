@@ -77,10 +77,24 @@ Un NPS Windows n'existe pas sous Linux : le service est **FreeRADIUS** intégré
 | 2 | 0.13.1 | Annuaire : liaison LDAPS en lecture seule, état du compte et groupes imbriqués, test de recherche | ✅ 0.13.1 (vrai Samba AD en LDAPS ; pas encore testé sur un AD Microsoft) |
 | 3 | 0.13.2 | PKI : autorité de confiance des certificats clients, certificat du serveur, EAP-TLS, révocation (CRL / OCSP) | ✅ 0.13.2 (vrai FreeRADIUS + `eapol_test` en TLS 1.2 et 1.3 ; CRL seulement, **OCSP reporté** ; pas encore essayé avec AD CS) |
 | 4 | 0.13.3 | Règles d'accès : groupe AD → décision, VLAN, pool ; ordre d'évaluation, simulation avant publication | ✅ 0.13.3 (vrai FreeRADIUS + `eapol_test` + Samba AD, mêmes décisions que la simulation sur 15 cas ; **jamais essayé sur un AD Microsoft** ; DN de groupe à échappement hexadécimal refusés) |
-| 5 | 0.13.4 | Import d'un NPS existant (`netsh nps export`) : clients, stratégies, rapport « repris / adapté / non pris en charge » | ⬜ |
+| 5 | 0.13.4 | Import d'un NPS existant (`netsh nps export`) : clients, stratégies, rapport « repris / adapté / non pris en charge » | ✅ 0.13.4 (par fichier ; vrai Samba AD pour la résolution des groupes par SID ; **format non vérifié sur un export réel**, lecture directe par WinRM **reportée**) |
 | 6 | 0.13.5 | Comptabilité (1813), journal des authentifications, alertes | ⬜ |
 | 7 | 0.13.6 | Cluster : deux nœuds actifs, mêmes clients et règles, sans adresse virtuelle | ⬜ |
 | 8 | 0.13.7 | Liens IPAM / DHCP : VLAN et pools issus de l'IPAM, session ↔ bail ↔ utilisateur dans la traçabilité | ⬜ |
+
+## Série 0.14.x — PKI du DDI : EJBCA Community intégrée (demande du 2026-11-17)
+La PKI est **EJBCA Community** (image officielle `keyfactor/ejbca-ce`, Podman + Quadlet, base PostgreSQL de l'appliance), pilotée par la console avec la même frontière de privilèges que BIND, Kea et FreeRADIUS : la console dépose une demande minuscule, un script root la revalide et l'applique, aucun secret ne transite par la console. Cycle de vie complet (installation, démarrage, arrêt, mise à jour à la demande avec retour arrière, désinstallation qui garde les données). **Toute autorité créée ou importée est publiée automatiquement dans l'Active Directory connecté au DDI** (racines → `Certification Authorities`, émettrices → `AIA`). Cahier des charges détaillé : document `ejbca-pki-spec` du projet.
+
+| # | Version | Évolution | État |
+|---|---|---|---|
+| 1 | 0.14.0 | Service PKI : conteneur EJBCA CE (Quadlet, image figée par empreinte), base et secrets créés une fois, nom public `pki.<domaine>` (HTTP, port 8080), pare-feu limité aux réseaux autorisés, état, démarrage / arrêt, désinstallation sans perte, enregistrement DNS protégé, page « PKI » | ✅ 0.14.0 (conteneur EJBCA lancé de bout en bout avec Podman réel et la commande du vrai générateur Quadlet, validé en 0.14.1 ; démarrage sous systemd réel pas encore constaté) |
+| 2 | 0.14.1 | Autorités : racine hors ligne (le DDI produit la demande, la racine signe ailleurs, import) ou racine auto-signée de laboratoire ; autorité émettrice ; CRL (servies en HTTP, renouvelées par minuteur) ; CDP / AIA ; remise à zéro | ✅ 0.14.1 (vrai conteneur EJBCA : 97 contrôles ; vrai Chrome) |
+| 3 | 0.14.2 | Publication automatique dans l'AD : compte délégué, repli `certutil -dspublish`, relecture et comparaison d'empreinte, rejeu en cas d'échec, rapprochement quotidien (jamais de retrait automatique) | ✅ 0.14.2 (vrai Samba AD : 20 contrôles, délégation appliquée avec `samba-tool` ; vrai Chrome) |
+| 4 | 0.14.3 | Émission depuis la console (CSR ou PKCS#12), lien « Utiliser la PKI du DDI » dans l'accès réseau (RADIUS) | ⬜ |
+| 5 | 0.14.4 | Sauvegarde et restauration avec le reste de l'appliance (`ddibuntu-backup`, même destination et même chiffrement) | ⬜ |
+| 6 | 0.14.5 | Mises à jour de la version Community : détection (étiquettes Docker Hub), notes de version, sauvegarde + contrôle de santé + validation séparée + retour arrière, refus de rétrograder | ⬜ |
+| 7 | 0.14.6 | SCEP (équipements réseau ; MDM à confirmer — l'alias SCEP se crée dans l'interface d'administration d'EJBCA, pas en ligne de commande) | ⬜ |
+| 8 | 0.14.7 | Cluster : comportement de la PKI sur deux nœuds | ⬜ |
 
 ## Série 0.10.x — gestion complète DNS ↔ IPAM ↔ DHCP (validée le 2026-11-13)
 Dix évolutions, une version chacune, chacune testée (unitaires, e2e, batteries réelles) avant publication. Ordre retenu : les deux plus rentables d'abord, puis celles qui s'appuient dessus.

@@ -109,3 +109,10 @@ export const withConsoleUrl = (code: string, origin: string, pin = ''): string =
   if (/^[0-9A-Fa-f]{2}(:?[0-9A-Fa-f]{2}){31}$/.test(pin)) out = out.replace("$pin = ''", `$pin = '${pin.replace(/:/g, '').toUpperCase()}'`)
   return out
 }
+
+export const PS_NPS = `# Export de la configuration NPS (clients RADIUS et stratégies) — fichier à déposer dans l'onglet « Import NPS » de la page RADIUS. Lecture seule.
+# À exécuter en administrateur sur le serveur NPS. exportPSK=YES est exigé par netsh : les secrets partagés sont écrits EN CLAIR dans le fichier.
+$f = "$env:TEMP\\nps-export.xml"
+netsh nps export filename="$f" exportPSK=YES
+Write-Host "Écrit : $f"
+Write-Warning "Le fichier contient les secrets partagés en clair : supprimez-le dès l'import terminé (Remove-Item $f)."`

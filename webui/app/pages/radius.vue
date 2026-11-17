@@ -1,12 +1,12 @@
 <script setup lang="ts">
 // Accès réseau — service RADIUS de CE nœud (0.13.0, itération 1) : état du service, déploiement, arrêt, test d'un Access-Request,
 // clients (contrôleurs Wi-Fi, passerelles VPN, commutateurs) et, pour l'administrateur, l'annuaire Active Directory (0.13.1, composant RadiusDirectory)
-// les certificats EAP-TLS (0.13.2, composant RadiusPki) et les règles d'accès (0.13.3, composant RadiusRules). Le service est piloté par root (ddibuntu-radius) à partir d'une demande
+// les certificats EAP-TLS (0.13.2, composant RadiusPki) les règles d'accès (0.13.3, composant RadiusRules) et l'import d'un NPS (0.13.4, composant RadiusNps). Le service est piloté par root (ddibuntu-radius) à partir d'une demande
 // déposée par la console : après chaque action on attend la publication du résultat (même mécanique que le pare-feu).
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm(); const fmt = useFmt()
 const { isAdmin } = useRole()
-const tab = useHashTab('service', ['service', 'clients', 'directory', 'certs', 'rules'])
-const tabs = computed(() => [{ label: t('radius.tab_service'), value: 'service', icon: 'i-lucide-radio-tower' }, { label: t('radius.tab_clients'), value: 'clients', icon: 'i-lucide-router' }, ...(isAdmin.value ? [{ label: t('radius.tab_directory'), value: 'directory', icon: 'i-lucide-network' }, { label: t('radius.tab_certs'), value: 'certs', icon: 'i-lucide-shield-check' }, { label: t('radius.tab_rules'), value: 'rules', icon: 'i-lucide-list-checks' }] : [])])
+const tab = useHashTab('service', ['service', 'clients', 'directory', 'certs', 'rules', 'import'])
+const tabs = computed(() => [{ label: t('radius.tab_service'), value: 'service', icon: 'i-lucide-radio-tower' }, { label: t('radius.tab_clients'), value: 'clients', icon: 'i-lucide-router' }, ...(isAdmin.value ? [{ label: t('radius.tab_directory'), value: 'directory', icon: 'i-lucide-network' }, { label: t('radius.tab_certs'), value: 'certs', icon: 'i-lucide-shield-check' }, { label: t('radius.tab_rules'), value: 'rules', icon: 'i-lucide-list-checks' }, { label: t('radius.tab_import'), value: 'import', icon: 'i-lucide-file-input' }] : [])])
 
 const data = ref<any>(null), busy = ref<'' | 'apply' | 'stop' | 'test'>(''), err = ref(''), probe = ref<any>(null)
 const status = computed(() => data.value?.status ?? null)
@@ -108,6 +108,7 @@ await load()
     <RadiusDirectory v-else-if="tab === 'directory' && isAdmin" />
     <RadiusPki v-else-if="tab === 'certs' && isAdmin" :eap="status?.eap ?? null" />
     <RadiusRules v-else-if="tab === 'rules' && isAdmin" @changed="load" />
+    <RadiusNps v-else-if="tab === 'import' && isAdmin" @changed="load" />
 
     <div v-else class="flex flex-col gap-3">
       <p class="text-sm text-muted">{{ t('radius.cl_help') }}</p>

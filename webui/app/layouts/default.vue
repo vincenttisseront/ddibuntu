@@ -45,6 +45,7 @@ const navGroups = computed(() => {
     { label: t('nav.grp_security'), items: [
       { label: t('nav.filtering'), icon: 'i-lucide-shield-ban', to: '/filtering' },
       ...(['admin', 'operator'].includes(role.value) ? [{ label: t('nav.radius'), icon: 'i-lucide-radio-tower', to: '/radius' }] : []),
+      ...(role.value === 'admin' ? [{ label: t('nav.pki'), icon: 'i-lucide-badge-check', to: '/pki' }] : []),
     ] },
     { label: t('nav.grp_ops'), items: [
       { label: t('nav.import'), icon: 'i-lucide-file-input', to: '/import' },

@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!-- Export NPS SYNTHÉTIQUE (aucun secret réel) : structure telle que lue par l'outil d'audit AD-NPS sur de vrais exports
+     (clients sous Clients/Children, stratégies et profils = éléments à attribut name + Properties, lien msNPAction, « Proxy » = demande de connexion).
+     Utilisé par webui/tests/unit-radius-nps.test.ts et e2e-iter43. Domaine fictif : S-1-5-21-111-222-333. -->
+<Root xmlns:dt="urn:schemas-microsoft-com:datatypes">
+  <Children>
+    <Microsoft_Internet_Authentication_Service name="Microsoft_Internet_Authentication_Service">
+      <Properties><Version dt:dt="i4">2</Version></Properties>
+      <Children>
+        <Protocols name="Protocols">
+          <Children>
+            <Microsoft_Radius_Protocol name="Microsoft_Radius_Protocol">
+              <Children>
+                <Clients name="Clients">
+                  <Children>
+                    <AP_Etage_1 name="AP Étage 1">
+                      <Properties><IP_Address dt:dt="string">10.20.0.11</IP_Address><Shared_Secret dt:dt="string">Zk3mPq8vTn5wRb7yHc2LdX9a</Shared_Secret><NAS_Manufacturer dt:dt="i4">0</NAS_Manufacturer></Properties>
+                    </AP_Etage_1>
+                    <wlc-1 name="wlc-1">
+                      <Properties><IP_Address dt:dt="string">10.20.0.2</IP_Address><Shared_Secret dt:dt="string">Hq7nVd4sKf2jXm9tBw6pLz3R</Shared_Secret></Properties>
+                    </wlc-1>
+                    <VPN-FW name="VPN-FW">
+                      <Properties><IP_Address dt:dt="string">10.30.0.1</IP_Address><Shared_Secret dt:dt="string">partage</Shared_Secret></Properties>
+                    </VPN-FW>
+                    <Switch_Core name="Switch Core">
+                      <Properties><IP_Address dt:dt="string">10.10.0.0/255.255.255.0</IP_Address></Properties>
+                    </Switch_Core>
+                    <ap9 name="ap9">
+                      <Properties><IP_Address dt:dt="string">ap9.corp.local</IP_Address><Shared_Secret dt:dt="string">Gh5tYu8iOp3aSd6fJk1lZx4C</Shared_Secret></Properties>
+                    </ap9>
+                    <Too_Wide name="Too Wide">
+                      <Properties><IP_Address dt:dt="string">10.0.0.0/8</IP_Address><Shared_Secret dt:dt="string">Mn2bVc5xZl8kJh3gFd6sAq9P</Shared_Secret></Properties>
+                    </Too_Wide>
+                    <wlc-1-bis name="wlc-1-bis">
+                      <Properties><IP_Address dt:dt="string">10.20.0.2</IP_Address><Shared_Secret dt:dt="string">Rt4yUi7oPa1sDf5gHj8kLz2X</Shared_Secret></Properties>
+                    </wlc-1-bis>
+                    <ddi-selftest name="ddi-selftest">
+                      <Properties><IP_Address dt:dt="string">10.50.0.5</IP_Address><Shared_Secret dt:dt="string">Qw6eRt9yUi3oPa7sDf2gHj5K</Shared_Secret></Properties>
+                    </ddi-selftest>
+                  </Children>
+                </Clients>
+                <RADIUS_Server_Groups name="RADIUS_Server_Groups">
+                  <Children>
+                    <Groupe_distant name="Groupe distant">
+                      <Properties><Shared_Secret dt:dt="string">NeDoitJamaisEtreLuCommeClient00</Shared_Secret><IP_Address dt:dt="string">10.99.0.1</IP_Address></Properties>
+                    </Groupe_distant>
+                  </Children>
+                </RADIUS_Server_Groups>
+              </Children>
+            </Microsoft_Radius_Protocol>
+          </Children>
+        </Protocols>
+        <RadiusProfiles name="RadiusProfiles">
+          <Children>
+            <Admins_reseau name="Admins réseau"><Properties><msNPAllowDialin dt:dt="boolean">1</msNPAllowDialin><msNPAuthenticationType2 dt:dt="i4">5</msNPAuthenticationType2><msEAPConfiguration dt:dt="string">0D00000014000000AABBCCDDEEFF00112233445566778899AABBCCDD</msEAPConfiguration><msRADIUSFramedProtocol dt:dt="i4">1</msRADIUSFramedProtocol><msRADIUSServiceType dt:dt="i4">2</msRADIUSServiceType></Properties></Admins_reseau>
+            <Wi-Fi_utilisateurs name="Wi-Fi utilisateurs"><Properties><msNPAllowDialin dt:dt="boolean">1</msNPAllowDialin><msNPAuthenticationType2 dt:dt="i4">5</msNPAuthenticationType2><msEAPConfiguration dt:dt="string">190000000200000000</msEAPConfiguration></Properties></Wi-Fi_utilisateurs>
+            <Tous_les_utilisateurs name="Tous les utilisateurs"><Properties><msNPAllowDialin dt:dt="boolean">1</msNPAllowDialin><msEAPConfiguration dt:dt="string">0D00000000000000</msEAPConfiguration></Properties></Tous_les_utilisateurs>
+            <Refus_invites name="Refus invités"><Properties><msNPAllowDialin dt:dt="boolean">0</msNPAllowDialin><msEAPConfiguration dt:dt="string">0D00000000000000</msEAPConfiguration></Properties></Refus_invites>
+            <VPN_legacy name="VPN legacy"><Properties><msNPAllowDialin dt:dt="boolean">1</msNPAllowDialin><msNPAuthenticationType2 dt:dt="i4">4</msNPAuthenticationType2></Properties></VPN_legacy>
+            <Heures_bureau name="Heures bureau"><Properties><msNPAllowDialin dt:dt="boolean">1</msNPAllowDialin><msEAPConfiguration dt:dt="string">0D00000000000000</msEAPConfiguration></Properties></Heures_bureau>
+            <Ancienne name="Ancienne"><Properties><msNPAllowDialin dt:dt="boolean">1</msNPAllowDialin><msEAPConfiguration dt:dt="string">0D00000000000000</msEAPConfiguration></Properties></Ancienne>
+            <VLAN_invites name="VLAN invités"><Properties><msNPAllowDialin dt:dt="boolean">1</msNPAllowDialin><msEAPConfiguration dt:dt="string">0D00000000000000</msEAPConfiguration><msRADIUSTunnelPvtGroupID dt:dt="string">30</msRADIUSTunnelPvtGroupID></Properties></VLAN_invites>
+          </Children>
+        </RadiusProfiles>
+        <NetworkPolicy name="NetworkPolicy">
+          <Children>
+            <Admins_reseau name="Admins réseau"><Properties><Policy_Enabled dt:dt="boolean">1</Policy_Enabled><msNPSequence dt:dt="i4">1</msNPSequence><msNPAction dt:dt="string">Admins réseau</msNPAction><msNPConstraint dt:dt="string">NTGROUPS("S-1-5-21-111-222-333-1106")</msNPConstraint><msNPConstraint dt:dt="string">MATCH("Client-Friendly-Name=^wlc-1$")</msNPConstraint></Properties></Admins_reseau>
+            <Wi-Fi_utilisateurs name="Wi-Fi utilisateurs"><Properties><Policy_Enabled dt:dt="boolean">1</Policy_Enabled><msNPSequence dt:dt="i4">2</msNPSequence><msNPAction dt:dt="string">Wi-Fi utilisateurs</msNPAction><msNPConstraint dt:dt="string">MATCH("NAS-Port-Type=^19$")</msNPConstraint><msNPConstraint dt:dt="string">USERGROUPS("S-1-5-21-111-222-333-1107;S-1-5-21-111-222-333-1108")</msNPConstraint><msNPConstraint dt:dt="string">MATCH("Called-Station-Id=^.*:CorpWiFi$")</msNPConstraint></Properties></Wi-Fi_utilisateurs>
+            <Tous_les_utilisateurs name="Tous les utilisateurs"><Properties><Policy_Enabled dt:dt="boolean">1</Policy_Enabled><msNPSequence dt:dt="i4">3</msNPSequence><msNPAction dt:dt="string">Tous les utilisateurs</msNPAction><msNPConstraint dt:dt="string">NTGROUPS("S-1-5-21-111-222-333-513")</msNPConstraint></Properties></Tous_les_utilisateurs>
+            <Refus_invites name="Refus invités"><Properties><Policy_Enabled dt:dt="boolean">1</Policy_Enabled><msNPSequence dt:dt="i4">4</msNPSequence><msNPAction dt:dt="string">Refus invités</msNPAction><msNPConstraint dt:dt="string">NTGROUPS("S-1-5-21-111-222-333-1109")</msNPConstraint></Properties></Refus_invites>
+            <VPN_legacy name="VPN legacy"><Properties><Policy_Enabled dt:dt="boolean">1</Policy_Enabled><msNPSequence dt:dt="i4">5</msNPSequence><msNPAction dt:dt="string">VPN legacy</msNPAction><msNPConstraint dt:dt="string">NTGROUPS("S-1-5-21-111-222-333-1106")</msNPConstraint></Properties></VPN_legacy>
+            <Heures_bureau name="Heures bureau"><Properties><Policy_Enabled dt:dt="boolean">1</Policy_Enabled><msNPSequence dt:dt="i4">6</msNPSequence><msNPAction dt:dt="string">Heures bureau</msNPAction><msNPConstraint dt:dt="string">NTGROUPS("S-1-5-21-111-222-333-1106")</msNPConstraint><msNPConstraint dt:dt="string">TIMEOFDAY("Lundi 08:00-18:00")</msNPConstraint></Properties></Heures_bureau>
+            <Ancienne name="Ancienne"><Properties><Policy_Enabled dt:dt="boolean">0</Policy_Enabled><msNPSequence dt:dt="i4">7</msNPSequence><msNPAction dt:dt="string">Ancienne</msNPAction><msNPConstraint dt:dt="string">NTGROUPS("S-1-5-21-111-222-333-1106")</msNPConstraint></Properties></Ancienne>
+            <VLAN_invites name="VLAN invités"><Properties><Policy_Enabled dt:dt="boolean">1</Policy_Enabled><msNPSequence dt:dt="i4">8</msNPSequence><msNPAction dt:dt="string">VLAN invités</msNPAction><msNPConstraint dt:dt="string">NTGROUPS("S-1-5-21-111-222-333-1106")</msNPConstraint></Properties></VLAN_invites>
+          </Children>
+        </NetworkPolicy>
+        <Proxy_Profiles name="Proxy_Profiles">
+          <Children>
+            <Use_Windows_authentication_for_all_users name="Use Windows authentication for all users"><Properties><msAuthProviderType dt:dt="i4">1</msAuthProviderType></Properties></Use_Windows_authentication_for_all_users>
+          </Children>
+        </Proxy_Profiles>
+        <Proxy_Policies name="Proxy_Policies">
+          <Children>
+            <Use_Windows_authentication_for_all_users name="Use Windows authentication for all users"><Properties><Policy_Enabled dt:dt="boolean">1</Policy_Enabled><msNPSequence dt:dt="i4">1</msNPSequence><msNPAction dt:dt="string">Use Windows authentication for all users</msNPAction><msNPConstraint dt:dt="string">MATCH("User-Name=.*")</msNPConstraint></Properties></Use_Windows_authentication_for_all_users>
+          </Children>
+        </Proxy_Policies>
+      </Children>
+    </Microsoft_Internet_Authentication_Service>
+  </Children>
+</Root>

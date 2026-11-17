@@ -140,3 +140,28 @@ export async function findGroups(s: DirSettings, bindPassword: string, factory: 
     return { groups, truncated: r.searchEntries.length > MAX_FOUND_GROUPS }
   })
 }
+
+// ---- Résolution de groupes par SID (0.13.4, import d'un NPS : les stratégies désignent leurs groupes par SID) ----
+const SID_RE = /^S-1-\d{1,3}(?:-\d{1,10}){1,15}$/
+/** Base de recherche « <SID=S-1-5-21-…> » (DN étendu d'Active Directory et de Samba) : le SID est écrit en clair, sans filtre binaire — essayé contre un vrai Samba AD,
+ *  où un filtre `objectSid=\01\05…` passé par ldapts ne trouve rien (la valeur est lue comme du texte). Le SID est validé : rien d'autre ne peut entrer dans la base. */
+export const sidBase = (sid: string): string | null => (SID_RE.test(sid) ? `<SID=${sid}>` : null)
+export type SidLookup = { found: false } | { found: true; dn: string; name: string; usable: boolean }
+/** Un SID qu'aucun objet ne porte (ou d'un autre domaine, ou mal formé) : réponse « introuvable » normale, pas une panne de l'annuaire. */
+const notThere = (e: any) => /NoSuchObject|InvalidDNSyntax|Referral|0x20\b|0x22\b/i.test(`${e?.name ?? ''} ${e?.code ?? ''} ${e?.message ?? ''}`)
+/** Cherche chaque SID parmi les groupes de l'annuaire (une seule liaison de service, lecture seule). Un SID introuvable (groupe supprimé, autre domaine) donne { found: false }. */
+export async function resolveGroupSids(s: DirSettings, bindPassword: string, factory: Factory, sids: string[]): Promise<Session<Map<string, SidLookup>>> {
+  return withService(s, bindPassword, factory, async (c) => {
+    const out = new Map<string, SidLookup>()
+    for (const sid of sids) {
+      const base = sidBase(sid)
+      if (!base) { out.set(sid, { found: false }); continue }
+      try {
+        const r = await c.search(base, { scope: 'base', filter: '(objectCategory=group)', attributes: ['dn', 'cn'], sizeLimit: 2 })
+        const e = r.searchEntries.length === 1 ? r.searchEntries[0] : null
+        out.set(sid, e ? { found: true, dn: String(e.dn), name: first(e.cn) || String(e.dn).split(',')[0]!.replace(/^cn=/i, ''), usable: GROUP_DN_RE.test(String(e.dn)) } : { found: false })
+      } catch (e) { if (!notThere(e)) throw e; out.set(sid, { found: false }) }
+    }
+    return out
+  })
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=DDI-Buntu : maintenance de la PKI (état publié, renouvellement des CRL)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddibuntu-pki maintain
+# une demande en cours peut garder le verrou (premier tirage de l'image) : la commande attend jusqu'à 10 minutes
+TimeoutStartSec=900
+Nice=10
+PrivateTmp=yes
+ProtectHome=yes

@@ -537,7 +537,23 @@ create table radius_rules (
 );
 create index radius_rules_rank on radius_rules (rank, id);
 `
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }, { version: 19, sql: SCHEMA_19 }, { version: 20, sql: SCHEMA_20 }, { version: 21, sql: SCHEMA_21 }, { version: 22, sql: SCHEMA_22 }, { version: 23, sql: SCHEMA_23 }]
+// 0.14.2 — publication des autorités de la PKI dans l'Active Directory : une ligne par autorité (le certificat à publier, ce qu'on a relu dans l'AD, l'état).
+// « published_sha256 » non nul = le DDI a déjà écrit à cet endroit : il peut le remplacer ; sinon un objet existant qui n'est pas le sien est un conflit.
+const SCHEMA_24 = String.raw`
+create table pki_ad_publication (
+  ca_name text primary key check (ca_name ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$'),
+  container text not null check (container in ('roots','aia')),
+  dn text not null default '',
+  sha256 text not null check (sha256 ~ '^[0-9a-f]{64}$'),
+  published_sha256 text check (published_sha256 ~ '^[0-9a-f]{64}$'),
+  state text not null check (state in ('pending','published','failed','conflict','drift','withdrawn')),
+  reason text,
+  attempts int not null default 0,
+  published_at timestamptz, checked_at timestamptz, next_try_at timestamptz,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+`
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }, { version: 19, sql: SCHEMA_19 }, { version: 20, sql: SCHEMA_20 }, { version: 21, sql: SCHEMA_21 }, { version: 22, sql: SCHEMA_22 }, { version: 23, sql: SCHEMA_23 }, { version: 24, sql: SCHEMA_24 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

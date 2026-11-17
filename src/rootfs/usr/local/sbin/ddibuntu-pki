@@ -1,0 +1,614 @@
+#!/bin/bash
+# ddibuntu-pki — service PKI (EJBCA Community en conteneur Podman) de l'appliance, piloté par la console web (sans privilège).
+# Frontière de privilèges : la console dépose .pki-request (une demande JSON courte, jamais de secret) et, pour les certificats et les CRL
+# (données publiques), des fichiers dans pki-in/ ; ICI, root revalide tout champ par champ (image, nom public, réseaux, noms d'autorités,
+# éléments de nom distinctif, certificats, CRL), crée la base et les secrets, écrit lui-même l'unité Quadlet à partir d'un modèle fixe,
+# démarre le conteneur, n'ouvre le pare-feu qu'aux réseaux déclarés, pilote la CLI d'EJBCA (podman exec) et publie l'état.
+# Aucune chaîne de la console n'est jamais reprise dans une configuration ni interprétée par un shell.
+# Secrets : /etc/ddibuntu/pki/ejbca.env (root, 0600), générés UNE FOIS. PASSWORD_ENCRYPTION_KEY ne doit jamais changer après la première
+# installation (les clés des autorités en dépendent) : une réinstallation conserve donc toujours le fichier existant, et une installation
+# est refusée si une base « ejbca » existe déjà sans ses secrets (ses autorités seraient illisibles).
+# 0.14.0 : installation, démarrage / arrêt, état, désinstallation. 0.14.1 : autorités (racine, émettrice, import, CRL), remise à zéro.
+# Mise à jour de l'image : 0.14.5.
+set -euo pipefail
+umask 077
+
+DDI_LIBDIR="${DDI_LIBDIR:-/usr/local/lib/ddibuntu}"
+# shellcheck source=/dev/null
+. "$DDI_LIBDIR/common.sh"
+
+GEN="${DDI_GENERATED_DIR:-/var/lib/ddibuntu/generated}"
+RUN="${DDI_RUN_DIR:-/run/ddibuntu}"
+PETC="${DDI_PKI_ETC:-/etc/ddibuntu/pki}"                      # secrets et instance.json (root)
+PDATA="${DDI_PKI_DATA:-/var/lib/ddibuntu/pki}"                # volume du conteneur
+QDIR="${DDI_PKI_QUADLET_DIR:-/etc/containers/systemd}"        # unités Quadlet
+PODMAN="${DDI_PKI_PODMAN:-podman}"
+SYSCTL="${DDI_PKI_SYSTEMCTL:-systemctl}"
+CURL="${DDI_PKI_CURL:-curl}"
+FW_BIN="${DDI_FW_BIN:-/usr/local/sbin/ddibuntu-fw}"
+HELPER="${DDI_PKI_HELPER:-$DDI_LIBDIR/pki-helper.py}"
+HEALTH_URL="${DDI_PKI_HEALTH_URL:-http://127.0.0.1:8080/ejbca/publicweb/healthcheck/ejbcahealth}"
+UNIT_NAME="ddibuntu-ejbca"
+SERVICE="$UNIT_NAME.service"
+QUADLET="$QDIR/$UNIT_NAME.container"
+ENVF="$PETC/ejbca.env"
+INST="$PETC/instance.json"
+IMAGE_REPO="docker.io/keyfactor/ejbca-ce"
+CONT_UID="${DDI_PKI_UID:-10001}"                              # utilisateur du processus dans l'image officielle
+PUBLIC_PORT=8080
+START_GRACE="${DDI_PKI_START_GRACE:-900}"                     # secondes pendant lesquelles un conteneur qui ne répond pas encore est « en démarrage »
+CAD="$PDATA/ca"                                               # métadonnées et copies des demandes de certificat (root)
+WORK_HOST="$PDATA/persistent/work"                            # dossier d'échange avec la CLI (vu du conteneur : /mnt/persistent/work)
+WORK_CONT=/mnt/persistent/work
+EJBCA_SH=/opt/keyfactor/bin/ejbca.sh
+IN_DIR="$GEN/pki-in"                                          # dépôts de la console (certificats et CRL publics)
+CRL_PERIOD_MS=604800000                                       # 7 jours de validité ; renouvelées bien avant (EJBCA n'a aucun service de renouvellement)
+CRL_OVERLAP_MS=86400000
+CRL_RENEW_AFTER="${DDI_PKI_CRL_RENEW_AFTER:-43200}"            # secondes : une CRL plus vieille est renouvelée par « maintain »
+# commande psql de l'utilisateur postgres (surchargeable pour les tests) : la base visée est ajoutée à chaque appel
+read -r -a PSQL <<< "${DDI_PKI_PSQL:-runuser -u postgres -- psql -X -q -v ON_ERROR_STOP=1}"
+
+usage() {
+  cat <<'USAGE'
+Usage : ddibuntu-pki <commande>
+  apply IMAGE NOM [RÉSEAUX]  installe (ou met à jour les réglages de) l'instance : base, secrets, Quadlet, démarrage, pare-feu
+  start | stop | restart     pilote le conteneur
+  status                     publie l'état (pki-status.json) et celui des autorités (pki-cas.json)
+  uninstall                  retire le conteneur et l'unité ; la base, le volume et les secrets restent
+  reset                      efface TOUT (base, volume, secrets) ; refusé s'il existe une autorité
+  ca-root NOM DN ALG JOURS               crée une racine auto-signée (laboratoire)
+  ca-issuing NOM DN ALG JOURS [SIGNEUR]  crée une émettrice : « external » (défaut ; certificat de la racine déposé) ou une racine du DDI
+  ca-import NOM              importe le certificat signé déposé pour une émettrice en attente
+  ca-crl NOM                 renouvelle la CRL d'une autorité
+  ca-rootcrl NOM             importe la CRL déposée d'une racine externe
+  maintain                   publie l'état et renouvelle les CRL trop anciennes (minuteur)
+  request                    traite la demande déposée par la console (.pki-request)
+  render IMAGE NOM           affiche l'unité Quadlet qui serait écrite (sans rien installer)
+  check IMAGE NOM [RÉSEAUX]  valide les paramètres (sans rien installer)
+USAGE
+}
+
+log() { ddi_log "pki: $*"; printf 'ddibuntu-pki: %s\n' "$*" >&2; }
+
+# ---- Publication (sans secret, lisible par la console) ----
+publish() {   # $1 = nom de fichier, $2 = JSON
+  install -d -m 0755 "$RUN" 2>/dev/null || return 0
+  local t; t="$(mktemp "$RUN/.pki.XXXXXX")" || return 0
+  printf '%s\n' "$2" > "$t"; chmod 0644 "$t"; mv -f "$t" "$RUN/$1"
+}
+publish_result() {   # $1 = action, $2 = ok (true|false), $3 = message
+  publish pki-result.json "$(A="$1" O="$2" M="$3" python3 -c 'import json,os,time; print(json.dumps({"at": int(time.time()), "action": os.environ["A"], "ok": os.environ["O"] == "true", "message": os.environ["M"][:300]}, ensure_ascii=False))')"
+}
+
+# ---- Validation (aucune entrée n'est supposée sûre) ----
+valid_image() { [[ "$1" =~ ^docker\.io/keyfactor/ejbca-ce:[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{1,3}$ ]]; }
+valid_pki_host() {   # nom public : au moins deux étiquettes, minuscules, 253 caractères au plus, dernière étiquette non numérique (jamais une adresse IP)
+  [[ "${#1}" -le 253 && "$1" == *.* && ! "$1" =~ \.[0-9]+$ ]] && ddi_valid_domain "$1"
+}
+valid_ca_name() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$ && "$1" != ManagementCA && "$1" != ExtRoot-* ]]; }
+valid_ext_name() { [[ "$1" =~ ^ExtRoot-[0-9a-f]{8}$ ]]; }
+# réseaux (un par ligne ou séparés par des virgules) → liste normalisée séparée par des virgules ; 64 au plus
+norm_nets() {
+  local n norm out="" c=0
+  while IFS= read -r n || [ -n "$n" ]; do
+    norm="$(ddi_norm_net "$n")" || { log "réseau invalide : $n"; return 1; }
+    c=$((c + 1)); [[ "$c" -le 64 ]] || { log "trop de réseaux (64 au plus)"; return 1; }
+    out="${out:+$out,}$norm"
+  done < <(ddi_split_list "$1")
+  printf '%s' "$out"
+}
+tag_of() { printf '%s' "${1##*:}"; }   # docker.io/keyfactor/ejbca-ce:9.6.3 → 9.6.3
+gen_secret() { python3 -c 'import secrets,string; print("".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(40)))'; }
+
+have_podman() { command -v "$PODMAN" >/dev/null 2>&1; }
+svc_active() { "$SYSCTL" is-active --quiet "$SERVICE" >/dev/null 2>&1; }
+instance_get() {   # $1 = clé de instance.json ; vide si absent
+  [[ -f "$INST" && ! -L "$INST" ]] || return 0
+  INST_PATH="$INST" K="$1" python3 -c 'import json,os
+try: v = json.load(open(os.environ["INST_PATH"]))[os.environ["K"]]
+except Exception: v = ""
+print(v if isinstance(v, (str, int)) else "")' 2>/dev/null || true
+}
+own() { if [[ "$(id -u)" -eq 0 ]]; then chown "$CONT_UID:$CONT_UID" "$@"; fi; }   # fichiers que le conteneur doit pouvoir lire / écrire
+
+# ---- Unité Quadlet : modèle fixe, seuls l'image (épinglée par empreinte) et le chemin du volume varient ----
+render_quadlet() {   # $1 = référence d'image (étiquette ou @sha256:…)
+  cat <<EOF
+# Écrit par ddibuntu-pki — ne pas modifier : cette unité est régénérée à chaque installation.
+[Unit]
+Description=DDI-Buntu : PKI (EJBCA Community)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Container]
+ContainerName=$UNIT_NAME
+Image=$1
+Network=host
+EnvironmentFile=$ENVF
+Volume=$PDATA/persistent:/mnt/persistent
+NoNewPrivileges=true
+# arrêt propre de WildFly (la base ne doit pas être coupée en pleine écriture) : laisser du temps avant le SIGKILL
+PodmanArgs=--stop-timeout=90
+
+[Service]
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=900
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# ---- Fichier de secrets : créé une seule fois, jamais régénéré ----
+write_env() {   # $1 = nom public
+  local host="$1"
+  if [[ -f "$ENVF" && ! -L "$ENVF" ]]; then
+    # le nom public ne change pas après l'installation ; les secrets restent ceux du premier démarrage
+    return 0
+  fi
+  [[ ! -e "$ENVF" && ! -L "$ENVF" ]] || { log "$ENVF n'est pas un fichier ordinaire"; return 1; }
+  install -d -m 0750 "$PETC"
+  local t; t="$(mktemp "$PETC/.env.XXXXXX")"
+  {
+    printf 'PASSWORD_ENCRYPTION_KEY=%s\n' "$(gen_secret)"
+    printf 'CA_KEYSTOREPASS=%s\n' "$(gen_secret)"
+    printf 'EJBCA_CLI_DEFAULTPASSWORD=%s\n' "$(gen_secret)"
+    printf 'DATABASE_USER=ejbca\n'
+    printf 'DATABASE_PASSWORD=%s\n' "$(gen_secret)"
+    printf 'DATABASE_JDBC_URL=jdbc:postgresql://127.0.0.1:5432/ejbca\n'
+    printf 'HTTPSERVER_HOSTNAME=%s\n' "$host"
+    printf 'TLS_SETUP_ENABLED=true\n'
+  } > "$t"
+  chmod 0600 "$t"; mv -f "$t" "$ENVF"
+}
+env_get() { sed -n "s/^$1=//p" "$ENVF" | head -n1; }
+
+# ---- Base : rôle et base « ejbca » (PostgreSQL du DDI) ----
+sql() { local db="$1"; shift; "${PSQL[@]}" -d "$db" -At -F $'\t' "$@"; }   # le SQL arrive sur l'entrée standard
+ensure_db() {
+  local pw; pw="$(env_get DATABASE_PASSWORD)"
+  [[ "$pw" =~ ^[A-Za-z0-9]{20,64}$ ]] || { log "mot de passe de base illisible dans $ENVF"; return 1; }
+  # le mot de passe passe par l'environnement puis par une variable psql (\getenv, quotée par :'pw') : jamais par la ligne de commande (visible dans ps)
+  # ni par concaténation ; le rôle est resynchronisé avec le fichier à chaque appel
+  PKI_DB_PW="$pw" "${PSQL[@]}" -d postgres <<'SQL' >/dev/null || { log "création de la base « ejbca » impossible (PostgreSQL arrêté ?)"; return 1; }
+\getenv pw PKI_DB_PW
+select format('create role ejbca login password %L', :'pw') where not exists (select 1 from pg_roles where rolname = 'ejbca') \gexec
+select format('alter role ejbca login password %L', :'pw') \gexec
+select 'create database ejbca owner ejbca encoding ''UTF8'' template template0' where not exists (select 1 from pg_database where datname = 'ejbca') \gexec
+SQL
+}
+# état de la base « ejbca » : absent | empty (créée, sans table) | data (EJBCA y a écrit) | error (PostgreSQL injoignable)
+db_state() {
+  local r
+  r="$(sql postgres <<'SQL' 2>/dev/null
+select 'exists' from pg_database where datname = 'ejbca'
+SQL
+)" || { printf error; return 0; }
+  [[ "$r" = exists ]] || { printf absent; return 0; }
+  r="$(sql ejbca <<'SQL' 2>/dev/null
+select count(*) from information_schema.tables where table_schema = 'public'
+SQL
+)" || { printf error; return 0; }
+  [[ "$r" =~ ^[0-9]+$ ]] || { printf error; return 0; }
+  if [[ "$r" -gt 0 ]]; then printf data; else printf empty; fi
+}
+# nombre d'autorités qui portent une clé (hors ManagementCA, hors racines externes importées) ; vide si illisible
+count_user_cas() {
+  sql ejbca <<'SQL' 2>/dev/null | head -n1
+select count(*) from cadata where name <> 'ManagementCA' and status <> 6
+SQL
+}
+ca_exists() {   # $1 = nom d'autorité
+  [[ "$(sql ejbca -v n="$1" <<'SQL' 2>/dev/null | head -n1
+select 1 from cadata where name = :'n'
+SQL
+)" = 1 ]]
+}
+ca_field() {    # $1 = colonne (subjectdn | caid | status), $2 = nom
+  case "$1" in subjectdn|caid|status) ;; *) return 1 ;; esac
+  sql ejbca -v n="$2" <<SQL 2>/dev/null | head -n1
+select $1 from cadata where name = :'n'
+SQL
+}
+
+# ---- Pare-feu : le port public (CRL, SCEP, OCSP) n'est ouvert qu'aux réseaux déclarés ----
+fw_open() {   # $1 = réseaux séparés par des virgules ; vide = referme
+  if [[ ! -x "$FW_BIN" ]]; then printf 'pare-feu non mis à jour (ddibuntu-fw absent)'; return 0; fi
+  if "$FW_BIN" set PKI_NETS "$1" >/dev/null 2>&1 && "$FW_BIN" apply >/dev/null 2>&1; then return 0; fi
+  printf 'AVERTISSEMENT : pare-feu non mis à jour, les clients ne pourront pas joindre la PKI'
+}
+
+health_body() { "$CURL" -fsS --max-time 5 "$HEALTH_URL" 2>/dev/null | head -c 64 | tr -d '\r\n' || true; }
+
+# ---- État des autorités (données publiques, lues dans la base ; ne demande pas que le conteneur tourne) ----
+publish_cas() {
+  local host t1 t2; host="$(instance_get hostname)"; [[ -n "$host" ]] || host="$(env_get HTTPSERVER_HOSTNAME 2>/dev/null || true)"
+  [[ -n "$host" ]] || return 0
+  [[ "$(db_state)" = data ]] || { rm -rf "$RUN/pki-ca" "$RUN/pki-cas.json" 2>/dev/null || true; return 0; }
+  t1="$(mktemp)"; t2="$(mktemp)"
+  sql ejbca > "$t1" 2>/dev/null <<'SQL' || { rm -f "$t1" "$t2"; return 0; }
+select distinct on (c.name) c.name, c.status, c.subjectdn, c.caid, translate(coalesce(b.base64cert, d.base64cert, ''), E'\r\n', '')
+from cadata c left join certificatedata d on d.subjectdn = c.subjectdn and d.type in (2, 8) and d.status = 20
+left join base64certdata b on b.fingerprint = d.fingerprint
+order by c.name, d.expiredate desc nulls last
+SQL
+  sql ejbca > "$t2" 2>/dev/null <<'SQL' || true
+select distinct on (issuerdn) issuerdn, crlnumber, thisupdate, nextupdate, translate(base64crl, E'\r\n', '') from crldata where deltacrlindicator = -1 order by issuerdn, crlnumber desc
+SQL
+  install -d -m 0755 "$RUN" 2>/dev/null || true
+  python3 "$HELPER" publish-cas "$t1" "$t2" "$CAD" "$RUN" "$host" "$PUBLIC_PORT" 2>/dev/null || true
+  rm -f "$t1" "$t2"
+}
+
+# ---- État (sans secret) ----
+cmd_status() {
+  local installed=false active=false health="" state=absent host tag digest nets since="" now age
+  local pm=false; have_podman && pm=true
+  local data=false dhost="" ncas="" reset_ok=false dbs secrets=false
+  [[ -f "$INST" && ! -L "$INST" ]] && installed=true
+  host="$(instance_get hostname)"; tag="$(instance_get tag)"; digest="$(instance_get digest)"; nets="$(instance_get nets)"
+  if [[ "$installed" = true ]]; then
+    if svc_active; then
+      active=true; health="$(health_body)"
+      if [[ "$health" = ALLOK ]]; then state=healthy
+      else
+        since="$("$SYSCTL" show -p ActiveEnterTimestamp --value "$SERVICE" 2>/dev/null || true)"
+        now="$(date +%s)"; age=0
+        if [[ -n "$since" ]]; then age=$(( now - $(date -d "$since" +%s 2>/dev/null || echo "$now") )); fi
+        if [[ "$age" -le "$START_GRACE" && -z "$health" ]]; then state=starting; else state=unhealthy; fi
+      fi
+    else state=stopped; fi
+  fi
+  # données conservées (après une désinstallation) : le nom public qu'elles imposent, et si la remise à zéro est permise
+  dbs="$(db_state)"
+  if [[ -f "$ENVF" && ! -L "$ENVF" ]]; then data=true; secrets=true; dhost="$(env_get HTTPSERVER_HOSTNAME)"; fi
+  [[ "$dbs" = data ]] && data=true
+  if [[ "$dbs" = data ]]; then ncas="$(count_user_cas || true)"; [[ "$ncas" =~ ^[0-9]+$ ]] || ncas=""; fi
+  if [[ "$data" = true && ( "$dbs" != data || "$ncas" = 0 ) && "$dbs" != error ]]; then reset_ok=true; fi
+  publish pki-status.json "$(PM="$pm" INS="$installed" ACT="$active" ST="$state" H="$host" T="$tag" D="$digest" N="$nets" HB="$health" PORT="$PUBLIC_PORT" DATA="$data" SEC="$secrets" DH="$dhost" NC="$ncas" RO="$reset_ok" python3 -c '
+import json, os, time
+e = os.environ
+print(json.dumps({"at": int(time.time()), "podman": e["PM"] == "true", "installed": e["INS"] == "true", "active": e["ACT"] == "true", "state": e["ST"],
+  "hostname": e["H"], "version": e["T"], "digest": e["D"], "nets": [x for x in e["N"].split(",") if x], "health": e["HB"][:64], "port": int(e["PORT"]),
+  "dataPresent": e["DATA"] == "true", "secretsPresent": e["SEC"] == "true", "dataHostname": e["DH"], "casCount": int(e["NC"]) if e["NC"].isdigit() else None, "resetAllowed": e["RO"] == "true"}, ensure_ascii=False))')"
+  publish_cas
+}
+
+write_instance() {   # $1 nom, $2 étiquette, $3 empreinte, $4 réseaux
+  local t; t="$(mktemp "$PETC/.inst.XXXXXX")"
+  H="$1" T="$2" D="$3" N="$4" python3 -c '
+import json, os, time
+e = os.environ
+print(json.dumps({"hostname": e["H"], "tag": e["T"], "digest": e["D"], "nets": e["N"], "installedAt": int(time.time())}))' > "$t"
+  chmod 0600 "$t"; mv -f "$t" "$INST"
+}
+
+cmd_apply() {   # $1 = image, $2 = nom public, $3 = réseaux
+  local image="${1:-}" host="${2:-}" nets="" tag digest="" ref prev_host prev_tag warn="" dbs
+  valid_image "$image" || { log "image refusée : seule docker.io/keyfactor/ejbca-ce:X.Y.Z est admise"; return 1; }
+  valid_pki_host "$host" || { log "nom public invalide : $host"; return 1; }
+  nets="$(norm_nets "${3:-}")" || return 1
+  have_podman || { log "podman n'est pas installé (paquet fourni par l'ISO : installation ou mode Mise à jour)"; return 1; }
+  tag="$(tag_of "$image")"
+  # une instance existante garde son nom (gravé dans les certificats) et son image (la mise à jour a son propre parcours, 0.14.5)
+  prev_host="$(instance_get hostname)"; prev_tag="$(instance_get tag)"
+  if [[ -n "$prev_host" && "$prev_host" != "$host" ]]; then log "le nom public ($prev_host) ne peut plus changer après l'installation"; return 1; fi
+  if [[ -n "$prev_tag" && "$prev_tag" != "$tag" ]]; then log "la version installée ($prev_tag) ne change que par la mise à jour de la PKI"; return 1; fi
+  install -d -m 0750 "$PETC"; install -d -m 0755 "$QDIR"
+  install -d -m 0750 "$PDATA"; install -d -m 0700 -o "$CONT_UID" -g "$CONT_UID" "$PDATA/persistent" 2>/dev/null || install -d -m 0700 "$PDATA/persistent"
+  if [[ -f "$ENVF" && ! -L "$ENVF" && "$(env_get HTTPSERVER_HOSTNAME)" != "$host" ]]; then
+    log "une installation précédente existe pour le nom public « $(env_get HTTPSERVER_HOSTNAME) » : il ne peut plus changer (remise à zéro possible tant qu'aucune autorité n'existe)"; return 1
+  fi
+  if [[ ! -e "$ENVF" && ! -L "$ENVF" ]]; then
+    # des secrets neufs sur une ancienne base rendraient ses autorités illisibles (jetons de clés chiffrés avec les anciens secrets)
+    dbs="$(db_state)"
+    case "$dbs" in
+      data) log "une base « ejbca » existe déjà mais ses secrets ($ENVF) sont absents : restaurez-les, ou faites une remise à zéro (possible seulement sans autorité)"; return 1 ;;
+      error) log "PostgreSQL est injoignable : impossible de vérifier la base « ejbca »"; return 1 ;;
+      *) ;;
+    esac
+  fi
+  write_env "$host" || return 1
+  ensure_db || return 1
+  if ! "$PODMAN" image exists "$image" >/dev/null 2>&1; then
+    log "tirage de l'image $image"
+    timeout 1500 "$PODMAN" pull --quiet "$image" >/dev/null || { log "tirage de l'image impossible (accès à docker.io ? sinon : podman load d'une archive)"; return 1; }
+  fi
+  digest="$("$PODMAN" image inspect --format '{{.Digest}}' "$image" 2>/dev/null | head -n1 | tr -d '\r\n')"
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { log "empreinte de l'image illisible"; return 1; }
+  ref="$IMAGE_REPO@$digest"
+  render_quadlet "$ref" > "$QUADLET.new"; chmod 0644 "$QUADLET.new"; mv -f "$QUADLET.new" "$QUADLET"
+  write_instance "$host" "$tag" "$digest" "$nets"
+  "$SYSCTL" daemon-reload
+  "$SYSCTL" start "$SERVICE" || { log "le démarrage du conteneur a échoué (journalctl -u $SERVICE)"; return 1; }
+  warn="$(fw_open "$nets")"
+  printf 'PKI installée (EJBCA %s) : démarrage en cours, la première initialisation de la base dure quelques minutes.%s' "$tag" "${warn:+ $warn}"
+}
+
+cmd_ctl() {   # $1 = start | stop | restart
+  [[ -f "$INST" && ! -L "$INST" ]] || { log "la PKI n'est pas installée"; return 1; }
+  "$SYSCTL" "$1" "$SERVICE" || { log "$1 impossible (journalctl -u $SERVICE)"; return 1; }
+  printf 'Conteneur : %s.' "$1"
+}
+
+cmd_uninstall() {
+  [[ -f "$INST" && ! -L "$INST" ]] || { log "la PKI n'est pas installée"; return 1; }
+  "$SYSCTL" stop "$SERVICE" >/dev/null 2>&1 || true
+  rm -f "$QUADLET"; "$SYSCTL" daemon-reload >/dev/null 2>&1 || true
+  rm -f "$INST"
+  local warn; warn="$(fw_open "")"
+  printf 'PKI retirée. La base « ejbca », le volume et les secrets sont conservés (%s).%s' "$PETC, $PDATA" "${warn:+ $warn}"
+}
+
+# ---- Remise à zéro : seulement tant qu'aucune autorité ne porte de clé (sinon ces clés seraient détruites) ----
+cmd_reset() {
+  local dbs n
+  dbs="$(db_state)"
+  [[ "$dbs" != error ]] || { log "PostgreSQL est injoignable : remise à zéro refusée (impossible de vérifier qu'il n'existe aucune autorité)"; return 1; }
+  if [[ "$dbs" = data ]]; then
+    n="$(count_user_cas || true)"
+    [[ "$n" =~ ^[0-9]+$ ]] || { log "autorités illisibles : remise à zéro refusée"; return 1; }
+    [[ "$n" -eq 0 ]] || { log "$n autorité(s) existent : la remise à zéro détruirait leurs clés, elle est refusée"; return 1; }
+  fi
+  [[ "$dbs" != absent || -f "$ENVF" || -d "$PDATA" || -f "$INST" ]] || { log "rien à effacer"; return 1; }
+  "$SYSCTL" stop "$SERVICE" >/dev/null 2>&1 || true
+  rm -f "$QUADLET"; "$SYSCTL" daemon-reload >/dev/null 2>&1 || true
+  if [[ "$dbs" != absent ]]; then
+    "${PSQL[@]}" -d postgres >/dev/null <<'SQL' || { log "suppression de la base « ejbca » impossible"; return 1; }
+drop database if exists ejbca with (force);
+drop role if exists ejbca;
+SQL
+  fi
+  rm -rf --one-file-system "$PDATA" "$RUN/pki-ca" "$RUN/pki-cas.json"
+  rm -f "$INST" "$ENVF"
+  local warn; warn="$(fw_open "")"
+  printf 'PKI remise à zéro : base, volume et secrets effacés. Une nouvelle installation peut choisir un autre nom public.%s' "${warn:+ $warn}"
+}
+
+# ---- Autorités : tout passe par la CLI d'EJBCA dans le conteneur, avec des arguments jamais interprétés par un shell ----
+cli() { timeout "${DDI_PKI_CLI_TIMEOUT:-600}" "$PODMAN" exec -w "$WORK_CONT" "$UNIT_NAME" "$EJBCA_SH" "$@"; }
+clean_out() { sed -e 's/\x1b\[[0-9;]*m//g' -e 's/^[0-9-]* [0-9:,+]* [A-Z]* *\[[^]]*\] ([^)]*) //' | grep -v '^[[:space:]]*at ' || true; }
+cli_run() {   # exécute la CLI ; en cas d'échec, les dernières lignes (sans secret : la CLI n'en reçoit aucun) expliquent pourquoi
+  local out rc=0
+  out="$(cli "$@" 2>&1)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then log "échec de « $1 $2 » : $(printf '%s' "$out" | clean_out | tail -n 2 | tr '\n' ' ' | cut -c1-240)"; return 1; fi
+  printf '%s\n' "$out" | clean_out
+}
+need_running() {
+  [[ -f "$INST" && ! -L "$INST" ]] || { log "la PKI n'est pas installée"; return 1; }
+  local h; h="$(health_body)"
+  [[ "$h" = ALLOK ]] || { log "la PKI ne répond pas encore (santé « ${h:-aucune réponse} ») : attendre qu'elle soit « En service »"; return 1; }
+}
+prep_work() { install -d -m 0700 "$PDATA/persistent" 2>/dev/null || true; install -d -m 0700 "$WORK_HOST"; own "$WORK_HOST"; find "$WORK_HOST" -mindepth 1 -delete 2>/dev/null || true; }
+done_work() { find "$WORK_HOST" -mindepth 1 -delete 2>/dev/null || true; }
+put_work() { install -m 0600 "$1" "$WORK_HOST/$2"; own "$WORK_HOST/$2"; }   # $1 = source (root), $2 = nom vu par le conteneur
+alg_args() {   # $1 = alg → KS (taille ou courbe) et SIG (algorithme de signature)
+  case "$1" in
+    rsa3072) KS=3072; SIG=SHA256WithRSA ;;
+    rsa4096) KS=4096; SIG=SHA384WithRSA ;;
+    ecp256) KS=prime256v1; SIG=SHA256withECDSA ;;
+    ecp384) KS=secp384r1; SIG=SHA384withECDSA ;;
+    *) return 1 ;;
+  esac
+}
+write_meta() {   # $1 = nom, $2 = kind, $3 = signedBy, $4 = alg, $5 = racine hors ligne (ExtRoot-…) d'une émettrice externe
+  install -d -m 0750 "$CAD/$1"
+  N="$1" K="$2" S="$3" A="$4" X="${5:-}" python3 -c '
+import json, os, time
+e = os.environ
+d = {"kind": e["K"], "signedBy": e["S"], "alg": e["A"], "createdAt": int(time.time())}
+if e["X"]: d["extRoot"] = e["X"]
+print(json.dumps(d))' > "$CAD/$1/meta.json"
+}
+# réglages d'une autorité : adresses publiques gravées dans les certificats qu'elle signera (si le profil les utilise : voir 0.14.3), périodes de CRL
+ca_defaults() {   # $1 = nom
+  local dn crl cert host fld val urls
+  dn="$(ca_field subjectdn "$1")"; [[ -n "$dn" ]] || { log "nom distinctif de « $1 » illisible"; return 1; }
+  host="$(instance_get hostname)"
+  urls="$(python3 "$HELPER" urls "$host" "$PUBLIC_PORT" "$dn")"
+  crl="$(printf '%s\n' "$urls" | sed -n 1p)"; cert="$(printf '%s\n' "$urls" | sed -n 2p)"
+  for fld in "defaultCRLDistPoint|$crl" "certificateAiaDefaultCaIssuerUri|$cert" "CRLPeriod|$CRL_PERIOD_MS" "CRLOverlapTime|$CRL_OVERLAP_MS"; do
+    val="${fld#*|}"; fld="${fld%%|*}"
+    cli_run ca editca --caname "$1" --field "$fld" --value "$val" >/dev/null || return 1
+  done
+}
+fetch_deposit() {   # $1 = nom du dépôt, $2 = destination (root), $3 = certs | crl, $4 = nombre maximal de certificats
+  local out
+  out="$(python3 "$HELPER" deposit "$IN_DIR/$1" "$2" "$3" "${4:-1}" 2>&1)" || { log "dépôt refusé : ${out#ERR	}"; return 1; }
+}
+
+ca_create_root() {   # $1 nom, $2 DN, $3 alg, $4 jours
+  local name="$1" dn="$2" alg="$3" days="$4" KS SIG
+  valid_ca_name "$name" || { log "nom d'autorité invalide"; return 1; }
+  alg_args "$alg" || { log "algorithme invalide"; return 1; }
+  need_running || return 1
+  ca_exists "$name" && { log "une autorité « $name » existe déjà"; return 1; }
+  prep_work
+  cli_run ca init --caname "$name" --dn "$dn" --tokenType soft --tokenPass null --keyspec "$KS" -v "$days" --policy null -s "$SIG" >/dev/null || { done_work; return 1; }
+  ca_exists "$name" || { done_work; log "l'autorité n'a pas été créée (voir le journal du conteneur)"; return 1; }
+  write_meta "$name" root self "$alg"
+  local warn=""; ca_defaults "$name" || warn=" AVERTISSEMENT : adresses publiques non enregistrées dans l'autorité."
+  done_work
+  printf 'Racine « %s » créée (auto-signée : sa clé est dans la base du DDI, pour un laboratoire).%s' "$name" "$warn"
+}
+
+ca_create_issuing() {   # $1 nom, $2 DN, $3 alg, $4 jours, $5 signeur (external | nom d'une racine du DDI)
+  local name="$1" dn="$2" alg="$3" days="$4" by="${5:-external}" KS SIG rid chain info rootsha ext warn=""
+  valid_ca_name "$name" || { log "nom d'autorité invalide"; return 1; }
+  alg_args "$alg" || { log "algorithme invalide"; return 1; }
+  need_running || return 1
+  ca_exists "$name" && { log "une autorité « $name » existe déjà"; return 1; }
+  prep_work
+  if [[ "$by" = external ]]; then
+    install -d -m 0750 "$CAD/$name"
+    chain="$CAD/$name/chain.pem"
+    fetch_deposit "$name.chain.pem" "$chain" certs 5 || { done_work; rm -rf "${CAD:?}/$name"; return 1; }
+    info="$(python3 "$HELPER" check-chain "$chain" "$CAD/$name/root.pem" 2>&1)" || { done_work; rm -rf "${CAD:?}/$name"; log "chaîne refusée : ${info#ERR	}"; return 1; }
+    rootsha="$(printf '%s' "$info" | cut -f2)"; ext="ExtRoot-$rootsha"
+    # la racine hors ligne est connue d'EJBCA comme autorité externe (sans clé) : sa chaîne et sa CRL sont ainsi servies avec les nôtres
+    if ! ca_exists "$ext"; then
+      put_work "$CAD/$name/root.pem" root.pem
+      cli_run ca importcacert --caname "$ext" -f "$WORK_CONT/root.pem" >/dev/null || { done_work; rm -rf "${CAD:?}/$name"; return 1; }
+      write_meta "$ext" extroot external ""
+    fi
+    put_work "$chain" chain.pem
+    cli_run ca init --caname "$name" --dn "$dn" --tokenType soft --tokenPass null --keyspec "$KS" -v "$days" --policy null -s "$SIG" --signedby External -externalcachain "$WORK_CONT/chain.pem" >/dev/null || { done_work; return 1; }
+    [[ -s "$WORK_HOST/${name}_csr.der" ]] || { done_work; log "EJBCA n'a pas écrit la demande de certificat"; return 1; }
+    install -m 0640 "$WORK_HOST/${name}_csr.der" "$CAD/$name/csr.der"
+    openssl req -inform DER -in "$CAD/$name/csr.der" -out "$CAD/$name/csr.pem" 2>/dev/null || { done_work; log "demande de certificat illisible"; return 1; }
+    openssl req -in "$CAD/$name/csr.pem" -noout -verify >/dev/null 2>&1 || { done_work; log "la demande de certificat n'a pas une signature valide"; return 1; }
+    chmod 0640 "$CAD/$name/csr.pem"
+    write_meta "$name" issuing external "$alg" "$ext"
+    ca_defaults "$name" || warn=" AVERTISSEMENT : adresses publiques non enregistrées dans l'autorité."
+    done_work
+    printf 'Émettrice « %s » créée, en attente du certificat signé par la racine : télécharger la demande, la faire signer, puis importer le certificat.%s' "$name" "$warn"
+  else
+    valid_ca_name "$by" || { done_work; log "nom de racine invalide"; return 1; }
+    [[ "$(ca_field status "$by")" = 1 ]] || { done_work; log "la racine « $by » n'existe pas ou n'est pas active"; return 1; }
+    [[ "$(META_PATH="$CAD/$by/meta.json" python3 -c 'import json,os
+try: print(json.load(open(os.environ["META_PATH"])).get("kind", ""))
+except Exception: print("")')" = root ]] || { done_work; log "« $by » n'est pas une racine créée par le DDI"; return 1; }
+    rid="$(ca_field caid "$by")"
+    cli_run ca init --caname "$name" --dn "$dn" --tokenType soft --tokenPass null --keyspec "$KS" -v "$days" --policy null -s "$SIG" --signedby "$rid" >/dev/null || { done_work; return 1; }
+    ca_exists "$name" || { done_work; log "l'autorité n'a pas été créée (voir le journal du conteneur)"; return 1; }
+    write_meta "$name" issuing "$by" "$alg"
+    ca_defaults "$name" || warn=" AVERTISSEMENT : adresses publiques non enregistrées dans l'autorité."
+    done_work
+    printf 'Émettrice « %s » créée et signée par la racine « %s » du DDI.%s' "$name" "$by" "$warn"
+  fi
+}
+
+ca_import() {   # $1 = nom d'une émettrice en attente
+  local name="$1" cert info
+  valid_ca_name "$name" || { log "nom d'autorité invalide"; return 1; }
+  need_running || return 1
+  [[ "$(ca_field status "$name")" = 2 ]] || { log "« $name » n'attend pas de certificat"; return 1; }
+  [[ -f "$CAD/$name/csr.pem" && -f "$CAD/$name/chain.pem" ]] || { log "demande ou chaîne de « $name » introuvables"; return 1; }
+  prep_work
+  cert="$CAD/$name/issued.pem"
+  fetch_deposit "$name.cert.pem" "$cert" certs 1 || { done_work; return 1; }
+  info="$(python3 "$HELPER" check-issued "$CAD/$name/csr.pem" "$cert" "$CAD/$name/chain.pem" 2>&1)" || { done_work; rm -f "$cert"; log "certificat refusé : ${info#ERR	}"; return 1; }
+  put_work "$cert" issued.pem
+  cli_run ca importcacert --caname "$name" -f "$WORK_CONT/issued.pem" >/dev/null || { done_work; return 1; }
+  [[ "$(ca_field status "$name")" = 1 ]] || { done_work; log "l'autorité n'est pas devenue active après l'import"; return 1; }
+  cli_run ca createcrl --caname "$name" >/dev/null || log "AVERTISSEMENT : première CRL non créée"
+  done_work
+  printf 'Certificat importé : l'\''émettrice « %s » est active et publie sa CRL.' "$name"
+}
+
+ca_crl() {   # $1 = nom
+  valid_ca_name "$1" || { log "nom d'autorité invalide"; return 1; }
+  need_running || return 1
+  [[ "$(ca_field status "$1")" = 1 ]] || { log "« $1 » n'est pas une autorité active"; return 1; }
+  cli_run ca createcrl --caname "$1" >/dev/null || return 1
+  printf 'CRL de « %s » renouvelée.' "$1"
+}
+
+ca_rootcrl() {   # $1 = ExtRoot-xxxxxxxx : CRL (publique) de la racine hors ligne, à republier avant son expiration
+  local name="$1" crl="$CAD/$1/root.crl" info cert="$CAD/$1/root-cert.pem" sha
+  valid_ext_name "$name" || { log "nom de racine invalide"; return 1; }
+  need_running || return 1
+  [[ "$(ca_field status "$name")" = 6 ]] || { log "« $name » n'est pas une racine externe importée"; return 1; }
+  install -d -m 0750 "$CAD/$name"
+  prep_work
+  fetch_deposit "$name.crl" "$crl" crl || { done_work; return 1; }
+  # le certificat de la racine est relu dans la base : la CRL doit être signée par CETTE racine
+  sha="${name#ExtRoot-}"
+  sql ejbca -v n="$name" <<'SQL' 2>/dev/null | head -n1 | python3 "$HELPER" b64pem > "$cert" || true
+select translate(coalesce(b.base64cert, d.base64cert), E'\r\n', '') from cadata c join certificatedata d on d.subjectdn = c.subjectdn and d.type = 8 and d.status = 20
+left join base64certdata b on b.fingerprint = d.fingerprint where c.name = :'n' order by d.expiredate desc limit 1
+SQL
+  [[ -s "$cert" && "$(openssl x509 -in "$cert" -outform DER 2>/dev/null | sha256sum | cut -c1-8)" = "$sha" ]] || { done_work; rm -f "$crl"; log "certificat de la racine « $name » illisible"; return 1; }
+  info="$(python3 "$HELPER" check-crl "$cert" "$crl" 2>&1)" || { done_work; rm -f "$crl"; log "CRL refusée : ${info#ERR	}"; return 1; }
+  put_work "$crl" root.crl
+  cli_run ca importcrl --caname "$name" -f "$WORK_CONT/root.crl" -o ADAPTIVE >/dev/null || { done_work; return 1; }
+  done_work
+  printf 'CRL de la racine « %s » importée : elle est publiée avec celles du DDI.' "$name"
+}
+
+# minuteur : publie l'état et renouvelle les CRL des autorités du DDI (EJBCA n'a aucun service qui le fasse : sans cela elles expirent)
+cmd_maintain() {
+  cmd_status || true
+  [[ -f "$INST" && ! -L "$INST" && "$(health_body)" = ALLOK ]] || return 0
+  [[ -f "$RUN/pki-cas.json" ]] || return 0
+  local n now renewed=0
+  now="$(date +%s)"
+  while IFS=$'\t' read -r n age; do
+    valid_ca_name "$n" || continue
+    if [[ "$age" -ge "$CRL_RENEW_AFTER" ]]; then
+      if cli_run ca createcrl --caname "$n" >/dev/null; then renewed=$((renewed + 1)); fi
+    fi
+  done < <(NOW="$now" RUN_JSON="$RUN/pki-cas.json" python3 -c '
+import json, os, time, calendar
+try: d = json.load(open(os.environ["RUN_JSON"]))
+except Exception: raise SystemExit(0)
+now = int(os.environ["NOW"])
+for c in d.get("cas", []):
+    if c.get("state") != "active" or c.get("kind") not in ("root", "issuing"): continue
+    crl = c.get("crl") or {}
+    t = crl.get("thisUpdate")
+    try: age = now - calendar.timegm(time.strptime(t, "%Y-%m-%dT%H:%M:%SZ"))
+    except Exception: age = 10**9
+    print("%s\t%d" % (c["name"], age))' 2>/dev/null || true)
+  [[ "$renewed" -eq 0 ]] || { cmd_status || true; log "$renewed CRL renouvelée(s)"; }
+}
+
+# ---- Demande de la console (sans privilège) : revalidée ici en totalité par pki-helper.py ----
+# Formats : {"action":"apply",…} | {"action":"start|stop|restart|status|uninstall|reset"} | {"action":"ca_root|ca_issuing",…} | {"action":"ca_import|ca_crl|ca_rootcrl","name":"…"}
+cmd_request() {
+  local rq="$GEN/.pki-request" raw="" out="" rc=0 ok=false k v action=""
+  local -A R=()
+  [[ -e "$rq" || -L "$rq" ]] || return 0
+  if [[ -f "$rq" && ! -L "$rq" ]]; then raw="$(head -c 4097 "$rq")"; fi
+  rm -f "$rq"
+  while IFS=$'\t' read -r k v; do
+    if [[ -n "$k" ]]; then R["$k"]="$v"; fi
+  done < <(printf '%s' "$raw" | python3 "$HELPER" parse-request 2>/dev/null || true)
+  action="${R[action]:-}"
+  case "$action" in
+    apply) out="$( ( cmd_apply "${R[image]}" "${R[hostname]}" "${R[nets]:-}" ) 2>&1)" || rc=$? ;;
+    start|stop|restart) out="$( ( cmd_ctl "$action" ) 2>&1)" || rc=$? ;;
+    uninstall) out="$( ( cmd_uninstall ) 2>&1)" || rc=$? ;;
+    reset) out="$( ( cmd_reset ) 2>&1)" || rc=$? ;;
+    status) out="état publié" ;;
+    ca_root) out="$( ( ca_create_root "${R[name]}" "${R[dn]}" "${R[alg]}" "${R[days]}" ) 2>&1)" || rc=$? ;;
+    ca_issuing) out="$( ( ca_create_issuing "${R[name]}" "${R[dn]}" "${R[alg]}" "${R[days]}" "${R[signedBy]:-external}" ) 2>&1)" || rc=$? ;;
+    ca_import) out="$( ( ca_import "${R[name]}" ) 2>&1)" || rc=$? ;;
+    ca_crl) out="$( ( ca_crl "${R[name]}" ) 2>&1)" || rc=$? ;;
+    ca_rootcrl) out="$( ( ca_rootcrl "${R[name]}" ) 2>&1)" || rc=$? ;;
+    *) out="demande invalide"; rc=1 ;;
+  esac
+  [[ "$rc" -eq 0 ]] && ok=true
+  out="$(printf '%s' "$out" | tr '\n\r' '  ' | sed 's/ddibuntu-pki: //g')"
+  log "demande de la console (${action:-invalide}) : ${out:-ok}"
+  publish_result "${action:-invalide}" "$ok" "$out"
+  # les dépôts de la console sont consommés quoi qu'il arrive : ils ne restent jamais sur le disque
+  [[ -z "${R[name]:-}" ]] || rm -f "$IN_DIR/${R[name]}.chain.pem" "$IN_DIR/${R[name]}.cert.pem" "$IN_DIR/${R[name]}.crl" 2>/dev/null || true
+  cmd_status || true
+  [[ "$ok" = true ]]
+}
+
+# validation et rendu seuls : aucun effet, utilisables sans privilège (tests, diagnostic)
+if [[ "${1:-}" = render ]]; then valid_image "${2:-}" && valid_pki_host "${3:-}" || ddi_die "paramètres invalides"; render_quadlet "$IMAGE_REPO@sha256:0000000000000000000000000000000000000000000000000000000000000000"; exit 0; fi
+if [[ "${1:-}" = check ]]; then valid_image "${2:-}" || ddi_die "image refusée"; valid_pki_host "${3:-}" || ddi_die "nom public invalide"; norm_nets "${4:-}" >/dev/null || exit 1; echo ok; exit 0; fi
+[[ "$(id -u)" -eq 0 || -n "${DDI_PKI_ALLOW_USER:-}" ]] || ddi_die "à lancer en root"
+exec 9>"${DDI_PKI_LOCK:-/run/ddibuntu-pki.lock}"
+flock -w 600 9 || ddi_die "une autre demande PKI est en cours depuis plus de 10 minutes"
+cmd="${1:-}"; [[ $# -gt 0 ]] && shift
+case "$cmd" in
+  apply) cmd_apply "${1:-}" "${2:-}" "${3:-}"; echo; cmd_status ;;
+  start|stop|restart) cmd_ctl "$cmd"; echo; cmd_status ;;
+  uninstall) cmd_uninstall; echo; cmd_status ;;
+  reset) cmd_reset; echo; cmd_status ;;
+  ca-root) ca_create_root "${1:-}" "${2:-}" "${3:-}" "${4:-}"; echo; cmd_status ;;
+  ca-issuing) ca_create_issuing "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-external}"; echo; cmd_status ;;
+  ca-import) ca_import "${1:-}"; echo; cmd_status ;;
+  ca-crl) ca_crl "${1:-}"; echo; cmd_status ;;
+  ca-rootcrl) ca_rootcrl "${1:-}"; echo; cmd_status ;;
+  maintain) cmd_maintain ;;
+  status) cmd_status ;;
+  request) cmd_request ;;
+  *) usage >&2; exit 2 ;;
+esac
