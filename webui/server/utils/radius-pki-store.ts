@@ -2,6 +2,8 @@
 import { getSetting, setSetting } from './db'
 import { crlSetDigest, PKI_DEFAULTS, PKI_KEY, readiness, refreshCrl } from './radius-pki'
 import { depositRadiusRequest, radiusRequestPending, readRadiusStatus } from './radius'
+import { readPkiCas } from './pki-ca'
+import { syncDdiCrls } from './radius-ddi'
 import type { PkiState } from './radius-pki'
 
 export const loadPki = async (): Promise<PkiState> => ({ ...PKI_DEFAULTS, ...(await getSetting<PkiState>(PKI_KEY, PKI_DEFAULTS)) })
@@ -18,7 +20,18 @@ export function withPki<T>(fn: () => Promise<T>): Promise<T> {
 /** Télécharge les CRL de toutes les autorités qui ont une adresse. Renvoie le nombre de CRL nouvelles et celui des échecs. */
 export async function refreshAllCrls(fetchFn: typeof fetch = fetch): Promise<{ changed: number; failed: number }> {
   let changed = 0, failed = 0
-  for (const ca of (await loadPki()).cas.filter((c) => c.crlUrl)) {
+  // autorités venues de la PKI du DDI : CRL relue sur place (ce que root publie) ; l'adresse ne sert que si elle n'est pas disponible
+  const local = new Set<string>()
+  const pub = (await readPkiCas())?.cas
+  if (pub && (await loadPki()).cas.some((c) => c.ddi)) {
+    await withPki(async () => {
+      const r = await syncDdiCrls(await loadPki(), pub)
+      await savePki(r.state)
+      changed += r.changed; failed += r.failed
+      for (const c of r.state.cas) if (c.ddi && !r.missing.includes(c.ddi)) local.add(c.id)   // fichier présent (même illisible) : la PKI du DDI est la source, l'adresse ne dirait rien de plus
+    })
+  }
+  for (const ca of (await loadPki()).cas.filter((c) => c.crlUrl && !local.has(c.id))) {
     await withPki(async () => {
       const r = await refreshCrl(await loadPki(), ca.id, fetchFn)
       await savePki(r.state)

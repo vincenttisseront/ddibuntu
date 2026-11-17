@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Batterie 33 — autorités de la PKI du DDI (0.14.1) sur le VRAI conteneur EJBCA Community (Podman, unité Quadlet relue par le vrai générateur, vraie
+# Batterie 33 — autorités (0.14.1) et certificats (0.14.3) de la PKI du DDI sur le VRAI conteneur EJBCA Community (Podman, unité Quadlet relue par le vrai générateur, vraie
 # base PostgreSQL) : installation réelle, racine auto-signée, émettrice signée par une racine du DDI, émettrice sous une racine « hors ligne »
 # (demande de certificat → signature openssl avec les adresses CDP / AIA publiées → import), CRL servies en HTTP et vérifiées par openssl, CRL de
 # la racine hors ligne, renouvellement des CRL, refus (clé qui ne correspond pas, certificat sans CA:TRUE, dépôt piégé, noms piégés), remise à zéro.
@@ -263,6 +263,112 @@ n3="$(ca_get Lab-Sub crl.number)"
 check "le minuteur renouvelle les CRL trop anciennes ($n2 → $n3)" test "$n3" -gt "$n2"
 n4="$(ca_get Lab-Ext crl.number)"; DDI_PKI_CRL_RENEW_AFTER=99999 "$PKI" maintain >/dev/null 2>&1
 expect_eq "le minuteur ne renouvelle pas une CRL récente" "$n4" "$(ca_get Lab-Ext crl.number)"
+
+echo "== Certificats (0.14.3) : émission réelle, profils fournis, révocation =="
+CW="$D/cw"; mkdir -p "$CW"
+issue() {   # $1 identifiant, $2 profil, $3 demande de certificat, $4 SAN (JSON), $5 autorité (Lab-Sub par défaut)
+  install -m 0644 "$3" "$GEN/pki-in/$1.csr.pem"
+  req "$(printf '{"action":"cert_issue","id":"%s","ca":"%s","profile":"%s","cn":"ddi-test-%s","o":"Laboratoire","c":"FR",%s}' "$1" "${5:-Lab-Sub}" "$2" "$2" "$4")"
+}
+ctext() { openssl x509 -in "$1" -noout -text; }
+has_san() { ctext "$1" | grep -A1 'Alternative Name' | grep -qF -- "$2"; }
+has_eku() { ctext "$1" | grep -A1 'Extended Key Usage' | grep -qF -- "$2"; }
+no_eku() { ! ctext "$1" | grep -A1 'Extended Key Usage' | grep -qF -- "$2"; }
+same_key() { [ "$(openssl x509 -in "$1" -noout -pubkey | openssl sha256)" = "$(openssl pkey -in "$2" -pubout | openssl sha256)" ]; }
+valid_days() {
+  local s e
+  s="$(date -d "$(openssl x509 -in "$1" -noout -startdate | cut -d= -f2)" +%s)"; e="$(date -d "$(openssl x509 -in "$1" -noout -enddate | cut -d= -f2)" +%s)"
+  echo $(( (e - s) / 86400 ))
+}
+ejpsql() { runuser -u postgres -- psql -X -q -At -d ejbca "$@"; }
+openssl req -newkey rsa:2048 -nodes -keyout "$CW/srv.key" -out "$CW/srv.csr" -subj "/CN=ignoré/O=ignoré" 2>/dev/null
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$CW/mac.key" -out "$CW/mac.csr" -subj "/CN=ignoré" 2>/dev/null
+openssl req -newkey rsa:3072 -nodes -keyout "$CW/usr.key" -out "$CW/usr.csr" -subj "/CN=ignoré" 2>/dev/null
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:secp384r1 -nodes -keyout "$CW/net.key" -out "$CW/net.csr" -subj "/CN=ignoré" 2>/dev/null
+issue 1000000000000001 server "$CW/srv.csr" '"dns":["radius1.lab.test","radius.lab.test"],"ip":["10.1.2.3"]'
+expect_eq "serveur RADIUS : émis (profils importés à la première émission)" true "$RES_OK"
+expect_eq "référence rendue à la console" 1000000000000001 "$(jget "$RUNP/pki-result.json" ref)"
+C1="$RUNP/pki-cert/1000000000000001"
+check "serveur : certificat, chaîne et fiche publiés" test -s "$C1/cert.pem" -a -s "$C1/chain.pem" -a -s "$C1/meta.json"
+check "serveur : la chaîne publiée valide le certificat" openssl verify -CAfile "$C1/chain.pem" -untrusted "$RUNP/pki-ca/Lab-Sub/cert.pem" "$C1/cert.pem"
+check "serveur : le nom vient du formulaire (CN = ddi-test-server)" bash -c "openssl x509 -in '$C1/cert.pem' -noout -subject | grep -q 'ddi-test-server'"
+check "serveur : rien de la demande de certificat (CN « ignoré ») dans le certificat" bash -c "! openssl x509 -in '$C1/cert.pem' -noout -subject | grep -q 'ignor'"
+check "serveur : SAN DNS et IP du formulaire" has_san "$C1/cert.pem" "DNS:radius1.lab.test, DNS:radius.lab.test, IP Address:10.1.2.3"
+check "serveur : EKU serverAuth" has_eku "$C1/cert.pem" "TLS Web Server Authentication"
+check "serveur : pas d'EKU clientAuth" no_eku "$C1/cert.pem" "Client Authentication"
+check "serveur : certificat final (CA:FALSE)" bash -c "openssl x509 -in '$C1/cert.pem' -noout -text | grep -q 'CA:FALSE'"
+check "serveur : adresse de CRL de l'autorité" bash -c "openssl x509 -in '$C1/cert.pem' -noout -text | grep -q 'cmd=crl&issuer=CN%3DLab%20Sub%20CA'"
+check "serveur : adresse du certificat de l'autorité (AIA)" bash -c "openssl x509 -in '$C1/cert.pem' -noout -text | grep -q 'CA Issuers - URI:.*cmd=cacert&issuer=CN%3DLab%20Sub%20CA'"
+check "serveur : jamais d'adresse OCSP" bash -c "! openssl x509 -in '$C1/cert.pem' -noout -text | grep -q 'OCSP - URI'"
+check "serveur : clé de la demande conservée (RSA 2048)" same_key "$C1/cert.pem" "$CW/srv.key"
+d="$(valid_days "$C1/cert.pem")"; check "serveur : validité de 730 jours fixée par le profil ($d j)" test "$d" -ge 729 -a "$d" -le 731
+check "serveur : le dépôt de la demande est consommé" test ! -e "$GEN/pki-in/1000000000000001.csr.pem"
+check "dossier d'échange vidé (aucun mot de passe d'émission sur le disque)" test -z "$(ls -A "$D/data/persistent/work")"
+check "aucune clé privée publiée" bash -c "! grep -rl 'PRIVATE KEY' '$RUNP/pki-cert'"
+issue 1000000000000002 machine "$CW/mac.csr" '"dns":["pc01.lab.test"]'
+expect_eq "machine (ECDSA P-256) : émis" true "$RES_OK"
+check "machine : EKU clientAuth" has_eku "$RUNP/pki-cert/1000000000000002/cert.pem" "TLS Web Client Authentication"
+check "machine : clé de la demande conservée" same_key "$RUNP/pki-cert/1000000000000002/cert.pem" "$CW/mac.key"
+issue 1000000000000003 user "$CW/usr.csr" '"upn":["jdupont@lab.test"],"mail":["jdupont@lab.test"]'
+expect_eq "utilisateur (RSA 3072) : émis" true "$RES_OK"
+check "utilisateur : SAN rfc822Name et UPN" has_san "$RUNP/pki-cert/1000000000000003/cert.pem" "email:jdupont@lab.test, othername: UPN::jdupont@lab.test"
+issue 1000000000000004 network "$CW/net.csr" '"dns":["sw1.lab.test"],"ip":["10.9.9.9"]'
+expect_eq "équipement réseau (ECDSA P-384) : émis" true "$RES_OK"
+check "équipement réseau : EKU serveur" has_eku "$RUNP/pki-cert/1000000000000004/cert.pem" "TLS Web Server Authentication"
+check "équipement réseau : EKU client" has_eku "$RUNP/pki-cert/1000000000000004/cert.pem" "TLS Web Client Authentication"
+expect_eq "profils : cinq importés, jamais deux fois (4 certificats + 1 entité finale)" 5 "$(ejpsql -c "select (select count(*) from certificateprofiledata where certificateprofilename like 'DDI-%') + (select count(*) from endentityprofiledata where profilename = 'DDI-Endentity')")"
+expect_eq "les entités finales d'émission sont supprimées (aucun mot de passe d'émission ne reste)" 0 "$(ejpsql -c "select count(*) from userdata where username like 'ddi-%'")"
+issue 1000000000000005 server "$CW/srv.csr" '"dns":["radius1.lab.test"]' Lab-Root
+expect_eq "une racine ne délivre pas de certificats finaux" false "$RES_OK"
+issue 1000000000000006 user "$CW/usr.csr" '"dns":["x.lab.test"]'
+expect_eq "profil utilisateur avec un nom DNS refusé avant EJBCA" false "$RES_OK"
+openssl req -newkey rsa:1024 -nodes -keyout "$CW/w.key" -out "$CW/w.csr" -subj "/CN=x" 2>/dev/null
+issue 1000000000000007 server "$CW/w.csr" '"dns":["x.lab.test"]'
+expect_eq "clé RSA 1024 refusée" false "$RES_OK"
+install -m 0644 "$CW/srv.csr" "$GEN/pki-in/1000000000000001.csr.pem"
+req '{"action":"cert_issue","id":"1000000000000001","ca":"Lab-Sub","profile":"server","cn":"x","dns":["radius1.lab.test"]}'
+expect_eq "un identifiant déjà émis n'est jamais rejoué" false "$RES_OK"
+check "rien n'est émis pour les demandes refusées" test ! -e "$RUNP/pki-cert/1000000000000005" -a ! -e "$RUNP/pki-cert/1000000000000006" -a ! -e "$RUNP/pki-cert/1000000000000007"
+if [ "$(runuser -u postgres -- psql -X -q -At -d postgres -c "select count(*) from pg_roles where rolname = 'ddi'")" = 1 ]; then
+  "$PKI" status >/dev/null 2>&1
+  asddi() { ejpsql -c "set role ddi; $1" >/dev/null 2>&1; }
+  expect_eq "console : lit les certificats (rôle ddi)" t "$(ejpsql -c "set role ddi; select count(*) > 0 from certificatedata" | tail -n1)"
+  expect_eq "console : lit les certificats en base64" t "$(ejpsql -c "set role ddi; select count(*) > 0 from base64certdata" | tail -n1)"
+  check_fail "console : AUCUN accès aux clés des autorités (cadata)" asddi "select 1 from cadata limit 1"
+  check_fail "console : aucun accès aux entités finales (userdata)" asddi "select 1 from userdata limit 1"
+  check_fail "console : aucun droit d'écriture sur les certificats" asddi "update certificatedata set status = 40"
+else
+  note "rôle PostgreSQL « ddi » absent : droits de lecture de la console non vérifiés"
+fi
+SER1="$(jget "$C1/meta.json" serial)"
+SUBDN_DB="$(ejpsql -c "select subjectdn from cadata where name = 'Lab-Sub'")"
+cert_status() { ejpsql -c "select status from certificatedata where issuerdn = '$SUBDN_DB' and serialnumber = '$(python3 -c 'import sys; print(int(sys.argv[1], 16))' "$1")'"; }
+expect_eq "avant révocation : certificat actif (20)" 20 "$(cert_status "$SER1")"
+req "$(printf '{"action":"cert_revoke","ca":"Lab-Sub","serial":"%s","reason":1}' "$SER1")"
+expect_eq "révocation acceptée" true "$RES_OK"
+expect_eq "après révocation : statut 40 dans EJBCA" 40 "$(cert_status "$SER1")"
+code="$(fetch_url "$(ca_get Lab-Sub crlUrl)" "$CW/sub.crl")"; expect_eq "CRL de l'émettrice servie en HTTP" 200 "$code"
+check "la CRL servie contient AUSSITÔT le certificat révoqué, avec son motif" bash -c "openssl crl -inform DER -in '$CW/sub.crl' -noout -text | grep -A5 -i '$SER1' | grep -q 'Key Compromise'"
+check "la CRL servie est signée par l'émettrice" bash -c "openssl crl -inform DER -in '$CW/sub.crl' -CAfile '$RUNP/pki-ca/Lab-Sub/cert.pem' -noout -verify 2>&1 | grep -q 'verify OK'"
+openssl crl -inform DER -in "$CW/sub.crl" -out "$CW/sub.crl.pem"
+check_fail "openssl verify -crl_check refuse le certificat révoqué" openssl verify -crl_check -CRLfile "$CW/sub.crl.pem" -CAfile "$C1/chain.pem" -untrusted "$RUNP/pki-ca/Lab-Sub/cert.pem" "$C1/cert.pem"
+check "…et accepte un certificat non révoqué du même émetteur" openssl verify -crl_check -CRLfile "$CW/sub.crl.pem" -CAfile "$RUNP/pki-cert/1000000000000003/chain.pem" -untrusted "$RUNP/pki-ca/Lab-Sub/cert.pem" "$RUNP/pki-cert/1000000000000003/cert.pem"
+req "$(printf '{"action":"cert_revoke","ca":"Lab-Sub","serial":"%s","reason":1}' "$SER1")"
+expect_eq "deuxième révocation refusée" false "$RES_OK"
+req '{"action":"cert_revoke","ca":"Lab-Sub","serial":"ABCDEF","reason":1}'
+expect_eq "révocation d'une série inconnue refusée" false "$RES_OK"
+SUBSER="$(openssl x509 -in "$RUNP/pki-ca/Lab-Sub/cert.pem" -noout -serial | cut -d= -f2)"
+req "$(printf '{"action":"cert_revoke","ca":"Lab-Root","serial":"%s","reason":1}' "$SUBSER")"
+expect_eq "le certificat d'une autorité ne se révoque pas ici" false "$RES_OK"
+expect_eq "…et il reste actif" 20 "$(ejpsql -c "select status from certificatedata where subjectdn = '$SUBDN_DB' and type = 2 limit 1")"
+touch -d '-3 hours' "$RUNP/pki-cert/1000000000000002"
+"$PKI" maintain >/dev/null 2>&1
+check "le minuteur purge un certificat relevable depuis plus d'une heure" test ! -e "$RUNP/pki-cert/1000000000000002"
+check "…et garde les récents" test -d "$RUNP/pki-cert/1000000000000003"
+openssl req -newkey rsa:2048 -nodes -keyout "$CW/ext.key" -out "$CW/ext.csr" -subj "/CN=x" 2>/dev/null
+issue 1000000000000008 server "$CW/ext.csr" '"dns":["ext.lab.test"]' Lab-Ext
+expect_eq "émettrice sous racine hors ligne : certificat émis aussi" true "$RES_OK"
+check "…et sa chaîne remonte à la racine hors ligne" openssl verify -CAfile "$RUNP/pki-cert/1000000000000008/chain.pem" -untrusted "$RUNP/pki-ca/Lab-Ext/cert.pem" "$RUNP/pki-cert/1000000000000008/cert.pem"
 
 echo "== Remise à zéro =="
 req '{"action":"reset"}'

@@ -53,14 +53,14 @@ export function dnOf(b: { cn: string; ou?: string; o?: string; c?: string }): { 
   return out
 }
 
-export type DepositKind = 'chain.pem' | 'cert.pem' | 'crl'
-export type BlobKind = 'certs' | 'crl'
+export type DepositKind = 'chain.pem' | 'cert.pem' | 'crl' | 'csr.pem'
+export type BlobKind = 'certs' | 'crl' | 'csr'
 /** Octets d'un fichier remis, ou null s'il n'a pas la forme attendue (certificat / CRL en PEM ou en DER, ≤ 16 Ko). Root refait tous les contrôles. */
 export function blobBytes(b: Blob, kind: BlobKind): Buffer | null {
   let buf: Buffer
   if (b.pem !== undefined) {
-    const label = kind === 'certs' ? 'CERTIFICATE' : 'X509 CRL'
-    if (!b.pem.includes(`-----BEGIN ${label}-----`)) return null
+    const re = kind === 'certs' ? /-----BEGIN CERTIFICATE-----/ : kind === 'csr' ? /-----BEGIN (?:NEW )?CERTIFICATE REQUEST-----/ : /-----BEGIN X509 CRL-----/
+    if (!re.test(b.pem)) return null
     buf = Buffer.from(b.pem.replace(/\r\n?/g, '\n'), 'utf8')
   } else {
     buf = Buffer.from(b.der!.replace(/\s+/g, ''), 'base64')

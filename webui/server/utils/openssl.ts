@@ -3,7 +3,8 @@
 // Les secrets passent par l'entrée standard ou une variable d'environnement, jamais par la ligne de commande ; seule la demande de certificat (req -key)
 // exige un fichier : dossier privé 0700, fichier 0600, effacé dans tous les cas (withTmp). Ne pas utiliser /dev/stdin : un tube Node est un socket, openssl ne peut pas l'ouvrir.
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { constants as fsc } from 'node:fs'
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -26,9 +27,12 @@ export function openssl(args: string[], opts: { input?: string | Buffer; timeout
   })
 }
 
-/** Dossier temporaire privé (0700) pour les commandes qui exigent des fichiers ; supprimé dans tous les cas. */
-export async function withTmp<T>(fn: (dir: string, put: (name: string, data: string | Buffer) => Promise<string>) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), 'ddi-ssl-'))
+/** Dossier temporaire privé (0700) pour les commandes qui exigent des fichiers ; supprimé dans tous les cas.
+ *  `ram` : de préférence en mémoire (/dev/shm, jamais sur le disque) : à demander pour tout fichier qui contient une clé privée. */
+export async function withTmp<T>(fn: (dir: string, put: (name: string, data: string | Buffer) => Promise<string>) => Promise<T>, opts: { ram?: boolean } = {}): Promise<T> {
+  let base = tmpdir()
+  if (opts.ram) { try { await access('/dev/shm', fsc.W_OK | fsc.X_OK); base = '/dev/shm' } catch { /* pas de mémoire partagée : dossier temporaire ordinaire */ } }
+  const dir = await mkdtemp(join(base, 'ddi-ssl-'))
   try { return await fn(dir, async (name, data) => { const f = join(dir, name); await writeFile(f, data, { mode: 0o600 }); return f }) }
   finally { await rm(dir, { recursive: true, force: true }) }
 }

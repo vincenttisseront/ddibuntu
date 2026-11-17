@@ -1,11 +1,11 @@
 <script setup lang="ts">
 // PKI du DDI (0.14.0) — EJBCA Community dans un conteneur Podman, sur CE nœud : installation, démarrage / arrêt, état, nom public (URL gravée dans
 // les certificats), réseaux autorisés, enregistrement DNS ; 0.14.1 : autorités (composant PkiCas) et remise à zéro d'une PKI vide ; 0.14.2 : publication des autorités dans l'AD
-// (composant PkiAd). L'émission de certificats vient à l'itération suivante.
+// (composant PkiAd) ; 0.14.3 : certificats (composant PkiCerts : émission, liste, révocation).
 // Le service est piloté par root (ddibuntu-pki) à partir d'une demande déposée par la console : après chaque action on attend le résultat publié.
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm(); const fmt = useFmt()
-const tab = useHashTab('state', ['state', 'cas', 'ad'])
-const tabs = computed(() => [{ label: t('pki.tab_state'), value: 'state', icon: 'i-lucide-badge-check' }, { label: t('pki.tab_cas'), value: 'cas', icon: 'i-lucide-shield-check' }, { label: t('pki.tab_ad'), value: 'ad', icon: 'i-lucide-building-2' }])
+const tab = useHashTab('state', ['state', 'cas', 'certs', 'ad'])
+const tabs = computed(() => [{ label: t('pki.tab_state'), value: 'state', icon: 'i-lucide-badge-check' }, { label: t('pki.tab_cas'), value: 'cas', icon: 'i-lucide-shield-check' }, { label: t('pki.tab_certs'), value: 'certs', icon: 'i-lucide-file-badge' }, { label: t('pki.tab_ad'), value: 'ad', icon: 'i-lucide-building-2' }])
 
 const data = ref<any>(null), busy = ref(''), err = ref('')
 const status = computed(() => data.value?.status ?? null)
@@ -96,6 +96,7 @@ await load()
   <div class="flex flex-col gap-3">
     <UTabs v-model="tab" :items="tabs" :content="false" :aria-label="t('nav.pki')" />
     <PkiCas v-if="tab === 'cas'" :status="status" :waiting="waiting" :settle="settle" @changed="load" />
+    <PkiCerts v-else-if="tab === 'certs'" :status="status" :waiting="waiting" />
     <PkiAd v-else-if="tab === 'ad'" />
     <template v-else>
     <p class="text-sm text-muted">{{ t('pki.intro') }}</p>

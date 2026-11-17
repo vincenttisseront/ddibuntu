@@ -13,7 +13,8 @@ export const OID_SERVER_AUTH = '1.3.6.1.5.5.7.3.1'
 export const OID_CLIENT_AUTH = '1.3.6.1.5.5.7.3.2'
 
 export interface CrlInfo { pem: string; fetchedAt: number; thisUpdate: number; nextUpdate: number; revoked: number; source: 'url' | 'upload'; sha256: string }
-export interface CaEntry { id: string; name: string; pem: string; hash: string; crlUrl?: string; crl?: CrlInfo; crlError?: { at: number; code: string } }
+/** `ddi` : nom de l'autorité côté PKI du DDI (0.14.3) — sa CRL est relue sur place, dans ce que root publie. */
+export interface CaEntry { id: string; name: string; pem: string; hash: string; crlUrl?: string; crl?: CrlInfo; crlError?: { at: number; code: string }; ddi?: string }
 export interface ServerCert { pem: string; keyEnc: string }
 export interface Pending { keyEnc: string; csrPem: string; cn: string; sans: string[]; keyType: KeyType; createdAt: number }
 export interface PkiState { checkCrl: boolean; cas: CaEntry[]; server?: ServerCert; pending?: Pending; crlPushed?: string }
@@ -65,7 +66,7 @@ export function parseCert(pem: string): { info: CertInfo; x: X509Certificate } {
 const issuedBy = (child: X509Certificate, parent: X509Certificate) => { try { return child.checkIssued(parent) && child.verify(parent.publicKey) } catch { return false } }
 
 // ---- Chaîne de confiance ----
-export interface CaView { id: string; name: string; info: CertInfo; root: boolean; issuing: boolean; chainOk: boolean; expired: boolean; hash: string; crlUrl: string | null; crl: Omit<CrlInfo, 'pem'> | null; crlError: { at: number; code: string } | null }
+export interface CaView { id: string; name: string; info: CertInfo; root: boolean; issuing: boolean; chainOk: boolean; expired: boolean; hash: string; crlUrl: string | null; crl: Omit<CrlInfo, 'pem'> | null; crlError: { at: number; code: string } | null; ddi: string | null }
 const crlSummary = ({ pem: _pem, ...rest }: CrlInfo): Omit<CrlInfo, 'pem'> => rest
 export function analyzeCas(s: PkiState, now = Date.now()): CaView[] {
   const parsed = s.cas.map((c) => ({ c, ...parseCert(c.pem) }))
@@ -80,7 +81,7 @@ export function analyzeCas(s: PkiState, now = Date.now()): CaView[] {
   return parsed.map((p, i) => {
     const hasChild = parsed.some((o, j) => j !== i && !isRoot(j) && issuedBy(o.x, p.x))
     return { id: p.c.id, name: p.c.name, info: p.info, root: isRoot(i), issuing: !hasChild, chainOk: reaches(i), expired: p.info.notAfter <= now, hash: p.c.hash,
-      crlUrl: p.c.crlUrl ?? null, crl: p.c.crl ? crlSummary(p.c.crl) : null, crlError: p.c.crlError ?? null }
+      crlUrl: p.c.crlUrl ?? null, crl: p.c.crl ? crlSummary(p.c.crl) : null, crlError: p.c.crlError ?? null, ddi: p.c.ddi ?? null }
   })
 }
 

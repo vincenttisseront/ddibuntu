@@ -139,7 +139,7 @@ route('POST', '/radius/pki/server/csr', 'admin', async (c) => {
 })
 
 /** Contrôles communs à un certificat serveur avant de l'accepter. */
-function checkServerCert(pem: string) {
+export function checkServerCert(pem: string) {
   const { info } = parseCert(pem)
   if (info.ca) throw new PkiError('server_is_ca')
   if (info.notAfter <= Date.now()) throw new PkiError('server_expired')

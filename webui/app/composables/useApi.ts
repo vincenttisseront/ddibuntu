@@ -1,6 +1,6 @@
 // Appels d'API : jeton CSRF, redirection si la session a expiré, erreurs traduites.
 import { isSessionExpired } from '../utils/session'
-export interface ApiErrorInfo { status: number; code: string; message: string; issues: Array<{ path: string; message: string }>; upstream?: { status: number; detail: string } }
+export interface ApiErrorInfo { status: number; code: string; message: string; issues: Array<{ path: string; message: string }>; upstream?: { status: number; detail: string }; detail?: string }
 
 export function pendingLabel(t: (k: string, p?: Record<string, unknown>) => string, p: { kind?: string; action?: string; node?: string }): string {
   const k = `cluster.pending.${p.action ?? 'other'}`, r = t(k, { node: p.node ?? '?' })
@@ -19,7 +19,7 @@ export function useApi() {
     const msg = t(key)
     const up = body?.data?.upstream
     const pend = code === 'action_pending' ? body?.data?.pending : null
-    return { status, code, message: msg === key ? t('err.internal') : pend ? `${msg} ${t('cluster.pending.current', { task: pendingLabel(t, pend) })}` : msg, issues: body?.data?.issues ?? [], ...(up && typeof up.status === 'number' ? { upstream: { status: up.status, detail: String(up.detail ?? '') } } : {}) }
+    return { status, code, message: msg === key ? t('err.internal') : pend ? `${msg} ${t('cluster.pending.current', { task: pendingLabel(t, pend) })}` : msg, issues: body?.data?.issues ?? [], ...(up && typeof up.status === 'number' ? { upstream: { status: up.status, detail: String(up.detail ?? '') } } : {}), ...(typeof body?.data?.detail === 'string' ? { detail: body.data.detail.slice(0, 400) } : {}) }
   }
 
   async function call<T = any>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, body?: unknown, opts: { silent?: boolean; busy?: boolean } = {}): Promise<T> {

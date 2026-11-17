@@ -7,8 +7,10 @@ publication de l'état des autorités ne contient que des données publiques (ce
 
 Sous-commandes :
   parse-request            stdin = JSON de la console ; sortie = lignes « clé<TAB>valeur » validées (rien si la demande est invalide)
-  deposit                  relit un dépôt de la console (PEM / DER) et l'écrit en PEM canonique (ou en DER pour une CRL)
+  deposit                  relit un dépôt de la console (PEM / DER) et l'écrit en PEM canonique (ou en DER pour une CRL) ; KIND = certs | crl | csr (demande de certificat)
   check-issued             contrôle le certificat signé rendu par la racine hors ligne avant de l'importer dans EJBCA
+  check-leaf               contrôle le certificat final émis par EJBCA (clé de la demande, chaîne, CA:FALSE, validité), l'écrit en PEM canonique et en extrait les champs publics
+  hex2dec                  numéro de série hexadécimal → décimal (la base d'EJBCA stocke les séries en décimal)
   check-chain              contrôle la chaîne de l'autorité qui signera (la racine auto-signée en dernier) et en extrait la racine
   check-crl                contrôle une CRL de racine (signature, validité) avant de l'importer
   publish-cas              construit pki-cas.json et les fichiers publics de chaque autorité
@@ -18,6 +20,7 @@ Sous-commandes :
 import base64
 import calendar
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -42,6 +45,21 @@ DN_VALUE_RE = re.compile(r"[^\x00-\x1f\x7f,+=\\\"<>;#/\s]([^\x00-\x1f\x7f,+=\\\"
 CERT_RE = re.compile(r"-----BEGIN CERTIFICATE-----\s*([A-Za-z0-9+/=\s]+?)\s*-----END CERTIFICATE-----")
 CRL_RE = re.compile(r"-----BEGIN X509 CRL-----\s*([A-Za-z0-9+/=\s]+?)\s*-----END X509 CRL-----")
 CA_DAYS = {"ca_root": (365, 7305), "ca_issuing": (365, 3650)}
+CSR_RE = re.compile(r"-----BEGIN (?:NEW )?CERTIFICATE REQUEST-----\s*([A-Za-z0-9+/=\s]+?)\s*-----END (?:NEW )?CERTIFICATE REQUEST-----")
+# Émission de certificats (0.14.3). Les profils sont ceux que fournit le DDI (tools/pki-profiles/Gen.java) : le nom côté EJBCA, les types de SAN permis
+# et les types dont au moins un est obligatoire. Mêmes règles que la console (utils/pki-certs.ts) : ici elles sont la protection, là un guide.
+PROFILES = {"server": "DDI-RADIUS-Server", "machine": "DDI-Client-Machine", "user": "DDI-Client-User", "network": "DDI-Network-Device"}
+SAN_ALLOWED = {"server": ("dns", "ip"), "machine": ("dns",), "user": ("upn", "mail"), "network": ("dns", "ip")}
+SAN_NEEDED = {"server": ("dns",), "machine": ("dns",), "user": ("upn", "mail"), "network": ("dns", "ip")}
+SAN_MAX = {"dns": 8, "ip": 4, "mail": 2, "upn": 2}
+SAN_LABEL = {"dns": "dNSName", "ip": "iPAddress", "mail": "rfc822Name", "upn": "upn"}
+ID_RE = re.compile(r"[0-9a-f]{16}")
+DNS_RE = re.compile(r"(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
+MAIL_RE = re.compile(r"[A-Za-z0-9._-]{1,64}@[A-Za-z0-9]([A-Za-z0-9.-]{0,188}[A-Za-z0-9])?")
+SERIAL_RE = re.compile(r"[0-9A-Fa-f]{1,40}")
+REVOKE_REASONS = (0, 1, 3, 4, 5)   # non précisé, clé compromise, changement d'affiliation, remplacé, cessation d'activité
+RSA_BITS = (2048, 3072, 4096)
+EC_CURVES = ("prime256v1", "secp384r1")
 
 
 def valid_name(n):
@@ -67,6 +85,53 @@ def build_dn(d):
             return None
         parts.append("C=" + c)
     return ",".join(parts)
+
+
+def san_values(d, kind):
+    """Liste de valeurs d'un type de SAN : chacune revalidée et normalisée ; None si une valeur est refusée."""
+    v = d.get(kind, [])
+    if v in (None, ""):
+        return []
+    if not (isinstance(v, list) and len(v) <= SAN_MAX[kind]):
+        return None
+    out = []
+    for x in v:
+        if not isinstance(x, str):
+            return None
+        if kind == "dns":
+            if not DNS_RE.fullmatch(x):
+                return None
+            x = x.lower()
+        elif kind == "ip":
+            try:
+                x = str(ipaddress.ip_address(x))
+            except ValueError:
+                return None
+        elif not MAIL_RE.fullmatch(x):
+            return None
+        if x not in out:
+            out.append(x)
+    return out
+
+
+def parse_cert_issue(d):
+    """Demande d'émission : (id, ca, profile, dn, altname) validés, ou None. Le profil impose les types de SAN permis et ceux dont un au moins est requis."""
+    rid, ca, prof = d.get("id"), d.get("ca"), d.get("profile")
+    if not (isinstance(rid, str) and ID_RE.fullmatch(rid) and valid_name(ca) and prof in PROFILES):
+        return None
+    dn = build_dn(d)
+    if not dn:
+        return None
+    parts, count = [], {}
+    for kind in ("dns", "ip", "mail", "upn"):
+        vals = san_values(d, kind)
+        if vals is None or (vals and kind not in SAN_ALLOWED[prof]):
+            return None
+        count[kind] = len(vals)
+        parts += ["%s=%s" % (SAN_LABEL[kind], x) for x in vals]
+    if not any(count.get(k) for k in SAN_NEEDED[prof]):
+        return None
+    return [("id", rid), ("ca", ca), ("profile", prof), ("dn", dn), ("altname", ",".join(parts))]
 
 
 def parse_request():
@@ -112,6 +177,20 @@ def parse_request():
         if not (isinstance(n, str) and re.fullmatch(r"ExtRoot-[0-9a-f]{8}", n)):
             return 1
         out = [("action", a), ("name", n)]
+    elif a == "cert_issue":
+        r = parse_cert_issue(d)
+        if r is None:
+            return 1
+        out = [("action", a)] + r
+    elif a == "cert_revoke":
+        ca, ser, why, rid = d.get("ca"), d.get("serial"), d.get("reason"), d.get("id")
+        if not (valid_name(ca) and isinstance(ser, str) and SERIAL_RE.fullmatch(ser) and isinstance(why, int) and not isinstance(why, bool) and why in REVOKE_REASONS):
+            return 1
+        out = [("action", a), ("ca", ca), ("serial", ser.upper().lstrip("0") or "0"), ("reason", str(why))]
+        if rid is not None:   # référence facultative : root la recopie dans son résultat, la console sait ainsi quelle demande a abouti
+            if not (isinstance(rid, str) and ID_RE.fullmatch(rid)):
+                return 1
+            out.append(("id", rid))
     else:
         return 1
     for k, v in out:
@@ -179,8 +258,46 @@ def cert_ok(der):
     return rc == 0
 
 
+def csr_der(data):
+    """Demande de certificat PKCS#10 en PEM (CERTIFICATE REQUEST) ou en DER → DER ; ValueError sinon."""
+    if data[:1] == b"\x30":
+        return data
+    text = data.decode("ascii", "replace")
+    m = CSR_RE.search(text)
+    if not m or CSR_RE.sub("", text).strip():
+        raise ValueError("la demande de certificat doit être au format PEM (CERTIFICATE REQUEST) ou DER, et ne rien contenir d'autre")
+    try:
+        return base64.b64decode("".join(m.group(1).split()), validate=True)
+    except Exception:
+        raise ValueError("demande de certificat PEM illisible (base64)")
+
+
+def csr_check(der):
+    """Contrôle d'une demande : signature valide (preuve de possession de la clé), clé admise par les profils du DDI. Retourne (algorithme, détail)."""
+    # OpenSSL 3 (Ubuntu 24.04) rend le code 0 même quand la signature est fausse : seul le message fait foi
+    rc, out, err = openssl(["req", "-inform", "DER", "-noout", "-verify"], der)
+    if rc != 0 or "verify OK" not in (out + err) or "failure" in (out + err):
+        raise ValueError("la signature de la demande de certificat n'est pas valide (preuve de possession de la clé refusée)")
+    rc, text, _ = openssl(["req", "-inform", "DER", "-noout", "-text"], der)
+    if rc != 0:
+        raise ValueError("demande de certificat illisible")
+    if "rsaEncryption" in text:
+        m = re.search(r"Public-Key:\s*\((\d+) bit\)", text)
+        bits = int(m.group(1)) if m else 0
+        if bits not in RSA_BITS:
+            raise ValueError("clé RSA de %d bits refusée (admis : %s)" % (bits, ", ".join(str(b) for b in RSA_BITS)))
+        return "RSA", str(bits)
+    if "id-ecPublicKey" in text:
+        m = re.search(r"ASN1 OID:\s*(\S+)", text)
+        curve = m.group(1) if m else ""
+        if curve not in EC_CURVES:
+            raise ValueError("courbe %s refusée (admises : %s)" % (curve or "inconnue", ", ".join(EC_CURVES)))
+        return "EC", curve
+    raise ValueError("type de clé refusé (admis : RSA 2048 / 3072 / 4096, ECDSA P-256 / P-384)")
+
+
 def cmd_deposit(argv):
-    # deposit SRC DEST KIND [MAXCERTS] ; KIND = certs | crl
+    # deposit SRC DEST KIND [MAXCERTS] ; KIND = certs | crl | csr
     src, dest, kind = argv[0], argv[1], argv[2]
     maxc = int(argv[3]) if len(argv) > 3 else 1
     try:
@@ -188,6 +305,7 @@ def cmd_deposit(argv):
     except (OSError, ValueError) as e:
         print("ERR\t%s" % e)
         return 1
+    info = "1"
     try:
         if kind == "certs":
             ders = parse_certs(data)
@@ -196,6 +314,12 @@ def cmd_deposit(argv):
             if not all(cert_ok(d) for d in ders):
                 raise ValueError("un certificat n'est pas lisible par openssl")
             payload = "".join(pem_of(d) for d in ders).encode()
+            info = str(len(ders))
+        elif kind == "csr":
+            der = csr_der(data)
+            alg, detail = csr_check(der)
+            payload = pem_of(der, "CERTIFICATE REQUEST").encode()
+            info = "%s\t%s" % (alg, detail)
         elif kind == "crl":
             if data[:1] == b"\x30":
                 der = data
@@ -216,7 +340,7 @@ def cmd_deposit(argv):
     fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(payload)
-    print("OK\t%d" % (len(parse_certs(data)) if kind == "certs" else 1))
+    print("OK\t%s" % info)
     return 0
 
 
@@ -276,6 +400,88 @@ def cmd_check_issued(argv):
         print("ERR\t%s" % err)
         return 1
     print("OK")
+    return 0
+
+
+def leaf_der(raw):
+    """Le certificat rendu par la CLI d'EJBCA : des lignes « Subject: » / « Issuer: » précèdent le bloc PEM. Un seul bloc PEM est exigé, rien d'autre après lui."""
+    text = raw.decode("ascii", "replace")
+    blocks = re.findall(r"-----BEGIN CERTIFICATE-----\s*([A-Za-z0-9+/=\s]+?)\s*-----END CERTIFICATE-----", text)
+    if len(blocks) != 1:
+        raise ValueError("un seul certificat est attendu dans le fichier rendu par EJBCA (%d trouvé(s))" % len(blocks))
+    rest = re.sub(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", "", text, flags=re.S)
+    if any(l.strip() and not re.match(r"(Subject|Issuer):", l.strip()) for l in rest.splitlines()):
+        raise ValueError("le fichier rendu par EJBCA contient autre chose qu'un certificat")
+    try:
+        return base64.b64decode("".join(blocks[0].split()), validate=True)
+    except Exception:
+        raise ValueError("certificat illisible (base64)")
+
+
+def issued_by_first(cert_path, bundle_path):
+    """L'émetteur du certificat final est-il le sujet du premier certificat du lot (l'autorité demandée), et non une autre autorité de la même chaîne ?"""
+    try:
+        first = parse_certs(open(bundle_path, "rb").read())[0]
+    except (OSError, ValueError, IndexError):
+        return False
+    want = describe_cert(first)["subject"].lower()
+    rc, out, _ = openssl(["x509", "-in", cert_path, "-noout", "-issuer", "-nameopt", "RFC2253"])
+    got = out.partition("=")[2].strip().lower() if rc == 0 else ""
+    return bool(want) and want == got
+
+
+def cmd_check_leaf(argv):
+    # check-leaf CSR CERT BUNDLE OUT : le certificat émis par EJBCA correspond-il à la demande (même clé) et remonte-t-il à une racine par BUNDLE
+    # (certificat de l'autorité + sa chaîne, racine auto-signée en dernier) ? OUT reçoit le certificat en PEM canonique.
+    # Sortie : OK, série (hex), SHA-256, début, fin, sujet
+    csr, cert, bundle, out_path = argv[0], argv[1], argv[2], argv[3]
+    try:
+        der = leaf_der(read_deposit(cert))
+    except (OSError, ValueError) as e:
+        print("ERR\t%s" % e)
+        return 1
+    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(pem_of(der).encode())
+    text = x509_text(out_path)
+    err = None
+    pk_c, pk_r = pubkey_of("x509", out_path), pubkey_of("req", csr)
+    if not text:
+        err = "certificat illisible"
+    elif not pk_c or pk_c != pk_r:
+        err = "la clé publique du certificat ne correspond pas à la demande"
+    elif "CA:FALSE" not in text:
+        err = "le certificat émis n'est pas un certificat final (CA:FALSE absent) : refusé"
+    elif not issued_by_first(out_path, bundle):
+        err = "le certificat n'a pas été signé par l'autorité demandée (premier certificat du lot)"
+    else:
+        rc, _, e = openssl(["verify", "-CAfile", bundle, out_path])
+        if rc != 0:
+            err = "la chaîne ne valide pas le certificat émis : %s" % (e.strip().splitlines()[-1] if e.strip() else "refusé")
+        elif openssl(["x509", "-in", out_path, "-noout", "-checkend", "60"])[0] != 0:
+            err = "le certificat émis est déjà expiré"
+    if err:
+        print("ERR\t%s" % err)
+        return 1
+    rc, out, _ = openssl(["x509", "-in", out_path, "-noout", "-serial", "-fingerprint", "-sha256", "-subject", "-nameopt", "RFC2253"])
+    serial = sha = subject = ""
+    for line in out.splitlines():
+        k, _, v = line.partition("=")
+        if k == "serial":
+            serial = v.strip().upper().lstrip("0") or "0"
+        elif k.lower().endswith("fingerprint"):
+            sha = v.replace(":", "").lower()
+        elif k == "subject":
+            subject = v.strip()
+    info = describe_cert(der)
+    print("OK\t%s\t%s\t%s\t%s\t%s" % (serial, sha, info["notBefore"], info["notAfter"], subject))
+    return 0
+
+
+def cmd_hex2dec(argv):
+    if len(argv) != 1 or not SERIAL_RE.fullmatch(argv[0]):
+        return 1
+    print(int(argv[0], 16))
     return 0
 
 
@@ -563,6 +769,10 @@ def main():
         return cmd_deposit(args)
     if cmd == "check-issued":
         return cmd_check_issued(args)
+    if cmd == "check-leaf":
+        return cmd_check_leaf(args)
+    if cmd == "hex2dec":
+        return cmd_hex2dec(args)
     if cmd == "check-chain":
         return cmd_check_chain(args)
     if cmd == "check-crl":

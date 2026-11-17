@@ -9,6 +9,9 @@
 # installation (les clés des autorités en dépendent) : une réinstallation conserve donc toujours le fichier existant, et une installation
 # est refusée si une base « ejbca » existe déjà sans ses secrets (ses autorités seraient illisibles).
 # 0.14.0 : installation, démarrage / arrêt, état, désinstallation. 0.14.1 : autorités (racine, émettrice, import, CRL), remise à zéro.
+# 0.14.3 : émission de certificats depuis une demande (CSR) déposée par la console, révocation, profils fournis (importés au besoin), lecture
+# de la liste des certificats par la console (droit de lecture sur deux tables d'EJBCA, public seulement). La clé privée d'un certificat ne passe
+# JAMAIS ici : la console fabrique la clé et la demande, root ne reçoit et ne rend que des données publiques.
 # Mise à jour de l'image : 0.14.5.
 set -euo pipefail
 umask 077
@@ -42,6 +45,10 @@ WORK_HOST="$PDATA/persistent/work"                            # dossier d'échan
 WORK_CONT=/mnt/persistent/work
 EJBCA_SH=/opt/keyfactor/bin/ejbca.sh
 IN_DIR="$GEN/pki-in"                                          # dépôts de la console (certificats et CRL publics)
+PROFILE_DIR="${DDI_PKI_PROFILE_DIR:-$DDI_LIBDIR/pki-profiles}"   # profils de certificat et d'entité finale fournis (XML d'EJBCA, tools/pki-gen-profiles.sh)
+CERT_OUT="$RUN/pki-cert"                                      # certificats émis (publics), à relever par la console puis purgés
+CERT_KEEP="${DDI_PKI_CERT_KEEP:-3600}"                         # secondes pendant lesquelles un certificat émis reste relevable
+CONSOLE_ROLE="${DDI_PKI_CONSOLE_ROLE:-ddi}"                    # rôle PostgreSQL de la console : lit certificatedata et base64certdata, rien d'autre
 CRL_PERIOD_MS=604800000                                       # 7 jours de validité ; renouvelées bien avant (EJBCA n'a aucun service de renouvellement)
 CRL_OVERLAP_MS=86400000
 CRL_RENEW_AFTER="${DDI_PKI_CRL_RENEW_AFTER:-43200}"            # secondes : une CRL plus vieille est renouvelée par « maintain »
@@ -61,7 +68,9 @@ Usage : ddibuntu-pki <commande>
   ca-import NOM              importe le certificat signé déposé pour une émettrice en attente
   ca-crl NOM                 renouvelle la CRL d'une autorité
   ca-rootcrl NOM             importe la CRL déposée d'une racine externe
-  maintain                   publie l'état et renouvelle les CRL trop anciennes (minuteur)
+  cert-issue ID CA PROFIL DN [SAN]  émet un certificat pour la demande déposée (pki-in/ID.csr.pem) ; PROFIL = server | machine | user | network
+  cert-revoke CA SÉRIE MOTIF  révoque un certificat (série en hexadécimal ; motif 0, 1, 3, 4 ou 5) et renouvelle la CRL tout de suite
+  maintain                   publie l'état, renouvelle les CRL trop anciennes, importe les profils fournis, purge les certificats relevés (minuteur)
   request                    traite la demande déposée par la console (.pki-request)
   render IMAGE NOM           affiche l'unité Quadlet qui serait écrite (sans rien installer)
   check IMAGE NOM [RÉSEAUX]  valide les paramètres (sans rien installer)
@@ -76,8 +85,11 @@ publish() {   # $1 = nom de fichier, $2 = JSON
   local t; t="$(mktemp "$RUN/.pki.XXXXXX")" || return 0
   printf '%s\n' "$2" > "$t"; chmod 0644 "$t"; mv -f "$t" "$RUN/$1"
 }
-publish_result() {   # $1 = action, $2 = ok (true|false), $3 = message
-  publish pki-result.json "$(A="$1" O="$2" M="$3" python3 -c 'import json,os,time; print(json.dumps({"at": int(time.time()), "action": os.environ["A"], "ok": os.environ["O"] == "true", "message": os.environ["M"][:300]}, ensure_ascii=False))')"
+publish_result() {   # $1 = action, $2 = ok (true|false), $3 = message, $4 = référence de la demande (facultatif : identifiant d'émission)
+  publish pki-result.json "$(A="$1" O="$2" M="$3" REF="${4:-}" python3 -c 'import json,os,time
+d = {"at": int(time.time()), "action": os.environ["A"], "ok": os.environ["O"] == "true", "message": os.environ["M"][:300]}
+if os.environ["REF"]: d["ref"] = os.environ["REF"][:40]
+print(json.dumps(d, ensure_ascii=False))')"
 }
 
 # ---- Validation (aucune entrée n'est supposée sûre) ----
@@ -213,6 +225,48 @@ select $1 from cadata where name = :'n'
 SQL
 }
 
+# La console lit la liste des certificats (recherche, export) DIRECTEMENT dans la base d'EJBCA, avec son propre rôle PostgreSQL et en lecture seule sur deux
+# tables qui ne contiennent que des données publiques (certificats, empreintes, motifs de révocation). Elle n'a aucun droit sur cadata (clés des autorités),
+# ni sur les utilisateurs d'EJBCA. Les tables n'existent qu'après le premier démarrage d'EJBCA : le droit est posé dès qu'elles sont là, sans effet ensuite.
+grant_console_read() {
+  [[ "$CONSOLE_ROLE" =~ ^[a-z][a-z0-9_]{0,30}$ ]] || return 0
+  sql ejbca -v r="$CONSOLE_ROLE" <<'SQL' >/dev/null 2>&1 || true
+select format('grant select on certificatedata, base64certdata to %I', :'r')
+where to_regclass('public.certificatedata') is not null and to_regclass('public.base64certdata') is not null
+  and exists (select 1 from pg_roles where rolname = :'r')
+  and not has_table_privilege(:'r', 'public.certificatedata', 'select') \gexec
+SQL
+}
+
+# ---- Profils fournis : importés une seule fois dans EJBCA (jamais réimportés : EJBCA refuse un profil existant, et un administrateur a pu l'ajuster) ----
+PROFILE_CERT=(DDI-RADIUS-Server:5010001 DDI-Client-Machine:5010002 DDI-Client-User:5010003 DDI-Network-Device:5010004)
+profile_present() {   # $1 = certificateprofile | endentityprofile, $2 = nom
+  local tbl col
+  case "$1" in certificateprofile) tbl=certificateprofiledata; col=certificateprofilename ;; endentityprofile) tbl=endentityprofiledata; col=profilename ;; *) return 1 ;; esac
+  [[ "$(sql ejbca -v n="$2" <<SQL 2>/dev/null | head -n1
+select 1 from $tbl where $col = :'n'
+SQL
+)" = 1 ]]
+}
+ensure_profiles() {
+  local e n id missing=() f
+  for e in "${PROFILE_CERT[@]}"; do n="${e%%:*}"; profile_present certificateprofile "$n" || missing+=("certprofile_$e"); done
+  profile_present endentityprofile DDI-Endentity || missing+=("entityprofile_DDI-Endentity:5020001")
+  [[ "${#missing[@]}" -eq 0 ]] && return 0
+  prep_work
+  install -d -m 0700 "$WORK_HOST/profiles"; own "$WORK_HOST/profiles"
+  for e in "${missing[@]}"; do
+    f="$PROFILE_DIR/${e%%:*}-${e##*:}.xml"
+    [[ -f "$f" && ! -L "$f" ]] || { done_work; log "profil fourni introuvable : $f"; return 1; }
+    install -m 0600 "$f" "$WORK_HOST/profiles/${f##*/}"; own "$WORK_HOST/profiles/${f##*/}"
+  done
+  cli_run ca importprofiles -d "$WORK_CONT/profiles" >/dev/null || { done_work; return 1; }
+  done_work
+  for e in "${PROFILE_CERT[@]}"; do n="${e%%:*}"; profile_present certificateprofile "$n" || { log "le profil « $n » n'a pas été importé"; return 1; }; done
+  profile_present endentityprofile DDI-Endentity || { log "le profil d'entité finale « DDI-Endentity » n'a pas été importé"; return 1; }
+  log "profils fournis importés dans EJBCA"
+}
+
 # ---- Pare-feu : le port public (CRL, SCEP, OCSP) n'est ouvert qu'aux réseaux déclarés ----
 fw_open() {   # $1 = réseaux séparés par des virgules ; vide = referme
   if [[ ! -x "$FW_BIN" ]]; then printf 'pare-feu non mis à jour (ddibuntu-fw absent)'; return 0; fi
@@ -274,6 +328,7 @@ print(json.dumps({"at": int(time.time()), "podman": e["PM"] == "true", "installe
   "hostname": e["H"], "version": e["T"], "digest": e["D"], "nets": [x for x in e["N"].split(",") if x], "health": e["HB"][:64], "port": int(e["PORT"]),
   "dataPresent": e["DATA"] == "true", "secretsPresent": e["SEC"] == "true", "dataHostname": e["DH"], "casCount": int(e["NC"]) if e["NC"].isdigit() else None, "resetAllowed": e["RO"] == "true"}, ensure_ascii=False))')"
   publish_cas
+  if [[ "$dbs" = data ]]; then grant_console_read; fi
 }
 
 write_instance() {   # $1 nom, $2 étiquette, $3 empreinte, $4 réseaux
@@ -528,10 +583,101 @@ SQL
   printf 'CRL de la racine « %s » importée : elle est publiée avec celles du DDI.' "$name"
 }
 
+# ---- Certificats (0.14.3) : émission depuis une demande déposée par la console, révocation ----
+profile_name() { case "$1" in server) echo DDI-RADIUS-Server ;; machine) echo DDI-Client-Machine ;; user) echo DDI-Client-User ;; network) echo DDI-Network-Device ;; *) return 1 ;; esac; }
+ca_meta_kind() { META_PATH="$CAD/$1/meta.json" python3 -c 'import json,os
+try: print(json.load(open(os.environ["META_PATH"])).get("kind", ""))
+except Exception: print("")'; }
+# Une demande déjà traitée (même identifiant) n'est jamais rejouée : ni dossier publié, ni entité finale d'EJBCA du même nom.
+cert_issue() {   # $1 identifiant, $2 autorité, $3 profil (server|machine|user|network), $4 nom distinctif, $5 SAN (facultatif)
+  local id="$1" ca="$2" prof="$3" dn="$4" alt="${5:-}" user pw pname info bundle out meta serial sha nb na subj
+  [[ "$id" =~ ^[0-9a-f]{16}$ ]] || { log "identifiant d'émission invalide"; return 1; }
+  valid_ca_name "$ca" || { log "nom d'autorité invalide"; return 1; }
+  pname="$(profile_name "$prof")" || { log "profil inconnu"; return 1; }
+  [[ -n "$dn" ]] || { log "nom distinctif vide"; return 1; }
+  need_running || return 1
+  [[ -e "$CERT_OUT/$id" ]] && { log "cette demande a déjà été traitée"; return 1; }
+  [[ "$(ca_field status "$ca")" = 1 ]] || { log "l'autorité « $ca » n'existe pas ou n'est pas active"; return 1; }
+  [[ "$(ca_meta_kind "$ca")" = issuing ]] || { log "« $ca » n'est pas une émettrice créée par le DDI : seules les émettrices délivrent des certificats"; return 1; }
+  [[ -s "$RUN/pki-ca/$ca/cert.pem" && -s "$RUN/pki-ca/$ca/chain.pem" ]] || { cmd_status >/dev/null 2>&1 || true; }
+  [[ -s "$RUN/pki-ca/$ca/cert.pem" && -s "$RUN/pki-ca/$ca/chain.pem" ]] || { log "certificat ou chaîne de « $ca » introuvables (état non publié)"; return 1; }
+  ensure_profiles || return 1
+  prep_work
+  info="$(python3 "$HELPER" deposit "$IN_DIR/$id.csr.pem" "$WORK_HOST/req.csr" csr 2>&1)" || { done_work; log "demande de certificat refusée : ${info#ERR	}"; return 1; }
+  own "$WORK_HOST/req.csr"
+  user="ddi-$id"; pw="$(gen_secret)"
+  # l'entité finale (nom, SAN) vient du formulaire validé par root, jamais de la demande de certificat : le profil interdit toute dérogation
+  if ! cli_run ra addendentity --username "$user" --dn "$dn" --caname "$ca" --type 1 --token USERGENERATED --password "$pw" --certprofile "$pname" --eeprofile DDI-Endentity ${alt:+--altname "$alt"} >/dev/null; then
+    done_work; return 1
+  fi
+  # l'entité finale (et son mot de passe à usage unique) ne sert qu'à cette émission : supprimée dans tous les cas, le certificat reste dans EJBCA
+  if ! cli_run createcert --username "$user" --password "$pw" -c "$WORK_CONT/req.csr" -f "$WORK_CONT/issued.pem" >/dev/null; then
+    cli_run ra delendentity --username "$user" -force >/dev/null 2>&1 || true
+    done_work; return 1
+  fi
+  cli_run ra delendentity --username "$user" -force >/dev/null 2>&1 || log "avertissement : l'entité finale « $user » n'a pas pu être supprimée d'EJBCA"
+  [[ -s "$WORK_HOST/issued.pem" ]] || { done_work; log "EJBCA n'a pas écrit le certificat"; return 1; }
+  bundle="$WORK_HOST/bundle.pem"
+  cat "$RUN/pki-ca/$ca/cert.pem" "$RUN/pki-ca/$ca/chain.pem" > "$bundle"
+  out="$(python3 "$HELPER" check-leaf "$WORK_HOST/req.csr" "$WORK_HOST/issued.pem" "$bundle" "$WORK_HOST/leaf.pem" 2>&1)" || { done_work; log "certificat émis refusé : ${out#ERR	}"; return 1; }
+  IFS=$'\t' read -r _ serial sha nb na subj <<< "$out"
+  install -d -m 0755 "$CERT_OUT" "$CERT_OUT/$id"
+  install -m 0644 "$WORK_HOST/leaf.pem" "$CERT_OUT/$id/cert.pem"
+  install -m 0644 "$bundle" "$CERT_OUT/$id/chain.pem"
+  meta="$(ID="$id" CA="$ca" PR="$prof" SE="$serial" SH="$sha" NB="$nb" NA="$na" SU="$subj" python3 -c 'import json,os,time
+e = os.environ
+print(json.dumps({"id": e["ID"], "ca": e["CA"], "profile": e["PR"], "serial": e["SE"], "sha256": e["SH"], "notBefore": e["NB"], "notAfter": e["NA"], "subject": e["SU"], "issuedAt": int(time.time())}, ensure_ascii=False))')"
+  printf '%s\n' "$meta" > "$CERT_OUT/$id/meta.json"; chmod 0644 "$CERT_OUT/$id/meta.json"
+  done_work
+  printf 'Certificat émis par « %s » (profil %s, série %s, expire le %s).' "$ca" "$pname" "$serial" "$na"
+}
+
+cert_revoke() {   # $1 autorité, $2 série (hexadécimal), $3 motif (0, 1, 3, 4 ou 5)
+  local ca="$1" ser="$2" why="$3" dn dec st
+  valid_ca_name "$ca" || { log "nom d'autorité invalide"; return 1; }
+  [[ "$ser" =~ ^[0-9A-Fa-f]{1,40}$ ]] || { log "numéro de série invalide"; return 1; }
+  [[ "$why" =~ ^[01345]$ ]] || { log "motif de révocation invalide"; return 1; }
+  need_running || return 1
+  dn="$(ca_field subjectdn "$ca")"; [[ -n "$dn" ]] || { log "l'autorité « $ca » n'existe pas"; return 1; }
+  dec="$(python3 "$HELPER" hex2dec "$ser")" || { log "numéro de série illisible"; return 1; }
+  # seuls les certificats finaux (type 1) de cette autorité se révoquent ici ; le certificat d'une autorité ne se révoque jamais depuis cette commande
+  st="$(sql ejbca -v d="$dn" -v s="$dec" <<'SQL' 2>/dev/null | head -n1
+select status from certificatedata where issuerdn = :'d' and serialnumber = :'s' and type = 1
+SQL
+)"
+  [[ -n "$st" ]] || { log "aucun certificat de série $ser émis par « $ca »"; return 1; }
+  [[ "$st" != 40 ]] || { log "ce certificat est déjà révoqué"; return 1; }
+  cli_run ra revokecert --dn "$dn" -s "$ser" -r "$why" >/dev/null || return 1
+  st="$(sql ejbca -v d="$dn" -v s="$dec" <<'SQL' 2>/dev/null | head -n1
+select status from certificatedata where issuerdn = :'d' and serialnumber = :'s' and type = 1
+SQL
+)"
+  [[ "$st" = 40 ]] || { log "la révocation n'a pas été enregistrée par EJBCA"; return 1; }
+  # la CRL est renouvelée tout de suite : sans cela le certificat révoqué resterait accepté jusqu'au prochain passage du minuteur
+  if cli_run ca createcrl --caname "$ca" >/dev/null; then
+    printf 'Certificat %s révoqué (motif %s) ; la CRL de « %s » est à jour.' "$ser" "$why" "$ca"
+  else
+    printf 'Certificat %s révoqué (motif %s). AVERTISSEMENT : la CRL de « %s » n'\''a pas pu être renouvelée, le minuteur la renouvellera.' "$ser" "$why" "$ca"
+  fi
+}
+
+# les certificats émis sont relevés par la console puis effacés : aucun ne reste plus de CERT_KEEP secondes
+purge_certs() {
+  if [[ -d "$CERT_OUT" && ! -L "$CERT_OUT" ]]; then
+    find "$CERT_OUT" -mindepth 1 -maxdepth 1 -type d -regextype posix-extended -regex '.*/[0-9a-f]{16}' -mmin "+$(( CERT_KEEP / 60 ))" -exec rm -rf --one-file-system {} + 2>/dev/null || true
+  fi
+  # une demande de certificat déposée mais jamais traitée (demande JSON refusée, console arrêtée entre les deux) ne reste pas sur le disque
+  if [[ -d "$IN_DIR" && ! -L "$IN_DIR" ]]; then
+    find "$IN_DIR" -mindepth 1 -maxdepth 1 -type f -regextype posix-extended -regex '.*/[0-9a-f]{16}\.csr\.pem' -mmin "+$(( CERT_KEEP / 60 ))" -delete 2>/dev/null || true
+  fi
+}
+
 # minuteur : publie l'état et renouvelle les CRL des autorités du DDI (EJBCA n'a aucun service qui le fasse : sans cela elles expirent)
 cmd_maintain() {
   cmd_status || true
+  purge_certs
   [[ -f "$INST" && ! -L "$INST" && "$(health_body)" = ALLOK ]] || return 0
+  ensure_profiles || true   # une instance saine reçoit ses profils tout de suite, pas seulement à la première émission
   [[ -f "$RUN/pki-cas.json" ]] || return 0
   local n now renewed=0
   now="$(date +%s)"
@@ -557,6 +703,7 @@ for c in d.get("cas", []):
 
 # ---- Demande de la console (sans privilège) : revalidée ici en totalité par pki-helper.py ----
 # Formats : {"action":"apply",…} | {"action":"start|stop|restart|status|uninstall|reset"} | {"action":"ca_root|ca_issuing",…} | {"action":"ca_import|ca_crl|ca_rootcrl","name":"…"}
+#           | {"action":"cert_issue","id","ca","profile","cn","o","ou","c","dns","ip","mail","upn"} | {"action":"cert_revoke","ca","serial","reason"[,"id"]}
 cmd_request() {
   local rq="$GEN/.pki-request" raw="" out="" rc=0 ok=false k v action=""
   local -A R=()
@@ -578,14 +725,17 @@ cmd_request() {
     ca_import) out="$( ( ca_import "${R[name]}" ) 2>&1)" || rc=$? ;;
     ca_crl) out="$( ( ca_crl "${R[name]}" ) 2>&1)" || rc=$? ;;
     ca_rootcrl) out="$( ( ca_rootcrl "${R[name]}" ) 2>&1)" || rc=$? ;;
+    cert_issue) out="$( ( cert_issue "${R[id]}" "${R[ca]}" "${R[profile]}" "${R[dn]}" "${R[altname]:-}" ) 2>&1)" || rc=$? ;;
+    cert_revoke) out="$( ( cert_revoke "${R[ca]}" "${R[serial]}" "${R[reason]}" ) 2>&1)" || rc=$? ;;
     *) out="demande invalide"; rc=1 ;;
   esac
   [[ "$rc" -eq 0 ]] && ok=true
   out="$(printf '%s' "$out" | tr '\n\r' '  ' | sed 's/ddibuntu-pki: //g')"
   log "demande de la console (${action:-invalide}) : ${out:-ok}"
-  publish_result "${action:-invalide}" "$ok" "$out"
+  publish_result "${action:-invalide}" "$ok" "$out" "${R[id]:-}"
   # les dépôts de la console sont consommés quoi qu'il arrive : ils ne restent jamais sur le disque
   [[ -z "${R[name]:-}" ]] || rm -f "$IN_DIR/${R[name]}.chain.pem" "$IN_DIR/${R[name]}.cert.pem" "$IN_DIR/${R[name]}.crl" 2>/dev/null || true
+  [[ -z "${R[id]:-}" ]] || rm -f "$IN_DIR/${R[id]}.csr.pem" 2>/dev/null || true
   cmd_status || true
   [[ "$ok" = true ]]
 }
@@ -607,6 +757,8 @@ case "$cmd" in
   ca-import) ca_import "${1:-}"; echo; cmd_status ;;
   ca-crl) ca_crl "${1:-}"; echo; cmd_status ;;
   ca-rootcrl) ca_rootcrl "${1:-}"; echo; cmd_status ;;
+  cert-issue) cert_issue "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}"; echo; cmd_status ;;
+  cert-revoke) cert_revoke "${1:-}" "${2:-}" "${3:-}"; echo; cmd_status ;;
   maintain) cmd_maintain ;;
   status) cmd_status ;;
   request) cmd_request ;;

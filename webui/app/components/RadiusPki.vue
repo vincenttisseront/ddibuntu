@@ -6,8 +6,10 @@ const props = defineProps<{ eap: any | null }>()
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm(); const fmt = useFmt()
 
 const view = ref<any>(null), loadErr = ref('')
+const ddi = ref<any>(null)   // ce que la PKI du DDI propose (0.14.3) ; absent = pas de carte
 async function load() {
   try { view.value = await api.call('GET', '/radius/pki', undefined, { silent: true }); loadErr.value = '' } catch (e: any) { loadErr.value = e?.info?.message ?? t('err.internal') }
+  try { ddi.value = await api.call('GET', '/radius/pki/ddi', undefined, { silent: true }) } catch { ddi.value = null }
 }
 const rd = computed(() => view.value?.readiness ?? { ready: false, empty: true, problems: [], warnings: [] })
 const caName = (id?: string) => view.value?.cas.find((c: any) => c.id === id)?.name ?? ''
@@ -142,6 +144,34 @@ async function delServer() {
   try { await api.call('DELETE', '/radius/pki/server'); await load() } catch { /* message déjà affiché */ }
 }
 
+// ---- PKI du DDI (0.14.3) : confiance en une autorité du DDI, certificat du serveur émis par elle ----
+const ddiBusy = ref(''), ddiErr = ref('')
+async function ddiTrust(name: string) {
+  ddiBusy.value = `trust:${name}`; ddiErr.value = ''
+  try {
+    const r: any = await api.call('POST', '/radius/pki/ddi/trust', { ca: name }, { silent: true })
+    view.value = r.view
+    toast.add({ title: t('radius.pki.ddi_trusted_done', { n: r.added, crl: r.crl.loaded }), color: 'success', icon: 'i-lucide-check' })
+    await load()
+  } catch (e: any) { ddiErr.value = errOf(e) } finally { ddiBusy.value = '' }
+}
+const dsv = reactive({ open: false, ca: '', cn: '', dns: '', ip: '', alg: 'ecp256', busy: false, err: '' })
+const DDI_ALGS = [{ value: 'ecp256', label: 'ECDSA P-256' }, { value: 'rsa2048', label: 'RSA 2048' }, { value: 'rsa3072', label: 'RSA 3072' }]
+const lines = (v: string) => [...new Set(v.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean))]
+const dsvOk = computed(() => !!dsv.ca && !!dsv.cn.trim() && lines(dsv.dns).length > 0)
+function openDdiServer() {
+  const first = ddi.value?.issuers?.find((i: any) => i.trusted) ?? ddi.value?.issuers?.[0]
+  Object.assign(dsv, { open: true, ca: first?.name ?? '', cn: '', dns: '', ip: '', alg: 'ecp256', busy: false, err: '' })
+}
+async function ddiServer() {
+  dsv.busy = true; dsv.err = ''
+  try {
+    const r: any = await api.call('POST', '/radius/pki/ddi/server', { ca: dsv.ca, cn: dsv.cn.trim(), dns: lines(dsv.dns), ip: lines(dsv.ip), alg: dsv.alg }, { silent: true })
+    view.value = r.view; dsv.open = false
+    toast.add({ title: t('radius.pki.ddi_issued', { serial: r.serial }), color: 'success', icon: 'i-lucide-check' })
+  } catch (e: any) { dsv.err = e?.info?.detail ? `${errOf(e)} ${e.info.detail}` : errOf(e) } finally { dsv.busy = false }
+}
+
 // ---- Vérification d'un certificat client ----
 const chk = reactive({ pem: '', directory: true, busy: false, err: '' }), chkRes = ref<any>(null)
 async function checkClient() {
@@ -190,6 +220,33 @@ watch(() => props.eap, () => { void load() })
         <UAlert color="info" variant="subtle" icon="i-lucide-info" class="mt-3" :title="t('radius.pki.rules_title')" :description="t('radius.pki.rules_body')" data-test="pki-rules-note" />
       </UCard>
 
+      <!-- PKI du DDI -->
+      <UCard v-if="ddi?.installed" data-test="pki-ddi">
+        <template #header>
+          <div class="flex items-center gap-2"><UIcon name="i-lucide-badge-check" class="size-5 text-primary" /><h2 class="font-semibold">{{ t('radius.pki.ddi_title') }}</h2></div>
+          <p class="text-sm text-muted mt-1">{{ t('radius.pki.ddi_desc') }}</p>
+        </template>
+        <UAlert v-if="!ddi.ready" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('pki.ca.not_ready')" role="status" class="mb-3" data-test="pki-ddi-notready" />
+        <p v-if="!ddi.issuers.length" class="text-sm text-muted" data-test="pki-ddi-none">{{ t('radius.pki.ddi_none') }} <NuxtLink to="/pki#cas" class="text-primary underline">{{ t('radius.pki.ddi_none_link') }}</NuxtLink></p>
+        <ul v-else class="flex flex-col divide-y divide-default border border-default rounded-md text-sm" data-test="pki-ddi-list">
+          <li v-for="i in ddi.issuers" :key="i.name" class="flex flex-wrap items-center gap-2 px-3 py-2" :data-test="`pki-ddi-${i.name}`">
+            <div class="flex flex-col gap-0.5 min-w-0">
+              <span class="font-medium font-mono">{{ i.name }}</span>
+              <span class="text-xs text-muted font-mono break-all">{{ i.dn }}</span>
+              <span v-if="!i.hasCrl" class="text-xs text-warning" data-test="pki-ddi-nocrl">{{ t('radius.pki.ddi_no_crl') }}</span>
+            </div>
+            <UBadge class="ml-auto" :color="i.trusted ? 'success' : 'neutral'" variant="subtle" :label="t(i.trusted ? 'radius.pki.ddi_trusted' : 'radius.pki.ddi_not_trusted')" data-test="pki-ddi-state" />
+            <UButton size="xs" :color="i.trusted ? 'neutral' : 'primary'" :variant="i.trusted ? 'outline' : 'solid'" :icon="i.trusted ? 'i-lucide-refresh-cw' : 'i-lucide-link'" :label="t(i.trusted ? 'radius.pki.ddi_refresh' : 'radius.pki.ddi_trust')"
+              :loading="ddiBusy === `trust:${i.name}`" :disabled="!!ddiBusy || !ddi.ready" :data-test="`pki-ddi-trust-${i.name}`" @click="ddiTrust(i.name)" />
+          </li>
+        </ul>
+        <p v-if="ddiErr" class="text-sm text-error mt-2" role="alert" data-test="pki-ddi-error">{{ ddiErr }}</p>
+        <div v-if="ddi.issuers.length" class="mt-3 flex flex-wrap items-center gap-2">
+          <UButton icon="i-lucide-server-cog" color="neutral" variant="outline" :label="t('radius.pki.ddi_server_btn')" :disabled="!!ddiBusy || !ddi.ready" data-test="pki-ddi-server-open" @click="openDdiServer" />
+          <span class="text-xs text-dimmed">{{ t('radius.pki.ddi_server_hint') }}</span>
+        </div>
+      </UCard>
+
       <!-- Autorités -->
       <UCard>
         <template #header>
@@ -205,6 +262,7 @@ watch(() => props.eap, () => { void load() })
               <UBadge v-if="c.root" color="primary" variant="subtle" size="sm" :label="t('radius.pki.root')" />
               <UBadge v-else color="neutral" variant="subtle" size="sm" :label="t('radius.pki.inter')" />
               <UBadge v-if="c.issuing" color="neutral" variant="outline" size="sm" :label="t('radius.pki.issuing')" />
+              <UBadge v-if="c.ddi" color="primary" variant="outline" size="sm" icon="i-lucide-badge-check" :label="t('radius.pki.ddi_badge')" data-test="pki-ca-ddi" />
               <UBadge v-if="c.expired" color="error" variant="subtle" size="sm" :label="t('radius.pki.expired')" />
               <UBadge v-else-if="!c.chainOk" color="warning" variant="subtle" size="sm" icon="i-lucide-unlink" :label="t('radius.pki.chain_broken')" data-test="pki-ca-broken" />
               <span class="ml-auto flex gap-1">
@@ -394,6 +452,28 @@ watch(() => props.eap, () => { void load() })
           <UAlert color="neutral" variant="subtle" icon="i-lucide-lock" :description="t('radius.pki.imp_note')" />
           <UAlert v-if="impM.err" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="impM.err" role="alert" data-test="pki-imp-error" />
           <div class="flex justify-end gap-2"><UButton color="neutral" variant="outline" :label="t('common.cancel')" @click="impM.open = false" /><UButton type="submit" :loading="impM.busy" :label="t('radius.pki.import')" data-test="pki-imp-submit" /></div>
+        </form>
+      </template>
+    </UModal>
+
+    <!-- Certificat du serveur émis par la PKI du DDI -->
+    <UModal v-model:open="dsv.open" :title="t('radius.pki.ddi_server_title')" :description="t('radius.pki.ddi_server_desc')" :dismissible="!dsv.busy">
+      <template #body>
+        <form class="flex flex-col gap-3" @submit.prevent="ddiServer">
+          <UAlert v-if="view?.server" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('radius.pki.ddi_replace_title')" :description="t('radius.pki.ddi_replace_hint')" data-test="pki-ddi-replace-warn" />
+          <UFormField :label="t('pki.ca.name')"><USelect v-model="dsv.ca" :items="(ddi?.issuers ?? []).map((x: any) => x.name)" class="w-full" data-test="pki-ddi-ca" /></UFormField>
+          <UFormField :label="t('pki.cert.cn')" :help="t('radius.pki.ddi_cn_help')"><UInput v-model="dsv.cn" class="w-full" maxlength="64" placeholder="radius.lab.test" data-test="pki-ddi-cn" /></UFormField>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <UFormField :label="t('pki.cert.san_dns')" :help="t('pki.cert.san_help', { max: 8 })"><UTextarea v-model="dsv.dns" :rows="3" class="w-full font-mono text-xs" data-test="pki-ddi-dns" /></UFormField>
+            <UFormField :label="t('pki.cert.san_ip')" :help="t('pki.cert.san_help', { max: 4 })"><UTextarea v-model="dsv.ip" :rows="3" class="w-full font-mono text-xs" data-test="pki-ddi-ip" /></UFormField>
+          </div>
+          <UFormField :label="t('pki.ca.alg')"><USelect v-model="dsv.alg" :items="DDI_ALGS" class="w-full sm:w-1/2" data-test="pki-ddi-alg" /></UFormField>
+          <p v-if="dsv.busy" class="text-xs text-muted" role="status">{{ t('pki.cert.working') }}</p>
+          <UAlert v-if="dsv.err" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="dsv.err" role="alert" data-test="pki-ddi-server-error" />
+          <div class="flex justify-end gap-2">
+            <UButton type="button" color="neutral" variant="outline" :label="t('common.cancel')" :disabled="dsv.busy" @click="dsv.open = false" />
+            <UButton type="submit" :loading="dsv.busy" :disabled="!dsvOk" :label="t('pki.cert.issue_go')" data-test="pki-ddi-issue" />
+          </div>
         </form>
       </template>
     </UModal>

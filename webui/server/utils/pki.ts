@@ -85,7 +85,8 @@ export interface PkiStatus {
   /** La base « ejbca » contient des données (même si le conteneur est désinstallé), nom public de ces données, nombre d'autorités avec clé, et remise à zéro permise. */
   dataPresent: boolean; secretsPresent: boolean; dataHostname: string; casCount: number | null; resetAllowed: boolean
 }
-export interface PkiResult { at: number; action: string; ok: boolean; message: string }
+/** `ref` : identifiant de la demande d'émission à laquelle ce résultat répond (root le recopie ; vide pour les autres actions). */
+export interface PkiResult { at: number; action: string; ok: boolean; message: string; ref?: string }
 
 export async function readPkiStatus(): Promise<PkiStatus | null> {
   try {
@@ -103,7 +104,7 @@ export async function readPkiResult(): Promise<PkiResult | null> {
   try {
     const j = JSON.parse(await fs.readFile(cfg().pkiResultFile, 'utf8'))
     if (typeof j?.at !== 'number') return null
-    return { at: j.at, action: String(j.action ?? '').slice(0, 24), ok: j.ok === true, message: String(j.message ?? '').slice(0, 300) }
+    return { at: j.at, action: String(j.action ?? '').slice(0, 24), ok: j.ok === true, message: String(j.message ?? '').slice(0, 300), ...(typeof j.ref === 'string' && /^[0-9a-f]{16}$/.test(j.ref) ? { ref: j.ref } : {}) }
   } catch { return null }
 }
 export async function pkiRequestPending(): Promise<boolean> {
@@ -116,6 +117,8 @@ export type PkiRequest =
   | ({ action: 'ca_root'; name: string; alg: string; days: number } & CaDn)
   | ({ action: 'ca_issuing'; name: string; alg: string; days: number; signedBy: string } & CaDn)
   | { action: 'ca_import' | 'ca_crl' | 'ca_rootcrl'; name: string }
+  | ({ action: 'cert_issue'; id: string; ca: string; profile: string; dns?: string[]; ip?: string[]; mail?: string[]; upn?: string[] } & CaDn)
+  | { action: 'cert_revoke'; ca: string; serial: string; reason: number }
 export async function depositPkiRequest(req: PkiRequest): Promise<{ requestedAt: number }> {
   await fs.writeFile(join(cfg().generatedDir, '.pki-request'), JSON.stringify(req) + '\n', { mode: 0o640 })
   return { requestedAt: Math.floor(Date.now() / 1000) }

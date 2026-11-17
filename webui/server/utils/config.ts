@@ -1,4 +1,8 @@
 // Configuration lue dans l'environnement (jamais dans le code). DDI_TEST_MODE=1 : tests uniquement.
+/** Même adresse de base de données avec un autre nom de base (identifiants et paramètres conservés) : la base d'EJBCA est lue avec le rôle de la console. */
+export function withDatabase(url: string, name: string): string {
+  try { const u = new URL(url); u.pathname = `/${name}`; return u.toString() } catch { return url }
+}
 export function cfg() {
   const e = process.env
   const test = e.DDI_TEST_MODE === '1'
@@ -37,6 +41,11 @@ export function cfg() {
     // autorités de la PKI (publiées par root) : liste JSON et dossier des fichiers publics (certificat, chaîne, demande de certificat, CRL)
     pkiCasFile: e.DDI_PKI_CAS ?? '/run/ddibuntu/pki-cas.json',
     pkiCaDir: e.DDI_PKI_CA_DIR ?? '/run/ddibuntu/pki-ca',
+    // certificats émis (publics, publiés par root puis purgés au bout d'une heure) et base d'EJBCA lue par la console (rôle ddi : lecture seule, deux tables publiques)
+    pkiCertDir: e.DDI_PKI_CERT_DIR ?? '/run/ddibuntu/pki-cert',
+    /** Délai maximal d'attente de root pour une émission ou une révocation (EJBCA démarre une JVM par commande : une dizaine de secondes en pratique). */
+    pkiIssueTimeoutMs: num(e.DDI_PKI_ISSUE_TIMEOUT_MS, 120000),
+    ejbcaDatabaseUrl: e.DDI_EJBCA_DATABASE_URL ?? withDatabase(e.DDI_DATABASE_URL ?? 'postgresql://ddi@127.0.0.1/ddibuntu', 'ejbca'),
     // sauvegardes de la base (ddibuntu-backup, root) : état, résultat de la dernière demande, phase d'une restauration en cours
     backupStatusFile: e.DDI_BACKUP_STATUS ?? '/run/ddibuntu/backup-status.json',
     backupResultFile: e.DDI_BACKUP_RESULT ?? '/run/ddibuntu/backup-result.json',
