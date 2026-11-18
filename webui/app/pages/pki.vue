@@ -11,7 +11,10 @@ const data = ref<any>(null), busy = ref(''), err = ref('')
 const status = computed(() => data.value?.status ?? null)
 const result = computed(() => data.value?.result ?? null)
 const updateRunning = computed(() => data.value?.updateJob?.state === 'running')
-const waiting = computed(() => !!busy.value || !!data.value?.requestPending || updateRunning.value)
+// 0.14.9 : dans un cluster, seul le leader pilote la PKI ; sur le secondaire et sur l'arbitre la page est en lecture seule (root refuserait de toute façon)
+const cluster = computed(() => data.value?.cluster ?? null)
+const passive = computed(() => { const c = cluster.value; return !!c && !c.stale && (c.nodeRole !== 'data' || (!!c.leader && c.leader !== c.node)) })
+const waiting = computed(() => !!busy.value || !!data.value?.requestPending || updateRunning.value || passive.value)
 const installed = computed(() => !!status.value?.installed)
 const form = reactive({ hostname: '', nets: '' })
 let formLoaded = false
@@ -87,6 +90,7 @@ onBeforeUnmount(() => { stopped = true; if (timer) clearTimeout(timer) })
 
 const badge = computed(() => {
   const s = status.value?.state ?? 'absent'
+  if (passive.value && status.value?.installed && s === 'stopped') return { color: 'neutral', label: t('pki.cl.standby') }
   return { color: s === 'healthy' ? 'success' : s === 'unhealthy' ? 'error' : s === 'starting' ? 'warning' : 'neutral', label: t(`pki.state.${s}`) }
 })
 const resultText = computed(() => (result.value ? `${result.value.ok ? '✔' : '✖'} ${result.value.message}` : ''))
@@ -105,6 +109,7 @@ await load()
     <PkiUpdate v-else-if="tab === 'update'" :status="status" :waiting="waiting" @changed="load" />
     <template v-else>
     <p class="text-sm text-muted">{{ t('pki.intro') }}</p>
+    <PkiCluster :cluster="cluster" :status="status" />
     <UAlert v-if="!installed && status?.dataPresent && !status.secretsPresent" color="error" variant="subtle" icon="i-lucide-key-round" :title="t('pki.secrets_missing_title')" :description="t('pki.secrets_missing_body')" data-test="pki-secrets-missing" />
     <UAlert v-else-if="!installed && status?.dataPresent" color="info" variant="subtle" icon="i-lucide-database" :title="t('pki.data_found_title', { host: status.dataHostname })" :description="t('pki.data_found_body')" data-test="pki-data-found" />
 

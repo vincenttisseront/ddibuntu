@@ -20,6 +20,16 @@ export interface ClusterPki { node: { notAfter: number; daysLeft: number; serial
 export interface ClusterPreferred { node: string; at: number; by: string }
 // Mise à jour du cluster nœud par nœud : ordre commun (etcd), versions de chaque nœud, avancement publié par chacun.
 export interface ClusterUpdate { order: { target: string; at: number; by: string } | null; versions: Record<string, string>; states: Record<string, { state: string; at: number; msg: string }> }
+// PKI (EJBCA) du cluster (0.14.9), vue d'etcd : état répliqué (empreinte courte, nœud qui l'a publié), préparation de chaque nœud de données, marque « mise à jour en cours ».
+export interface PkiNodeReady { role: 'leader' | 'replica' | 'unknown'; installed: boolean; unit: 'active' | 'inactive'; image: 'none' | 'ready' | 'pulling' | 'missing'; version: string; desired: 'running' | 'stopped'; synced: string; blocked: string | null; at: number }
+export interface PkiSyncNote { at: number; state: string; message: string; hash: string }
+export interface ClusterEjbca {
+  enabled: boolean
+  state: { sha: string; by: string | null; at: number | null } | null
+  nodes: Record<string, PkiNodeReady>
+  mark: { node: string; at: number; from: string; to: string } | null
+  sync: PkiSyncNote | null
+}
 export interface ClusterState {
   cluster: string; node: string; nodeRole: string; localRole: 'leader' | 'replica' | 'unknown'; at: number; ageSeconds: number; stale: boolean
   etcd: { healthy: boolean; members: number; quorum: Quorum | null }
@@ -34,8 +44,10 @@ export interface ClusterState {
   pki: ClusterPki | null
   update: ClusterUpdate | null
   preferred: ClusterPreferred | null   // nœud où le primaire doit se trouver en temps normal (etcd, commun à tous les nœuds)
+  ejbca: ClusterEjbca | null           // PKI (EJBCA) : suit le leader (0.14.9)
 }
 
+export const NODE_NAME_RE = /^[a-z][a-z0-9-]{1,30}$/
 const MAX_AGE_SECONDS = 180   // la minuterie publie chaque minute : au-delà de 3 minutes, l'information est périmée
 const str = (v: unknown, max = 128) => (typeof v === 'string' ? v.slice(0, max) : '')
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
@@ -109,6 +121,35 @@ export function parsePreferred(v: any, nodes: ClusterNode[]): ClusterPreferred |
   return n ? { node: n.name, at: num(v.at) ?? 0, by: typeof v.by === 'string' ? str(v.by, 31) : '' } : null
 }
 
+const SYNC_STATES = ['synced', 'published', 'applied', 'busy', 'waiting', 'conflict', 'failed']
+const SHA12_RE = /^(?:[0-9a-f]{12}|none)$/
+// PKI du cluster : uniquement des champs connus et bornés ; un nœud inconnu du registre est ignoré (clé piégée), comme pour la santé.
+export function parseEjbca(j: any, nodes: ClusterNode[]): ClusterEjbca | null {
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return null
+  const known = new Set(nodes.filter((n) => n.role === 'data').map((n) => n.name))
+  const st = j.state && typeof j.state === 'object' && typeof j.state.sha === 'string' && SHA12_RE.test(j.state.sha)
+    ? { sha: j.state.sha as string, by: typeof j.state.by === 'string' && NODE_NAME_RE.test(j.state.by) ? j.state.by : null, at: num(j.state.at) } : null
+  const out: Record<string, PkiNodeReady> = {}
+  if (j.nodes && typeof j.nodes === 'object' && !Array.isArray(j.nodes)) {
+    for (const [name, v] of Object.entries<any>(j.nodes).slice(0, 16)) {
+      if (!known.has(name) || !v || typeof v !== 'object') continue
+      out[name] = {
+        role: v.role === 'leader' || v.role === 'replica' ? v.role : 'unknown', installed: v.installed === true, unit: v.unit === 'active' ? 'active' : 'inactive',
+        image: v.image === 'ready' || v.image === 'pulling' || v.image === 'missing' ? v.image : 'none', version: typeof v.version === 'string' && /^[0-9.]{0,20}$/.test(v.version) ? v.version : '',
+        desired: v.desired === 'stopped' ? 'stopped' : 'running', synced: typeof v.synced === 'string' && SHA12_RE.test(v.synced) ? v.synced : '',
+        blocked: typeof v.blocked === 'string' && /^[a-z-]{1,32}$/.test(v.blocked) ? v.blocked : null, at: num(v.at) ?? 0,
+      }
+    }
+  }
+  const m = j.mark
+  const mark = m && typeof m === 'object' && typeof m.node === 'string' && (NODE_NAME_RE.test(m.node) || m.node === 'inconnu')
+    ? { node: m.node as string, at: num(m.at) ?? 0, from: str(m.from, 40).replace(/[^0-9A-Za-z._-]/g, ''), to: str(m.to, 60).replace(/[^0-9A-Za-z._:/@-]/g, '') } : null
+  const s = j.sync
+  const sync = s && typeof s === 'object' && SYNC_STATES.includes(s.state)
+    ? { at: num(s.at) ?? 0, state: s.state as string, message: str(s.message, 200).replace(/[^\x20-\x7e\u00a0-\u024f’…«»–—]/g, '?'), hash: typeof s.hash === 'string' && /^[0-9a-f]{0,12}$/.test(s.hash) ? s.hash : '' } : null
+  return { enabled: j.enabled === true && !!st && st.sha !== 'none', state: st, nodes: out, mark, sync }
+}
+
 // Assainit le fichier : uniquement les champs connus, bornés ; un fichier mal formé est ignoré (jamais d'erreur côté appelant).
 export function parseClusterState(raw: string, nowSec = Date.now() / 1000): ClusterState | null {
   let j: any
@@ -138,7 +179,7 @@ export function parseClusterState(raw: string, nowSec = Date.now() / 1000): Clus
     kea: j.kea ?? null,
     vip: j.vip && typeof j.vip.address === 'string' ? { address: str(j.vip.address, 64), iface: str(j.vip.iface, 32), held: j.vip.held === true } : null,
     health: parseHealthMap(j.health, nowSec),
-    settings: parseSettings(j.settings), pki: parsePki(j.pki), preferred: parsePreferred(j.preferred, nodes), update: parseUpdate(j.update, nodes),
+    settings: parseSettings(j.settings), pki: parsePki(j.pki), preferred: parsePreferred(j.preferred, nodes), update: parseUpdate(j.update, nodes), ejbca: parseEjbca(j.ejbca, nodes),
   }
 }
 
@@ -270,7 +311,6 @@ export function actionRefusal(st: ClusterState | null, a: ClusterAction, ctx: Ac
 }
 
 // ---- assistants : création, lot d'enrôlement, rattachement (la console ne fait que déposer des demandes validées de nouveau par root)
-export const NODE_NAME_RE = /^[a-z][a-z0-9-]{1,30}$/
 export interface LocalAddress { iface: string; address: string; prefix: number }
 // Adresses IPv4 des interfaces du serveur (la boucle locale n'est utile qu'aux tests).
 // Ne lève jamais : sous un service durci (sans AF_NETLINK) la lecture échoue ; la liste est alors vide et les assistants acceptent la saisie libre (root revalide).

@@ -31,6 +31,8 @@ Sous-commandes :
   update-crl-urls          (0.14.7) adresses locales des CRL des autorités actives (contrôle après une mise à jour)
   scep-pw                  (0.14.8) lit le mot de passe à usage unique d'un équipement SCEP déposé par la console (le défi de l'équipement)
   scep-publish             (0.14.8) construit pki-scep.json (alias, adresse, équipements préenregistrés et leur état) pour la console
+  state-pack               (0.14.9) état de la PKI à répliquer dans le cluster (secrets, métadonnées des autorités, volume) : document JSON déterministe
+  state-extract            (0.14.9) revalide un tel document (noms, tailles, modes, secrets, certificat de récupération) et l'extrait sous un dossier temporaire
 """
 import base64
 import calendar
@@ -1104,10 +1106,17 @@ def validate_instance(text):
     return d
 
 
-def _bundle_sources(petc, pdata):
+STATE_EXTRA = ("recovery.pem", "db-tag", "desired")   # 0.14.9 : fichiers de root en plus que l'état du cluster réplique (jamais le lot des sauvegardes)
+STATE_EXTRA_NAMES = tuple("etc/" + x for x in STATE_EXTRA)
+STATE_FORMAT = 1
+STATE_MAX_PLAIN = 600 << 10        # 600 Kio de données au total : l'état est chiffré puis rangé dans etcd, qui refuse les valeurs trop grosses (1,5 Mio)
+STATE_MAX_FILES = 400
+
+
+def _bundle_sources(petc, pdata, extra=()):
     """(chemin source, nom dans le lot, type) ; ni lien symbolique ni fichier spécial. Le dossier d'échange de la CLI (persistent/work) n'est jamais sauvegardé."""
     out, skipped = [], 0
-    for n in ("ejbca.env", "instance.json"):
+    for n in ("ejbca.env", "instance.json") + tuple(extra):
         p = os.path.join(petc, n)
         st = os.lstat(p) if os.path.lexists(p) else None
         if st is None:
@@ -1195,11 +1204,13 @@ def cmd_bundle_pack(argv):
         return 1
 
 
-def _bundle_name_ok(name):
+def _bundle_name_ok(name, state=False):
     parts = name.split("/")
-    if name == "MANIFEST.json":
+    if name == "MANIFEST.json" and not state:
         return "manifest"
     if name in ("etc/ejbca.env", "etc/instance.json"):
+        return "secret"
+    if state and name in STATE_EXTRA_NAMES:
         return "secret"
     if len(parts) >= 2 and parts[0] == "etc":
         return None
@@ -1289,6 +1300,123 @@ def cmd_bundle_extract(argv):
         print(json.dumps(out))
         return 0
     except (OSError, ValueError, tarfile.TarError, EOFError, json.JSONDecodeError) as e:
+        print("ERR\t%s" % e)
+        return 1
+
+
+def cmd_state_pack(argv):
+    # state-pack PETC PDATA : écrit sur la sortie standard l'état de la PKI à répliquer (document JSON déterministe, sur une ligne) ; ERR<TAB>message et code 1 sinon.
+    # Déterministe : mêmes fichiers (noms, modes, contenus) = mêmes octets, quels que soient les dates et les propriétaires ; c'est ce qui permet de comparer deux nœuds par une empreinte.
+    petc, pdata = argv[0], argv[1]
+    try:
+        items, _ = _bundle_sources(petc, pdata, STATE_EXTRA)
+        if len(items) > STATE_MAX_FILES:
+            raise ValueError("trop de fichiers (%d)" % len(items))
+        dirs, files, total = {}, {}, 0
+        for p, arc, kind in items:
+            st = os.lstat(p)
+            if kind == "d":
+                dirs[arc] = st.st_mode & 0o777
+                continue
+            total += st.st_size
+            if total > STATE_MAX_PLAIN:
+                raise ValueError("état trop gros (plus de %d Kio) : le volume d'EJBCA contient autre chose que ses clés TLS" % (STATE_MAX_PLAIN >> 10))
+            fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, "rb") as f:
+                data = f.read(STATE_MAX_PLAIN + 1)
+            files[arc] = {"m": st.st_mode & 0o777, "d": base64.b64encode(data).decode("ascii")}
+        doc = {"v": STATE_FORMAT, "kind": "pki-state", "dirs": dirs, "files": files}
+        sys.stdout.write(json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n")
+        return 0
+    except (OSError, ValueError) as e:
+        print("ERR\t%s" % e)
+        return 1
+
+
+def _state_validate(doc):
+    """Contrôle structurel d'un état reçu (hostile jusqu'à preuve du contraire) ; renvoie (dossiers, fichiers) {nom: …} ou lève ValueError."""
+    if not isinstance(doc, dict) or set(doc) != {"v", "kind", "dirs", "files"} or doc["v"] != STATE_FORMAT or doc["kind"] != "pki-state":
+        raise ValueError("état refusé : format inconnu")
+    dirs, files = doc["dirs"], doc["files"]
+    if not isinstance(dirs, dict) or not isinstance(files, dict) or len(dirs) + len(files) > STATE_MAX_FILES:
+        raise ValueError("état refusé : structure ou nombre d'entrées invalide")
+    for name, mode in dirs.items():
+        if not isinstance(name, str) or _bundle_name_ok(name, True) not in ("dir", "ca", "persist") or type(mode) is not int or not 0 <= mode <= 0o777:
+            raise ValueError("état refusé : dossier inattendu (%s)" % str(name)[:60])
+    out, total = {}, 0
+    for name, ent in files.items():
+        if not isinstance(name, str) or _bundle_name_ok(name, True) not in ("secret", "ca", "persist") or name in dirs:
+            raise ValueError("état refusé : nom inattendu (%s)" % str(name)[:60])
+        if not isinstance(ent, dict) or set(ent) != {"m", "d"} or type(ent["m"]) is not int or not 0 <= ent["m"] <= 0o777 or not isinstance(ent["d"], str):
+            raise ValueError("état refusé : entrée invalide (%s)" % name[:60])
+        data = base64.b64decode(ent["d"], validate=True)
+        total += len(data)
+        if total > STATE_MAX_PLAIN:
+            raise ValueError("état refusé : volume excessif")
+        out[name] = (ent["m"], data)
+    if "etc/ejbca.env" not in out:
+        raise ValueError("état incomplet (ejbca.env absent)")
+    return dirs, out
+
+
+def _confined(root, rel):
+    """Chemin de « rel » sous « root » (déjà normalisé) ; ValueError s'il en sortait, même après validation des noms (ceinture et bretelles)."""
+    path = os.path.normpath(os.path.join(root, rel))
+    if os.path.commonpath([root, path]) != root:
+        raise ValueError("état refusé : chemin hors du dossier cible")
+    return path
+
+
+def cmd_state_extract(argv):
+    # state-extract DEST (document d'état sur l'entrée standard) : revalide tout, écrit sous DEST (etc/ et data/), imprime une synthèse JSON ou ERR<TAB>message
+    dest = os.path.realpath(argv[0])   # DEST est un dossier temporaire créé par ddibuntu-pki ; chaque cible est de toute façon bornée à ce dossier (_confined)
+    try:
+        if not os.path.isabs(argv[0]) or dest == os.sep:
+            raise ValueError("dossier cible invalide")
+        raw = sys.stdin.buffer.read(STATE_MAX_PLAIN * 2 + 65536)
+        if len(raw) >= STATE_MAX_PLAIN * 2 + 65536:
+            raise ValueError("état refusé : document trop gros")
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            raise ValueError("état refusé : JSON illisible")
+        dirs, files = _state_validate(doc)
+        env = validate_env(files["etc/ejbca.env"][1].decode("utf-8", "strict"))
+        inst = None
+        if "etc/instance.json" in files:
+            inst = validate_instance(files["etc/instance.json"][1].decode("utf-8", "strict"))
+            if inst["hostname"] != env["HTTPSERVER_HOSTNAME"]:
+                raise ValueError("le nom public d'instance.json ne correspond pas à celui d'ejbca.env")
+        if "etc/recovery.pem" in files:
+            data = files["etc/recovery.pem"][1]
+            if len(data) > 8192 or len(parse_certs(data)) != 1:
+                raise ValueError("état refusé : certificat de récupération invalide")
+        if "etc/db-tag" in files and not TAG_RE.fullmatch(files["etc/db-tag"][1].decode("ascii", "strict").strip()):
+            raise ValueError("état refusé : db-tag invalide")
+        if "etc/desired" in files and files["etc/desired"][1].strip() != b"stopped":
+            raise ValueError("état refusé : consigne inconnue")
+        os.makedirs(dest, mode=0o700, exist_ok=True)
+        dmodes = []
+        for name in sorted(dirs):
+            target = _confined(dest, name)
+            os.makedirs(target, mode=0o700, exist_ok=True)
+            dmodes.append((target, dirs[name]))
+        for name in sorted(files):
+            mode, data = files[name]
+            target = _confined(dest, name)
+            os.makedirs(os.path.dirname(target), mode=0o700, exist_ok=True)
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.chmod(target, mode)
+        for t, mode in reversed(dmodes):
+            os.chmod(t, mode | 0o700)
+        cas = sorted({n.split("/")[2] for n in list(dirs) + list(files) if n.startswith("data/ca/") and len(n.split("/")) > 2})
+        print(json.dumps({"hostname": env["HTTPSERVER_HOSTNAME"], "tag": inst["tag"] if inst else "", "digest": inst["digest"] if inst else "", "hasInstance": inst is not None,
+                          "files": len(files), "cas": cas[:200], "recovery": "etc/recovery.pem" in files, "stopped": "etc/desired" in files,
+                          "dbtag": files["etc/db-tag"][1].decode().strip() if "etc/db-tag" in files else ""}))
+        return 0
+    except (OSError, ValueError) as e:
         print("ERR\t%s" % e)
         return 1
 
@@ -1691,6 +1819,10 @@ def main():
         return cmd_bundle_pack(args)
     if cmd == "bundle-extract":
         return cmd_bundle_extract(args)
+    if cmd == "state-pack":
+        return cmd_state_pack(args)
+    if cmd == "state-extract":
+        return cmd_state_extract(args)
     if cmd == "recovery-check":
         return cmd_recovery_check(args)
     if cmd == "recovery-info":

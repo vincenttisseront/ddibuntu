@@ -8,10 +8,11 @@ import { logHistory, recSnap } from '../utils/dns-history'
 import { toRelativeName } from '../utils/dns'
 import { normIp } from '../utils/net'
 import {
-  applyBody, depositPkiRequest, imageOf, loadPkiSettings, nodeAddresses, pkiRequestPending, PUBLIC_PORT, readPkiResult, readPkiStatus, savePkiSettings, suggestHostname,
+  applyBody, depositPkiRequest, imageOf, loadPkiSettings, nodeAddresses, pkiRequestPending, PUBLIC_PORT, readPkiClusterLocal, readPkiResult, readPkiStatus, savePkiSettings, suggestHostname,
 } from '../utils/pki'
 import type { PkiRequest } from '../utils/pki'
 import { readPkiUpdate } from '../utils/pki-update'
+import { readClusterState } from '../utils/cluster'
 
 export const registered = true
 
@@ -33,14 +34,20 @@ async function dnsState(hostname: string) {
 }
 
 route('GET', '/pki', 'admin', async () => {
-  const [status, result, settings, suggested, upd] = await Promise.all([readPkiStatus(), readPkiResult(), loadPkiSettings(), suggestHostname(), readPkiUpdate()])
+  const [status, result, settings, suggested, upd, cl, local] = await Promise.all([readPkiStatus(), readPkiResult(), loadPkiSettings(), suggestHostname(), readPkiUpdate(), readClusterState(), readPkiClusterLocal()])
   // une instance installée impose son nom et sa version ; sinon, les choix enregistrés, puis la proposition
   // des données conservées (désinstallation ou base d'une installation précédente) imposent leur nom public : il est gravé dans leurs certificats
   const fixed = !!(status && !status.installed && status.dataPresent && status.dataHostname)
   const hostname = status?.installed ? status.hostname : fixed ? status.dataHostname : settings.hostname || suggested
   const base = hostname ? `http://${hostname}:${PUBLIC_PORT}/ejbca/publicweb` : null
   const updateJob = upd?.job ? { state: upd.job.state, step: upd.job.step, from: upd.job.from, to: upd.job.to } : null
-  return { status, result, requestPending: await pkiRequestPending(), updateJob, settings, suggestedHostname: suggested, hostname, locked: !!status?.installed, hostnameFixed: fixed, dns: await dnsState(hostname),
+  // 0.14.9 : dans un cluster, la PKI ne tourne que sur le leader PostgreSQL ; ce nœud dit s'il l'est, sinon où elle se trouve (et si le secondaire est prêt à la reprendre)
+  const cluster = cl && !cl.stale ? { clustered: true, node: cl.node, nodeRole: cl.nodeRole, leader: cl.leader, local, ejbca: cl.ejbca,
+    vip: cl.vip ? { address: cl.vip.address.split('/')[0]!, held: cl.vip.held } : null } : cl ? { clustered: true, stale: true, node: cl.node, nodeRole: cl.nodeRole, leader: null, local: null, ejbca: null, vip: null } : null
+  // dans un cluster, le nom public doit pointer vers l'adresse virtuelle (elle suit le leader), pas vers l'adresse d'un seul nœud
+  const dns = await dnsState(hostname)
+  if (cl?.vip?.address) dns.suggested = [cl.vip.address.split('/')[0]!, ...dns.suggested.filter((a) => a !== cl.vip!.address.split('/')[0])]
+  return { status, result, cluster, requestPending: await pkiRequestPending(), updateJob, settings, suggestedHostname: suggested, hostname, locked: !!status?.installed, hostnameFixed: fixed, dns,
     endpoints: { port: PUBLIC_PORT, health: base ? `${base}/healthcheck/ejbcahealth` : null } }
 })
 
