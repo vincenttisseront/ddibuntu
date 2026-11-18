@@ -58,6 +58,10 @@ CRL_RENEW_AFTER="${DDI_PKI_CRL_RENEW_AFTER:-43200}"            # secondes : une 
 UPD="$PETC/update"                                            # 0.14.7 : tâche de mise à jour, résultat de la recherche, points de retour arrière (root, 0700)
 JOB="$UPD/job.json"; CHK="$UPD/check.json"
 DBTAG="$PETC/db-tag"                                          # plus haute version d'EJBCA qui ait ouvert (donc migré) la base : une image plus ancienne ne la rouvre jamais
+CLCONF="${DDI_CLUSTER_CONF:-/etc/ddibuntu-cluster/cluster.conf}"   # 0.14.9 : présent = ce nœud fait partie d'un cluster
+CLUSTER_CMD="${DDI_CLUSTER_CMD:-/usr/local/sbin/ddibuntu-cluster}"
+DESIRED="$PETC/desired"                                        # « stopped » : l'administrateur a arrêté la PKI, le cluster ne la redémarre pas (répliqué avec le reste de l'état)
+SYSTEMD_RUN="${DDI_PKI_SYSTEMD_RUN:-systemd-run}"
 HUB_URL="${DDI_PKI_HUB_URL:-https://hub.docker.com/v2/repositories/keyfactor/ejbca-ce/tags?page_size=100&ordering=last_updated}"
 UPDATE_KEEP_DAYS="${DDI_PKI_UPDATE_KEEP_DAYS:-14}"            # jours pendant lesquels un point de retour arrière validé est gardé
 UPDATE_CHECK_EVERY="${DDI_PKI_UPDATE_CHECK_EVERY:-86400}"     # secondes entre deux recherches de nouvelles versions (« maintain »)
@@ -95,6 +99,11 @@ Usage : ddibuntu-pki <commande>
   secrets-pack FICHIER       (appelé par ddibuntu-backup) chiffre les secrets, les métadonnées des autorités et le volume pour la clé de récupération
   secrets-verify --file LOT --key CLÉ      essai de restauration : déchiffre et contrôle un lot sans rien installer (phrase secrète : variable DDI_RECOVERY_PASS)
   secrets-restore --file LOT --key CLÉ [--force] [--no-start]   réinstalle secrets, métadonnées et volume depuis un lot, puis remet la PKI en service
+  state-export FICHIER       (cluster) écrit l'état à répliquer (secrets, métadonnées des autorités, volume) et imprime son empreinte (« none » si rien n'est installé)
+  state-import FICHIER SHA | none   (cluster) remplace l'état local par celui du cluster, validé en entier avant tout changement ; « none » : le cluster n'a plus de PKI
+  align leader|replica       (cluster, appelé par « ddibuntu-cluster follow ») le leader démarre la PKI, le secondaire l'arrête et garde unité et image prêtes
+  pull-image                 (cluster) tire l'image d'instance.json en arrière-plan (jamais sous le verrou global)
+  cluster-unblock            (cluster) retire la marque « mise à jour interrompue » après vérification : le leader pourra de nouveau démarrer la PKI
   request                    traite la demande déposée par la console (.pki-request)
   render IMAGE NOM           affiche l'unité Quadlet qui serait écrite (sans rien installer)
   check IMAGE NOM [RÉSEAUX]  valide les paramètres (sans rien installer)
@@ -186,10 +195,9 @@ Restart=on-failure
 RestartSec=15
 TimeoutStartSec=900
 TimeoutStopSec=120
-
-[Install]
-WantedBy=multi-user.target
 EOF
+  # seule la machine seule démarre l'unité au démarrage du système ; dans un cluster, « ddibuntu-cluster follow » ne la démarre que sur le leader
+  if ! in_cluster; then printf '\n[Install]\nWantedBy=multi-user.target\n'; fi
 }
 
 # ---- Fichier de secrets : créé une seule fois, jamais régénéré ----
@@ -429,6 +437,7 @@ cmd_apply() {   # $1 = image, $2 = nom public, $3 = réseaux
   ref="$IMAGE_REPO@$digest"
   render_quadlet "$ref" > "$QUADLET.new"; chmod 0644 "$QUADLET.new"; mv -f "$QUADLET.new" "$QUADLET"
   write_instance "$host" "$tag" "$digest" "$nets"
+  rm -f "$DESIRED"   # installer = vouloir la PKI en marche
   "$SYSCTL" daemon-reload
   "$SYSCTL" start "$SERVICE" || { log "le démarrage du conteneur a échoué (journalctl -u $SERVICE)"; return 1; }
   [[ -n "$dbt" ]] || dbtag_set "$tag"
@@ -438,6 +447,10 @@ cmd_apply() {   # $1 = image, $2 = nom public, $3 = réseaux
 
 cmd_ctl() {   # $1 = start | stop | restart
   [[ -f "$INST" && ! -L "$INST" ]] || { log "la PKI n'est pas installée"; return 1; }
+  # en cluster, l'arrêt demandé par l'administrateur est une consigne (répliquée) : ni le prochain « follow » ni un autre leader ne redémarre la PKI
+  if in_cluster; then
+    if [[ "$1" = stop ]]; then printf 'stopped\n' > "$DESIRED.new" && chmod 0600 "$DESIRED.new" && mv -f "$DESIRED.new" "$DESIRED"; else rm -f "$DESIRED"; fi
+  fi
   "$SYSCTL" "$1" "$SERVICE" || { log "$1 impossible (journalctl -u $SERVICE)"; return 1; }
   printf 'Conteneur : %s.' "$1"
 }
@@ -1435,6 +1448,8 @@ update_maintain() {
 # minuteur : publie l'état et renouvelle les CRL des autorités du DDI (EJBCA n'a aucun service qui le fasse : sans cela elles expirent)
 cmd_maintain() {
   cmd_status || true
+  # en cluster, seul le leader entretient la PKI (CRL, profils, SCEP, recherche de versions) : le secondaire ne fait que publier son état
+  if in_cluster && [[ "$(cluster_state)" != leader ]]; then return 0; fi
   purge_certs
   # secrets mis de côté par une restauration (--force) : 14 jours, pas plus (ce sont des secrets)
   find "$PETC" -mindepth 1 -maxdepth 1 -type d -name 'pre-restore.*' -mtime +14 -exec rm -rf --one-file-system {} + 2>/dev/null || true
@@ -1465,6 +1480,224 @@ for c in d.get("cas", []):
   [[ "$renewed" -eq 0 ]] || { cmd_status || true; log "$renewed CRL renouvelée(s)"; }
 }
 
+# ---- Cluster (0.14.9) ----
+# La PKI ne tourne que sur le LEADER PostgreSQL (la base « ejbca » est dans le PostgreSQL du cluster, donc répliquée par Patroni). L'autre nœud de données garde en
+# veille un état identique — secrets, métadonnées des autorités, volume (clés TLS d'EJBCA) —, l'unité Quadlet et l'image déjà tirée : à la promotion il n'a plus qu'à démarrer.
+# L'état voyage chiffré dans etcd (ddibuntu-cluster pki-sync, même enveloppe que le keytab AD) ; ici : l'export, l'import validé en entier, et l'alignement de l'unité.
+in_cluster() { [[ -f "$CLCONF" && ! -L "$CLCONF" ]]; }
+cluster_state() {   # rôle de CE nœud, mesuré en direct : standalone | leader | replica | witness | unknown
+  in_cluster || { printf standalone; return 0; }
+  local r; r="$(timeout 10 "$CLUSTER_CMD" role 2>/dev/null | head -n1 | tr -d '\r\n')" || r=""
+  case "$r" in leader|replica|witness) printf '%s' "$r" ;; *) printf unknown ;; esac
+}
+need_leader() {   # toute action qui écrit (base, conteneur, secrets) est réservée au leader du cluster
+  case "$(cluster_state)" in
+    standalone|leader) return 0 ;;
+    replica) log "ce nœud est le secondaire du cluster : la PKI se gère depuis le nœud actif (leader PostgreSQL)"; return 1 ;;
+    witness) log "ce nœud est l'arbitre du cluster : il n'héberge pas la PKI"; return 1 ;;
+    *) log "le rôle de ce nœud dans le cluster est inconnu (Patroni injoignable ?) : action refusée par prudence"; return 1 ;;
+  esac
+}
+
+# $1 = fichier de sortie (0600). Imprime l'empreinte SHA-256 de l'état, ou « none » quand il n'y a rien à répliquer (aucun ejbca.env)
+state_export() {
+  local out="${1:-}"
+  [[ -n "$out" ]] || { log "usage : state-export FICHIER"; return 1; }
+  if [[ ! -f "$ENVF" || -L "$ENVF" ]]; then rm -f "$out"; printf none; return 0; fi
+  if ! python3 "$HELPER" state-pack "$PETC" "$PDATA" > "$out.part"; then
+    log "état non exporté : $(head -c 300 "$out.part" | tr '\t\n' '  ' | sed 's/^ERR //')"; rm -f "$out.part"; return 1
+  fi
+  chmod 0600 "$out.part"; mv -f "$out.part" "$out"
+  sha256sum < "$out" | cut -d' ' -f1 | tr -d '\n'
+}
+
+# met de côté (14 jours, comme les restaurations) ce que l'état du cluster remplace
+state_aside() {   # $1 = dossier de mise de côté (créé au besoin) ; les chemins suivent
+  local d="$1" p; shift
+  install -d -m 0700 "$d"
+  for p in "$@"; do [[ ! -e "$p" && ! -L "$p" ]] || mv -f "$p" "$d/$(basename "$p")"; done
+}
+# $1 = fichier d'état, $2 = empreinte attendue | « none »
+state_import() {
+  local f="${1:-}" want="${2:-}" td x mf ts aside p n differ=0
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"; aside="$PETC/pre-restore.sync.$ts"; [[ ! -e "$aside" ]] || aside="$aside.$$"
+  install -d -m 0750 "$PETC" "$PDATA"
+  if [[ "$want" = none ]]; then   # le leader n'a plus de PKI (remise à zéro) : ce nœud met de côté la sienne
+    "$SYSCTL" stop "$SERVICE" >/dev/null 2>&1 || true
+    state_aside "$aside" "$ENVF" "$INST" "$RECOVERY" "$DBTAG" "$DESIRED" "$CAD" "$PDATA/persistent"
+    rmdir "$aside" 2>/dev/null || true
+    rm -f "$QUADLET"; "$SYSCTL" daemon-reload >/dev/null 2>&1 || true
+    log "le cluster n'a plus de PKI : état local mis de côté"; return 0
+  fi
+  [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { log "empreinte attendue invalide"; return 1; }
+  [[ -f "$f" && ! -L "$f" ]] || { log "état introuvable : $f"; return 1; }
+  [[ "$(sha256sum < "$f" | cut -d' ' -f1)" = "$want" ]] || { log "l'état reçu n'a pas l'empreinte annoncée : refusé"; return 1; }
+  td="$(secure_tmpdir)" || { log "dossier temporaire impossible"; return 1; }
+  x="$td/x"
+  mf="$(python3 "$HELPER" state-extract "$x" < "$f" 2>&1)" || { rm -rf "$td"; log "état du cluster refusé : ${mf#ERR$'\t'}"; return 1; }
+  # rien n'est touché avant ce point : l'état a été validé en entier. Ce qui change est mis de côté, puis remplacé.
+  for n in ejbca.env instance.json recovery.pem db-tag desired; do
+    case "$n" in ejbca.env) p="$ENVF" ;; instance.json) p="$INST" ;; recovery.pem) p="$RECOVERY" ;; db-tag) p="$DBTAG" ;; *) p="$DESIRED" ;; esac
+    if [[ -f "$x/etc/$n" ]]; then
+      if [[ -f "$p" && ! -L "$p" ]] && cmp -s "$p" "$x/etc/$n"; then continue; fi
+      differ=1
+      [[ "$n" != ejbca.env || ! -f "$ENVF" ]] || "$SYSCTL" stop "$SERVICE" >/dev/null 2>&1 || true   # d'autres secrets : le conteneur ne doit plus tourner avec les anciens
+      state_aside "$aside" "$p"
+      install -m "$([[ "$n" = recovery.pem ]] && echo 0644 || echo 0600)" "$x/etc/$n" "$p"
+    elif [[ -e "$p" || -L "$p" ]]; then
+      differ=1; state_aside "$aside" "$p"
+    fi
+  done
+  if [[ -d "$x/data/ca" ]]; then
+    if [[ ! -d "$CAD" ]] || ! diff -rq "$x/data/ca" "$CAD" >/dev/null 2>&1; then differ=1; state_aside "$aside" "$CAD"; cp -a "$x/data/ca" "$CAD"; fi
+  elif [[ -d "$CAD" ]]; then differ=1; state_aside "$aside" "$CAD"; fi
+  if [[ -d "$x/data/persistent" ]]; then
+    if [[ ! -d "$PDATA/persistent" ]] || ! diff -rq -x work "$x/data/persistent" "$PDATA/persistent" >/dev/null 2>&1; then
+      differ=1
+      "$SYSCTL" stop "$SERVICE" >/dev/null 2>&1 || true
+      install -d -m 0700 "$PDATA/persistent"
+      while IFS= read -r -d '' p; do state_aside "$aside/persistent" "$p"; done < <(find "$PDATA/persistent" -mindepth 1 -maxdepth 1 ! -name work -print0)
+      cp -a "$x/data/persistent/." "$PDATA/persistent/"
+    fi
+  fi
+  install -d -m 0700 "$WORK_HOST"
+  chmod 0700 "$PDATA/persistent"; if [[ "$(id -u)" -eq 0 ]]; then chown -R "$CONT_UID:$CONT_UID" "$PDATA/persistent"; fi
+  rm -rf "$td"
+  rmdir "$aside/persistent" "$aside" 2>/dev/null || true
+  if [[ "$differ" -eq 1 ]]; then log "état de la PKI reçu du cluster appliqué (version $(printf '%s' "$mf" | json_get tag), $(printf '%s' "$mf" | json_get files) fichier(s))"; fi
+  return 0
+}
+
+# ---- Unité et image de CE nœud, d'après instance.json (identique sur les deux nœuds de données) ----
+PULL_LOCK="${DDI_PKI_PULL_LOCK:-/run/ddibuntu-pki-pull.lock}"
+SU_IMG=none SU_CHANGED=0
+sync_unit() {   # définit SU_IMG (none | ready | pulling | missing) et SU_CHANGED (l'unité Quadlet vient d'être réécrite)
+  local digest ref
+  SU_IMG=none SU_CHANGED=0
+  [[ -f "$INST" && ! -L "$INST" ]] || return 0
+  digest="$(instance_get digest)"
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { SU_IMG=missing; return 0; }
+  ref="$IMAGE_REPO@$digest"
+  install -d -m 0755 "$QDIR"
+  render_quadlet "$ref" > "$QUADLET.new"; chmod 0644 "$QUADLET.new"
+  if [[ ! -f "$QUADLET" ]] || ! cmp -s "$QUADLET.new" "$QUADLET"; then mv -f "$QUADLET.new" "$QUADLET"; SU_CHANGED=1; "$SYSCTL" daemon-reload >/dev/null 2>&1 || true
+  else rm -f "$QUADLET.new"; fi
+  if "$PODMAN" image exists "$ref" >/dev/null 2>&1; then SU_IMG=ready; return 0; fi
+  # image absente : tirage en arrière-plan (un tirage dure des minutes ; il ne doit ni tenir le verrou de la PKI ni retarder « follow », qui aligne aussi BIND et Kea)
+  if ( exec 8>"$PULL_LOCK"; ! flock -n 8 ) 2>/dev/null; then SU_IMG=pulling; return 0; fi
+  if "$SYSTEMD_RUN" --quiet --no-block --collect --unit="ddibuntu-pki-pull-$(date +%s)" "$0" pull-image >/dev/null 2>&1; then SU_IMG=pulling
+  else SU_IMG=missing; fi
+}
+cmd_pull_image() {   # appelé en arrière-plan : tire l'image d'instance.json, une seule fois à la fois
+  exec 8>"$PULL_LOCK"; flock -n 8 || return 0
+  local digest; digest="$(instance_get digest)"
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { log "pull-image : pas d'empreinte d'image dans instance.json"; return 1; }
+  "$PODMAN" image exists "$IMAGE_REPO@$digest" >/dev/null 2>&1 && return 0
+  log "tirage de l'image $IMAGE_REPO@$digest (secours du cluster)"
+  timeout 1800 "$PODMAN" pull --quiet "$IMAGE_REPO@$digest" >/dev/null || { log "tirage de l'image impossible (accès à docker.io ?) : ce nœud ne pourra pas reprendre la PKI avant d'avoir l'image"; return 1; }
+}
+
+# marque « mise à jour en cours » dans etcd : une mise à jour interrompue (arrêt brutal, bascule en pleine migration) laisse la marque, et plus aucun nœud ne démarre
+# la PKI tout seul sur une base peut-être à moitié migrée. Une seule remise en service : « ddibuntu-pki cluster-unblock », après vérification.
+update_mark() {   # $1 = set | clear ; $2 = version visée (set)
+  in_cluster || return 0
+  local out
+  case "$1" in
+    set)
+      out="$("$CLUSTER_CMD" pki-mark set "$(instance_get tag)" "${2:-?}" 2>&1)" || { log "mise à jour refusée : ${out:-marque impossible dans etcd (quorum ?)}"; return 1; } ;;
+    clear) "$CLUSTER_CMD" pki-mark clear >/dev/null 2>&1 || log "avertissement : la marque de mise à jour n'a pas pu être retirée (etcd ?) ; « ddibuntu-pki cluster-unblock » la retire" ;;
+  esac
+}
+# met à jour / revient en arrière sous la marque d'etcd : si le nœud tombe en pleine opération, la marque reste et aucun autre nœud ne démarre la PKI sur une base peut-être à moitié migrée
+with_mark() {   # $1 = version visée (ou « rollback »), puis la commande
+  local to="$1" rc=0; shift
+  if ! in_cluster; then "$@"; return; fi
+  update_mark set "$to" || return 1
+  "$@" || rc=$?
+  # la marque ne tombe que si l'état local est connu et cohérent : mise à jour interrompue ou retour arrière incomplet = elle reste
+  case "$(job_get state)" in
+    running) ;;
+    failed) [[ -n "$(job_get backup)" ]] || update_mark clear ;;
+    *) update_mark clear ;;
+  esac
+  return "$rc"
+}
+cluster_kick() {   # publie sans attendre la minute suivante : le travail de la console ne reste pas seulement sur ce nœud (best effort, après la fin de la demande)
+  in_cluster || return 0
+  "$SYSTEMD_RUN" --quiet --no-block --collect --unit="ddibuntu-pki-sync-$(date +%s)" "$CLUSTER_CMD" pki-sync >/dev/null 2>&1 || true
+}
+cmd_cluster_unblock() {
+  in_cluster || { log "ce nœud n'est pas dans un cluster"; return 1; }
+  "$CLUSTER_CMD" pki-mark clear --force >/dev/null 2>&1 || { log "marque non retirée (etcd injoignable ?)"; return 1; }
+  printf 'Marque retirée : le leader pourra démarrer la PKI à la prochaine minute (vérifier d'"'"'abord la base et la version avec « ddibuntu-pki status »).'
+}
+
+CLUSTER_OUT="$RUN/pki-cluster.json"
+cluster_publish() {   # $1 = rôle, $2 = unité (active | inactive), $3 = image, $4 = blocage (vide | update-interrupted), $5 = détail du blocage (JSON ou vide)
+  install -d -m 0755 "$RUN" 2>/dev/null || return 0
+  local t; t="$(mktemp "$RUN/.pkicl.XXXXXX")" || return 0
+  ROLE="$1" UNIT="$2" IMG="$3" BLK="$4" BLKD="${5:-}" INS="$([[ -f "$INST" && ! -L "$INST" ]] && echo 1 || echo 0)" DES="$([[ -f "$DESIRED" ]] && echo stopped || echo running)" TAG="$(instance_get tag)" \
+    python3 -c '
+import json, os, time
+e = os.environ
+blk = None
+if e["BLK"]:
+    blk = {"reason": e["BLK"]}
+    try:
+        d = json.loads(e["BLKD"]) if e["BLKD"] else {}
+        if isinstance(d, dict): blk.update({k: d[k] for k in ("node", "at", "from", "to") if k in d})
+    except Exception: pass
+print(json.dumps({"at": int(time.time()), "role": e["ROLE"], "installed": e["INS"] == "1", "unit": e["UNIT"], "image": e["IMG"], "desired": e["DES"], "version": e["TAG"], "blocked": blk}))' > "$t" 2>/dev/null \
+    && { chmod 0644 "$t"; mv -f "$t" "$CLUSTER_OUT"; } || rm -f "$t"
+}
+
+FW_APPLIED="$RUN/pki-fw-applied"
+cmd_align() {   # $1 = leader | replica
+  local role="${1:-}" nets unit=inactive blocked="" blkd="" acted=0
+  [[ "$role" = leader || "$role" = replica ]] || { log "align : « leader » ou « replica » attendu"; return 1; }
+  in_cluster || { log "align : ce nœud n'est pas dans un cluster"; return 1; }
+  if [[ ! -f "$INST" || -L "$INST" ]]; then   # PKI non installée (ou retirée par le leader) : aucune unité ne doit rester
+    if [[ -e "$QUADLET" ]]; then "$SYSCTL" stop "$SERVICE" >/dev/null 2>&1 || true; rm -f "$QUADLET"; "$SYSCTL" daemon-reload >/dev/null 2>&1 || true; fi
+    if [[ -s "$FW_APPLIED" ]]; then if [[ -z "$(fw_open "")" ]]; then rm -f "$FW_APPLIED"; fi; fi
+    cluster_publish "$role" inactive none "" ""; return 0
+  fi
+  sync_unit
+  nets="$(instance_get nets)"
+  if [[ "$(cat "$FW_APPLIED" 2>/dev/null || true)" != "$nets" ]]; then   # le pare-feu est prêt sur les deux nœuds : la VIP peut arriver à tout moment
+    if [[ -z "$(fw_open "$nets")" ]]; then install -d -m 0755 "$RUN"; printf '%s' "$nets" > "$FW_APPLIED"; fi
+  fi
+  if [[ "$role" = replica ]]; then
+    if svc_active; then "$SYSCTL" stop "$SERVICE" >/dev/null 2>&1 || true; acted=1; log "align : ce nœud n'est plus le leader : PKI arrêtée (elle tourne sur le nœud actif)"; fi
+  else
+    local mark="" mrc=0
+    mark="$("$CLUSTER_CMD" pki-mark get 2>/dev/null)" || mrc=$?
+    mark="${mark:0:600}"
+    if [[ "$mrc" -ne 0 ]]; then blocked=cluster-unreachable   # etcd injoignable : ni démarrage ni arrêt à l'aveugle (Patroni, qui en dépend, a de toute façon déjà rétrogradé ce nœud ou le fera)
+    elif [[ -n "$mark" ]]; then blocked=update-interrupted; blkd="$mark"
+    elif [[ "$(job_get state)" = running ]]; then blocked=update-interrupted; fi
+    if [[ -n "$blocked" ]]; then
+      if [[ "$blocked" = update-interrupted ]]; then log "align : une mise à jour de la PKI a été interrompue${mark:+ ($mark)} : démarrage automatique suspendu (« ddibuntu-pki cluster-unblock » après vérification)"
+      else log "align : etcd injoignable : état de la PKI laissé tel quel"; fi
+    elif [[ -f "$DESIRED" ]]; then
+      if svc_active; then "$SYSCTL" stop "$SERVICE" >/dev/null 2>&1 || true; acted=1; fi
+    elif [[ "$SU_IMG" = ready ]]; then
+      if ! svc_active; then
+        ensure_db >/dev/null 2>&1 || log "align : base « ejbca » non vérifiée (PostgreSQL ?) ; démarrage tout de même"
+        log "align : ce nœud est le leader : démarrage de la PKI"
+        "$SYSCTL" start "$SERVICE" || log "align : le démarrage du conteneur a échoué (journalctl -u $SERVICE)"
+        acted=1
+      elif [[ "$SU_CHANGED" -eq 1 ]]; then
+        log "align : unité modifiée : redémarrage de la PKI"; "$SYSCTL" restart "$SERVICE" || true; acted=1
+      fi
+    fi
+  fi
+  if svc_active; then unit=active; fi
+  cluster_publish "$role" "$unit" "$SU_IMG" "$blocked" "$blkd"
+  [[ "$acted" -eq 0 ]] || cmd_status || true
+  return 0
+}
+
+
 # ---- Demande de la console (sans privilège) : revalidée ici en totalité par pki-helper.py ----
 # Formats : {"action":"apply",…} | {"action":"start|stop|restart|status|uninstall|reset"} | {"action":"ca_root|ca_issuing",…} | {"action":"ca_import|ca_import_p12|ca_crl|ca_rootcrl","name":"…"}
 #           | {"action":"update_check|update_validate|update_rollback"} | {"action":"update_apply","image"}
@@ -1480,6 +1713,8 @@ cmd_request() {
     if [[ -n "$k" ]]; then R["$k"]="$v"; fi
   done < <(printf '%s' "$raw" | python3 "$HELPER" parse-request 2>/dev/null || true)
   action="${R[action]:-}"
+  if [[ -n "$action" && "$action" != status ]]; then out="$( ( need_leader ) 2>&1)" || rc=$?; fi
+  if [[ "$rc" -eq 0 ]]; then
   case "$action" in
     apply) out="$( ( cmd_apply "${R[image]}" "${R[hostname]}" "${R[nets]:-}" ) 2>&1)" || rc=$? ;;
     start|stop|restart) out="$( ( cmd_ctl "$action" ) 2>&1)" || rc=$? ;;
@@ -1501,11 +1736,12 @@ cmd_request() {
     scep_cancel) out="$( ( scep_cancel "${R[cn]}" ) 2>&1)" || rc=$? ;;
     recovery_set) out="$( ( recovery_set "$IN_DIR/recovery.pem" ) 2>&1)" || rc=$? ;;
     update_check) out="$( ( update_check ) 2>&1)" || rc=$? ;;
-    update_apply) out="$( ( update_apply "${R[image]}" ) 2>&1)" || rc=$? ;;
+    update_apply) out="$( ( with_mark "${R[image]:-?}" update_apply "${R[image]}" ) 2>&1)" || rc=$? ;;
     update_validate) out="$( ( update_validate ) 2>&1)" || rc=$? ;;
-    update_rollback) out="$( ( update_rollback ) 2>&1)" || rc=$? ;;
+    update_rollback) out="$( ( with_mark rollback update_rollback ) 2>&1)" || rc=$? ;;
     *) out="demande invalide"; rc=1 ;;
   esac
+  fi
   [[ "$rc" -eq 0 ]] && ok=true
   out="$(printf '%s' "$out" | tr '\n\r' '  ' | sed 's/ddibuntu-pki: //g')"
   log "demande de la console (${action:-invalide}) : ${out:-ok}"
@@ -1517,6 +1753,7 @@ cmd_request() {
   if [[ -z "${R[id]:-}" && "$raw" =~ \"id\"[[:space:]]*:[[:space:]]*\"([0-9a-f]{16})\" ]]; then rm -f "$IN_DIR/${BASH_REMATCH[1]}.scepw" 2>/dev/null || true; fi
   [[ "$action" != recovery_set ]] || rm -f "$IN_DIR/recovery.pem" 2>/dev/null || true
   cmd_status || true
+  [[ -z "$action" || "$action" = status ]] || cluster_kick
   [[ "$ok" = true ]]
 }
 
@@ -1524,9 +1761,21 @@ cmd_request() {
 if [[ "${1:-}" = render ]]; then valid_image "${2:-}" && valid_pki_host "${3:-}" || ddi_die "paramètres invalides"; render_quadlet "$IMAGE_REPO@sha256:0000000000000000000000000000000000000000000000000000000000000000"; exit 0; fi
 if [[ "${1:-}" = check ]]; then valid_image "${2:-}" || ddi_die "image refusée"; valid_pki_host "${3:-}" || ddi_die "nom public invalide"; norm_nets "${4:-}" >/dev/null || exit 1; echo ok; exit 0; fi
 [[ "$(id -u)" -eq 0 || -n "${DDI_PKI_ALLOW_USER:-}" ]] || ddi_die "à lancer en root"
-exec 9>"${DDI_PKI_LOCK:-/run/ddibuntu-pki.lock}"
-flock -w 600 9 || ddi_die "une autre demande PKI est en cours depuis plus de 10 minutes"
 cmd="${1:-}"; [[ $# -gt 0 ]] && shift
+# le tirage d'image de secours (cluster) a son propre verrou : il ne retient jamais le verrou général pendant des minutes
+if [[ "$cmd" = pull-image ]]; then cmd_pull_image; exit $?; fi
+exec 9>"${DDI_PKI_LOCK:-/run/ddibuntu-pki.lock}"
+if [[ "$cmd" =~ ^(state-export|state-import|align|cluster-unblock)$ ]]; then
+  # appelés chaque minute par « ddibuntu-cluster » : ils n'attendent pas une longue opération (installation, mise à jour) ; code 75 = occupé, réessai à la prochaine échéance
+  flock -w "${DDI_PKI_CLUSTER_LOCK_WAIT:-25}" 9 || { printf 'ddibuntu-pki: occupé (une autre demande PKI est en cours)\n' >&2; exit 75; }
+else
+  flock -w 600 9 || ddi_die "une autre demande PKI est en cours depuis plus de 10 minutes"
+fi
+# toute action qui écrit (base, conteneur, secrets, autorités) est réservée au leader du cluster
+LEADER_ONLY=" apply start stop restart uninstall reset ca-root ca-issuing ca-import ca-import-p12 ca-crl ca-rootcrl cert-issue cert-revoke scep-enable scep-disable scep-offer scep-rearm scep-cancel update-check update-apply update-validate update-rollback recovery-set secrets-restore "
+case "$LEADER_ONLY" in
+  *" $cmd "*) need_leader || exit 1 ;;
+esac
 case "$cmd" in
   apply) cmd_apply "${1:-}" "${2:-}" "${3:-}"; echo; cmd_status ;;
   start|stop|restart) cmd_ctl "$cmd"; echo; cmd_status ;;
@@ -1546,13 +1795,17 @@ case "$cmd" in
   scep-rearm) scep_rearm "${1:-}" "${2:-}"; echo; cmd_status ;;
   scep-cancel) scep_cancel "${1:-}"; echo; cmd_status ;;
   update-check) update_check; echo; cmd_status ;;
-  update-apply) update_apply "${1:-}"; echo; cmd_status ;;
+  update-apply) with_mark "${1:-?}" update_apply "${1:-}"; echo; cmd_status ;;
   update-validate) update_validate; echo; cmd_status ;;
-  update-rollback) update_rollback; echo; cmd_status ;;
+  update-rollback) with_mark rollback update_rollback; echo; cmd_status ;;
   recovery-set) recovery_set "${1:-$IN_DIR/recovery.pem}"; echo; cmd_status ;;
   secrets-pack) secrets_pack "${1:-}" ;;
   secrets-verify) secrets_verify "$@" ;;
   secrets-restore) secrets_restore "$@"; echo; cmd_status ;;
+  state-export) state_export "${1:-}" ;;
+  state-import) state_import "${1:-}" "${2:-}" ;;
+  align) cmd_align "${1:-}" ;;
+  cluster-unblock) cmd_cluster_unblock ;;
   maintain) cmd_maintain ;;
   status) cmd_status ;;
   request) cmd_request ;;

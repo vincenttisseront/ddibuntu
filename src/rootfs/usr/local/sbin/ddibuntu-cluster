@@ -18,6 +18,7 @@
 #   request                                                                     traite la demande de bascule déposée par la console (« .cluster-switchover » : un nom de nœud, validé)
 #   follow                                                                      (nœud de données) aligne Kea (HA) et BIND (primaire/secondaire) : primaire = fichiers de la console, secondaire = copie répliquée en base
 #   ad-sync                                                                     (nœud de données) le keytab et le domaine Kerberos suivent le cluster (chiffrés dans etcd ; l'arbitre ne les lit pas)
+#   pki-sync | role | pki-mark get|set|clear                                    (nœud de données) la PKI (EJBCA) suit le leader : état chiffré dans etcd, rôle local, marque « mise à jour en cours »
 #   set-vip --vip CIDR --iface IF [--vrid N] | clear-vip                        (nœud de données) adresse virtuelle de TOUT le cluster, publiée par etcd ; chaque nœud l'applique seul
 #   set-preferred NOEUD | clear-preferred | preferred                           nœud de données où le primaire doit se trouver en temps normal (clé etcd ; écart signalé par la console, bascule guidée)
 #   update-start VERSION | update-cancel | update                               mise à jour du cluster NŒUD PAR NŒUD (arbitre, secondaires, primaire en dernier ; un échec arrête la file) ; état
@@ -31,7 +32,7 @@
 #   drill --yes [--candidate N] [--back]                                        test de bascule mesuré (+ retour au primaire d'origine), rapport conservé dans etcd ; « drills » : historique ; « drill-clear --yes » : marque d'un test abandonné
 #   vip-check                                                                   (Keepalived) code 0 si ce nœud est le leader Patroni ; « init --vip CIDR --vip-iface IFACE [--vip-vrid N] » active la VIP de service
 #
-# Variables de test : DDI_GENERATED_DIR, DDI_RELOAD_CMD, DDI_KEA_SOCKET, DDI_DB_NAME ; DDI_ROOT (préfixe de tous les chemins), DDI_TEST=1 (ni systemctl ni exigence root), DDI_PY (interpréteur de Patroni)
+# Variables de test : DDI_GENERATED_DIR, DDI_RELOAD_CMD, DDI_KEA_SOCKET, DDI_DB_NAME, DDI_PKI_CMD, DDI_TEST_PATRONI_ROLE_FILE (rôle lu dans un fichier, avec DDI_TEST=1) ; DDI_ROOT (préfixe de tous les chemins), DDI_TEST=1 (ni systemctl ni exigence root), DDI_PY (interpréteur de Patroni)
 set -euo pipefail
 umask 077
 
@@ -556,6 +557,222 @@ print(h if isinstance(h,str) and re.fullmatch(r"none|[0-9a-f]{64}",h) and d.get(
     shred -u "$dir/plain" "$dir/blob" 2>/dev/null || true
     ad_note failed "état du cluster refusé par ddibuntu-ad (voir le journal)" ""; log "ad-sync : l'état du cluster a été refusé par ddibuntu-ad (rien n'a été modifié)"; return 1
   fi
+}
+
+# ---------------------------------------------------------------- PKI (EJBCA) : la PKI suit le leader (0.14.9)
+# EJBCA ne tourne que sur le LEADER PostgreSQL (sa base « ejbca » est dans le PostgreSQL du cluster, donc répliquée par Patroni). L'état qui n'est pas dans la base —
+# secrets (ejbca.env), instance, métadonnées des autorités, volume (clés TLS d'EJBCA), consigne d'arrêt — voyage dans etcd, CHIFFRÉ comme le keytab AD (phrase d'enveloppe dérivée de
+# ddi-xfr : l'arbitre ne le lit pas). Même comparaison L / E / S que « ad-sync », avec UNE règle de plus : un secondaire converge toujours vers etcd et ne publie jamais ;
+# seul le leader publie. Au démarrage du secondaire promu, son état est déjà celui du cluster : « ddibuntu-pki align leader » n'a plus qu'à démarrer le conteneur.
+PKISTATE=/ddibuntu-cluster/pki/state          # état chiffré : {"v":1,"sha":…|"none","blob":…,"by":nœud,"at":date}
+PKIMARK=/ddibuntu-cluster/pki/updating        # « mise à jour en cours » : posée avant une mise à jour ou un retour arrière, retirée à la fin ; si elle reste, aucun nœud ne démarre la PKI
+PKINODES=/ddibuntu-cluster/pki/nodes/         # préparation de chaque nœud de données (état synchronisé, image présente, unité)
+PKI_CMD="${DDI_PKI_CMD:-/usr/local/sbin/ddibuntu-pki}"
+pki_pass() {   # phrase de passe d'enveloppe : HMAC-SHA256(clé ddi-xfr, étiquette), via l'environnement
+  local secret; secret="$(sed -n 's/^ *secret "\([A-Za-z0-9+\/=]*\)";$/\1/p' "$XFRKEY" | head -n1)"
+  [ -n "$secret" ] || return 1
+  SECRET="$secret" python3 -c 'import hashlib, hmac, os; print(hmac.new(os.environ["SECRET"].encode(), b"ddibuntu-pki-state-v1", hashlib.sha256).hexdigest(), end="")'
+}
+pki_note() {   # pki_note ÉTAT MESSAGE [EMPREINTE] : état de la synchronisation, sans secret, lisible par la console
+  local d="$ROOT/run/ddibuntu" t; install -d -m 0755 "$d" 2>/dev/null || return 0
+  t="$(mktemp "$d/.pkisync.XXXXXX" 2>/dev/null)" || return 0
+  ST="$1" MSG="$2" HASH="${3:-}" python3 -c '
+import json, os, time
+print(json.dumps({"at": int(time.time()), "state": os.environ["ST"], "message": os.environ["MSG"][:200], "hash": os.environ["HASH"][:12]}, ensure_ascii=False))' > "$t" 2>/dev/null \
+    && { chmod 0644 "$t"; mv -f "$t" "$d/pki-sync.json"; } || rm -f "$t"
+  return 0
+}
+cmd_pki_sync() {
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || return 0
+  [ -x "$PKI_CMD" ] || [ -n "${DDI_PKI_CMD:-}" ] || return 0
+  [ -f "$XFRKEY" ] || { log "pki-sync : pas de clé de cluster (ddi-xfr) sur ce nœud : synchronisation de la PKI impossible"; return 0; }
+  install -d -m 0700 "$STATE"
+  exec 9>"$STATE/pki-sync.lock"; flock -w 120 9 || { log "pki-sync : verrou occupé"; return 1; }
+  local role; role="$(patroni_role)"
+  [ -n "$role" ] || { log "pki-sync : rôle Patroni inconnu (réessai à la prochaine échéance)"; return 0; }
+  local dir; dir="$(mktemp -d "$STATE/.pki.XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "shred -u '$dir'/* 2>/dev/null; rm -rf '$dir'" RETURN
+  local lh="" rc=0 eh="" sh ev="$dir/etcd"
+  lh="$("$PKI_CMD" state-export "$dir/local" 2>"$dir/err")" || rc=$?
+  if [ "$rc" -eq 75 ]; then pki_note busy "une opération PKI est en cours : synchronisation reportée" ""; return 0; fi
+  if [ "$rc" -ne 0 ] || ! printf '%s' "$lh" | grep -Eqx 'none|[0-9a-f]{64}'; then
+    pki_note failed "état local illisible : $(tr '\n' ' ' < "$dir/err" | cut -c1-120)" ""; log "pki-sync : état local illisible"; return 1
+  fi
+  if ! ectl get "$PKISTATE" --print-value-only > "$ev" 2>/dev/null; then pki_note failed "etcd injoignable" ""; log "pki-sync : etcd injoignable (réessai à la prochaine échéance)"; return 0; fi
+  local ekey=0
+  if [ -s "$ev" ]; then
+    eh="$(python3 -c 'import json,re,sys
+try: d=json.load(open(sys.argv[1])); h=d["sha"]
+except Exception: sys.exit(0)
+print(h if isinstance(h,str) and re.fullmatch(r"none|[0-9a-f]{64}",h) and d.get("v")==1 else "", end="")' "$ev" 2>/dev/null || true)"
+    [ -n "$eh" ] || { log "pki-sync : valeur d'etcd illisible : ignorée"; pki_note failed "valeur d'etcd illisible" ""; return 1; }
+    ekey=1
+  fi
+  local eeff="${eh:-none}"; sh="$(cat "$STATE/pki-synced" 2>/dev/null || true)"
+  if [ "$lh" = "$eeff" ]; then printf '%s\n' "$lh" > "$STATE/pki-synced"; pki_note synced "à jour" "$lh"; return 0; fi
+  # décision
+  local action
+  if [ "$role" = replica ]; then
+    if [ "$ekey" -eq 1 ]; then action=apply; else pki_note waiting "le leader n'a encore rien publié" ""; return 0; fi
+  elif [ -z "$sh" ]; then
+    if [ "$eeff" = none ]; then action=publish
+    elif [ "$lh" = none ]; then action=apply
+    else pki_note conflict "ce nœud et le cluster ont chacun une PKI différente : rien n'est écrasé (mise à zéro d'un des deux côtés nécessaire)" ""; log "pki-sync : deux PKI différentes (locale et cluster) : aucune action"; return 1; fi
+  elif [ "$lh" != "$sh" ]; then action=publish
+  else action=apply; fi
+  local pass; pass="$(pki_pass)" || { log "pki-sync : clé d'enveloppe illisible"; return 1; }
+  if [ "$action" = publish ]; then
+    if [ "$lh" = none ]; then printf '{"v":1,"sha":"none","blob":"","by":"%s","at":%s}' "${C[NODE_NAME]}" "$(date +%s)" > "$dir/value"
+    else
+      gpg_sym enc "$dir/local" "$dir/blob" 3< <(printf '%s' "$pass") || { shred -u "$dir/local" 2>/dev/null; log "pki-sync : chiffrement impossible"; return 1; }
+      LH="$lh" BY="${C[NODE_NAME]}" python3 -c 'import base64, json, os, sys, time; print(json.dumps({"v": 1, "sha": os.environ["LH"], "blob": base64.b64encode(open(sys.argv[1], "rb").read()).decode(), "by": os.environ["BY"], "at": int(time.time())}, separators=(",", ":")), end="")' "$dir/blob" > "$dir/value"
+    fi
+    if [ "$(wc -c < "$dir/value")" -gt 1400000 ]; then pki_note failed "état trop gros pour etcd" ""; log "pki-sync : état trop gros pour etcd (1,4 Mo au plus)"; return 1; fi
+    if ectl put "$PKISTATE" < "$dir/value" >/dev/null 2>&1; then
+      printf '%s\n' "$lh" > "$STATE/pki-synced"; pki_note published "publié sur le cluster" "$lh"; log "pki-sync : état de la PKI publié sur le cluster"
+    else pki_note failed "publication impossible (quorum ?)" ""; log "pki-sync : publication impossible (réessai à la prochaine échéance)"; return 1; fi
+    rm -f "$dir/local" "$dir/blob"; return 0
+  fi
+  # apply : l'état d'etcd remplace l'état local (jamais sur un nœud qui vient de publier autre chose)
+  if [ "$eeff" = none ]; then : > "$dir/plain"
+  else
+    python3 -c 'import base64, json, sys; open(sys.argv[2], "wb").write(base64.b64decode(json.load(open(sys.argv[1]))["blob"], validate=True))' "$ev" "$dir/blob" 2>/dev/null || { pki_note failed "état d'etcd illisible" ""; log "pki-sync : état d'etcd illisible"; return 1; }
+    gpg_sym dec "$dir/blob" "$dir/plain" 3< <(printf '%s' "$pass") 2>/dev/null || { pki_note failed "déchiffrement impossible (clé de cluster différente ?)" ""; log "pki-sync : déchiffrement impossible"; return 1; }
+    [ "$(sha256sum < "$dir/plain" | cut -d' ' -f1)" = "$eeff" ] || { pki_note failed "empreinte inattendue" ""; log "pki-sync : empreinte inattendue : état refusé"; shred -u "$dir/plain" 2>/dev/null; return 1; }
+  fi
+  rc=0; "$PKI_CMD" state-import "$dir/plain" "$eeff" >/dev/null 2>"$dir/err" || rc=$?
+  shred -u "$dir/plain" "$dir/blob" 2>/dev/null || true
+  if [ "$rc" -eq 0 ]; then
+    printf '%s\n' "$eeff" > "$STATE/pki-synced"; pki_note applied "état reçu du cluster appliqué" "$eeff"; log "pki-sync : état de la PKI du cluster appliqué"
+  elif [ "$rc" -eq 75 ]; then pki_note busy "une opération PKI est en cours : application reportée" ""
+  else
+    pki_note failed "état du cluster refusé par ddibuntu-pki : $(tr '\n' ' ' < "$dir/err" | cut -c1-120)" ""; log "pki-sync : l'état du cluster a été refusé par ddibuntu-pki (rien n'a été modifié)"; return 1
+  fi
+}
+
+# role : rôle de CE nœud pour les outils locaux (ddibuntu-pki) : leader | replica | witness | unknown
+cmd_role() {
+  conf_load
+  if [ "${C[NODE_ROLE]}" != data ]; then echo witness; return 0; fi
+  local r; r="$(patroni_role)"; echo "${r:-unknown}"
+}
+
+# pki-mark get | set DE VERS | clear [--force] : marque « mise à jour de la PKI en cours » (valeur = JSON en base64url : aucun caractère que la transaction d'etcdctl puisse mal lire)
+pki_mark_read() {   # imprime le JSON de la marque (vide : aucune) ; code 1 si etcd est injoignable
+  local raw rc=0
+  raw="$(ectl --command-timeout=5s get "$PKIMARK" --print-value-only 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  [ -n "$raw" ] || return 0
+  RAW="$raw" python3 -c '
+import base64, json, os, re
+try:
+    d = json.loads(base64.urlsafe_b64decode(os.environ["RAW"].strip() + "=" * (-len(os.environ["RAW"].strip()) % 4)))
+    ok = isinstance(d, dict) and re.fullmatch(r"[a-z][a-z0-9-]{1,30}", str(d.get("node", ""))) and isinstance(d.get("at"), int)
+    d = {"node": d["node"], "at": d["at"], "from": str(d.get("from", ""))[:40], "to": str(d.get("to", ""))[:60]} if ok else None
+except Exception:
+    d = None
+print(json.dumps(d or {"node": "inconnu", "at": 0, "from": "", "to": ""}, ensure_ascii=False), end="")'
+}
+cmd_pki_mark() {
+  conf_load
+  case "${1:-}" in
+    get) pki_mark_read || die "lecture dans etcd impossible (quorum ?)" ;;
+    set)
+      local from="${2:-}" to="${3:-}" cur val enc
+      [[ "$from" =~ ^[0-9A-Za-z._-]{0,40}$ && "$to" =~ ^[0-9A-Za-z._:/@-]{1,80}$ ]] || die "marque : valeurs invalides"
+      val="$(FROM="$from" TO="$to" NODE="${C[NODE_NAME]}" python3 -c '
+import base64, json, os, time
+d = {"node": os.environ["NODE"], "at": int(time.time()), "from": os.environ["FROM"], "to": os.environ["TO"][:60]}
+print(base64.urlsafe_b64encode(json.dumps(d, separators=(",", ":")).encode()).decode().rstrip("="), end="")')"
+      enc="$(printf 'mod("%s") = "0"\n\nput %s %s\n\nget %s\n\n' "$PKIMARK" "$PKIMARK" "$val" "$PKIMARK" | ectl --command-timeout=8s txn 2>/dev/null | head -n1)" || enc=""
+      case "$enc" in
+        SUCCESS*) return 0 ;;
+        FAILURE*)
+          cur="$(pki_mark_read)" || die "lecture dans etcd impossible (quorum ?)"
+          if [ "$(printf '%s' "$cur" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("node",""))' 2>/dev/null)" = "${C[NODE_NAME]}" ]; then
+            printf '%s' "$val" | ectl --command-timeout=5s put "$PKIMARK" >/dev/null 2>&1 || die "écriture dans etcd impossible (quorum ?)"; return 0
+          fi
+          die "une mise à jour de la PKI est déjà en cours ou a été interrompue sur « $(printf '%s' "$cur" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("node","?"))' 2>/dev/null) » : « ddibuntu-pki cluster-unblock » après vérification" ;;
+        *) die "etcd n'a pas répondu à la transaction (quorum ?)" ;;
+      esac ;;
+    clear)
+      local cur; cur="$(pki_mark_read)" || die "lecture dans etcd impossible (quorum ?)"
+      [ -n "$cur" ] || return 0
+      if [ "${2:-}" != --force ] && [ "$(printf '%s' "$cur" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("node",""))' 2>/dev/null)" != "${C[NODE_NAME]}" ]; then
+        die "la marque a été posée par un autre nœud : seul « ddibuntu-pki cluster-unblock » (après vérification) la retire"
+      fi
+      ectl --command-timeout=5s del "$PKIMARK" >/dev/null 2>&1 || die "suppression dans etcd impossible (quorum ?)" ;;
+    *) die "pki-mark get | set DE VERS | clear [--force]" ;;
+  esac
+}
+
+# préparation de CE nœud, publiée dans etcd (une clé par nœud ; réécrite si elle change, sinon toutes les 10 minutes)
+cmd_pki_ready() {
+  conf_load; [ "${C[NODE_ROLE]}" = data ] || return 0
+  local f="$ROOT/run/ddibuntu/pki-cluster.json" v h last
+  [ -f "$f" ] && [ ! -L "$f" ] || return 0
+  v="$(NODE="${C[NODE_NAME]}" SYN="$(cat "$STATE/pki-synced" 2>/dev/null || true)" python3 -c '
+import json, os, re, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: raise SystemExit(0)
+syn = os.environ["SYN"]
+out = {"node": os.environ["NODE"], "role": d.get("role") if d.get("role") in ("leader", "replica") else "unknown", "installed": bool(d.get("installed")),
+       "unit": d.get("unit") if d.get("unit") in ("active", "inactive") else "inactive", "image": d.get("image") if d.get("image") in ("none", "ready", "pulling", "missing") else "none",
+       "version": str(d.get("version", ""))[:20], "desired": d.get("desired") if d.get("desired") in ("running", "stopped") else "running",
+       "synced": syn[:12] if re.fullmatch(r"none|[0-9a-f]{64}", syn) else "", "blocked": (d.get("blocked") or {}).get("reason") if isinstance(d.get("blocked"), dict) else None}
+print(json.dumps(out, ensure_ascii=False, sort_keys=True), end="")' "$f" 2>/dev/null)" || return 0
+  [ -n "$v" ] || return 0
+  h="$(printf '%s' "$v" | sha256sum | cut -d' ' -f1)"; last="$STATE/pki-ready"
+  if [ "$(head -n1 "$last" 2>/dev/null)" = "$h" ] && [ -n "$(find "$last" -mmin -10 2>/dev/null)" ]; then return 0; fi
+  if printf '%s' "$(printf '%s' "$v" | python3 -c 'import json,sys,time; d=json.load(sys.stdin); d["at"]=int(time.time()); print(json.dumps(d, ensure_ascii=False), end="")')" | ectl --command-timeout=5s put "$PKINODES${C[NODE_NAME]}" >/dev/null 2>&1; then
+    printf '%s\n' "$h" > "$last"
+  fi
+}
+# appelé par « follow » avec le rôle Patroni déjà connu : aligne la PKI de ce nœud, puis publie sa préparation
+cmd_pki_align() {   # $1 = leader | replica
+  [ "${C[NODE_ROLE]}" = data ] || return 0
+  [ -x "$PKI_CMD" ] || [ -n "${DDI_PKI_CMD:-}" ] || return 0
+  local rc=0
+  "$PKI_CMD" align "$1" >/dev/null || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ]; then log "follow : alignement de la PKI en échec (code $rc) : voir le journal « ddibuntu-pki »"; fi
+  cmd_pki_ready || true
+  return 0
+}
+# JSON publié dans « status » : la PKI du cluster vue d'etcd (sans le contenu chiffré)
+pki_cluster_json() {
+  local sraw nraw mraw sync="null"
+  sraw="$(ectl --command-timeout=3s get "$PKISTATE" --print-value-only 2>/dev/null | head -c 1500000)" || sraw=""
+  nraw="$(ectl --command-timeout=3s get --prefix "$PKINODES" -w json 2>/dev/null | head -c 100000)" || nraw=""; [ -n "$nraw" ] || nraw="{}"
+  mraw="$(pki_mark_read 2>/dev/null)" || mraw=""
+  if [ -f "$ROOT/run/ddibuntu/pki-sync.json" ] && [ ! -L "$ROOT/run/ddibuntu/pki-sync.json" ]; then sync="$(head -c 2000 "$ROOT/run/ddibuntu/pki-sync.json")"; fi
+  SRAW="$sraw" NRAW="$nraw" MRAW="$mraw" SYNC="$sync" python3 -c '
+import base64, json, os, re
+state = None
+try:
+    d = json.loads(os.environ["SRAW"])
+    if d.get("v") == 1 and re.fullmatch(r"none|[0-9a-f]{64}", str(d.get("sha"))):
+        by = d.get("by") if re.fullmatch(r"[a-z][a-z0-9-]{1,30}", str(d.get("by", ""))) else None
+        state = {"sha": d["sha"][:12] if d["sha"] != "none" else "none", "by": by, "at": d["at"] if isinstance(d.get("at"), int) else None}
+except Exception:
+    pass
+nodes = {}
+try: kvs = json.loads(os.environ["NRAW"]).get("kvs", [])[:16]
+except Exception: kvs = []
+for kv in kvs:
+    try:
+        name = base64.b64decode(kv["key"]).decode().rsplit("/", 1)[-1]
+        raw = base64.b64decode(kv.get("value", ""))
+        h = json.loads(raw) if len(raw) <= 2048 else None
+        if re.fullmatch(r"[a-z][a-z0-9-]{1,30}", name) and isinstance(h, dict) and h.get("node") == name:
+            nodes[name] = {k: h.get(k) for k in ("role", "installed", "unit", "image", "version", "desired", "synced", "blocked", "at")}
+    except Exception:
+        continue
+try: mark = json.loads(os.environ["MRAW"]) if os.environ["MRAW"] else None
+except Exception: mark = None
+try: sync = json.loads(os.environ["SYNC"])
+except Exception: sync = None
+print(json.dumps({"enabled": bool(state and state["sha"] != "none"), "state": state, "nodes": nodes, "mark": mark, "sync": sync}, ensure_ascii=False), end="")' 2>/dev/null || echo null
 }
 
 # ---------------------------------------------------------------- registre des nœuds (dans etcd) : chaque nœud finit par connaître tous les autres
@@ -1398,7 +1615,8 @@ cmd_status() {
   prefj="$(preferred_json 2>/dev/null)" || prefj=""; [ -n "$prefj" ] || prefj="null"
   local updj; updj="$(update_json 2>/dev/null)" || updj=""; [ -n "$updj" ] || updj="null"
   certj="$(cert_json 2>/dev/null)" || certj=""; [ -n "$certj" ] || certj="null"
-  SETTINGS_J="$setj" PKI_J="$certj" PREF_J="$prefj" UPD_J="$updj" HEALTH_RAW="$hraw" CAOWN_V="$caown" CAESC_V="$caesc" CANODE_V="${C[CA_NODE]}" QUORUM="$quorum" VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
+  local pkicj="null"; if [ "${C[NODE_ROLE]}" = data ]; then pkicj="$(pki_cluster_json 2>/dev/null)" || pkicj="null"; [ -n "$pkicj" ] || pkicj="null"; fi
+  PKIC_J="$pkicj" SETTINGS_J="$setj" PKI_J="$certj" PREF_J="$prefj" UPD_J="$updj" HEALTH_RAW="$hraw" CAOWN_V="$caown" CAESC_V="$caesc" CANODE_V="${C[CA_NODE]}" QUORUM="$quorum" VIP="$vip" KEA="$kea" ETCD_OK="$etcd_ok" MEMBERS="$members" PAT="$pat" NODE="${C[NODE_NAME]}" ROLE="${C[NODE_ROLE]}" CLUSTER="${C[CLUSTER_NAME]}" PEERS="${C[PEERS]}" \
     python3 -c '
 import base64, json, os, re
 pat = json.loads(os.environ["PAT"])
@@ -1419,7 +1637,7 @@ print(json.dumps({"cluster": os.environ["CLUSTER"], "node": os.environ["NODE"], 
   "peers": [dict(zip(("name", "ip", "role"), (p.split("=")[0], p.split("=")[1].split(":")[0], p.split(":")[-1]))) for p in os.environ["PEERS"].split()],
   "ca": {"node": os.environ["CANODE_V"] == "1", "owner": os.environ["CAOWN_V"] or None, "escrow": os.environ["CAESC_V"] == "true"},
   "patroni": pat, "kea": json.loads(os.environ["KEA"]), "vip": json.loads(os.environ["VIP"]), "health": health,
-  "settings": json.loads(os.environ["SETTINGS_J"]), "pki": json.loads(os.environ["PKI_J"]), "preferred": json.loads(os.environ["PREF_J"]), "update": json.loads(os.environ["UPD_J"])}, ensure_ascii=False))'
+  "settings": json.loads(os.environ["SETTINGS_J"]), "pki": json.loads(os.environ["PKI_J"]), "ejbca": json.loads(os.environ["PKIC_J"]), "preferred": json.loads(os.environ["PREF_J"]), "update": json.loads(os.environ["UPD_J"])}, ensure_ascii=False))'
 }
 
 # ---------------------------------------------------------------- Kea HA
@@ -1450,6 +1668,8 @@ except Exception:
 PY
 }
 patroni_role() {   # leader | replica | "" (inconnu)
+  # essais seulement (DDI_TEST=1) : le rôle est lu dans un fichier, sans Patroni
+  if [ -n "${DDI_TEST:-}" ] && [ -n "${DDI_TEST_PATRONI_ROLE_FILE:-}" ]; then head -n1 "$DDI_TEST_PATRONI_ROLE_FILE" 2>/dev/null | tr -d '\r\n '; echo; return 0; fi
   curl -fsS --max-time 4 --cacert "$PKI/ca.crt" --cert "$PKI/node.crt" --key "$PKI/node.key" "https://${C[NODE_IP]}:${C[PATRONI_PORT]}/patroni" 2>/dev/null \
     | python3 -c 'import json,sys; r=json.load(sys.stdin).get("role",""); print({"master":"leader","primary":"leader","standby_leader":"leader","replica":"replica"}.get(r,""))' 2>/dev/null || true
 }
@@ -1748,10 +1968,12 @@ cmd_follow() {
   install -d -m 0700 "$STATE"
   if [ "${C[CA_NODE]}" = 1 ]; then ensure_xfr_key; fi
   ( cmd_ad_sync ) || log "follow : synchronisation Kerberos non terminée (réessai à la prochaine échéance)"
+  ( cmd_pki_sync ) || log "follow : synchronisation de la PKI non terminée (réessai à la prochaine échéance)"
   ( cmd_ca_sync ) || log "follow : publication de la clé d'autorité non terminée (réessai à la prochaine échéance)"
   local gen="${DDI_GENERATED_DIR:-$ROOT/var/lib/ddibuntu/generated}" reload="${DDI_RELOAD_CMD:-/usr/local/sbin/ddibuntu-reload}" db="${DDI_DB_NAME:-ddibuntu}"
   local marker="$STATE/kea-applied" role margs="" content=""
   role="$(patroni_role)"; [ -n "$role" ] || { log "follow : rôle Patroni inconnu (réessai à la prochaine échéance)"; return 0; }
+  ( cmd_pki_align "$role" ) || log "follow : alignement de la PKI non terminé (réessai à la prochaine échéance)"
   if [ "$role" = replica ]; then
     local rows tmpd n s b names=""
     rows="$(psql_local -d "$db" -At -F ' ' -c "select name, sha256, translate(encode(convert_to(content, 'UTF8'), 'base64'), E'\n', '') from rendered_configs order by name" 2>/dev/null)" || { log "follow : base répliquée illisible (réessai)"; return 0; }
@@ -2055,6 +2277,7 @@ need = len(rest) // 2 + 1; healthy = sum(1 for m in rest if m["healthy"])
 print("ok" if healthy >= need else "non : %d voix saines sur %d nécessaires après retrait" % (healthy, need))')"
   [ "$verdict" = ok ] || die "retirer « $name » ferait perdre le quorum ($verdict)"
   forget_node "$name" "$nip" || die "écriture dans etcd impossible"
+  ectl --command-timeout=5s del "$PKINODES$name" >/dev/null 2>&1 || true
   if [ "$(preferred_read 2>/dev/null || true)" = "$name" ]; then ectl --command-timeout=5s del "$PREFERRED" >/dev/null 2>&1 || true; fi   # le nœud préféré retiré ne laisse pas de consigne orpheline
   local id; id="$(etcd_member_id "$name")"
   if [ -n "$id" ]; then ectl --command-timeout=10s member remove "$id" >/dev/null 2>&1 || die "etcd a refusé de retirer le membre $name (réessayez ; l'opération est répétable)"; fi
@@ -2362,6 +2585,9 @@ case "${1:-}" in
   sync) cmd_sync ;;
   follow) cmd_follow ;;
   ad-sync) cmd_ad_sync ;;
+  pki-sync) cmd_pki_sync ;;
+  role) cmd_role ;;
+  pki-mark) shift; cmd_pki_mark "$@" ;;
   setup-request) cmd_setup_request ;;
   request) rc=0; cmd_request || rc=1; cmd_action || rc=1; exit "$rc" ;;
   remove-node) shift; cmd_remove_node "$@" ;;
