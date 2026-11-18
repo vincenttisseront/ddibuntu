@@ -1421,8 +1421,9 @@ def cmd_update_check_write(argv):
             with open(src, "rb") as f:
                 d = json.loads(f.read(4 << 20).decode("utf-8"))
             rows = d["results"]
-            assert isinstance(rows, list)
-        except (OSError, ValueError, KeyError, AssertionError):
+            if not isinstance(rows, list):
+                raise ValueError("results n'est pas une liste")
+        except (OSError, ValueError, KeyError):
             out["error"] = "bad_answer"
             _atomic_json(path, out)
             return 0
