@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.14.10 — « PKI du DDI : texte de la carte « PKI et cluster » avant l'installation »
+
+Correctif relevé lors du **premier essai de 0.14.9 sur un vrai cluster** : tant qu'aucune PKI n'est installée, la carte « PKI et cluster » affichait « La PKI tourne sur ce nœud… » (sur le leader) ou « La PKI tourne sur « nœud »… » (sur le secondaire), puis, juste dessous, « Aucune PKI n'est installée sur le cluster ». Le texte ne regardait pas si une PKI existait.
+
+- **Console** : sans PKI dans le cluster, le leader dit qu'il est le leader PostgreSQL et que la PKI s'y installera (puis suivra le leader), et le secondaire dit où la PKI s'installe et se gère et qu'il la recevra ensuite pour la garder en veille. Les textes d'origine ne s'affichent plus qu'une fois la PKI installée. Textes français et anglais ; rien d'autre ne change (aucune modification de root, d'etcd ou de la réplication).
+- Tests : `unit-pki-cluster` passe de 22 à 25 contrôles (la branche « pas de PKI » est évaluée avant celles qui disent où la PKI tourne ; textes présents en français et en anglais, sans « tourne » / « runs »). Le test échoue sans la correction.
+
 ## 0.14.9 — « PKI du DDI : la PKI suit le leader du cluster (itération 9) »
 
 Neuvième et dernière étape de la **PKI intégrée** : dans un **cluster**, EJBCA tourne **sur le leader PostgreSQL seulement** et reprend **sans manipulation** sur l'autre nœud de données quand le leader change. Hors cluster, rien ne change.

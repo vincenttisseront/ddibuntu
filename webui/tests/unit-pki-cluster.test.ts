@@ -1,7 +1,7 @@
 // 0.14.9 — la PKI dans le cluster : lecture bornée de ce que root publie (bloc « ejbca » du statut du cluster, pki-cluster.json de ce nœud), nœuds inconnus ignorés,
 // valeurs piégées écartées, aucun contenu chiffré ni secret relayé. Les deux formats sont aussi relus tels que les scripts de root les produisent (test différentiel
 // avec ddibuntu-cluster et ddibuntu-pki : voir tests/b40-pki-cluster-live.sh, qui lit les mêmes champs).
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -98,5 +98,29 @@ describe('pki-cluster.json de ce nœud', () => {
     expect(await pki.readPkiClusterLocal()).toMatchObject({ role: 'replica', stale: false })
     writeFileSync(process.env.DDI_PKI_CLUSTER!, 'x'.repeat(20000))
     expect(await pki.readPkiClusterLocal()).toBeNull()
+  })
+})
+
+// 0.14.10 — avant toute installation, la carte ne doit pas dire que la PKI « tourne » quelque part (essai sur un vrai cluster : leader sans PKI installée).
+// Aucun test ne monte les composants Vue : la source est lue, comme pour les autres cartes.
+describe('carte « PKI et cluster » : texte quand le cluster n\'a pas encore de PKI', () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8')
+  const vue = read('../app/components/PkiCluster.vue')
+  const where = vue.slice(vue.indexOf('data-test="pki-cl-where"'), vue.indexOf('</p>', vue.indexOf('data-test="pki-cl-where"')))
+  it('la branche « pas de PKI » passe avant celles qui disent où elle tourne', () => {
+    const none = where.indexOf('!ej?.enabled')
+    expect(none).toBeGreaterThan(-1)
+    expect(none).toBeLessThan(where.indexOf("t('pki.cl.here')"))
+    expect(none).toBeLessThan(where.indexOf("t('pki.cl.elsewhere'"))
+    expect(where).toContain("t('pki.cl.here_none')"); expect(where).toContain("t('pki.cl.elsewhere_none'")
+  })
+  it.each([['fr', '../app/i18n/fr.ts', /tourne/i], ['en', '../app/i18n/en.ts', /\bruns\b/i]])('textes %s : présents, sans « la PKI tourne »', (_l, rel, running) => {
+    const src = read(rel)
+    for (const k of ['pki.cl.here_none', 'pki.cl.elsewhere_none']) {
+      const line = src.split('\n').find((x) => x.startsWith(`  "${k}":`))
+      expect(line, k).toBeTruthy()
+      expect(line).not.toMatch(running)
+    }
+    expect(src.split('\n').find((x) => x.startsWith('  "pki.cl.elsewhere_none":'))).toContain('{node}')
   })
 })

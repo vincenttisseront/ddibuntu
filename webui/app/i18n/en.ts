@@ -3153,6 +3153,8 @@ const messages: Record<string, string> = {
   "pki.cl.standby": "Standby (secondary)",
   "pki.cl.here": "The PKI runs on this node, which is the cluster's PostgreSQL leader. It follows the leader: after a switchover it restarts by itself on the new leader.",
   "pki.cl.elsewhere": "The PKI runs on \"{node}\", the cluster leader. This node keeps it up to date and ready, and takes it over when promoted: actions (installation, authorities, certificates, updates) are done from the active node.",
+  "pki.cl.here_none": "This node is the cluster's PostgreSQL leader: the PKI will be installed here. It then follows the leader and, after a switchover, restarts by itself on the new leader.",
+  "pki.cl.elsewhere_none": "The cluster leader is \"{node}\": the PKI is installed and managed from that node. This node will then receive it and keep it ready to take over.",
   "pki.cl.blocked_title": "Automatic start suspended: update interrupted",
   "pki.cl.blocked_body": "An update (or rollback) of the PKI was interrupted on \"{node}\" (EJBCA {from} → {to}). The database may be half-migrated: no node starts the PKI by itself. From node \"{node}\", open the Update tab (roll back); after checking, \"ddibuntu-pki cluster-unblock\" (root) lifts the block.",
   "pki.cl.blocked.update-interrupted": "update interrupted",

@@ -41,6 +41,7 @@ const reason = (r: any) => (r.v.blocked ? t(`pki.cl.blocked.${r.v.blocked}`) : !
       <p class="text-muted" data-test="pki-cl-where">
         <template v-if="c.stale">{{ t('pki.cl.stale_body') }}</template>
         <template v-else-if="c.nodeRole !== 'data'">{{ t('pki.cl.witness_body') }}</template>
+        <template v-else-if="!ej?.enabled">{{ iAmLeader ? t('pki.cl.here_none') : t('pki.cl.elsewhere_none', { node: c.leader ?? '?' }) }}</template>
         <template v-else-if="iAmLeader">{{ t('pki.cl.here') }}</template>
         <template v-else>{{ t('pki.cl.elsewhere', { node: c.leader ?? '?' }) }}</template>
       </p>

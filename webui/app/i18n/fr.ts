@@ -3153,6 +3153,8 @@ const messages: Record<string, string> = {
   "pki.cl.standby": "En veille (secondaire)",
   "pki.cl.here": "La PKI tourne sur ce nœud, qui est le leader PostgreSQL du cluster. Elle suit le leader : après une bascule, elle redémarre seule sur le nouveau leader.",
   "pki.cl.elsewhere": "La PKI tourne sur « {node} », le leader du cluster. Ce nœud la garde en veille, à jour, et la reprendra à sa promotion : les actions (installation, autorités, certificats, mises à jour) se font depuis le nœud actif.",
+  "pki.cl.here_none": "Ce nœud est le leader PostgreSQL du cluster : la PKI s'installera ici. Elle suivra ensuite le leader et, après une bascule, redémarrera seule sur le nouveau leader.",
+  "pki.cl.elsewhere_none": "Le leader du cluster est « {node} » : c'est depuis ce nœud que la PKI s'installe et se gère. Ce nœud la recevra ensuite et la gardera en veille, prête à la reprendre.",
   "pki.cl.blocked_title": "Démarrage automatique suspendu : mise à jour interrompue",
   "pki.cl.blocked_body": "Une mise à jour (ou un retour arrière) de la PKI a été interrompue sur « {node} » (EJBCA {from} → {to}). La base peut être à moitié migrée : aucun nœud ne démarre la PKI tout seul. Depuis le nœud « {node} », ouvrez l'onglet Mise à jour (revenir en arrière) ; après vérification, « ddibuntu-pki cluster-unblock » (root) lève le blocage.",
   "pki.cl.blocked.update-interrupted": "mise à jour interrompue",
