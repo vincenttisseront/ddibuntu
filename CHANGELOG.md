@@ -1,5 +1,15 @@
 # Journal des modifications
 
+## 0.14.6 — « PKI du DDI : installation simplifiée »
+
+Correctif de la **PKI intégrée**, demandé après un essai sur une appliance réelle mise à jour en ligne.
+
+- **Podman est installé par l'installation de la PKI elle-même.** Le paquet `podman` n'était posé que par l'ISO : une appliance mise à jour en ligne ne l'avait pas, la page PKI affichait un bandeau d'avertissement et l'installation était refusée. Désormais, quand Podman manque, `ddibuntu-pki apply` (root) lance `apt-get update` puis `apt-get install -y podman` (non interactif, verrou d'apt attendu jusqu'à 2 minutes, 25 minutes au plus) avant de continuer. Un échec (dépôt apt injoignable, machine sans accès Internet) arrête l'installation avant toute création, laisse les secrets et la base intacts, et écrit dans le résultat la commande à lancer à la main (`apt install podman`). Le script de mise à jour en ligne n'a pas été modifié : celui qui s'exécute pendant une mise à jour est celui de la version précédente, il n'aurait donc rien fait pour passer de la 0.14.5 à la 0.14.6.
+- **La console ne refuse plus l'installation quand Podman manque** (l'ancienne réponse `409 pki_podman_missing` est supprimée) ; le bouton *Installer* n'est plus grisé.
+- **Page PKI : deux bandeaux retirés** : « Édition Community : pas destinée à la production par l'éditeur » et « Podman n'est pas installé sur ce nœud » (textes français et anglais compris). Les autres bandeaux (clé de récupération absente, données retrouvées, secrets manquants) restent.
+- Tests : **b31** (114, contre 104 : apt injoignable, apt-get absent, apt qui réussit puis installation de la PKI avec ce Podman, apt jamais appelé quand Podman est présent, secrets intacts après chaque refus), **e2e-iter48** (18 : sans Podman, l'installation est acceptée et la demande est déposée).
+- Limite connue : **la PKI reste sur un seul nœud** (celui où elle est installée) ; ni le conteneur, ni ses secrets, ni son volume ne sont répliqués dans un cluster, et rien ne la redémarre sur l'autre nœud après une bascule. C'est la dernière étape de la feuille de route (0.14.9). Les mises à jour d'EJBCA passent en 0.14.7, SCEP en 0.14.8.
+
 ## 0.14.5 — « PKI du DDI : sauvegarde et restauration (itération 6) »
 
 Sixième étape de la **PKI intégrée** : la PKI se **sauvegarde avec le reste de l'appliance** et se **restaure après un sinistre**. Les clés des autorités sont dans la base `ejbca`, que la sauvegarde PostgreSQL (restauration à un instant donné) contient déjà ; mais elles ne se lisent qu'avec les **secrets d'EJBCA** (`ejbca.env`), qui ne sont pas dans la base. Sans eux, restaurer la base ne rend pas les autorités utilisables. Chaque sauvegarde reçoit donc, en plus, un **lot chiffré de ces secrets**.

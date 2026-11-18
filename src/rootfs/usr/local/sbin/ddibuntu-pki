@@ -27,6 +27,7 @@ PETC="${DDI_PKI_ETC:-/etc/ddibuntu/pki}"                      # secrets et insta
 PDATA="${DDI_PKI_DATA:-/var/lib/ddibuntu/pki}"                # volume du conteneur
 QDIR="${DDI_PKI_QUADLET_DIR:-/etc/containers/systemd}"        # unités Quadlet
 PODMAN="${DDI_PKI_PODMAN:-podman}"
+APT_GET="${DDI_PKI_APT_GET:-apt-get}"                        # 0.14.6 : installation de Podman s'il manque
 SYSCTL="${DDI_PKI_SYSTEMCTL:-systemctl}"
 CURL="${DDI_PKI_CURL:-curl}"
 FW_BIN="${DDI_FW_BIN:-/usr/local/sbin/ddibuntu-fw}"
@@ -120,6 +121,21 @@ tag_of() { printf '%s' "${1##*:}"; }   # docker.io/keyfactor/ejbca-ce:9.6.3 → 
 gen_secret() { python3 -c 'import secrets,string; print("".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(40)))'; }
 
 have_podman() { command -v "$PODMAN" >/dev/null 2>&1; }
+# 0.14.6 : le paquet podman n'est posé que par l'ISO ; une appliance mise à jour en ligne ne l'a donc pas. L'installation de la PKI le pose elle-même
+# (accès au dépôt apt de la machine requis). Un échec n'abîme rien : l'installation s'arrête avant toute création, avec la commande à lancer à la main.
+install_podman() {
+  have_podman && return 0
+  command -v "$APT_GET" >/dev/null 2>&1 || { log "podman n'est pas installé et apt-get est introuvable : installer le paquet podman à la main"; return 1; }
+  log "podman n'est pas installé : installation du paquet par apt (nécessaire à la PKI ; quelques minutes)"
+  export DEBIAN_FRONTEND=noninteractive
+  timeout 300 "$APT_GET" -o DPkg::Lock::Timeout=120 update -qq >/dev/null 2>&1 \
+    || log "avertissement : « apt-get update » a échoué (dépôt injoignable ?) ; installation avec les listes de paquets actuelles"
+  local out
+  out="$(timeout 1500 "$APT_GET" -o DPkg::Lock::Timeout=120 install -y -qq podman 2>&1)" \
+    || { log "installation de podman impossible (accès au dépôt apt de la machine ?) : lancer « apt install podman » à la main. $(printf '%s' "$out" | tail -n 2 | tr '\n' ' ')"; return 1; }
+  have_podman || { log "podman reste introuvable après l'installation du paquet"; return 1; }
+  log "podman installé"
+}
 svc_active() { "$SYSCTL" is-active --quiet "$SERVICE" >/dev/null 2>&1; }
 instance_get() {   # $1 = clé de instance.json ; vide si absent
   [[ -f "$INST" && ! -L "$INST" ]] || return 0
@@ -360,7 +376,7 @@ cmd_apply() {   # $1 = image, $2 = nom public, $3 = réseaux
   valid_image "$image" || { log "image refusée : seule docker.io/keyfactor/ejbca-ce:X.Y.Z est admise"; return 1; }
   valid_pki_host "$host" || { log "nom public invalide : $host"; return 1; }
   nets="$(norm_nets "${3:-}")" || return 1
-  have_podman || { log "podman n'est pas installé (paquet fourni par l'ISO : installation ou mode Mise à jour)"; return 1; }
+  install_podman || return 1
   tag="$(tag_of "$image")"
   # une instance existante garde son nom (gravé dans les certificats) et son image (la mise à jour a son propre parcours, 0.14.5)
   prev_host="$(instance_get hostname)"; prev_tag="$(instance_get tag)"

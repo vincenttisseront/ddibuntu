@@ -101,8 +101,6 @@ await load()
     <PkiRecovery v-else-if="tab === 'recovery'" :waiting="waiting" @changed="load" />
     <template v-else>
     <p class="text-sm text-muted">{{ t('pki.intro') }}</p>
-    <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('pki.ce_title')" :description="t('pki.ce_body')" data-test="pki-ce" />
-    <UAlert v-if="status && !status.podman" color="warning" variant="subtle" icon="i-lucide-package-x" :title="t('pki.podman_title')" :description="t('pki.podman_body')" data-test="pki-podman" />
     <UAlert v-if="!installed && status?.dataPresent && !status.secretsPresent" color="error" variant="subtle" icon="i-lucide-key-round" :title="t('pki.secrets_missing_title')" :description="t('pki.secrets_missing_body')" data-test="pki-secrets-missing" />
     <UAlert v-else-if="!installed && status?.dataPresent" color="info" variant="subtle" icon="i-lucide-database" :title="t('pki.data_found_title', { host: status.dataHostname })" :description="t('pki.data_found_body')" data-test="pki-data-found" />
 
@@ -146,7 +144,7 @@ await load()
           <UTextarea v-model="form.nets" class="w-full font-mono" :rows="4" :disabled="waiting" placeholder="10.10.0.0/16&#10;192.168.1.0/24" data-test="pki-nets-input" />
         </UFormField>
         <div class="flex justify-end">
-          <UButton v-if="!installed" icon="i-lucide-download" :label="t('pki.install')" :loading="busy === 'apply'" :disabled="waiting || !form.hostname || (status && !status.podman)" data-test="pki-install" @click="install" />
+          <UButton v-if="!installed" icon="i-lucide-download" :label="t('pki.install')" :loading="busy === 'apply'" :disabled="waiting || !form.hostname" data-test="pki-install" @click="install" />
           <UButton v-else icon="i-lucide-save" :label="t('pki.nets_save')" :loading="busy === 'apply'" :disabled="waiting" data-test="pki-nets-save" @click="saveNets" />
         </div>
       </div>

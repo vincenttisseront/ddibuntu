@@ -91,10 +91,12 @@ describe('avant l\'installation', () => {
     for (const b of bad) { const r = await admin.post('/api/pki/apply', b); expect([400], `${JSON.stringify(b)} → ${r.status} ${r.text}`).toContain(r.status) }
     expect(existsSync(REQ)).toBe(false)
   })
-  it('sans Podman, l\'installation est refusée avant tout dépôt', async () => {
+  it('sans Podman, l\'installation est acceptée : c\'est root qui installe le paquet (0.14.6)', async () => {
     setStatus({ podman: false })
-    code(await admin.post('/api/pki/apply', { hostname: 'pki.lab.test' }), 409, 'pki_podman_missing')
-    expect(existsSync(REQ)).toBe(false)
+    const r = await admin.post('/api/pki/apply', { hostname: 'pki.lab.test' })
+    expect(r.status, r.text).toBe(200)
+    expect(sent().action).toBe('apply')
+    rootDone()
   })
 })
 
