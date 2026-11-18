@@ -111,7 +111,33 @@ expect_nogrep "image déjà présente : pas de nouveau tirage" '^podman pull ' "
 expect_grep "pare-feu : réseaux remplacés" '^fw set PKI_NETS 172\.16\.0\.0/12$' "$LOG"
 check_fail "le nom public ne change plus après l'installation" "$PKI" apply "$IMG" other.lab.test ""
 check_fail "la version ne change que par la mise à jour de la PKI" "$PKI" apply docker.io/keyfactor/ejbca-ce:9.6.4 "$HOST" ""
-check_fail "installation sans podman refusée" env DDI_PKI_PODMAN=/nonexistent "$PKI" apply "$IMG" "$HOST" ""
+# 0.14.6 : sans podman, l'installation le pose elle-même par apt ; un échec d'apt arrête tout avec la commande à lancer à la main
+cat > "$B/apt-fail" <<EOF
+#!/bin/bash
+echo "apt-get \$*" >> "$LOG"
+case "\$*" in *update*) exit 100 ;; *) echo "E: Impossible de récupérer http://archive.ubuntu.com/pool/podman.deb" >&2; exit 100 ;; esac
+EOF
+cat > "$B/apt-ok" <<EOF
+#!/bin/bash
+echo "apt-get \$* (DEBIAN_FRONTEND=\${DEBIAN_FRONTEND:-})" >> "$LOG"
+case "\$*" in *install*podman*) mkdir -p "$T_TMP/late"; cp "$B/podman" "$T_TMP/late/podman" ;; esac
+EOF
+chmod +x "$B/apt-fail" "$B/apt-ok"
+rm -f "$LOG"
+check_fail "sans podman et sans accès à apt : installation refusée" env DDI_PKI_PODMAN="$T_TMP/late/podman" DDI_PKI_APT_GET="$B/apt-fail" "$PKI" apply "$IMG" "$HOST" ""
+expect_grep "…apt a bien été essayé (liste puis paquet)" '^apt-get .*update' "$LOG"
+expect_grep "…et le paquet demandé est podman" '^apt-get .*install -y -qq podman' "$LOG"
+out="$(DDI_PKI_PODMAN="$T_TMP/late/podman" DDI_PKI_APT_GET="$B/apt-fail" "$PKI" apply "$IMG" "$HOST" "" 2>&1 || true)"
+expect_grep "…le message donne la commande à lancer à la main" 'apt install podman' <(printf '%s' "$out")
+check "fichier de secrets toujours identique après le refus" cmp "$T_TMP/etc/ejbca.env" "$T_TMP/env.before"
+check_fail "sans podman et sans apt-get : installation refusée" env DDI_PKI_PODMAN="$T_TMP/late/podman" DDI_PKI_APT_GET=/nonexistent "$PKI" apply "$IMG" "$HOST" ""
+rm -f "$LOG"; rm -rf "$T_TMP/late"
+check "sans podman : apt le pose, l'installation continue" env DDI_PKI_PODMAN="$T_TMP/late/podman" DDI_PKI_APT_GET="$B/apt-ok" "$PKI" apply "$IMG" "$HOST" "172.16.0.0/12"
+expect_grep "…installation non interactive" 'install -y -qq podman \(DEBIAN_FRONTEND=noninteractive\)' "$LOG"
+expect_grep "…puis l'installation de la PKI se poursuit avec ce podman" '^podman ' "$LOG"
+rm -f "$LOG"
+check "podman déjà présent : apt n'est jamais appelé" env DDI_PKI_APT_GET="$B/apt-fail" "$PKI" apply "$IMG" "$HOST" "172.16.0.0/12"
+expect_nogrep "…vérifié dans le journal" '^apt-get ' "$LOG"
 check "fichier de secrets toujours identique après les refus" cmp "$T_TMP/etc/ejbca.env" "$T_TMP/env.before"
 
 echo "== État =="

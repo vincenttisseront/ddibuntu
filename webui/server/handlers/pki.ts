@@ -54,7 +54,6 @@ async function deposit(c: Parameters<Parameters<typeof route>[3]>[0], req: PkiRe
 route('POST', '/pki/apply', 'admin', async (c) => {
   const b = await c.body(applyBody)
   const st = await readPkiStatus()
-  if (st && !st.podman) fail(409, 'pki_podman_missing')
   if (st?.installed && st.hostname && st.hostname !== b.hostname) fail(409, 'pki_hostname_locked', undefined, { hostname: st.hostname })
   if (st && !st.installed && st.dataPresent && st.dataHostname && st.dataHostname !== b.hostname) fail(409, 'pki_hostname_locked', undefined, { hostname: st.dataHostname })
   if (st?.installed && st.version && st.version !== b.version) fail(409, 'pki_version_locked', undefined, { version: st.version })
