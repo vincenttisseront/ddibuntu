@@ -4,6 +4,7 @@ import type { ClusterState } from './cluster'
 import type { NodeHealth } from './health'
 import type { BackupResult, BackupStatus } from './backup'
 import type { PkiStatus } from './pki'
+import type { PkiUpdate } from './pki-update'
 import { pkiProtection } from './pki-protection'
 
 export type Severity = 'critical' | 'warning' | 'info'
@@ -26,6 +27,7 @@ export interface Snapshot {
   backup: BackupStatus | null
   backupResult: BackupResult | null
   pki?: PkiStatus | null                         // état de la PKI de CE nœud (absent = non évalué)
+  pkiUpdate?: PkiUpdate | null                   // recherche de versions et mise à jour de l'image d'EJBCA (0.14.7)
   subnets: SubnetUsage[]
   hygiene?: Hygiene                              // absent = non évalué (ex. nœud secondaire)
 }
@@ -43,6 +45,7 @@ export const RULES: Record<string, Severity> = {
   'node.time_unsynced': 'warning', 'node.memory_low': 'warning',
   'backup.state_stale': 'warning', 'backup.none': 'warning', 'backup.too_old': 'warning', 'backup.archiver_failing': 'critical', 'backup.run_failed': 'warning', 'backup.verify_failed': 'critical',
   'pki.no_recovery_key': 'warning', 'pki.backup_disabled': 'warning', 'pki.bundle_missing': 'warning',
+  'pki.update_available': 'info', 'pki.update_pending': 'warning', 'pki.update_failed': 'warning',
   'ipam.subnet_full': 'warning', 'ipam.ghosts': 'info', 'ipam.unknown_hosts': 'warning', 'ipam.mac_changed': 'warning',
 }
 export const RULE_IDS = Object.keys(RULES)
@@ -177,6 +180,20 @@ export function evaluate(s: Snapshot, th: Thresholds, memory: Memory): { finding
     if (pr.state === 'no_key') out.push(f('pki.no_recovery_key', 'warning', node, '', { cas: pk.casCount ?? 0 }))
     else if (pr.state === 'backup_off') out.push(f('pki.backup_disabled', 'warning', node, '', { cas: pk.casCount ?? 0 }))
     else if (pr.state === 'no_bundle') out.push(f('pki.bundle_missing', 'warning', node, '', { reason: pr.reason }))
+  }
+
+  // ------------------------------------------------------------ PKI : mises à jour de l'image d'EJBCA (0.14.7)
+  // Une version permise est disponible (sauf pendant une mise à jour ou tant qu'une autre attend sa validation) ; une mise à jour reste sans validation plus d'un jour (le retour
+  // arrière occupe de la place et la sauvegarde n'est gardée que quelques jours) ; une mise à jour a échoué ou a été annulée d'office (retour arrière manuel : pas d'alerte).
+  const pu = s.pkiUpdate
+  if (pu && pk?.installed) {
+    const node = b?.node ?? '', job = pu.job, at = job ? job.finishedAt || job.updatedAt : 0
+    const open = job?.state === 'running' || job?.state === 'pending'
+    if (job?.state === 'pending' && s.now - at > 86400) out.push(f('pki.update_pending', 'warning', node, job.to, { to: job.to, hours: Math.floor((s.now - at) / 3600) }))
+    else if (!open && pu.latest) out.push(f('pki.update_available', 'info', node, pu.latest, { version: pu.latest, current: pu.current }))
+    if (job && (job.state === 'failed' || (job.state === 'rolled_back' && job.reason !== 'manual')) && s.now - at < 7 * 86400) {
+      out.push(f('pki.update_failed', 'warning', node, job.to, { to: job.to, from: job.from, state: job.state }))
+    }
   }
 
   // ------------------------------------------------------------ IPAM : sous-réseaux presque pleins (les très petits sont ignorés : un /30 plein est normal)

@@ -485,7 +485,7 @@ echo "== Racine auto-signée =="
 : > "$LOG"
 req '{"action":"ca_root","name":"Lab-Root","alg":"rsa3072","days":3650,"cn":"Lab Root CA","o":"Laboratoire","c":"FR"}'
 expect_eq "racine acceptée" true "$RES_OK"
-expect_grep "init : arguments exacts (RSA 3072, SHA256WithRSA, 3650 jours, clé logicielle)" 'ca init --caname Lab-Root --dn CN=Lab Root CA,O=Laboratoire,C=FR --tokenType soft --tokenPass null --keyspec 3072 -v 3650 --policy null -s SHA256WithRSA$' "$LOG"
+expect_grep "init : arguments exacts (RSA 3072, SHA256WithRSA, 3650 jours, clé logicielle, type de clé exigé par EJBCA 9.3)" 'ca init --caname Lab-Root --dn CN=Lab Root CA,O=Laboratoire,C=FR --tokenType soft --tokenPass null --keyspec 3072 --keytype RSA -v 3650 --policy null -s SHA256WithRSA$' "$LOG"
 expect_grep "réglages : adresse de CRL publiée" "ca editca --caname Lab-Root --field defaultCRLDistPoint --value http://$HOST:8080/ejbca/publicweb/webdist/certdist\?cmd=crl&issuer=CN%3DLab%20Root%20CA%2CO%3DLaboratoire%2CC%3DFR\$" "$LOG"
 expect_grep "réglages : adresse du certificat d'autorité" "ca editca --caname Lab-Root --field certificateAiaDefaultCaIssuerUri --value http://$HOST:8080/ejbca/publicweb/webdist/certdist\?cmd=cacert&issuer=" "$LOG"
 expect_grep "réglages : période de CRL de 7 jours" 'ca editca --caname Lab-Root --field CRLPeriod --value 604800000$' "$LOG"
@@ -505,7 +505,7 @@ echo "== Émettrice signée par la racine du DDI =="
 : > "$LOG"
 req '{"action":"ca_issuing","name":"Lab-Sub","alg":"ecp256","days":1825,"cn":"Lab Sub CA","signedBy":"Lab-Root"}'
 expect_eq "émettrice interne acceptée" true "$RES_OK"
-expect_grep "init : signée par l'identifiant de la racine (2000)" 'ca init --caname Lab-Sub --dn CN=Lab Sub CA --tokenType soft --tokenPass null --keyspec prime256v1 -v 1825 --policy null -s SHA256withECDSA --signedby 2000$' "$LOG"
+expect_grep "init : signée par l'identifiant de la racine (2000)" 'ca init --caname Lab-Sub --dn CN=Lab Sub CA --tokenType soft --tokenPass null --keyspec prime256v1 --keytype ECDSA -v 1825 --policy null -s SHA256withECDSA --signedby 2000$' "$LOG"
 check "mémoire : signée par Lab-Root" grep -q '"signedBy": "Lab-Root"' "$T/data/ca/Lab-Sub/meta.json"
 req '{"action":"ca_issuing","name":"X1","alg":"ecp256","days":1825,"cn":"X","signedBy":"Inconnue"}'
 expect_eq "signeur inexistant refusé" false "$RES_OK"
@@ -526,7 +526,7 @@ cp "$W/root.pem" "$G/pki-in/Lab-Ext.chain.pem"; : > "$LOG"
 req '{"action":"ca_issuing","name":"Lab-Ext","alg":"rsa3072","days":1825,"cn":"Emettrice","o":"Laboratoire","c":"FR","signedBy":"external"}'
 expect_eq "racine hors ligne + demande : acceptée" true "$RES_OK"
 expect_grep "racine hors ligne importée comme autorité externe (ExtRoot-<empreinte>)" "ca importcacert --caname ExtRoot-$sha -f /mnt/persistent/work/root.pem\$" "$LOG"
-expect_grep "init externe : chaîne fournie à la CLI" 'ca init --caname Lab-Ext --dn CN=Emettrice,O=Laboratoire,C=FR --tokenType soft --tokenPass null --keyspec 3072 -v 1825 --policy null -s SHA256WithRSA --signedby External -externalcachain /mnt/persistent/work/chain.pem$' "$LOG"
+expect_grep "init externe : chaîne fournie à la CLI" 'ca init --caname Lab-Ext --dn CN=Emettrice,O=Laboratoire,C=FR --tokenType soft --tokenPass null --keyspec 3072 --keytype RSA -v 1825 --policy null -s SHA256WithRSA --signedby External -externalcachain /mnt/persistent/work/chain.pem$' "$LOG"
 check "demande de certificat conservée (PEM valide)" openssl req -in "$T/data/ca/Lab-Ext/csr.pem" -noout -verify
 expect_eq "mémoire : racine hors ligne associée à l'émettrice" "ExtRoot-$sha" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("extRoot"))' "$T/data/ca/Lab-Ext/meta.json")"
 check "dépôt de la console consommé" test ! -e "$G/pki-in/Lab-Ext.chain.pem"

@@ -38,6 +38,7 @@ export function cfg() {
     // service PKI (ddibuntu-pki, root) : état de l'instance EJBCA et résultat de la dernière demande
     pkiStatusFile: e.DDI_PKI_STATUS ?? '/run/ddibuntu/pki-status.json',
     pkiResultFile: e.DDI_PKI_RESULT ?? '/run/ddibuntu/pki-result.json',
+    pkiUpdateFile: e.DDI_PKI_UPDATE ?? '/run/ddibuntu/pki-update.json',
     // autorités de la PKI (publiées par root) : liste JSON et dossier des fichiers publics (certificat, chaîne, demande de certificat, CRL)
     pkiCasFile: e.DDI_PKI_CAS ?? '/run/ddibuntu/pki-cas.json',
     pkiCaDir: e.DDI_PKI_CA_DIR ?? '/run/ddibuntu/pki-ca',

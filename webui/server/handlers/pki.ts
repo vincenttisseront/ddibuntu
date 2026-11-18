@@ -11,6 +11,7 @@ import {
   applyBody, depositPkiRequest, imageOf, loadPkiSettings, nodeAddresses, pkiRequestPending, PUBLIC_PORT, readPkiResult, readPkiStatus, savePkiSettings, suggestHostname,
 } from '../utils/pki'
 import type { PkiRequest } from '../utils/pki'
+import { readPkiUpdate } from '../utils/pki-update'
 
 export const registered = true
 
@@ -32,13 +33,14 @@ async function dnsState(hostname: string) {
 }
 
 route('GET', '/pki', 'admin', async () => {
-  const [status, result, settings, suggested] = await Promise.all([readPkiStatus(), readPkiResult(), loadPkiSettings(), suggestHostname()])
+  const [status, result, settings, suggested, upd] = await Promise.all([readPkiStatus(), readPkiResult(), loadPkiSettings(), suggestHostname(), readPkiUpdate()])
   // une instance installée impose son nom et sa version ; sinon, les choix enregistrés, puis la proposition
   // des données conservées (désinstallation ou base d'une installation précédente) imposent leur nom public : il est gravé dans leurs certificats
   const fixed = !!(status && !status.installed && status.dataPresent && status.dataHostname)
   const hostname = status?.installed ? status.hostname : fixed ? status.dataHostname : settings.hostname || suggested
   const base = hostname ? `http://${hostname}:${PUBLIC_PORT}/ejbca/publicweb` : null
-  return { status, result, requestPending: await pkiRequestPending(), settings, suggestedHostname: suggested, hostname, locked: !!status?.installed, hostnameFixed: fixed, dns: await dnsState(hostname),
+  const updateJob = upd?.job ? { state: upd.job.state, step: upd.job.step, from: upd.job.from, to: upd.job.to } : null
+  return { status, result, requestPending: await pkiRequestPending(), updateJob, settings, suggestedHostname: suggested, hostname, locked: !!status?.installed, hostnameFixed: fixed, dns: await dnsState(hostname),
     endpoints: { port: PUBLIC_PORT, health: base ? `${base}/healthcheck/ejbcahealth` : null } }
 })
 

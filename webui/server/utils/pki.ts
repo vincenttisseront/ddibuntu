@@ -8,6 +8,8 @@ import { z } from 'zod'
 import { cfg } from './config'
 import { getSetting, setSetting } from './db'
 import { cidrToString, parseCidr, parseIp } from './net'
+import { pkiUpdateRunning } from './pki-update'
+import { fail } from './router'
 import type { Cidr } from './net'
 
 export const IMAGE_REPO = 'docker.io/keyfactor/ejbca-ce'
@@ -121,13 +123,16 @@ export async function pkiRequestPending(): Promise<boolean> {
 export interface CaDn { cn: string; ou?: string; o?: string; c?: string }
 export type PkiRequest =
   | { action: 'apply'; image: string; hostname: string; nets: string[] }
-  | { action: 'start' | 'stop' | 'restart' | 'status' | 'uninstall' | 'reset' | 'recovery_set' }
+  | { action: 'start' | 'stop' | 'restart' | 'status' | 'uninstall' | 'reset' | 'recovery_set' | 'update_check' | 'update_validate' | 'update_rollback' }
+  | { action: 'update_apply'; image: string }
   | ({ action: 'ca_root'; name: string; alg: string; days: number } & CaDn)
   | ({ action: 'ca_issuing'; name: string; alg: string; days: number; signedBy: string } & CaDn)
   | { action: 'ca_import' | 'ca_import_p12' | 'ca_crl' | 'ca_rootcrl'; name: string }
   | ({ action: 'cert_issue'; id: string; ca: string; profile: string; dns?: string[]; ip?: string[]; mail?: string[]; upn?: string[] } & CaDn)
   | { action: 'cert_revoke'; ca: string; serial: string; reason: number }
 export async function depositPkiRequest(req: PkiRequest): Promise<{ requestedAt: number }> {
+  // 0.14.7 : pendant une mise à jour (le conteneur est arrêté puis relancé), aucune autre demande n'est déposée : elle attendrait le verrou de root, puis agirait sur une PKI qui a changé
+  if (await pkiUpdateRunning()) fail(409, 'pki_update_running')
   await fs.writeFile(join(cfg().generatedDir, '.pki-request'), JSON.stringify(req) + '\n', { mode: 0o640 })
   return { requestedAt: Math.floor(Date.now() / 1000) }
 }
