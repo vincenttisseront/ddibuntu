@@ -29,6 +29,8 @@ Sous-commandes :
   update-publish           (0.14.7) construit pki-update.json (recherche + mise à jour en cours) pour la console
   update-digest            (0.14.7) empreinte annoncée par Docker Hub pour une étiquette lors de la dernière recherche (vide si inconnue)
   update-crl-urls          (0.14.7) adresses locales des CRL des autorités actives (contrôle après une mise à jour)
+  scep-pw                  (0.14.8) lit le mot de passe à usage unique d'un équipement SCEP déposé par la console (le défi de l'équipement)
+  scep-publish             (0.14.8) construit pki-scep.json (alias, adresse, équipements préenregistrés et leur état) pour la console
 """
 import base64
 import calendar
@@ -74,6 +76,13 @@ DNS_RE = re.compile(r"(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\
 MAIL_RE = re.compile(r"[A-Za-z0-9._-]{1,64}@[A-Za-z0-9]([A-Za-z0-9.-]{0,188}[A-Za-z0-9])?")
 SERIAL_RE = re.compile(r"[0-9A-Fa-f]{1,40}")
 REVOKE_REASONS = (0, 1, 3, 4, 5)   # non précisé, clé compromise, changement d'affiliation, remplacé, cessation d'activité
+# SCEP (0.14.8). Le nom d'utilisateur de l'entité finale EST le CN de la demande de l'équipement (mode « CA » d'EJBCA : le mode « RA » à défi partagé n'existe
+# pas dans la Community) ; le mot de passe à usage unique est le défi. L'alias est unique et son nom, fixe.
+SCEP_ALIAS = "ddibuntu"
+SCEP_CN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
+SCEP_PW_RE = re.compile(r"[A-Za-z0-9]{16,64}")
+SCEP_RESERVED = ("ejbca", "superadmin")   # entités de service d'EJBCA ; les noms « ddi-… » sont ceux des entités temporaires d'émission
+SCEP_PROFILE_OF = {5010001: "server", 5010002: "machine", 5010003: "user", 5010004: "network"}
 RSA_BITS = (2048, 3072, 4096)
 EC_CURVES = ("prime256v1", "secp384r1")
 
@@ -150,6 +159,19 @@ def parse_cert_issue(d):
     return [("id", rid), ("ca", ca), ("profile", prof), ("dn", dn), ("altname", ",".join(parts))]
 
 
+def scep_cn_ok(cn):
+    """Nom de l'équipement : devient le nom d'utilisateur de l'entité finale d'EJBCA, donc sans fantaisie et jamais celui d'une entité de service."""
+    return (isinstance(cn, str) and SCEP_CN_RE.fullmatch(cn) is not None and cn.lower() not in SCEP_RESERVED and not cn.lower().startswith("ddi-"))
+
+
+def parse_scep_offer(d):
+    """Préenregistrement d'un équipement : les mêmes champs qu'une émission (autorité, profil, nom, SAN) ; le nom doit aussi être un nom d'utilisateur sûr."""
+    r = parse_cert_issue(d)
+    if r is None or not scep_cn_ok(d.get("cn")):
+        return None
+    return r + [("cn", d["cn"])]
+
+
 def parse_request():
     raw = sys.stdin.buffer.read(MAX_REQUEST + 1)
     if len(raw) > MAX_REQUEST:
@@ -189,6 +211,21 @@ def parse_request():
         if not (set(d) == {"action", "image"} and isinstance(img, str) and IMAGE_RE.fullmatch(img)):
             return 1
         out = [("action", a), ("image", img)]
+    elif a in ("scep_enable", "scep_disable") and set(d) == {"action"}:
+        out = [("action", a)]
+    elif a == "scep_offer":
+        r = parse_scep_offer(d)
+        if r is None:
+            return 1
+        out = [("action", a)] + r
+    elif a == "scep_rearm":
+        if not (set(d) == {"action", "id", "cn"} and scep_cn_ok(d.get("cn")) and isinstance(d.get("id"), str) and ID_RE.fullmatch(d["id"])):
+            return 1
+        out = [("action", a), ("id", d["id"]), ("cn", d["cn"])]
+    elif a == "scep_cancel":
+        if not (set(d) == {"action", "cn"} and scep_cn_ok(d.get("cn"))):
+            return 1
+        out = [("action", a), ("cn", d["cn"])]
     elif a == "ca_import_p12":
         if not valid_name(d.get("name")):
             return 1
@@ -1565,6 +1602,63 @@ def cmd_update_crl_urls(argv):
     return 0
 
 
+def cmd_scep_pw(argv):
+    # scep-pw FICHIER : lit le mot de passe à usage unique déposé par la console (lien symbolique refusé) ; imprime le mot de passe, ou « ERR<TAB>motif »
+    if len(argv) != 1:
+        return 2
+    try:
+        raw = read_deposit(argv[0], 256)
+        pw = raw.decode("ascii").strip()
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        print("ERR\tmot de passe d'enregistrement absent ou illisible (%s)" % e.__class__.__name__)
+        return 1
+    if not SCEP_PW_RE.fullmatch(pw):
+        print("ERR\tmot de passe d'enregistrement refusé : 16 à 64 lettres ou chiffres attendus")
+        return 1
+    print(pw)
+    return 0
+
+
+def _clean(v, n=300):
+    return re.sub(r"[\x00-\x1f\x7f]", "", v or "")[:n]
+
+
+def cmd_scep_publish(argv):
+    # scep-publish ACTIVÉ(0|1) JOURS HÔTE PORT < TSV : pki-scep.json (données publiques). TSV = une ligne par équipement préenregistré (voir scep_publish)
+    if len(argv) != 4:
+        return 2
+    enabled, days, host, port = argv[0] == "1", int(argv[1]) if argv[1].isdigit() else 7, argv[2], argv[3]
+    now = int(time.time())
+    offers = []
+    for line in sys.stdin:
+        f = line.rstrip("\n").split("\t")
+        if len(f) < 12 or not SCEP_CN_RE.fullmatch(f[0]):
+            continue
+        cn, st = f[0], int(f[1]) if f[1].lstrip("-").isdigit() else -1
+        created, modified = (int(x) // 1000 if x.isdigit() else 0 for x in (f[2], f[3]))
+        exp = modified + days * 86400
+        cert = None
+        if f[8].isdigit():
+            na = int(f[9]) // 1000 if f[9].isdigit() else 0
+            cert = {"serial": "%X" % int(f[8]), "notAfter": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(na)) if na else "",
+                    "revoked": f[10] == "40", "sha1": f[11] if re.fullmatch(r"[0-9a-f]{40}", f[11]) else ""}
+        if st in (10, 11):
+            state = "failed" if st == 11 else ("expired" if exp <= now else "waiting")
+        elif st == 40:
+            state = "issued"
+        elif st in (50, 60):
+            state = "revoked"
+        else:
+            state = "other"
+        pid = int(f[5]) if f[5].isdigit() else 0
+        offers.append({"cn": cn, "state": state, "status": st, "ca": _clean(f[4], 48), "profile": SCEP_PROFILE_OF.get(pid, ""), "dn": _clean(f[6]), "san": _clean(f[7]),
+                       "createdAt": created, "modifiedAt": modified, "expiresAt": exp if st in (10, 11) else None, "cert": cert})
+    path = "/ejbca/publicweb/apply/scep/%s/pkiclient.exe" % SCEP_ALIAS
+    print(json.dumps({"at": now, "enabled": enabled, "alias": SCEP_ALIAS, "path": path, "port": int(port) if port.isdigit() else 8080,
+                      "url": "http://%s:%s%s" % (host, port, path) if host else "", "offerDays": days, "offers": offers}, ensure_ascii=False))
+    return 0
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     args = sys.argv[2:]
@@ -1614,6 +1708,10 @@ def main():
         return cmd_update_digest(args)
     if cmd == "update-crl-urls":
         return cmd_update_crl_urls(args)
+    if cmd == "scep-pw":
+        return cmd_scep_pw(args)
+    if cmd == "scep-publish":
+        return cmd_scep_publish(args)
     sys.stderr.write(__doc__)
     return 2
 

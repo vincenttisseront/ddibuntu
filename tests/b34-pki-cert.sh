@@ -149,7 +149,7 @@ ln -sf /etc/passwd "$W/lnk.csr"; out="$(ph deposit "$W/lnk.csr" "$D/lnk.pem" csr
 
 echo "== Helper : certificat rendu par EJBCA =="
 mkleaf "$W/rsa.csr" "$W/leaf.pem" "$W/leaf.ext"; ejbca_style "$W/leaf.pem" "$W/leaf.eb.pem"
-LEAF_SER="$(openssl x509 -in "$W/leaf.pem" -noout -serial | cut -d= -f2)"
+LEAF_SER="$(openssl x509 -in "$W/leaf.pem" -noout -serial | cut -d= -f2 | sed "s/^0*\([0-9A-F]\)/\1/")"   # série normalisée sans zéros de tête (le helper les retire ; la série est tirée au hasard)
 LEAF_SHA="$(openssl x509 -in "$W/leaf.pem" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d : | tr 'A-F' 'a-f')"
 cl() { ph check-leaf "$1" "$2" "$3" "$W/leaf.out.pem"; }
 out="$(cl "$W/rsa.csr" "$W/leaf.eb.pem" "$W/bundle.pem")"; rc=$?
@@ -211,7 +211,7 @@ case "\${s[0]} \${s[1]}" in
     ext="$W/leaf.ext"; [ -f "$T/leaf.isca" ] && ext="$W/isca.ext"
     openssl x509 -req -in "\$csr" -CA "$W/iss.pem" -CAkey "$W/iss.key" -CAcreateserial -days 365 -extfile "\$ext" -out "$WORKH/_leaf.pem" 2>/dev/null
     { printf 'Subject: CN=x,O=Lab,C=FR\nIssuer: CN=Emettrice,O=Laboratoire,C=FR\n'; cat "$WORKH/_leaf.pem"; } > "$WORKH/issued.pem"; rm -f "$WORKH/_leaf.pem"
-    openssl x509 -in "$WORKH/issued.pem" -noout -serial | cut -d= -f2 > "$T/leaf.serial"; python3 -c 'print(int(open("$T/leaf.serial").read().strip(), 16))' > "$T/leaf.dec"; echo 20 > "$T/leaf.status" ;;
+    openssl x509 -in "$WORKH/issued.pem" -noout -serial | cut -d= -f2 | sed "s/^0*\([0-9A-F]\)/\1/" > "$T/leaf.serial"; python3 -c 'print(int(open("$T/leaf.serial").read().strip(), 16))' > "$T/leaf.dec"; echo 20 > "$T/leaf.status" ;;
   "ra revokecert") [ -f "$T/fail.revoke" ] || echo 40 > "$T/leaf.status" ;;
   "ca createcrl") [ -f "$T/fail.crl" ] && exit 1 ;;
   "ca editca")

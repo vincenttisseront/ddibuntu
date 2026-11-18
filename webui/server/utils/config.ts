@@ -39,6 +39,8 @@ export function cfg() {
     pkiStatusFile: e.DDI_PKI_STATUS ?? '/run/ddibuntu/pki-status.json',
     pkiResultFile: e.DDI_PKI_RESULT ?? '/run/ddibuntu/pki-result.json',
     pkiUpdateFile: e.DDI_PKI_UPDATE ?? '/run/ddibuntu/pki-update.json',
+    // SCEP (0.14.8) : alias et équipements préenregistrés, publiés par root (jamais un défi : EJBCA ne garde qu'une empreinte du mot de passe)
+    pkiScepFile: e.DDI_PKI_SCEP ?? '/run/ddibuntu/pki-scep.json',
     // autorités de la PKI (publiées par root) : liste JSON et dossier des fichiers publics (certificat, chaîne, demande de certificat, CRL)
     pkiCasFile: e.DDI_PKI_CAS ?? '/run/ddibuntu/pki-cas.json',
     pkiCaDir: e.DDI_PKI_CA_DIR ?? '/run/ddibuntu/pki-ca',

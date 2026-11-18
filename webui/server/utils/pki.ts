@@ -130,6 +130,10 @@ export type PkiRequest =
   | { action: 'ca_import' | 'ca_import_p12' | 'ca_crl' | 'ca_rootcrl'; name: string }
   | ({ action: 'cert_issue'; id: string; ca: string; profile: string; dns?: string[]; ip?: string[]; mail?: string[]; upn?: string[] } & CaDn)
   | { action: 'cert_revoke'; ca: string; serial: string; reason: number }
+  | { action: 'scep_enable' | 'scep_disable' }
+  | ({ action: 'scep_offer'; id: string; ca: string; profile: string; dns?: string[]; ip?: string[]; mail?: string[]; upn?: string[] } & CaDn)
+  | { action: 'scep_rearm'; id: string; cn: string }
+  | { action: 'scep_cancel'; cn: string }
 export async function depositPkiRequest(req: PkiRequest): Promise<{ requestedAt: number }> {
   // 0.14.7 : pendant une mise à jour (le conteneur est arrêté puis relancé), aucune autre demande n'est déposée : elle attendrait le verrou de root, puis agirait sur une PKI qui a changé
   if (await pkiUpdateRunning()) fail(409, 'pki_update_running')

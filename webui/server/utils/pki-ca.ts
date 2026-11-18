@@ -61,7 +61,7 @@ export function dnOf(b: { cn: string; ou?: string; o?: string; c?: string }): { 
   return out
 }
 
-export type DepositKind = 'chain.pem' | 'cert.pem' | 'crl' | 'csr.pem' | 'p12' | 'p12pw'
+export type DepositKind = 'chain.pem' | 'cert.pem' | 'crl' | 'csr.pem' | 'p12' | 'p12pw' | 'scepw'
 export type BlobKind = 'certs' | 'crl' | 'csr'
 /** Octets d'un fichier remis, ou null s'il n'a pas la forme attendue (certificat / CRL en PEM ou en DER, ≤ 16 Ko). Root refait tous les contrôles. */
 export function blobBytes(b: Blob, kind: BlobKind): Buffer | null {
@@ -84,8 +84,8 @@ export function p12Bytes(b64: string): Buffer | null {
 }
 
 const inDir = () => join(cfg().generatedDir, 'pki-in')
-/** Dépôt SECRET (PKCS#12 d'une autorité et son mot de passe) pour root : 0600, supprimé avant d'être réécrit ; root l'efface aussitôt lu, quoi qu'il arrive. */
-export async function putSecretDeposit(name: string, kind: 'p12' | 'p12pw', data: Buffer): Promise<void> {
+/** Dépôt SECRET (PKCS#12 d'une autorité et son mot de passe, défi SCEP d'un équipement) pour root : 0600, supprimé avant d'être réécrit ; root l'efface aussitôt lu, quoi qu'il arrive. */
+export async function putSecretDeposit(name: string, kind: 'p12' | 'p12pw' | 'scepw', data: Buffer): Promise<void> {
   if (!CA_NAME_RE.test(name)) throw new Error('nom de dépôt invalide')
   await fs.mkdir(inDir(), { recursive: true, mode: 0o750 })
   const p = join(inDir(), `${name}.${kind}`)
