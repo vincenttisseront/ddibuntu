@@ -89,7 +89,7 @@ let timer: ReturnType<typeof setInterval> | undefined
 onMounted(async () => {
   try { meta.value = await api.call('GET', '/pki/certs/meta', undefined, { silent: true }) } catch (e: any) { err.value = errOf(e) }
   await load()
-  timer = setInterval(() => { if (!off.open && !busy.value) load() }, 15_000)   // une inscription se voit sans recharger la page
+  timer = setInterval(() => { if (!off.open && !busy.value) void load() }, 15_000)   // une inscription se voit sans recharger la page
 })
 onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 defineExpose({ load })

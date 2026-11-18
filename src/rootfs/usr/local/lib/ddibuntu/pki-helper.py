@@ -1655,7 +1655,8 @@ def cmd_scep_publish(argv):
                        "createdAt": created, "modifiedAt": modified, "expiresAt": exp if st in (10, 11) else None, "cert": cert})
     path = "/ejbca/publicweb/apply/scep/%s/pkiclient.exe" % SCEP_ALIAS
     print(json.dumps({"at": now, "enabled": enabled, "alias": SCEP_ALIAS, "path": path, "port": int(port) if port.isdigit() else 8080,
-                      "url": "http://%s:%s%s" % (host, port, path) if host else "", "offerDays": days, "offers": offers}, ensure_ascii=False))
+                      "url": "http://%s:%s%s" % (host, port, path) if host else "",  # NOSONAR : SCEP en HTTP par conception (port 8080 de la PKI, comme les CRL)
+                      "offerDays": days, "offers": offers}, ensure_ascii=False))
     return 0
 
 

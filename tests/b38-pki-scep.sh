@@ -289,7 +289,7 @@ export DDI_PKI_ETC="$T/etc" DDI_PKI_DATA="$T/data" DDI_PKI_QUADLET_DIR="$T/quad"
 export DDI_PKI_SYSTEMCTL="$B/systemctl" DDI_PKI_CURL="$B/curl" DDI_FW_BIN="$B/fw" DDI_PKI_PSQL="$B/psql" DDI_PKI_LOCK="$T/lock" DDI_PKI_UID="$PKI_UID"
 export DDI_PKI_NO_UPDATE_CHECK=1
 G="$T/gen"; R="$T/run"; IN="$G/pki-in"
-req() { printf '%s' "$1" > "$G/.pki-request"; "$PKI" request >"$T/req.out" 2>&1; RES_OK="$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["ok"]).lower())' "$R/pki-result.json")"; RES_MSG="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["message"])' "$R/pki-result.json")"; RES_REF="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("ref",""))' "$R/pki-result.json")"; [ -z "${DEBUG_REQ:-}" ] || { cat "$T/req.out" >&2; cat "$T/ejbca.log" >&2; }; }
+req() { printf '%s' "$1" > "$G/.pki-request"; "$PKI" request >"$T/req.out" 2>&1; RES_OK="$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["ok"]).lower())' "$R/pki-result.json")"; RES_MSG="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["message"])' "$R/pki-result.json")"; RES_REF="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("ref",""))' "$R/pki-result.json")"; [[ -z "${DEBUG_REQ:-}" ]] || { cat "$T/req.out" >&2; cat "$T/ejbca.log" >&2; }; }
 reset_ee() { rm -f "$T"/fail.*; : > "$T/ejbca.log"; }
 PW1="ABCDEFGHJKLMNPQRSTUVWXYZ"; PW2="23456789ABCDEFGHJKLMNPQR"; PW3="MNPQRSTUVWXYZ23456789ABC"
 dep() { printf '%s' "$2" > "$IN/$1.scepw"; chmod 600 "$IN/$1.scepw"; }
@@ -385,8 +385,8 @@ expect_eq "refus : demande invalide (SAN non permis)" false "$RES_OK"
 check "refus : le défi d'une demande invalide est tout de même consommé" test ! -e "$IN/aaaaaaaaaaaaaab3.scepw"
 echo "-- autres profils"
 for pr in server machine; do
-  reset_ee; I="bbbbbbbbbbbbbbb$([ "$pr" = server ] && echo 1 || echo 2)"; dep "$I" $PW2; req "$(OFFER "$I" Lab-SubRSA $pr "dev-$pr")"; expect_eq "profil $pr : accepté" true "$RES_OK"
-  check "profil $pr transmis à EJBCA" grep -q -- "--certprofile $([ "$pr" = server ] && echo DDI-RADIUS-Server || echo DDI-Client-Machine)" "$T/ejbca.log"
+  reset_ee; I="bbbbbbbbbbbbbbb$([[ "$pr" = server ]] && echo 1 || echo 2)"; dep "$I" $PW2; req "$(OFFER "$I" Lab-SubRSA $pr "dev-$pr")"; expect_eq "profil $pr : accepté" true "$RES_OK"
+  check "profil $pr transmis à EJBCA" grep -q -- "--certprofile $([[ "$pr" = server ]] && echo DDI-RADIUS-Server || echo DDI-Client-Machine)" "$T/ejbca.log"
 done
 reset_ee; dep bbbbbbbbbbbbbbb3 $PW2; req '{"action":"scep_offer","id":"bbbbbbbbbbbbbbb3","ca":"Lab-SubRSA","profile":"user","cn":"jdupont","mail":["j.dupont@lab.test"],"upn":["jdupont@lab.test"]}'
 expect_eq "profil utilisateur : accepté" true "$RES_OK"

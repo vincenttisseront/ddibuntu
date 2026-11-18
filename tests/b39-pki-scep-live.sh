@@ -16,9 +16,9 @@ PKI="$RFS/usr/local/sbin/ddibuntu-pki"
 OLD="docker.io/keyfactor/ejbca-ce:9.3.7"
 NEW="docker.io/keyfactor/ejbca-ce:9.6.3"
 read -r -a PARGS <<< "${DDI_TEST_PODMAN_ARGS:-}"
-if [ "${DDI_TEST_PKI_LIVE:-}" != 1 ]; then note "DDI_TEST_PKI_LIVE=1 absent (la batterie supprime la base « ejbca » et le conteneur « ddibuntu-ejbca ») : ignorée"; finish; exit $?; fi
-if [ "$(id -u)" -ne 0 ] || ! command -v podman >/dev/null || ! command -v openssl >/dev/null || ! command -v curl >/dev/null || ! command -v runuser >/dev/null \
-   || [ ! -x /usr/lib/systemd/system-generators/podman-system-generator ]; then
+if [[ "${DDI_TEST_PKI_LIVE:-}" != 1 ]]; then note "DDI_TEST_PKI_LIVE=1 absent (la batterie supprime la base « ejbca » et le conteneur « ddibuntu-ejbca ») : ignorée"; finish; exit $?; fi
+if [[ "$(id -u)" -ne 0 ]] || ! command -v podman >/dev/null || ! command -v openssl >/dev/null || ! command -v curl >/dev/null || ! command -v runuser >/dev/null \
+   || [[ ! -x /usr/lib/systemd/system-generators/podman-system-generator ]]; then
   note "prérequis absents (root, podman et son générateur Quadlet, openssl, curl, runuser) : batterie ignorée"; finish; exit $?
 fi
 for im in "$OLD" "$NEW"; do
@@ -27,7 +27,7 @@ done
 if curl -s --noproxy '*' -m 2 -o /dev/null http://127.0.0.1:8080/ 2>/dev/null; then note "le port 8080 est déjà utilisé : batterie ignorée"; finish; exit $?; fi
 if ! runuser -u postgres -- psql -X -q -At -d postgres -c 'select 1' >/dev/null 2>&1; then note "PostgreSQL local injoignable : batterie ignorée"; finish; exit $?; fi
 SSCEP="${DDI_TEST_SSCEP:-$(command -v sscep || true)}"
-[ -n "$SSCEP" ] && [ -x "$SSCEP" ] || { SSCEP=""; note "sscep absent : les inscriptions réelles sont ignorées"; }
+[[ -n "$SSCEP" ]] && [[ -x "$SSCEP" ]] || { SSCEP=""; note "sscep absent : les inscriptions réelles sont ignorées"; }
 
 D="$T_TMP"; chmod 0755 "$D"
 mkdir -p "$D/bin" "$D/etc" "$D/data" "$D/quad" "$D/run" "$D/gen/pki-in" "$D/w"
@@ -65,7 +65,7 @@ reset_all() {
   "$D/bin/podman" rm -f ddibuntu-ejbca >/dev/null 2>&1
   psql_pg -c 'drop database if exists ejbca with (force)' -c 'drop role if exists ejbca' >/dev/null 2>&1
 }
-if [ "${DDI_TEST_PKI_KEEP:-}" = 1 ]; then
+if [[ "${DDI_TEST_PKI_KEEP:-}" = 1 ]]; then
   { for v in DDI_LIBDIR DDI_PKI_ETC DDI_PKI_DATA DDI_PKI_QUADLET_DIR DDI_PKI_PODMAN DDI_PKI_SYSTEMCTL DDI_PKI_LOCK DDI_FW_BIN DDI_PKI_UID DDI_GENERATED_DIR DDI_RUN_DIR; do printf 'export %s=%q\n' "$v" "${!v}"; done; printf 'export PKI=%q D=%q\n' "$PKI" "$D"; } > /tmp/b39-keep.env
   trap 'note "état conservé : . /tmp/b39-keep.env"' EXIT
 else
@@ -83,13 +83,13 @@ req() {   # $1 = JSON de la demande ; la demande passe par le vrai « request »
   printf '%s' "$1" > "$GEN/.pki-request"
   "$PKI" request > "$D/req.out" 2>&1 || true
   RES_OK="$(jget "$RUNP/pki-result.json" ok)"
-  [ "$RES_OK" = true ] || note "demande refusée : $(jget "$RUNP/pki-result.json" message | cut -c1-300)"
+  [[ "$RES_OK" = true ]] || note "demande refusée : $(jget "$RUNP/pki-result.json" message | cut -c1-300)"
 }
 wait_health() {
   local h
   for _ in $(seq 1 60); do
     h="$(curl -s --noproxy '*' -m 4 http://127.0.0.1:8080/ejbca/publicweb/healthcheck/ejbcahealth 2>/dev/null | head -c 20)"
-    [ "$h" = ALLOK ] && return 0; sleep 6
+    [[ "$h" = ALLOK ]] && return 0; sleep 6
   done
   return 1
 }
@@ -133,11 +133,11 @@ rearm() {   # $1 nom : nouveau défi dans OFFER_PW
 }
 getca() {   # certificat de l'émettrice tel que l'équipement le reçoit (GetCACert), en PEM dans $W/ca.pem
   local code; code="$(curl -s --noproxy '*' -m 20 -o "$W/ca.der" -w '%{http_code}' "$(scep_url)?operation=GetCACert&message=${1:-Lab-SubRSA}")"
-  [ "$code" = 200 ] && openssl x509 -inform DER -in "$W/ca.der" -out "$W/ca.pem" 2>/dev/null
+  [[ "$code" = 200 ]] && openssl x509 -inform DER -in "$W/ca.der" -out "$W/ca.pem" 2>/dev/null
 }
 enrol() {   # $1 nom, $2 défi, $3 fichier de clé (défaut : $W/<nom>.key, créée si absente), $4 certificat obtenu (défaut $W/<nom>.crt) ; le sujet de la demande est VOLONTAIREMENT faux
   local cn="$1" pw="$2" key="${3:-$W/$1.key}" out="${4:-$W/$1.crt}"
-  [ -f "$key" ] || openssl genrsa -out "$key" 2048 2>/dev/null
+  [[ -f "$key" ]] || openssl genrsa -out "$key" 2048 2>/dev/null
   cat > "$W/$cn.cnf" <<EOC
 [req]
 distinguished_name = dn
@@ -153,23 +153,23 @@ EOC
   openssl req -new -key "$key" -out "$W/$cn.csr" -config "$W/$cn.cnf" 2>/dev/null
   rm -f "$out"
   "$SSCEP" enroll -u "$(scep_url)" -c "$W/ca.pem" -k "$key" -r "$W/$cn.csr" -l "$out" -E 3des -S sha1 > "$W/$cn.out" 2>&1
-  [ -s "$out" ]
+  [[ -s "$out" ]]
 }
 pubkey_of_cert() { openssl x509 -in "$1" -noout -pubkey 2>/dev/null | sha256sum | cut -d' ' -f1; }
 pubkey_of_key() { openssl pkey -in "$1" -pubout 2>/dev/null | sha256sum | cut -d' ' -f1; }
 ejbca_cli() { "$D/bin/podman" exec ddibuntu-ejbca /opt/keyfactor/bin/ejbca.sh "$@" 2>&1; }
 alias_listed() { ejbca_cli config scep listalias | grep -q ddibuntu; }
 alias_nochain() { ejbca_cli config scep dumpalias --alias ddibuntu | grep -qi 'returnCaChainInGetCaCert.*false'; }
-ca_single() { getca Lab-SubRSA && openssl x509 -in "$W/ca.pem" -noout -subject | grep -q 'Lab SubRSA CA' && [ "$(grep -c 'BEGIN CERTIFICATE' "$W/ca.pem")" = 1 ]; }
+ca_single() { getca Lab-SubRSA && openssl x509 -in "$W/ca.pem" -noout -subject | grep -q 'Lab SubRSA CA' && [[ "$(grep -c 'BEGIN CERTIFICATE' "$W/ca.pem")" = 1 ]]; }
 exp7() { python3 -c 'import json,sys
 o = [x for x in json.load(open(sys.argv[1]))["offers"] if x["cn"] == sys.argv[2]][0]
 sys.exit(0 if o["expiresAt"] - o["modifiedAt"] == 7 * 86400 else 1)' "$RUNP/pki-scep.json" "$1"; }
-hashed_only() { [ "$(ejpsql -c "select count(*) from userdata where username = '$1' and (clearpassword is null or clearpassword = '')")" = 1 ]; }
-in_db() { [ "$(ejpsql -c "select count(*) from userdata where username = '$1'")" = "$2" ]; }
+hashed_only() { [[ "$(ejpsql -c "select count(*) from userdata where username = '$1' and (clearpassword is null or clearpassword = '')")" = 1 ]]; }
+in_db() { [[ "$(ejpsql -c "select count(*) from userdata where username = '$1'")" = "$2" ]]; }
 reactivated_enrol() { getca Lab-SubRSA && enrol sw-reactive "$PW_RE"; }
 leak_free() {   # $1 défi : nulle part dans ce que root publie, dans sa sortie ni dans la base d'EJBCA
   local pw="$1"
-  ! grep -rqs "$pw" "$RUNP" "$D/req.out" "$GEN" 2>/dev/null && [ "$(ejpsql -c "select count(*) from userdata where endentityprofileid = 5020001 and clearpassword is not null and clearpassword <> ''" 2>/dev/null)" = 0 ]
+  ! grep -rqs "$pw" "$RUNP" "$D/req.out" "$GEN" 2>/dev/null && [[ "$(ejpsql -c "select count(*) from userdata where endentityprofileid = 5020001 and clearpassword is not null and clearpassword <> ''" 2>/dev/null)" = 0 ]]
 }
 
 echo "== Installation réelle de la 9.3.7 (base vierge) =="
@@ -215,7 +215,7 @@ check "publié : échéance à sept jours de la préparation" exp7 sw-old
 check "le défi n'est nulle part : ni publié, ni dans la sortie de root, ni en clair dans EJBCA" leak_free "$PW_OLD"
 check "le dépôt du défi est consommé" test ! -e "$GEN/pki-in/$OFFER_ID.scepw"
 offer sw-old; expect_eq "même nom une seconde fois : refusé" false "$RES_OK"
-if [ -n "$SSCEP" ]; then
+if [[ -n "$SSCEP" ]]; then
   check "GetCACert (émettrice)" getca Lab-SubRSA
   enrol sw-old "$(mkpw)"; expect_eq "mauvais défi : l'inscription échoue" 1 "$?"
   check "…aucun certificat n'a été délivré" test ! -s "$W/sw-old.crt"
@@ -240,14 +240,14 @@ fi
 
 echo "== Inscription ratée puis réussie : le mauvais essai n'use pas le défi =="
 offer sw-retry; expect_eq "sw-retry préenregistré" true "$RES_OK"; PW_RETRY="$OFFER_PW"
-if [ -n "$SSCEP" ]; then
+if [[ -n "$SSCEP" ]]; then
   enrol sw-retry "$(mkpw)"; expect_eq "défi faux : refusé" 1 "$?"
   check "défi juste ensuite : accepté" enrol sw-retry "$PW_RETRY"
 fi
 
 echo "== Les autres profils =="
 offer pc-lab machine; expect_eq "profil machine préenregistré" true "$RES_OK"; PW_PC="$OFFER_PW"
-if [ -n "$SSCEP" ]; then
+if [[ -n "$SSCEP" ]]; then
   check "inscription du poste (profil machine)" enrol pc-lab "$PW_PC"
   check "…usage client seulement" bash -c "e=\"\$(openssl x509 -in '$W/pc-lab.crt' -noout -ext extendedKeyUsage)\"; echo \"\$e\" | grep -q 'TLS Web Client' && ! echo \"\$e\" | grep -q 'TLS Web Server'"
 fi
@@ -259,9 +259,9 @@ check "le conteneur répond « ALLOK » après la migration" wait_health
 expect_eq "version installée : 9.6.3" 9.6.3 "$(inst_tag)"
 expect_eq "l'alias SCEP est toujours là" true "$(jget "$RUNP/pki-scep.json" enabled)"
 check "…et son réglage aussi (réponse GetCACert sans chaîne)" alias_nochain
-[ -z "$SSCEP" ] || expect_eq "sw-old est toujours inscrit" issued "$(offer_state sw-old state)"
+[[ -z "$SSCEP" ]] || expect_eq "sw-old est toujours inscrit" issued "$(offer_state sw-old state)"
 offer sw-new; expect_eq "sous la 9.6.3 : nouvel équipement préenregistré" true "$RES_OK"; PW_NEW="$OFFER_PW"
-if [ -n "$SSCEP" ]; then
+if [[ -n "$SSCEP" ]]; then
   check "GetCACert sous la 9.6.3" getca Lab-SubRSA
   check "inscription réelle sous la 9.6.3" enrol sw-new "$PW_NEW"
   check "…avec la clé de l'équipement" test "$(pubkey_of_cert "$W/sw-new.crt")" = "$(pubkey_of_key "$W/sw-new.key")"
@@ -286,10 +286,10 @@ check "le conteneur répond « ALLOK » après le retour arrière" wait_health
 expect_eq "version installée : 9.3.7" 9.3.7 "$(inst_tag)"
 expect_eq "l'alias SCEP est là (il était dans la base d'avant)" true "$(jget "$RUNP/pki-scep.json" enabled)"
 expect_eq "sw-new (préenregistré après la sauvegarde) a disparu" "" "$(offer_state sw-new state)"
-[ -z "$SSCEP" ] || expect_eq "sw-old est revenu à l'état d'avant (inscrit une fois)" issued "$(offer_state sw-old state)"
-[ -z "$SSCEP" ] || expect_eq "…avec le premier certificat" "$SER_OLD" "$(offer_state sw-old cert.serial)"
+[[ -z "$SSCEP" ]] || expect_eq "sw-old est revenu à l'état d'avant (inscrit une fois)" issued "$(offer_state sw-old state)"
+[[ -z "$SSCEP" ]] || expect_eq "…avec le premier certificat" "$SER_OLD" "$(offer_state sw-old cert.serial)"
 offer sw-apres; expect_eq "la 9.3.7 préenregistre de nouveau" true "$RES_OK"; PW_AP="$OFFER_PW"
-if [ -n "$SSCEP" ]; then
+if [[ -n "$SSCEP" ]]; then
   check "GetCACert après le retour arrière" getca Lab-SubRSA
   check "inscription réelle après le retour arrière" enrol sw-apres "$PW_AP"
 fi
@@ -313,15 +313,15 @@ offer sw-expire; expect_eq "sw-expire préenregistré" true "$RES_OK"
 sleep 2; DDI_PKI_SCEP_DAYS=0 "$PKI" maintain >/dev/null 2>&1
 "$PKI" status >/dev/null 2>&1
 expect_eq "délai dépassé : l'équipement jamais inscrit est supprimé par la maintenance" "" "$(offer_state sw-expire state)"
-[ -z "$SSCEP" ] || expect_eq "…mais un équipement déjà inscrit n'est jamais supprimé" issued "$(offer_state sw-apres state)"
+[[ -z "$SSCEP" ]] || expect_eq "…mais un équipement déjà inscrit n'est jamais supprimé" issued "$(offer_state sw-apres state)"
 req '{"action":"scep_disable"}'; expect_eq "désactivation acceptée" true "$RES_OK"
 "$PKI" status >/dev/null 2>&1
 expect_eq "état publié : désactivé" false "$(jget "$RUNP/pki-scep.json" enabled)"
 check_fail "l'alias n'est plus dans EJBCA" alias_listed
-[ -z "$SSCEP" ] || expect_eq "les équipements inscrits restent listés" issued "$(offer_state sw-apres state)"
+[[ -z "$SSCEP" ]] || expect_eq "les équipements inscrits restent listés" issued "$(offer_state sw-apres state)"
 offer sw-desactive; expect_eq "préenregistrer SCEP désactivé : refusé" false "$RES_OK"
 req '{"action":"scep_enable"}'; expect_eq "réactivation" true "$RES_OK"
-if [ -n "$SSCEP" ]; then
+if [[ -n "$SSCEP" ]]; then
   offer sw-reactive; PW_RE="$OFFER_PW"; expect_eq "préenregistrement après réactivation" true "$RES_OK"
   check "inscription après réactivation" reactivated_enrol
 fi
