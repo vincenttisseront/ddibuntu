@@ -127,10 +127,10 @@ ENVSHA="$(shaof "$D/etc/ejbca.env")"; INSTSHA="$(shaof "$D/etc/instance.json")";
 echo "== Le « nœud » est vidé : tout sauf la base (comme un secondaire qui n'a encore rien reçu) =="
 "$D/bin/systemctl" stop ddibuntu-ejbca.service
 rm -rf "${D:?}/etc" "${D:?}/data" "${D:?}/quad" "${RUNP:?}"/pki-* ; mkdir -p "$D/etc" "$D/data" "$D/quad"
-expect_eq "plus de secrets ni d'instance" "no" "$([ -e "$D/etc/ejbca.env" ] || [ -e "$D/etc/instance.json" ] && echo yes || echo no)"
+expect_eq "plus de secrets ni d'instance" "no" "$([[ -e "$D/etc/ejbca.env" ]] || [[ -e "$D/etc/instance.json" ]] && echo yes || echo no)"
 expect_eq "la base « ejbca » est intacte (elle est celle du cluster)" "$CAS_DB" "$(ejpsql -c "select name from cadata order by name" | tr '\n' ' ')"
 check "align leader sur un nœud sans PKI : sans effet" "$PKI" align leader
-expect_eq "…aucune unité écrite" "no" "$([ -e "$D/quad/ddibuntu-ejbca.container" ] && echo yes || echo no)"
+expect_eq "…aucune unité écrite" "no" "$([[ -e "$D/quad/ddibuntu-ejbca.container" ]] && echo yes || echo no)"
 expect_eq "…aucun conteneur" "no" "$("$D/bin/systemctl" is-active x >/dev/null 2>&1 && echo yes || echo no)"
 
 echo "== Import de l'état sur le nœud vide =="
@@ -192,7 +192,7 @@ check "EJBCA repart sur un volume vide" wait_health
 expect_eq "autorités toujours là" "Lab-Root Lab-Sub" "$(cas_listed)"
 expect_eq "keystore régénéré" 2 "$(find "$D/data/persistent" -name 'server.*' -type f | wc -l)"
 "$PKI" state-export "$D/state4.json" > "$D/state4.sha"
-expect_eq "…l'état exporté change (nouveau keystore) : le cluster le recevra à la prochaine synchronisation" "yes" "$([ "$(cat "$D/state4.sha")" != "$SHA" ] && echo yes || echo no)"
+expect_eq "…l'état exporté change (nouveau keystore) : le cluster le recevra à la prochaine synchronisation" "yes" "$([[ "$(cat "$D/state4.sha")" != "$SHA" ]] && echo yes || echo no)"
 
 echo "== Désinstallation : l'état exporté perd l'instance, garde les secrets =="
 "$PKI" uninstall >/dev/null 2>&1; expect_eq "désinstallation acceptée" 0 "$?"

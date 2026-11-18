@@ -1359,10 +1359,20 @@ def _state_validate(doc):
     return dirs, out
 
 
+def _confined(root, rel):
+    """Chemin de « rel » sous « root » (déjà normalisé) ; ValueError s'il en sortait, même après validation des noms (ceinture et bretelles)."""
+    path = os.path.normpath(os.path.join(root, rel))
+    if os.path.commonpath([root, path]) != root:
+        raise ValueError("état refusé : chemin hors du dossier cible")
+    return path
+
+
 def cmd_state_extract(argv):
     # state-extract DEST (document d'état sur l'entrée standard) : revalide tout, écrit sous DEST (etc/ et data/), imprime une synthèse JSON ou ERR<TAB>message
-    dest = argv[0]
+    dest = os.path.realpath(argv[0])   # DEST est un dossier temporaire créé par ddibuntu-pki ; chaque cible est de toute façon bornée à ce dossier (_confined)
     try:
+        if not os.path.isabs(argv[0]) or dest == os.sep:
+            raise ValueError("dossier cible invalide")
         raw = sys.stdin.buffer.read(STATE_MAX_PLAIN * 2 + 65536)
         if len(raw) >= STATE_MAX_PLAIN * 2 + 65536:
             raise ValueError("état refusé : document trop gros")
@@ -1388,12 +1398,12 @@ def cmd_state_extract(argv):
         os.makedirs(dest, mode=0o700, exist_ok=True)
         dmodes = []
         for name in sorted(dirs):
-            target = os.path.join(dest, name)
+            target = _confined(dest, name)
             os.makedirs(target, mode=0o700, exist_ok=True)
             dmodes.append((target, dirs[name]))
         for name in sorted(files):
             mode, data = files[name]
-            target = os.path.join(dest, name)
+            target = _confined(dest, name)
             os.makedirs(os.path.dirname(target), mode=0o700, exist_ok=True)
             fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "wb") as f:

@@ -7,7 +7,7 @@ const { t } = useT(); const fmt = useFmt()
 const c = computed(() => props.cluster)
 const ej = computed(() => c.value?.ejbca ?? null)
 const local = computed(() => c.value?.local ?? null)
-const names = computed(() => Object.keys(ej.value?.nodes ?? {}).sort())
+const names = computed(() => Object.keys(ej.value?.nodes ?? {}).sort((x, y) => x.localeCompare(y)))
 const iAmLeader = computed(() => !!c.value?.leader && c.value.leader === c.value.node)
 const stateSha = computed(() => ej.value?.state?.sha ?? '')
 const rows = computed(() => names.value.map((n) => {

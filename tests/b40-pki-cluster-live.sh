@@ -14,12 +14,12 @@ PKI="$RFS/usr/local/sbin/ddibuntu-pki"
 PY=python3.12
 PGBIN=/usr/lib/postgresql/16/bin
 missing=""
-[ "$(id -u)" -eq 0 ] || missing="$missing root"
+[[ "$(id -u)" -eq 0 ]] || missing="$missing root"
 for t in etcd etcdctl openssl gpg runuser python3 curl flock; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
 command -v "$PY" >/dev/null 2>&1 || PY=python3
 getent passwd etcd >/dev/null && getent passwd postgres >/dev/null || missing="$missing comptes-etcd/postgres"
-[ -x "$PGBIN/initdb" ] || missing="$missing postgresql-16"
-if [ -n "$missing" ]; then note "batterie PKI en cluster réel non exécutable ici (manque :$missing)"; finish; exit; fi
+[[ -x "$PGBIN/initdb" ]] || missing="$missing postgresql-16"
+if [[ -n "$missing" ]]; then note "batterie PKI en cluster réel non exécutable ici (manque :$missing)"; finish; exit; fi
 
 B="$(mktemp -d /srv/ddilive.XXXXXX)"; chmod 755 "$B"
 cleanup() { pkill -u etcd -f "$B/" 2>/dev/null; pkill -9 -u postgres -f "$B/n" 2>/dev/null
@@ -82,13 +82,13 @@ initdb_local() { runuser -u postgres -- "$PGBIN/initdb" -D "$(R "$1")/var/lib/po
 start_etcd() { local r; r="$(R "$1")"; ( cd / && runuser -u etcd -- /usr/bin/etcd --config-file "$r/etc/ddibuntu-cluster/etcd.yml" >"$B/etcd$1.log" 2>&1 & ); }
 stop_etcd() { pkill -u etcd -f "$(R "$1")/" 2>/dev/null; sleep 1; }
 ectl() { local n="$1"; shift; local p; p="$(R "$n")/etc/ddibuntu-cluster/pki"; ETCDCTL_API=3 etcdctl --endpoints "https://$(ip "$n"):2379" --cacert "$p/ca.crt" --cert "$p/node.crt" --key "$p/node.key" "$@"; }
-wait_for() { local s="$1" d="$2"; shift 2; local i=0; while [ "$i" -lt "$s" ]; do if "$@" >/dev/null 2>&1; then ok "$d (${i}s)"; return 0; fi; sleep 1; i=$((i + 1)); done; ko "$d" "délai de ${s}s dépassé"; return 1; }
+wait_for() { local s="$1" d="$2"; shift 2; local i=0; while [[ "$i" -lt "$s" ]]; do if "$@" >/dev/null 2>&1; then ok "$d (${i}s)"; return 0; fi; sleep 1; i=$((i + 1)); done; ko "$d" "délai de ${s}s dépassé"; return 1; }
 
 ETC() { echo "$(R "$1")/etc/ddibuntu/pki"; }
 DAT() { echo "$(R "$1")/var/lib/ddibuntu/pki"; }
 QU() { echo "$(R "$1")/etc/containers/systemd/ddibuntu-ejbca.container"; }
 RUNJ() { echo "$(R "$1")/run/ddibuntu"; }
-active() { [ -f "$B/d$1/active" ] && echo yes || echo no; }
+active() { [[ -f "$B/d$1/active" ]] && echo yes || echo no; }
 jget() { python3 -c 'import json,sys
 d = json.load(open(sys.argv[1]))
 for k in sys.argv[2].split("."):
@@ -111,13 +111,13 @@ runuser -u postgres -- "$PGBIN/pg_ctl" -D "$(R 1)/var/lib/postgresql/16/main" -m
 start_etcd 1; wait_for 20 "etcd n1 sain" ectl 1 endpoint health
 check "activate n1" cl 1 activate
 bundle() { cl 1 bundle --name "$1" --ip "$2" --role "$3" --out "$B/$1.bundle" 2>"$B/bundle-$1.err"; }
-P2="$(bundle n2 "$(ip 2)" data)"; [ -n "$P2" ] && ok "lot n2 (données) créé" || ko "lot n2 créé" "$(cat "$B/bundle-n2.err")"; mknode 2; initdb_local 2
+P2="$(bundle n2 "$(ip 2)" data)"; [[ -n "$P2" ]] && ok "lot n2 (données) créé" || ko "lot n2 créé" "$(cat "$B/bundle-n2.err")"; mknode 2; initdb_local 2
 check "join n2 (données)" clp "$P2" 2 join "$B/n2.bundle" --wipe-local-db --no-activate
 start_etcd 2; wait_for 30 "etcd n2 répond" ectl 2 endpoint status
 check "activate n2" cl 2 activate
 wait_for 60 "etcd : les deux membres sont sains" ectl 1 endpoint health --cluster
 sleep 8
-P3="$(bundle n3 "$(ip 3)" witness)"; [ -n "$P3" ] && ok "lot n3 (arbitre) créé" || ko "lot n3 (arbitre) créé" "$(cat "$B/bundle-n3.err")"; mknode 3
+P3="$(bundle n3 "$(ip 3)" witness)"; [[ -n "$P3" ]] && ok "lot n3 (arbitre) créé" || ko "lot n3 (arbitre) créé" "$(cat "$B/bundle-n3.err")"; mknode 3
 check "join n3 (arbitre)" clp "$P3" 3 join "$B/n3.bundle" --no-activate
 start_etcd 3; wait_for 30 "etcd n3 répond" ectl 3 endpoint status
 check "activate n3" cl 3 activate
@@ -131,10 +131,10 @@ check "pki-sync n1 sans PKI" cl 1 pki-sync
 expect_eq "…aucune valeur publiée" "" "$(ectl 1 get "$KEY" --print-value-only)"
 expect_eq "…état « à jour »" "synced" "$(sj 1 state)"
 check "align n2 sans PKI" pki 2 align replica
-expect_eq "…aucune unité écrite" "no" "$([ -e "$(QU 2)" ] && echo yes || echo no)"
+expect_eq "…aucune unité écrite" "no" "$([[ -e "$(QU 2)" ]] && echo yes || echo no)"
 expect_eq "…rien n'est installé (publié)" "False" "$(cj 2 installed)"
 check "pki-sync n3 (arbitre) : sans effet" cl 3 pki-sync
-expect_eq "…l'arbitre ne publie rien" "no" "$([ -e "$(RUNJ 3)/pki-sync.json" ] && echo yes || echo no)"
+expect_eq "…l'arbitre ne publie rien" "no" "$([[ -e "$(RUNJ 3)/pki-sync.json" ]] && echo yes || echo no)"
 
 echo "== Garde-fous : seul le leader écrit =="
 check_fail "n2 (secondaire) : installation refusée" pki 2 apply "$IMG" "$HOST" ""
@@ -148,7 +148,7 @@ expect_eq "n2 : demande de la console refusée" "False" "$(res 2 ok)"
 expect_grep "…avec une explication" "secondaire" "$(RUNJ 2)/pki-result.json"
 req 2 '{"action":"status"}'
 expect_eq "n2 : la demande « status » reste permise" "True" "$(res 2 ok)"
-expect_eq "n2 : toujours rien d'installé" "no" "$([ -e "$(ETC 2)/ejbca.env" ] && echo yes || echo no)"
+expect_eq "n2 : toujours rien d'installé" "no" "$([[ -e "$(ETC 2)/ejbca.env" ]] && echo yes || echo no)"
 
 echo "== Installation sur le leader (n1) =="
 req 1 '{"action":"apply","image":"'"$IMG"'","hostname":"'"$HOST"'","nets":["10.7.0.0/24"]}'
@@ -200,7 +200,7 @@ expect_eq "n2 : à jour" "synced" "$(sj 2 state)"
 
 echo "== n2 se prépare en veille : unité écrite, image tirée en arrière-plan, pare-feu prêt, conteneur arrêté =="
 check "n2 : align replica" pki 2 align replica
-expect_eq "n2 : unité Quadlet écrite" "yes" "$([ -e "$(QU 2)" ] && echo yes || echo no)"
+expect_eq "n2 : unité Quadlet écrite" "yes" "$([[ -e "$(QU 2)" ]] && echo yes || echo no)"
 expect_nogrep "n2 : …sans section [Install]" "^\[Install\]" "$(QU 2)"
 expect_eq "n2 : unité identique à celle de n1 (au préfixe du nœud près)" "$(unit_of 1)" "$(unit_of 2)"
 expect_eq "n2 : conteneur arrêté" "no" "$(active 2)"
@@ -209,7 +209,7 @@ expect_grep "n2 : …par systemd-run, jamais sous le verrou général" "pull-ima
 expect_eq "n2 : rôle publié" "replica" "$(cj 2 role)"
 expect_grep "n2 : pare-feu préparé pour les réseaux de la PKI" "fw set PKI_NETS 10.7.0.0/24" "$B/d2/calls.log"
 check "n2 : le tirage (pull-image) se fait sans le verrou général" pki 2 pull-image
-expect_eq "n2 : l'image est présente" "yes" "$([ -f "$B/d2/image.present" ] && echo yes || echo no)"
+expect_eq "n2 : l'image est présente" "yes" "$([[ -f "$B/d2/image.present" ]] && echo yes || echo no)"
 check "n2 : align replica (image prête)" pki 2 align replica
 expect_eq "n2 : image prête" "ready" "$(cj 2 image)"
 expect_eq "n2 : toujours arrêté" "no" "$(active 2)"
@@ -233,7 +233,7 @@ role 1 replica; role 2 leader
 check "n1 (ancien leader) : follow" cl 1 follow
 expect_eq "n1 : le conteneur est arrêté (la PKI ne tourne que sur le leader)" "no" "$(active 1)"
 expect_eq "n1 : rôle publié = replica" "replica" "$(cj 1 role)"
-expect_eq "n1 : ses secrets et ses données sont conservés (reprise possible)" "yes" "$([ -e "$(ETC 1)/ejbca.env" ] && [ -e "$(DAT 1)/persistent/secrets/tls/server.jks" ] && echo yes || echo no)"
+expect_eq "n1 : ses secrets et ses données sont conservés (reprise possible)" "yes" "$([[ -e "$(ETC 1)/ejbca.env" ]] && [[ -e "$(DAT 1)/persistent/secrets/tls/server.jks" ]] && echo yes || echo no)"
 check "n2 (promu) : follow" cl 2 follow
 expect_eq "n2 : le conteneur démarre" "yes" "$(active 2)"
 expect_grep "n2 : la base « ejbca » est vérifiée avant le démarrage" "create role ejbca" "$B/d2/psql.log"
@@ -266,10 +266,10 @@ expect_eq "n1 : consigne publiée" "stopped" "$(cj 1 desired)"
 req 1 '{"action":"start"}'
 expect_eq "n1 : démarrage demandé accepté" "True" "$(res 1 ok)"
 expect_eq "n1 : conteneur démarré" "yes" "$(active 1)"
-expect_eq "n1 : consigne d'arrêt levée" "no" "$([ -e "$(ETC 1)/desired" ] && echo yes || echo no)"
+expect_eq "n1 : consigne d'arrêt levée" "no" "$([[ -e "$(ETC 1)/desired" ]] && echo yes || echo no)"
 check "n1 : publie la levée de la consigne" cl 1 pki-sync
 check "n2 : la reçoit" cl 2 pki-sync
-expect_eq "n2 : consigne levée aussi" "no" "$([ -e "$(ETC 2)/desired" ] && echo yes || echo no)"
+expect_eq "n2 : consigne levée aussi" "no" "$([[ -e "$(ETC 2)/desired" ]] && echo yes || echo no)"
 
 echo "== Mise à jour interrompue : la marque d'etcd bloque tout démarrage automatique =="
 check "n1 : pose la marque" cl 1 pki-mark set 9.6.3 9.6.4
@@ -313,10 +313,10 @@ req 2 '{"action":"uninstall"}'
 expect_eq "n2 : désinstallation acceptée" "True" "$(res 2 ok)"
 check "n2 : publie" cl 2 pki-sync
 check "n1 : reçoit" cl 1 pki-sync
-expect_eq "n1 : instance.json retiré" "no" "$([ -e "$(ETC 1)/instance.json" ] && echo yes || echo no)"
-expect_eq "n1 : secrets et données conservés (comme sur n2)" "yes" "$([ -e "$(ETC 1)/ejbca.env" ] && echo yes || echo no)"
+expect_eq "n1 : instance.json retiré" "no" "$([[ -e "$(ETC 1)/instance.json" ]] && echo yes || echo no)"
+expect_eq "n1 : secrets et données conservés (comme sur n2)" "yes" "$([[ -e "$(ETC 1)/ejbca.env" ]] && echo yes || echo no)"
 check "n1 : align replica" pki 1 align replica
-expect_eq "n1 : unité retirée" "no" "$([ -e "$(QU 1)" ] && echo yes || echo no)"
+expect_eq "n1 : unité retirée" "no" "$([[ -e "$(QU 1)" ]] && echo yes || echo no)"
 expect_eq "n1 : pare-feu refermé" "yes" "$(grep -c 'fw set PKI_NETS $' "$B/d1/calls.log" | awk '{print ($1>0)?"yes":"no"}')"
 expect_eq "n1 : publié « non installé »" "False" "$(cj 1 installed)"
 
@@ -328,15 +328,15 @@ check "n1 : reçoit" cl 1 pki-sync
 expect_eq "n1 : instance.json de retour" "$(shaof "$(ETC 2)/instance.json")" "$(shaof "$(ETC 1)/instance.json")"
 req 2 '{"action":"reset"}'
 expect_eq "n2 : remise à zéro acceptée" "True" "$(res 2 ok)"
-expect_eq "n2 : secrets effacés" "no" "$([ -e "$(ETC 2)/ejbca.env" ] && echo yes || echo no)"
+expect_eq "n2 : secrets effacés" "no" "$([[ -e "$(ETC 2)/ejbca.env" ]] && echo yes || echo no)"
 check "n2 : publie « none »" cl 2 pki-sync
 expect_eq "etcd : état « none »" "none" "$(ectl 2 get "$KEY" --print-value-only | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
 check "n1 : reçoit « none »" cl 1 pki-sync
-expect_eq "n1 : secrets mis de côté, plus en service" "no" "$([ -e "$(ETC 1)/ejbca.env" ] && echo yes || echo no)"
+expect_eq "n1 : secrets mis de côté, plus en service" "no" "$([[ -e "$(ETC 1)/ejbca.env" ]] && echo yes || echo no)"
 expect_eq "n1 : les états remplacés sont gardés de côté (14 jours) : retrait de l'instance, puis remise à zéro" "2" "$(ls -d "$(ETC 1)"/pre-restore.sync.* 2>/dev/null | wc -l)"
 expect_eq "n1 : copie de côté en 0700" "700" "$(stat -c %a "$(ls -d "$(ETC 1)"/pre-restore.sync.* | head -n1)")"
 check "n1 : align replica (plus rien à préparer)" pki 1 align replica
-expect_eq "n1 : unité retirée" "no" "$([ -e "$(QU 1)" ] && echo yes || echo no)"
+expect_eq "n1 : unité retirée" "no" "$([[ -e "$(QU 1)" ]] && echo yes || echo no)"
 expect_eq "n1 : à jour" "none" "$(synced 1)"
 
 echo "== Nouvelle installation sur n2 pour les essais hostiles =="
@@ -355,7 +355,7 @@ enc_value() {   # enc_value JSON_ÉTAT → valeur d'etcd chiffrée avec la bonne
   PLAIN="$plain" python3 -c 'import base64,hashlib,json,os,sys; print(json.dumps({"v":1,"sha":hashlib.sha256(os.environ["PLAIN"].encode()).hexdigest(),"blob":base64.b64encode(open(sys.argv[1],"rb").read()).decode(),"by":"n2","at":1}), end="")' "$gh/b"
   rm -rf "$gh"
 }
-unchanged() { [ "$(tree "$(ETC 1)")$(tree "$(DAT 1)")" = "$GOOD" ] && echo yes || echo no; }
+unchanged() { [[ "$(tree "$(ETC 1)")$(tree "$(DAT 1)")" = "$GOOD" ]] && echo yes || echo no; }
 echo "== Valeurs hostiles dans etcd (n1, secondaire, ne doit rien appliquer) =="
 hostile 'pas du json'
 check_fail "valeur illisible : refusée" cl 1 pki-sync
@@ -395,7 +395,7 @@ x() { printf '%s' "$1" | base64 -w0; }
 hostile "$(enc_value "$(bad_state '{"etc/../evil":{"m":384,"d":"eA=="}}')")"
 check_fail "chemin « .. » dans l'état : refusé par ddibuntu-pki" cl 1 pki-sync
 expect_eq "…état local inchangé" "yes" "$(unchanged)"
-expect_eq "…rien n'a été écrit hors des dossiers de la PKI" "no" "$([ -e "$(R 1)/etc/ddibuntu/evil" ] && echo yes || echo no)"
+expect_eq "…rien n'a été écrit hors des dossiers de la PKI" "no" "$([[ -e "$(R 1)/etc/ddibuntu/evil" ]] && echo yes || echo no)"
 hostile "$(enc_value "$(bad_state '{"etc/desired":{"m":384,"d":"'"$(x 'rm -rf /')"'"}}')")"
 check_fail "consigne inconnue : refusée" cl 1 pki-sync
 hostile "$(enc_value "$(bad_state '{"data/persistent/work/a":{"m":384,"d":"eA=="}}')")"
@@ -416,7 +416,7 @@ GOODV="$(ectl 1 get "$KEY" --print-value-only)"
 echo "== Un secondaire ne publie JAMAIS =="
 printf 'dérive locale\n' > "$(DAT 1)/ca/derive.txt"
 check "n1 (secondaire) : pki-sync revient à l'état du cluster" cl 1 pki-sync
-expect_eq "…la dérive locale est écartée" "no" "$([ -e "$(DAT 1)/ca/derive.txt" ] && echo yes || echo no)"
+expect_eq "…la dérive locale est écartée" "no" "$([[ -e "$(DAT 1)/ca/derive.txt" ]] && echo yes || echo no)"
 expect_eq "…etcd n'a pas changé" "$GOODV" "$(ectl 1 get "$KEY" --print-value-only)"
 expect_eq "…l'état écarté est conservé de côté" "yes" "$(ls -d "$(ETC 1)"/pre-restore.sync.* >/dev/null 2>&1 && echo yes || echo no)"
 
