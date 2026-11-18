@@ -57,13 +57,14 @@ const upnList = z.array(z.string().trim().regex(MAIL_RE)).max(SAN_MAX.upn).defau
 const optDn = z.union([z.literal(''), z.string().trim().regex(DN_VALUE_RE)]).optional()
 const optCountry = z.union([z.literal(''), z.string().trim().regex(/^[A-Z]{2}$/)]).optional()
 
-const common = {
+/** Champs communs à une émission : autorité, profil, nom et SAN (0.14.8 : repris tels quels par le préenregistrement SCEP). */
+export const certCommon = {
   ca: caName, profile: z.enum(PROFILE_KEYS), cn: z.string().trim().regex(DN_VALUE_RE), ou: optDn, o: optDn, c: optCountry,
   dns: dnsList, ip: ipList, mail: mailList, upn: upnList,
 }
 type Sans = { dns: string[]; ip: string[]; mail: string[]; upn: string[]; profile: ProfileKey }
 /** Types de SAN permis par le profil, et au moins un des types requis : mêmes règles que root. */
-function sanRules(b: Sans, ctx: z.RefinementCtx) {
+export function sanRules(b: Sans, ctx: z.RefinementCtx) {
   const def = PROFILES[b.profile]
   for (const k of ['dns', 'ip', 'mail', 'upn'] as const) {
     if (b[k].length && !def.allowed.includes(k)) ctx.addIssue({ code: 'custom', path: [k], message: 'san_not_allowed' })
@@ -71,9 +72,9 @@ function sanRules(b: Sans, ctx: z.RefinementCtx) {
   }
   if (!def.needAny.some((k) => b[k].length)) ctx.addIssue({ code: 'custom', path: [def.needAny[0]!], message: 'san_required' })
 }
-export const issueCsrBody = z.object({ ...common, csr: blob }).strict().superRefine(sanRules)
+export const issueCsrBody = z.object({ ...certCommon, csr: blob }).strict().superRefine(sanRules)
 const PASSWORD_RE = /^[^\x00-\x1f\x7f]{8,128}$/
-export const issueP12Body = z.object({ ...common, alg: z.enum(KEY_ALGS), password: z.string().regex(PASSWORD_RE), compat: z.boolean().default(false) }).strict().superRefine(sanRules)
+export const issueP12Body = z.object({ ...certCommon, alg: z.enum(KEY_ALGS), password: z.string().regex(PASSWORD_RE), compat: z.boolean().default(false) }).strict().superRefine(sanRules)
 export const revokeBody = z.object({ reason: z.union([z.literal(0), z.literal(1), z.literal(3), z.literal(4), z.literal(5)]) }).strict()
 export type IssueCsrBody = z.infer<typeof issueCsrBody>
 export type IssueP12Body = z.infer<typeof issueP12Body>

@@ -82,6 +82,10 @@ Usage : ddibuntu-pki <commande>
   ca-rootcrl NOM             importe la CRL déposée d'une racine externe
   cert-issue ID CA PROFIL DN [SAN]  émet un certificat pour la demande déposée (pki-in/ID.csr.pem) ; PROFIL = server | machine | user | network
   cert-revoke CA SÉRIE MOTIF  révoque un certificat (série en hexadécimal ; motif 0, 1, 3, 4 ou 5) et renouvelle la CRL tout de suite
+  scep-enable | scep-disable activent / désactivent l'alias SCEP « ddibuntu » d'EJBCA (mode « CA » : la Community n'a pas le mode « RA »)
+  scep-offer ID CA PROFIL DN SAN CN   préenregistre un équipement (entité finale au nom de son CN) ; son défi est dans pki-in/ID.scepw
+  scep-rearm ID CN           re-prépare un équipement déjà enregistré (nouveau défi dans pki-in/ID.scepw, nouvelle inscription possible)
+  scep-cancel CN             supprime l'entité finale d'un équipement (ses certificats restent dans EJBCA)
   maintain                   publie l'état, renouvelle les CRL trop anciennes, importe les profils fournis, purge les certificats relevés (minuteur)
   update-check               cherche de nouvelles versions d'EJBCA Community (Docker Hub) ; la maintenance le fait une fois par jour
   update-apply IMAGE         met à jour l'image : tirage, arrêt, sauvegarde de retour arrière, migration, contrôles (retour arrière automatique en cas d'échec)
@@ -373,6 +377,7 @@ print(json.dumps({"at": int(time.time()), "podman": e["PM"] == "true", "installe
   publish_cas
   if [[ "$dbs" = data ]]; then grant_console_read; fi
   update_publish
+  scep_publish
 }
 
 write_instance() {   # $1 nom, $2 étiquette, $3 empreinte, $4 réseaux
@@ -815,6 +820,149 @@ SQL
   fi
 }
 
+# ---- SCEP (0.14.8) ----
+# EJBCA Community ne sait faire de SCEP qu'en mode « CA » : l'équipement est PRÉENREGISTRÉ (entité finale au nom de son CN, mot de passe à usage unique = défi) et
+# l'entité fixe seule le nom distinctif et les noms alternatifs du certificat ; la demande de l'équipement n'apporte que sa clé. Le mode « RA » (défi partagé,
+# entités créées à la volée) est réservé à l'édition Enterprise (« SCEP RA mode … not included in the community version »). Un seul alias, « ddibuntu ».
+# Le défi n'est jamais relu : EJBCA n'en garde que l'empreinte, la console ne le montre qu'une fois.
+SCEP_ALIAS=ddibuntu
+SCEP_DAYS="${DDI_PKI_SCEP_DAYS:-7}"      # jours pendant lesquels un équipement préenregistré attend son inscription ; au-delà, son entité (et son défi) est supprimée
+SCEP_EE_PROFILE=5020001                  # profil d'entité « DDI-Endentity » : distingue nos équipements des entités de service d'EJBCA (superadmin, ejbca, nom public)
+scep_alias_exists() {
+  [[ "$(sql ejbca <<'SQL' 2>/dev/null | head -n1
+select 1 from globalconfigurationdata where configurationid = '2' and position('ddibuntu.operationmode'::bytea in data) > 0
+SQL
+)" = 1 ]]
+}
+scep_entity() {   # $1 = nom d'utilisateur → état (10 nouveau, 11 échec, 40 certificat délivré…) d'une entité finale DU DDI ; vide si elle n'existe pas ou n'est pas à nous
+  sql ejbca -v u="$1" -v p="$SCEP_EE_PROFILE" <<'SQL' 2>/dev/null | head -n1
+select status from userdata where username = :'u' and endentityprofileid = :'p' and username !~ '^ddi-'
+SQL
+}
+scep_name_taken() {   # $1 = nom d'utilisateur : 1 si EJBCA connaît déjà ce nom (équipement, entité de service ou entité d'émission en cours)
+  sql ejbca -v u="$1" <<'SQL' 2>/dev/null | head -n1
+select 1 from userdata where username = :'u'
+SQL
+}
+scep_ca_alg() {   # $1 = autorité → algorithme de sa clé (RSA, EC…) d'après le certificat que root a publié
+  python3 -c 'import json,sys
+try:
+    for c in json.load(open(sys.argv[1]))["cas"]:
+        if c.get("name") == sys.argv[2]:
+            print(c.get("keyAlg") or ""); break
+except Exception:
+    pass' "$RUN/pki-cas.json" "$1"
+}
+scep_pw() {   # $1 = identifiant : le défi déposé par la console (fichier 0600, consommé quoi qu'il arrive par « request »)
+  local out rc=0
+  out="$(python3 "$HELPER" scep-pw "$IN_DIR/$1.scepw" 2>&1)" || rc=$?
+  rm -f "$IN_DIR/$1.scepw"   # lu une fois : le fichier ne survit à aucun chemin (succès comme refus)
+  [[ "$rc" -eq 0 ]] || { log "${out#ERR	}"; return 1; }
+  printf '%s' "$out"
+}
+
+scep_enable() {
+  need_running || return 1
+  ensure_profiles || return 1
+  scep_alias_exists || cli_run config scep addalias --alias "$SCEP_ALIAS" >/dev/null || return 1
+  # la réponse à GetCACert ne contient que l'émettrice : la plupart des équipements chiffrent leur demande pour le PREMIER certificat reçu (avec la chaîne,
+  # c'est la racine d'abord : EJBCA répond « Can not handle request » car seule l'émettrice sait déchiffrer)
+  cli_run config scep updatealias --alias "$SCEP_ALIAS" --key returnCaChainInGetCaCert --value false >/dev/null || return 1
+  scep_alias_exists || { log "EJBCA n'a pas enregistré l'alias SCEP « $SCEP_ALIAS »"; return 1; }
+  printf 'SCEP activé (alias « %s »).' "$SCEP_ALIAS"
+}
+
+scep_disable() {
+  need_running || return 1
+  if scep_alias_exists; then
+    cli_run config scep removealias --alias "$SCEP_ALIAS" >/dev/null || return 1
+    ! scep_alias_exists || { log "EJBCA n'a pas retiré l'alias SCEP « $SCEP_ALIAS »"; return 1; }
+  fi
+  printf 'SCEP désactivé : les équipements préenregistrés restent en attente, mais plus aucun ne peut s'\''inscrire.'
+}
+
+scep_offer() {   # $1 identifiant (défi : pki-in/<id>.scepw), $2 autorité, $3 profil, $4 nom distinctif, $5 SAN (facultatif), $6 CN = nom d'utilisateur
+  local id="$1" ca="$2" prof="$3" dn="$4" alt="${5:-}" cn="$6" pname pw alg
+  [[ "$id" =~ ^[0-9a-f]{16}$ ]] || { log "identifiant invalide"; return 1; }
+  valid_ca_name "$ca" || { log "nom d'autorité invalide"; return 1; }
+  pname="$(profile_name "$prof")" || { log "profil inconnu"; return 1; }
+  [[ -n "$dn" && "$cn" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]] || { log "nom d'équipement invalide"; return 1; }
+  need_running || return 1
+  scep_alias_exists || { log "SCEP n'est pas activé : activer SCEP avant de préenregistrer un équipement"; return 1; }
+  [[ "$(ca_field status "$ca")" = 1 ]] || { log "l'autorité « $ca » n'existe pas ou n'est pas active"; return 1; }
+  [[ "$(ca_meta_kind "$ca")" = issuing ]] || { log "« $ca » n'est pas une émettrice : seules les émettrices délivrent des certificats"; return 1; }
+  [[ -s "$RUN/pki-cas.json" ]] || { cmd_status >/dev/null 2>&1 || true; }
+  alg="$(scep_ca_alg "$ca")"
+  [[ "$alg" = RSA ]] || { log "SCEP chiffre la demande de l'équipement pour la clé de l'émettrice : « $ca » (clé ${alg:-inconnue}) ne convient pas, il faut une émettrice RSA"; return 1; }
+  [[ -z "$(scep_name_taken "$cn")" ]] || { log "EJBCA connaît déjà le nom « $cn » : « Renouveler » re-prépare un équipement déjà enregistré"; return 1; }
+  pw="$(scep_pw "$id")" || return 1
+  ensure_profiles || return 1
+  ca_allow_same_dn "$ca" || return 1
+  # le défi est le mot de passe de l'entité : un seul passage de l'équipement, puis EJBCA passe l'entité à « certificat délivré » et refuse la suite
+  cli_secret_run "$pw" ra addendentity --username "$cn" --dn "$dn" --caname "$ca" --type 1 --token USERGENERATED --password "$pw" --certprofile "$pname" --eeprofile DDI-Endentity ${alt:+--altname "$alt"} >/dev/null || return 1
+  [[ "$(scep_entity "$cn")" = 10 ]] || { log "EJBCA n'a pas enregistré l'équipement « $cn »"; return 1; }
+  printf 'Équipement « %s » préenregistré sur « %s » (profil %s) : il doit s'\''inscrire dans les %s jours.' "$cn" "$ca" "$pname" "$SCEP_DAYS"
+}
+
+scep_rearm() {   # $1 identifiant (nouveau défi : pki-in/<id>.scepw), $2 CN : nouvelle inscription d'un équipement (renouvellement, changement de clé, remplacement)
+  local id="$1" cn="$2" pw st
+  [[ "$id" =~ ^[0-9a-f]{16}$ && "$cn" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]] || { log "demande invalide"; return 1; }
+  need_running || return 1
+  scep_alias_exists || { log "SCEP n'est pas activé"; return 1; }
+  st="$(scep_entity "$cn")"
+  [[ -n "$st" ]] || { log "« $cn » n'est pas un équipement SCEP du DDI"; return 1; }
+  pw="$(scep_pw "$id")" || return 1
+  # le nouveau défi d'abord : si l'opération s'arrête entre les deux, l'entité garde son état et l'ancien défi n'est plus valable
+  cli_secret_run "$pw" ra setpwd --username "$cn" --password "$pw" >/dev/null || return 1
+  cli_run ra setendentitystatus --username "$cn" -S 10 >/dev/null || return 1
+  [[ "$(scep_entity "$cn")" = 10 ]] || { log "EJBCA n'a pas remis l'équipement « $cn » en attente d'inscription"; return 1; }
+  printf 'Équipement « %s » prêt pour une nouvelle inscription (dans les %s jours).' "$cn" "$SCEP_DAYS"
+}
+
+scep_cancel() {   # $1 = CN : supprime l'entité finale (et donc le défi) ; les certificats déjà délivrés restent dans EJBCA, révoquables depuis la liste
+  local cn="$1"
+  [[ "$cn" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]] || { log "nom d'équipement invalide"; return 1; }
+  need_running || return 1
+  [[ -n "$(scep_entity "$cn")" ]] || { log "« $cn » n'est pas un équipement SCEP du DDI"; return 1; }
+  cli_run ra delendentity --username "$cn" -force >/dev/null || return 1
+  [[ -z "$(scep_entity "$cn")" ]] || { log "EJBCA n'a pas supprimé l'équipement « $cn »"; return 1; }
+  printf 'Équipement « %s » retiré (ses certificats déjà délivrés restent valables jusqu'\''à révocation ou expiration).' "$cn"
+}
+
+scep_maintain() {   # un équipement jamais inscrit au bout de SCEP_DAYS perd son entité, donc son défi : un défi oublié ne reste pas valable indéfiniment
+  [[ "$SCEP_DAYS" =~ ^[0-9]{1,3}$ ]] || return 0
+  local cutoff u n=0
+  cutoff=$(( ( $(date +%s) - SCEP_DAYS * 86400 ) * 1000 ))
+  while IFS= read -r u; do
+    [[ "$u" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]] || continue
+    if cli_run ra delendentity --username "$u" -force >/dev/null 2>&1; then n=$(( n + 1 )); fi
+  done < <(sql ejbca -v p="$SCEP_EE_PROFILE" -v t="$cutoff" <<'SQL' 2>/dev/null || true
+select username from userdata where endentityprofileid = :'p' and username !~ '^ddi-' and status in (10, 11) and timemodified < (:'t')::bigint order by timemodified limit 20
+SQL
+)
+  if [[ "$n" -gt 0 ]]; then log "SCEP : $n équipement(s) préenregistré(s) jamais inscrit(s) depuis plus de $SCEP_DAYS jours supprimé(s)"; fi
+  return 0
+}
+
+scep_publish() {   # pki-scep.json : alias, adresse, équipements préenregistrés et leur état (données publiques, jamais un défi)
+  if [[ ! -f "$INST" || -L "$INST" ]]; then rm -f "$RUN/pki-scep.json" 2>/dev/null || true; return 0; fi
+  [[ "$(health_body)" = ALLOK ]] || return 0   # la base ne répond pas : l'état précédent reste affiché
+  local en=0 rows j
+  scep_alias_exists && en=1
+  rows="$(sql ejbca -v p="$SCEP_EE_PROFILE" <<'SQL' 2>/dev/null
+select u.username, u.status, u.timecreated, u.timemodified, coalesce(ca.name, ''), u.certificateprofileid, coalesce(u.subjectdn, ''), coalesce(u.subjectaltname, ''),
+       coalesce(c.serialnumber, ''), coalesce(c.expiredate::text, ''), coalesce(c.status::text, ''), coalesce(c.fingerprint, '')
+from userdata u
+left join cadata ca on ca.caid = u.caid
+left join lateral (select serialnumber, expiredate, status, fingerprint from certificatedata where username = u.username order by updatetime desc limit 1) c on true
+where u.endentityprofileid = :'p' and u.username !~ '^ddi-'
+order by u.timemodified desc limit 500
+SQL
+)" || return 0
+  j="$(printf '%s\n' "$rows" | python3 "$HELPER" scep-publish "$en" "$SCEP_DAYS" "$(instance_get hostname)" "$PUBLIC_PORT" 2>/dev/null || true)"
+  [[ -z "$j" ]] || publish pki-scep.json "$j"
+}
+
 # les certificats émis sont relevés par la console puis effacés : aucun ne reste plus de CERT_KEEP secondes
 purge_certs() {
   if [[ -d "$CERT_OUT" && ! -L "$CERT_OUT" ]]; then
@@ -824,7 +972,7 @@ purge_certs() {
   if [[ -d "$IN_DIR" && ! -L "$IN_DIR" ]]; then
     find "$IN_DIR" -mindepth 1 -maxdepth 1 -type f -regextype posix-extended -regex '.*/[0-9a-f]{16}\.csr\.pem' -mmin "+$(( CERT_KEEP / 60 ))" -delete 2>/dev/null || true
     # un PKCS#12 d'autorité (clé privée) et son mot de passe ne restent jamais : 10 minutes au plus s'ils n'ont pas été consommés
-    find "$IN_DIR" -mindepth 1 -maxdepth 1 -type f \( -name '*.p12' -o -name '*.p12pw' \) -mmin +10 -delete 2>/dev/null || true
+    find "$IN_DIR" -mindepth 1 -maxdepth 1 -type f \( -name '*.p12' -o -name '*.p12pw' -o -name '*.scepw' \) -mmin +10 -delete 2>/dev/null || true
   fi
 }
 
@@ -1280,7 +1428,7 @@ update_maintain() {
     local keep; keep="$(job_get backup)"; [[ "$(job_get state)" = pending || "$(job_get state)" = failed ]] || keep=""
     find "$UPD" -mindepth 1 -maxdepth 1 -type d -name '2*Z-*' -mtime +"$UPDATE_KEEP_DAYS" ! -name "${keep:-.none.}" -exec rm -rf --one-file-system {} + 2>/dev/null || true
   fi
-  last="$(json_get checkedAt < "$CHK" 2>/dev/null || true)"; [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  last=0; [[ ! -f "$CHK" ]] || last="$(json_get checkedAt < "$CHK" 2>/dev/null || true)"; [[ "$last" =~ ^[0-9]+$ ]] || last=0
   if [[ "${DDI_PKI_NO_UPDATE_CHECK:-0}" != 1 ]] && (( $(date +%s) - last >= UPDATE_CHECK_EVERY )); then update_check >/dev/null 2>&1 || true; fi
 }
 
@@ -1293,6 +1441,7 @@ cmd_maintain() {
   update_maintain || true
   [[ -f "$INST" && ! -L "$INST" && "$(health_body)" = ALLOK ]] || return 0
   ensure_profiles || true   # une instance saine reçoit ses profils tout de suite, pas seulement à la première émission
+  scep_maintain || true
   [[ -f "$RUN/pki-cas.json" ]] || return 0
   local n now renewed=0
   now="$(date +%s)"
@@ -1320,6 +1469,7 @@ for c in d.get("cas", []):
 # Formats : {"action":"apply",…} | {"action":"start|stop|restart|status|uninstall|reset"} | {"action":"ca_root|ca_issuing",…} | {"action":"ca_import|ca_import_p12|ca_crl|ca_rootcrl","name":"…"}
 #           | {"action":"update_check|update_validate|update_rollback"} | {"action":"update_apply","image"}
 #           | {"action":"cert_issue","id","ca","profile","cn","o","ou","c","dns","ip","mail","upn"} | {"action":"cert_revoke","ca","serial","reason"[,"id"]}
+#           | {"action":"scep_enable|scep_disable"} | {"action":"scep_offer","id","ca","profile","cn","o","ou","c","dns","ip","mail","upn"} | {"action":"scep_rearm","id","cn"} | {"action":"scep_cancel","cn"}
 cmd_request() {
   local rq="$GEN/.pki-request" raw="" out="" rc=0 ok=false k v action=""
   local -A R=()
@@ -1344,6 +1494,11 @@ cmd_request() {
     ca_rootcrl) out="$( ( ca_rootcrl "${R[name]}" ) 2>&1)" || rc=$? ;;
     cert_issue) out="$( ( cert_issue "${R[id]}" "${R[ca]}" "${R[profile]}" "${R[dn]}" "${R[altname]:-}" ) 2>&1)" || rc=$? ;;
     cert_revoke) out="$( ( cert_revoke "${R[ca]}" "${R[serial]}" "${R[reason]}" ) 2>&1)" || rc=$? ;;
+    scep_enable) out="$( ( scep_enable ) 2>&1)" || rc=$? ;;
+    scep_disable) out="$( ( scep_disable ) 2>&1)" || rc=$? ;;
+    scep_offer) out="$( ( scep_offer "${R[id]}" "${R[ca]}" "${R[profile]}" "${R[dn]}" "${R[altname]:-}" "${R[cn]}" ) 2>&1)" || rc=$? ;;
+    scep_rearm) out="$( ( scep_rearm "${R[id]}" "${R[cn]}" ) 2>&1)" || rc=$? ;;
+    scep_cancel) out="$( ( scep_cancel "${R[cn]}" ) 2>&1)" || rc=$? ;;
     recovery_set) out="$( ( recovery_set "$IN_DIR/recovery.pem" ) 2>&1)" || rc=$? ;;
     update_check) out="$( ( update_check ) 2>&1)" || rc=$? ;;
     update_apply) out="$( ( update_apply "${R[image]}" ) 2>&1)" || rc=$? ;;
@@ -1357,7 +1512,9 @@ cmd_request() {
   publish_result "${action:-invalide}" "$ok" "$out" "${R[id]:-}"
   # les dépôts de la console sont consommés quoi qu'il arrive : ils ne restent jamais sur le disque
   [[ -z "${R[name]:-}" ]] || rm -f "$IN_DIR/${R[name]}.chain.pem" "$IN_DIR/${R[name]}.cert.pem" "$IN_DIR/${R[name]}.crl" "$IN_DIR/${R[name]}.p12" "$IN_DIR/${R[name]}.p12pw" 2>/dev/null || true
-  [[ -z "${R[id]:-}" ]] || rm -f "$IN_DIR/${R[id]}.csr.pem" 2>/dev/null || true
+  [[ -z "${R[id]:-}" ]] || rm -f "$IN_DIR/${R[id]}.csr.pem" "$IN_DIR/${R[id]}.scepw" 2>/dev/null || true
+  # une demande refusée avant tout traitement (JSON invalide) laisse tout de même son défi sur le disque : l'identifiant ne sert ici qu'à nommer le fichier à effacer
+  if [[ -z "${R[id]:-}" && "$raw" =~ \"id\"[[:space:]]*:[[:space:]]*\"([0-9a-f]{16})\" ]]; then rm -f "$IN_DIR/${BASH_REMATCH[1]}.scepw" 2>/dev/null || true; fi
   [[ "$action" != recovery_set ]] || rm -f "$IN_DIR/recovery.pem" 2>/dev/null || true
   cmd_status || true
   [[ "$ok" = true ]]
@@ -1383,6 +1540,11 @@ case "$cmd" in
   ca-rootcrl) ca_rootcrl "${1:-}"; echo; cmd_status ;;
   cert-issue) cert_issue "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}"; echo; cmd_status ;;
   cert-revoke) cert_revoke "${1:-}" "${2:-}" "${3:-}"; echo; cmd_status ;;
+  scep-enable) scep_enable; echo; cmd_status ;;
+  scep-disable) scep_disable; echo; cmd_status ;;
+  scep-offer) scep_offer "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}"; echo; cmd_status ;;
+  scep-rearm) scep_rearm "${1:-}" "${2:-}"; echo; cmd_status ;;
+  scep-cancel) scep_cancel "${1:-}"; echo; cmd_status ;;
   update-check) update_check; echo; cmd_status ;;
   update-apply) update_apply "${1:-}"; echo; cmd_status ;;
   update-validate) update_validate; echo; cmd_status ;;
