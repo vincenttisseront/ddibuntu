@@ -5,6 +5,6 @@ Description=DDI-Buntu : demande PKI de la console (validée par root)
 Type=oneshot
 ExecStart=/usr/local/sbin/ddibuntu-pki request
 # le premier tirage de l'image (plus d'un gigaoctet) peut être long
-TimeoutStartSec=1800
+TimeoutStartSec=5400
 PrivateTmp=yes
 ProtectHome=yes

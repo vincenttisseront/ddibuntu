@@ -13,7 +13,7 @@
 # de la liste des certificats par la console (droit de lecture sur deux tables d'EJBCA, public seulement). La clé privée d'un certificat ne passe
 # JAMAIS ici : la console fabrique la clé et la demande, root ne reçoit et ne rend que des données publiques.
 # 0.14.5 : clé de récupération (certificat PUBLIC enregistré ici, clé privée jamais sur l'appliance) et lot chiffré des secrets et du volume, ajouté à chaque sauvegarde
-# de ddibuntu-backup ; essai et restauration par commande root (la clé privée est fournie par l'administrateur). Mise à jour de l'image : 0.14.6.
+# de ddibuntu-backup ; essai et restauration par commande root (la clé privée est fournie par l'administrateur). 0.14.7 : mise à jour de l'image d'EJBCA (recherche des versions, sauvegarde de retour arrière, contrôles, validation ou retour arrière).
 set -euo pipefail
 umask 077
 
@@ -55,8 +55,16 @@ CONSOLE_ROLE="${DDI_PKI_CONSOLE_ROLE:-ddi}"                    # rôle PostgreSQ
 CRL_PERIOD_MS=604800000                                       # 7 jours de validité ; renouvelées bien avant (EJBCA n'a aucun service de renouvellement)
 CRL_OVERLAP_MS=86400000
 CRL_RENEW_AFTER="${DDI_PKI_CRL_RENEW_AFTER:-43200}"            # secondes : une CRL plus vieille est renouvelée par « maintain »
+UPD="$PETC/update"                                            # 0.14.7 : tâche de mise à jour, résultat de la recherche, points de retour arrière (root, 0700)
+JOB="$UPD/job.json"; CHK="$UPD/check.json"
+DBTAG="$PETC/db-tag"                                          # plus haute version d'EJBCA qui ait ouvert (donc migré) la base : une image plus ancienne ne la rouvre jamais
+HUB_URL="${DDI_PKI_HUB_URL:-https://hub.docker.com/v2/repositories/keyfactor/ejbca-ce/tags?page_size=100&ordering=last_updated}"
+UPDATE_KEEP_DAYS="${DDI_PKI_UPDATE_KEEP_DAYS:-14}"            # jours pendant lesquels un point de retour arrière validé est gardé
+UPDATE_CHECK_EVERY="${DDI_PKI_UPDATE_CHECK_EVERY:-86400}"     # secondes entre deux recherches de nouvelles versions (« maintain »)
 # commande psql de l'utilisateur postgres (surchargeable pour les tests) : la base visée est ajoutée à chaque appel
 read -r -a PSQL <<< "${DDI_PKI_PSQL:-runuser -u postgres -- psql -X -q -v ON_ERROR_STOP=1}"
+read -r -a PGDUMP <<< "${DDI_PKI_PGDUMP:-runuser -u postgres -- pg_dump -Fc}"                       # 0.14.7 : point de retour arrière (le nom de la base est ajouté)
+read -r -a PGRESTORE <<< "${DDI_PKI_PGRESTORE:-runuser -u postgres -- pg_restore --no-owner --role=ejbca}"
 
 usage() {
   cat <<'USAGE'
@@ -75,6 +83,10 @@ Usage : ddibuntu-pki <commande>
   cert-issue ID CA PROFIL DN [SAN]  émet un certificat pour la demande déposée (pki-in/ID.csr.pem) ; PROFIL = server | machine | user | network
   cert-revoke CA SÉRIE MOTIF  révoque un certificat (série en hexadécimal ; motif 0, 1, 3, 4 ou 5) et renouvelle la CRL tout de suite
   maintain                   publie l'état, renouvelle les CRL trop anciennes, importe les profils fournis, purge les certificats relevés (minuteur)
+  update-check               cherche de nouvelles versions d'EJBCA Community (Docker Hub) ; la maintenance le fait une fois par jour
+  update-apply IMAGE         met à jour l'image : tirage, arrêt, sauvegarde de retour arrière, migration, contrôles (retour arrière automatique en cas d'échec)
+  update-validate            valide la mise à jour en attente (supprime le retour arrière proposé)
+  update-rollback            revient à la version d'avant (base, fichiers et unité restaurés)
   recovery-set [CERT.pem]    enregistre le certificat PUBLIC de récupération (défaut : celui que la console dépose) ; la clé privée reste chez l'administrateur
   secrets-pack FICHIER       (appelé par ddibuntu-backup) chiffre les secrets, les métadonnées des autorités et le volume pour la clé de récupération
   secrets-verify --file LOT --key CLÉ      essai de restauration : déchiffre et contrôle un lot sans rien installer (phrase secrète : variable DDI_RECOVERY_PASS)
@@ -360,6 +372,7 @@ print(json.dumps({"at": int(time.time()), "podman": e["PM"] == "true", "installe
   "recovery": json.loads(e["REC"]) if e["REC"] else None}, ensure_ascii=False))')"
   publish_cas
   if [[ "$dbs" = data ]]; then grant_console_read; fi
+  update_publish
 }
 
 write_instance() {   # $1 nom, $2 étiquette, $3 empreinte, $4 réseaux
@@ -381,7 +394,11 @@ cmd_apply() {   # $1 = image, $2 = nom public, $3 = réseaux
   # une instance existante garde son nom (gravé dans les certificats) et son image (la mise à jour a son propre parcours, 0.14.5)
   prev_host="$(instance_get hostname)"; prev_tag="$(instance_get tag)"
   if [[ -n "$prev_host" && "$prev_host" != "$host" ]]; then log "le nom public ($prev_host) ne peut plus changer après l'installation"; return 1; fi
-  if [[ -n "$prev_tag" && "$prev_tag" != "$tag" ]]; then log "la version installée ($prev_tag) ne change que par la mise à jour de la PKI"; return 1; fi
+  if [[ -n "$prev_tag" && "$prev_tag" != "$tag" ]]; then log "la version installée ($prev_tag) ne change que par la mise à jour de la PKI (onglet « Mise à jour »)"; return 1; fi
+  local dbt; dbt="$(dbtag_get)"
+  if [[ -n "$dbt" && "$(python3 "$HELPER" update-cmp "$tag" "$dbt" 2>/dev/null || echo 0)" = -1 ]]; then
+    log "la base a déjà été migrée par EJBCA $dbt : une image plus ancienne ($tag) ne doit pas la rouvrir"; return 1
+  fi
   install -d -m 0750 "$PETC"; install -d -m 0755 "$QDIR"
   install -d -m 0750 "$PDATA"; install -d -m 0700 -o "$CONT_UID" -g "$CONT_UID" "$PDATA/persistent" 2>/dev/null || install -d -m 0700 "$PDATA/persistent"
   if [[ -f "$ENVF" && ! -L "$ENVF" && "$(env_get HTTPSERVER_HOSTNAME)" != "$host" ]]; then
@@ -400,7 +417,7 @@ cmd_apply() {   # $1 = image, $2 = nom public, $3 = réseaux
   ensure_db || return 1
   if ! "$PODMAN" image exists "$image" >/dev/null 2>&1; then
     log "tirage de l'image $image"
-    timeout 1500 "$PODMAN" pull --quiet "$image" >/dev/null || { log "tirage de l'image impossible (accès à docker.io ? sinon : podman load d'une archive)"; return 1; }
+    timeout 1800 "$PODMAN" pull --quiet "$image" >/dev/null || { log "tirage de l'image impossible (accès à docker.io ? sinon : podman load d'une archive)"; return 1; }
   fi
   digest="$("$PODMAN" image inspect --format '{{.Digest}}' "$image" 2>/dev/null | head -n1 | tr -d '\r\n')"
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { log "empreinte de l'image illisible"; return 1; }
@@ -409,6 +426,7 @@ cmd_apply() {   # $1 = image, $2 = nom public, $3 = réseaux
   write_instance "$host" "$tag" "$digest" "$nets"
   "$SYSCTL" daemon-reload
   "$SYSCTL" start "$SERVICE" || { log "le démarrage du conteneur a échoué (journalctl -u $SERVICE)"; return 1; }
+  [[ -n "$dbt" ]] || dbtag_set "$tag"
   warn="$(fw_open "$nets")"
   printf 'PKI installée (EJBCA %s) : démarrage en cours, la première initialisation de la base dure quelques minutes.%s' "$tag" "${warn:+ $warn}"
 }
@@ -447,8 +465,8 @@ drop database if exists ejbca with (force);
 drop role if exists ejbca;
 SQL
   fi
-  rm -rf --one-file-system "$PDATA" "$RUN/pki-ca" "$RUN/pki-cas.json"
-  rm -f "$INST" "$ENVF"
+  rm -rf --one-file-system "$PDATA" "$RUN/pki-ca" "$RUN/pki-cas.json" "$UPD" "$RUN/pki-update.json"
+  rm -f "$INST" "$ENVF" "$DBTAG"
   local warn; warn="$(fw_open "")"
   printf 'PKI remise à zéro : base, volume et secrets effacés. Une nouvelle installation peut choisir un autre nom public.%s' "${warn:+ $warn}"
 }
@@ -478,12 +496,12 @@ need_running() {
 prep_work() { install -d -m 0700 "$PDATA/persistent" 2>/dev/null || true; install -d -m 0700 "$WORK_HOST"; own "$WORK_HOST"; find "$WORK_HOST" -mindepth 1 -delete 2>/dev/null || true; }
 done_work() { find "$WORK_HOST" -mindepth 1 -delete 2>/dev/null || true; }
 put_work() { install -m 0600 "$1" "$WORK_HOST/$2"; own "$WORK_HOST/$2"; }   # $1 = source (root), $2 = nom vu par le conteneur
-alg_args() {   # $1 = alg → KS (taille ou courbe) et SIG (algorithme de signature)
+alg_args() {   # $1 = alg → KS (taille ou courbe), KT (type de clé : EJBCA 9.3 l'exige, 9.6 l'accepte et l'ignore) et SIG (algorithme de signature)
   case "$1" in
-    rsa3072) KS=3072; SIG=SHA256WithRSA ;;
-    rsa4096) KS=4096; SIG=SHA384WithRSA ;;
-    ecp256) KS=prime256v1; SIG=SHA256withECDSA ;;
-    ecp384) KS=secp384r1; SIG=SHA384withECDSA ;;
+    rsa3072) KS=3072; KT=RSA; SIG=SHA256WithRSA ;;
+    rsa4096) KS=4096; KT=RSA; SIG=SHA384WithRSA ;;
+    ecp256) KS=prime256v1; KT=ECDSA; SIG=SHA256withECDSA ;;
+    ecp384) KS=secp384r1; KT=ECDSA; SIG=SHA384withECDSA ;;
     *) return 1 ;;
   esac
 }
@@ -515,13 +533,13 @@ fetch_deposit() {   # $1 = nom du dépôt, $2 = destination (root), $3 = certs |
 }
 
 ca_create_root() {   # $1 nom, $2 DN, $3 alg, $4 jours
-  local name="$1" dn="$2" alg="$3" days="$4" KS SIG
+  local name="$1" dn="$2" alg="$3" days="$4" KS KT SIG
   valid_ca_name "$name" || { log "nom d'autorité invalide"; return 1; }
   alg_args "$alg" || { log "algorithme invalide"; return 1; }
   need_running || return 1
   ca_exists "$name" && { log "une autorité « $name » existe déjà"; return 1; }
   prep_work
-  cli_run ca init --caname "$name" --dn "$dn" --tokenType soft --tokenPass null --keyspec "$KS" -v "$days" --policy null -s "$SIG" >/dev/null || { done_work; return 1; }
+  cli_run ca init --caname "$name" --dn "$dn" --tokenType soft --tokenPass null --keyspec "$KS" --keytype "$KT" -v "$days" --policy null -s "$SIG" >/dev/null || { done_work; return 1; }
   ca_exists "$name" || { done_work; log "l'autorité n'a pas été créée (voir le journal du conteneur)"; return 1; }
   write_meta "$name" root self "$alg"
   local warn=""; ca_defaults "$name" || warn=" AVERTISSEMENT : adresses publiques non enregistrées dans l'autorité."
@@ -530,7 +548,7 @@ ca_create_root() {   # $1 nom, $2 DN, $3 alg, $4 jours
 }
 
 ca_create_issuing() {   # $1 nom, $2 DN, $3 alg, $4 jours, $5 signeur (external | nom d'une racine du DDI)
-  local name="$1" dn="$2" alg="$3" days="$4" by="${5:-external}" KS SIG rid chain info rootsha ext warn=""
+  local name="$1" dn="$2" alg="$3" days="$4" by="${5:-external}" KS KT SIG rid chain info rootsha ext warn=""
   valid_ca_name "$name" || { log "nom d'autorité invalide"; return 1; }
   alg_args "$alg" || { log "algorithme invalide"; return 1; }
   need_running || return 1
@@ -549,7 +567,7 @@ ca_create_issuing() {   # $1 nom, $2 DN, $3 alg, $4 jours, $5 signeur (external 
       write_meta "$ext" extroot external ""
     fi
     put_work "$chain" chain.pem
-    cli_run ca init --caname "$name" --dn "$dn" --tokenType soft --tokenPass null --keyspec "$KS" -v "$days" --policy null -s "$SIG" --signedby External -externalcachain "$WORK_CONT/chain.pem" >/dev/null || { done_work; return 1; }
+    cli_run ca init --caname "$name" --dn "$dn" --tokenType soft --tokenPass null --keyspec "$KS" --keytype "$KT" -v "$days" --policy null -s "$SIG" --signedby External -externalcachain "$WORK_CONT/chain.pem" >/dev/null || { done_work; return 1; }
     [[ -s "$WORK_HOST/${name}_csr.der" ]] || { done_work; log "EJBCA n'a pas écrit la demande de certificat"; return 1; }
     install -m 0640 "$WORK_HOST/${name}_csr.der" "$CAD/$name/csr.der"
     openssl req -inform DER -in "$CAD/$name/csr.der" -out "$CAD/$name/csr.pem" 2>/dev/null || { done_work; log "demande de certificat illisible"; return 1; }
@@ -566,7 +584,7 @@ ca_create_issuing() {   # $1 nom, $2 DN, $3 alg, $4 jours, $5 signeur (external 
 try: print(json.load(open(os.environ["META_PATH"])).get("kind", ""))
 except Exception: print("")')" = root ]] || { done_work; log "« $by » n'est pas une racine créée par le DDI"; return 1; }
     rid="$(ca_field caid "$by")"
-    cli_run ca init --caname "$name" --dn "$dn" --tokenType soft --tokenPass null --keyspec "$KS" -v "$days" --policy null -s "$SIG" --signedby "$rid" >/dev/null || { done_work; return 1; }
+    cli_run ca init --caname "$name" --dn "$dn" --tokenType soft --tokenPass null --keyspec "$KS" --keytype "$KT" -v "$days" --policy null -s "$SIG" --signedby "$rid" >/dev/null || { done_work; return 1; }
     ca_exists "$name" || { done_work; log "l'autorité n'a pas été créée (voir le journal du conteneur)"; return 1; }
     write_meta "$name" issuing "$by" "$alg"
     ca_defaults "$name" || warn=" AVERTISSEMENT : adresses publiques non enregistrées dans l'autorité."
@@ -938,11 +956,332 @@ secrets_restore() {
     printf 'Secrets restaurés. Démarrage non demandé : « ddibuntu-pki apply » remet la PKI en service (nom public et version se lisent dans instance.json).'; return 0
   fi
   host="$(instance_get hostname)"; tag="$(instance_get tag)"; nets="$(instance_get nets)"
+  [[ -z "$tag" ]] || dbtag_set "$tag"   # la base restaurée est celle d'EJBCA $tag, quelle que soit la version qui l'ait migrée depuis
   if cmd_apply "$IMAGE_REPO:$tag" "$host" "$nets" >/dev/null; then
     printf 'PKI restaurée (EJBCA %s) : démarrage en cours ; les autorités et leurs clés sont celles de la base restaurée.' "$tag"
   else
     printf 'Secrets restaurés, mais le démarrage a échoué : corriger la cause indiquée ci-dessus puis relancer « ddibuntu-pki apply %s %s ».' "$IMAGE_REPO:$tag" "$host"; return 1
   fi
+}
+
+# ---- Mises à jour de l'image d'EJBCA (0.14.7) ----
+# Détection : Docker Hub (étiquettes X.Y.Z seulement, celles que l'appliance accepte), une fois par jour par « maintain » ou à la demande.
+# Mise à jour : un seul parcours sous le verrou global — tirage de l'image (sans interruption), arrêt, sauvegarde ciblée (base « ejbca » + fichiers + unité),
+# démarrage de la nouvelle image (migration automatique de la base), contrôles. Un échec après l'arrêt déclenche tout de suite le retour arrière ; un succès
+# attend la validation de l'administrateur (retour arrière possible tant qu'elle n'a pas eu lieu). Rien de ce que la console envoie n'est repris tel quel :
+# la demande ne porte que l'image, revalidée ici (dépôt, forme X.Y.Z) puis jugée par la politique de version (update_policy de pki-helper.py).
+ujob() { install -d -m 0700 "$UPD"; python3 "$HELPER" update-job "$JOB" "$@"; }
+job_get() { if [[ -f "$JOB" && ! -L "$JOB" ]]; then json_get "$1" < "$JOB" || true; fi; }
+dbtag_get() { local v=""; if [[ -f "$DBTAG" && ! -L "$DBTAG" ]]; then v="$(head -c 16 "$DBTAG" | tr -d '\r\n ' || true)"; fi; [[ "$v" =~ ^[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{1,3}$ ]] && printf '%s' "$v"; return 0; }
+dbtag_set() { printf '%s\n' "$1" > "$DBTAG.new" && chmod 0600 "$DBTAG.new" && mv -f "$DBTAG.new" "$DBTAG"; }
+certs_now() {   # nombre de certificats finaux connus d'EJBCA ; -1 si illisible
+  local n; n="$(sql ejbca 2>/dev/null <<'SQL' | head -n1
+select count(*) from certificatedata where type = 1
+SQL
+)" || true
+  if [[ "$n" =~ ^[0-9]+$ ]]; then printf '%s' "$n"; else printf -- '-1'; fi
+}
+cas_total() {   # nombre d'autorités connues d'EJBCA (toutes) ; -1 si illisible
+  local n; n="$(sql ejbca 2>/dev/null <<'SQL' | head -n1
+select count(*) from cadata
+SQL
+)" || true
+  if [[ "$n" =~ ^[0-9]+$ ]]; then printf '%s' "$n"; else printf -- '-1'; fi
+}
+update_publish() {   # pki-update.json : recherche + tâche en cours (données publiques)
+  local cur dbt n=-1 j
+  if [[ ! -f "$INST" || -L "$INST" ]]; then rm -f "$RUN/pki-update.json" 2>/dev/null || true; return 0; fi
+  cur="$(instance_get tag)"; dbt="$(dbtag_get)"
+  if [[ -f "$JOB" ]] && [[ -n "$(job_get backup)" ]]; then n="$(certs_now)"; fi
+  j="$(python3 "$HELPER" update-publish "$CHK" "$JOB" "$cur" "$dbt" "$n" 2>/dev/null || true)"
+  [[ -z "$j" ]] || publish pki-update.json "$j"
+}
+uprog() { ujob "$@" || true; update_publish; }
+policy_text() {   # $1 = motif, $2 = version installée, $3 = version visée, $4 = version de la base
+  case "$1" in
+    same) printf 'la version %s est déjà installée' "$3" ;;
+    older) printf 'une version plus ancienne que celle qui est installée (%s) ne s'\''installe jamais : le retour arrière passe par la sauvegarde' "$2" ;;
+    older_than_db) printf 'la base a déjà été migrée par EJBCA %s : une image plus ancienne (%s) ne doit pas la rouvrir' "$4" "$3" ;;
+    major_jump) printf 'passer de la série %s à la série %s n'\''est pas pris en charge (non essayé) : seules les mises à jour à l'\''intérieur d'\''une série le sont' "${2%%.*}" "${3%%.*}" ;;
+    *) printf 'version refusée (%s)' "$1" ;;
+  esac
+}
+
+update_check() {
+  [[ -f "$INST" && ! -L "$INST" ]] || { log "la PKI n'est pas installée"; return 1; }
+  install -d -m 0700 "$UPD"
+  local cur dbt td latest; cur="$(instance_get tag)"; dbt="$(dbtag_get)"; [[ -n "$dbt" ]] || dbt="$cur"
+  td="$(secure_tmpdir)" || { log "dossier temporaire impossible"; return 1; }
+  if "$CURL" -fsS --max-time 30 --max-filesize 4194304 -o "$td/tags.json" "$HUB_URL" 2>/dev/null; then
+    python3 "$HELPER" update-check-write "$CHK" "$cur" "$dbt" "$td/tags.json" || { rm -rf "$td"; return 1; }
+  else
+    python3 "$HELPER" update-check-write "$CHK" "$cur" "$dbt" --error=unreachable || true
+    rm -rf "$td"; update_publish
+    log "Docker Hub est injoignable depuis cette machine (accès sortant vers hub.docker.com en 443 ?)"; return 1
+  fi
+  rm -rf "$td"; update_publish
+  if [[ "$(json_get error < "$CHK")" = bad_answer ]]; then log "réponse de Docker Hub illisible"; return 1; fi
+  latest="$(json_get latest < "$CHK")"
+  if [[ -n "$latest" ]]; then printf 'Nouvelle version disponible : EJBCA %s (installée : %s).' "$latest" "$cur"; else printf 'EJBCA %s est à jour (aucune version plus récente que celle-ci n'\''est proposée).' "$cur"; fi
+}
+
+schema_missing() {   # colonnes d'EJBCA lues par le DDI (root et console) qui n'existent plus ; vide si tout est là
+  local r
+  r="$(sql ejbca 2>/dev/null <<'SQL' | paste -sd, -
+select v.t || '.' || v.c from (values
+ ('cadata','name'),('cadata','status'),('cadata','subjectdn'),('cadata','caid'),
+ ('certificatedata','fingerprint'),('certificatedata','serialnumber'),('certificatedata','issuerdn'),('certificatedata','subjectdn'),
+ ('certificatedata','subjectaltname'),('certificatedata','status'),('certificatedata','type'),('certificatedata','certificateprofileid'),
+ ('certificatedata','notbefore'),('certificatedata','expiredate'),('certificatedata','revocationdate'),('certificatedata','revocationreason'),
+ ('certificatedata','base64cert'),('base64certdata','fingerprint'),('base64certdata','base64cert'),
+ ('crldata','issuerdn'),('crldata','crlnumber'),('crldata','thisupdate'),('crldata','nextupdate'),('crldata','base64crl'),('crldata','deltacrlindicator'),
+ ('cryptotokendata','id'),('cryptotokendata','tokenname'),('cryptotokendata','tokenprops')) as v(t, c)
+where not exists (select 1 from information_schema.columns k where k.table_schema = 'public' and k.table_name = v.t and k.column_name = v.c)
+SQL
+)" || r="lecture du schéma impossible"
+  printf '%s' "$r"
+}
+
+wait_health() {   # $1 = secondes : 0 dès que la santé répond ALLOK ; 1 au bout du délai, ou si le service redémarre en boucle
+  local limit="$1" t0 now nr
+  t0="$(date +%s)"
+  while :; do
+    [[ "$(health_body)" = ALLOK ]] && return 0
+    now="$(date +%s)"
+    (( now - t0 < limit )) || return 1
+    nr="$("$SYSCTL" show -p NRestarts --value "$SERVICE" 2>/dev/null || true)"
+    if [[ "$nr" =~ ^[0-9]+$ && "$nr" -ge 3 ]]; then log "le conteneur redémarre en boucle (journalctl -u $SERVICE)"; return 1; fi
+    sleep "${DDI_PKI_UPDATE_POLL:-5}"
+  done
+}
+
+# Contrôles après un démarrage (mise à jour ou retour arrière) ; $1 = nombre d'autorités attendu au moins (-1 : pas de comparaison). Chaque résultat est
+# inscrit dans la tâche. Une CRL est recréée pour chaque autorité active : c'est ce qui prouve que son jeton de clés est en ligne et que la clé signe encore.
+update_checks() {
+  local want="$1" rc=0 miss n names bad="" badcrl="" url h
+  h="$(health_body)"
+  if [[ "$h" = ALLOK ]]; then ujob check health true "" || true; else ujob check health false "santé « ${h:-aucune réponse} »" || true; rc=1; fi
+  miss="$(schema_missing)"
+  if [[ -z "$miss" ]]; then ujob check schema true "" || true; else ujob check schema false "colonnes absentes ou illisibles : $miss" || true; rc=1; fi
+  n="$(cas_total)"
+  if [[ "$n" =~ ^[0-9]+$ && "$n" -ge 0 && ( "$want" -lt 0 || "$n" -ge "$want" ) ]]; then ujob check cas true "$n autorité(s)" || true
+  else ujob check cas false "$n autorité(s) lue(s), $want attendue(s)" || true; rc=1; fi
+  names="$(sql ejbca 2>/dev/null <<'SQL' || true
+select name from cadata where status = 1 order by name
+SQL
+)"
+  while IFS= read -r n; do
+    [[ -n "$n" ]] || continue
+    [[ "$n" = ManagementCA ]] || valid_ca_name "$n" || continue
+    cli_run ca createcrl --caname "$n" >/dev/null 2>&1 || bad="$bad $n"
+  done <<< "$names"
+  if [[ -z "$bad" ]]; then ujob check signing true "" || true; else ujob check signing false "signature impossible pour :$bad (jeton de clés hors ligne ?)" || true; rc=1; fi
+  publish_cas
+  while IFS=$'\t' read -r n url; do
+    [[ -n "$url" ]] || continue
+    "$CURL" -fsS --max-time 15 -o /dev/null "$url" >/dev/null 2>&1 || badcrl="$badcrl $n"
+  done < <(python3 "$HELPER" update-crl-urls "$RUN/pki-cas.json" "$PUBLIC_PORT" 2>/dev/null || true)
+  if [[ -z "$badcrl" ]]; then ujob check crl true "" || true; else ujob check crl false "CRL non servie pour :$badcrl" || true; rc=1; fi
+  update_publish
+  return "$rc"
+}
+
+# point de retour : base, fichiers (secrets, métadonnées des autorités, volume sans le dossier d'échange), unité et instance ; écrit en dernier meta.json
+update_backup() {   # $1 = dossier à créer
+  local d="$1" cas certs bytes
+  install -d -m 0700 "$d" || return 1
+  "${PGDUMP[@]}" ejbca > "$d/ejbca.dump" 2>"$d/dump.err" || { log "sauvegarde de la base « ejbca » impossible : $(tail -n 2 "$d/dump.err" | tr '\n' ' ')"; return 1; }
+  [[ -s "$d/ejbca.dump" ]] || { log "sauvegarde de la base « ejbca » vide"; return 1; }
+  python3 "$HELPER" bundle-pack "$d/files.tgz" "$PETC" "$PDATA" >/dev/null 2>"$d/pack.err" || { log "sauvegarde des fichiers impossible : $(tail -n 1 "$d/pack.err" | cut -c1-200)"; return 1; }
+  rm -f "$d/dump.err" "$d/pack.err"
+  cp -p "$QUADLET" "$d/quadlet" && cp -p "$INST" "$d/instance.json" || { log "sauvegarde de l'unité impossible"; return 1; }
+  cas="$(cas_total)"; certs="$(certs_now)"; bytes=$(( $(stat -c %s "$d/ejbca.dump") + $(stat -c %s "$d/files.tgz") ))
+  CAS="$cas" CERTS="$certs" BY="$bytes" python3 -c '
+import json, os, time
+e = os.environ
+print(json.dumps({"complete": True, "createdAt": int(time.time()), "cas": int(e["CAS"]), "certs": int(e["CERTS"]), "bytes": int(e["BY"])}))' > "$d/meta.json"
+  chmod 0600 "$d"/* 2>/dev/null || true
+  printf '%s %s %s\n' "$cas" "$certs" "$bytes"
+}
+
+update_restore_db() {   # $1 = sauvegarde de la base (pg_dump -Fc) : la base « ejbca » est recréée puis remplie
+  local err; err="$(mktemp)"
+  "${PSQL[@]}" -d postgres >/dev/null 2>"$err" <<'SQL' || { log "suppression de la base « ejbca » impossible : $(tail -n 1 "$err" | cut -c1-200)"; rm -f "$err"; return 1; }
+drop database if exists ejbca with (force);
+SQL
+  ensure_db || { rm -f "$err"; return 1; }
+  "${PGRESTORE[@]}" -d ejbca < "$1" >/dev/null 2>"$err" || { log "restauration de la base « ejbca » impossible : $(tail -n 2 "$err" | tr '\n' ' ' | cut -c1-240)"; rm -f "$err"; return 1; }
+  rm -f "$err"
+}
+
+# Retour arrière : arrête, remet la base, les fichiers (volume compris) et l'unité d'avant, redémarre l'ancienne image, contrôle.
+update_rollback_run() {   # $1 = dossier de sauvegarde
+  local d="$1" td x from want
+  [[ -f "$d/meta.json" && -f "$d/ejbca.dump" && -f "$d/files.tgz" && -f "$d/quadlet" && -f "$d/instance.json" ]] || { log "point de retour incomplet ($d)"; return 1; }
+  [[ "$(json_get complete < "$d/meta.json" 2>/dev/null || true)" != "" ]] || { log "point de retour incomplet ($d)"; return 1; }
+  from="$(json_get tag < "$d/instance.json")"
+  [[ "$from" =~ ^[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{1,3}$ ]] || { log "version d'origine illisible dans le point de retour"; return 1; }
+  want="$(job_get casAtBackup)"; [[ "$want" =~ ^-?[0-9]+$ ]] || want=-1
+  uprog set state=running "message=Retour arrière vers EJBCA $from"
+  uprog step rb_stop running
+  "$SYSCTL" stop "$SERVICE" >/dev/null 2>&1 || true
+  uprog step rb_stop "done"; uprog step rb_db running
+  if ! update_restore_db "$d/ejbca.dump"; then
+    uprog step rb_db failed; uprog set state=failed "message=Retour arrière impossible : la base n'a pas pu être restaurée (sauvegarde conservée dans $d)" "finishedAt=$(date +%s)"; return 1
+  fi
+  uprog step rb_db "done"; uprog step rb_files running
+  td="$(secure_tmpdir)" || { log "dossier temporaire impossible"; return 1; }; x="$td/x"
+  if ! python3 "$HELPER" bundle-extract "$d/files.tgz" "$x" >/dev/null 2>"$td/err"; then
+    log "fichiers du point de retour illisibles : $(tail -n 1 "$td/err" | cut -c1-200)"; rm -rf "$td"; uprog step rb_files failed
+    uprog set state=failed "message=Retour arrière impossible : les fichiers sauvegardés sont illisibles (sauvegarde conservée dans $d)" "finishedAt=$(date +%s)"; return 1
+  fi
+  rm -rf --one-file-system "$PDATA/persistent" "$CAD"
+  [[ ! -d "$x/data/ca" ]] || cp -a "$x/data/ca" "$CAD"
+  if [[ -d "$x/data/persistent" ]]; then cp -a "$x/data/persistent" "$PDATA/persistent"; else install -d -m 0700 "$PDATA/persistent"; fi
+  install -d -m 0700 "$WORK_HOST"
+  chmod 0700 "$PDATA/persistent"; if [[ "$(id -u)" -eq 0 ]]; then chown -R "$CONT_UID:$CONT_UID" "$PDATA/persistent"; fi
+  rm -rf "$td"
+  install -m 0644 "$d/quadlet" "$QUADLET"; install -m 0600 "$d/instance.json" "$INST"
+  "$SYSCTL" daemon-reload
+  uprog step rb_files "done"; uprog step rb_start running
+  if ! "$SYSCTL" start "$SERVICE" >/dev/null 2>&1; then
+    uprog step rb_start failed; uprog set state=failed "message=Retour arrière : l'ancienne image n'a pas redémarré (journalctl -u $SERVICE ; sauvegarde conservée dans $d)" "finishedAt=$(date +%s)"; return 1
+  fi
+  if ! wait_health "${DDI_PKI_UPDATE_WAIT:-1200}"; then
+    uprog step rb_start failed; uprog set state=failed "message=Retour arrière : l'ancienne image ne répond pas (santé EJBCA ; sauvegarde conservée dans $d)" "finishedAt=$(date +%s)"; return 1
+  fi
+  uprog step rb_start "done"; uprog step rb_checks running
+  dbtag_set "$from"
+  if update_checks "$want"; then
+    uprog step rb_checks "done"; cmd_status || true
+    uprog set state=rolled_back "message=Retour arrière effectué : EJBCA $from est de nouveau en service, avec la base et les fichiers d'avant la mise à jour" "finishedAt=$(date +%s)"
+  else
+    uprog step rb_checks failed; cmd_status || true
+    uprog set state=rolled_back "message=Retour arrière effectué, mais des contrôles échouent encore : voir le détail ci-dessous (la base d'avant la mise à jour est remise, la cause est ailleurs)" "finishedAt=$(date +%s)"
+  fi
+  return 0
+}
+
+auto_rollback() {   # $1 = dossier de sauvegarde, $2 = version d'origine : retour arrière après un échec de la nouvelle image
+  if update_rollback_run "$1"; then log "EJBCA $2 est de nouveau en service : la base, les fichiers et l'unité d'avant la mise à jour ont été remis"
+  else log "le retour arrière a échoué aussi : voir l'onglet « Mise à jour » (la sauvegarde est gardée dans $1)"; fi
+  return 1
+}
+
+update_apply() {   # $1 = image
+  local image="${1:-}" to cur dbt why fromdig todig host nets bdir ts st certs cas bytes avail pulled=0 expect
+  valid_image "$image" || { log "image refusée : seule docker.io/keyfactor/ejbca-ce:X.Y.Z est admise"; return 1; }
+  [[ -f "$INST" && ! -L "$INST" ]] || { log "la PKI n'est pas installée"; return 1; }
+  to="$(tag_of "$image")"; cur="$(instance_get tag)"; dbt="$(dbtag_get)"; [[ -n "$dbt" ]] || dbt="$cur"
+  st="$(job_get state)"
+  case "$st" in
+    running) log "une mise à jour est en cours ou a été interrompue : revenir en arrière depuis l'onglet « Mise à jour »"; return 1 ;;
+    pending) log "la mise à jour vers EJBCA $(job_get to) attend votre validation : la valider ou revenir en arrière avant d'en lancer une autre"; return 1 ;;
+    failed) [[ -z "$(job_get backup)" ]] || { log "la dernière mise à jour a échoué et laisse un point de retour : revenir en arrière avant d'en lancer une autre"; return 1; } ;;
+  esac
+  why="$(python3 "$HELPER" update-policy "$cur" "$dbt" "$to" 2>/dev/null || true)"
+  [[ "$why" = ok ]] || { log "mise à jour refusée : $(policy_text "$why" "$cur" "$to" "$dbt")"; return 1; }
+  need_running || return 1
+  avail="$(df -Pk "$PETC" | awk 'NR==2{print $4}')"
+  [[ "${avail:-0}" -ge "${DDI_PKI_UPDATE_MIN_FREE_KB:-524288}" ]] || { log "moins de 512 Mo libres dans $PETC : mise à jour refusée (la sauvegarde de retour arrière n'aurait pas la place)"; return 1; }
+  host="$(instance_get hostname)"; nets="$(instance_get nets)"; fromdig="$(instance_get digest)"
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"; bdir="$UPD/$ts-$cur"; [[ ! -e "$bdir" ]] || bdir="$bdir.$$"
+  install -d -m 0700 "$UPD"
+  ujob init "$cur" "$to" "$fromdig" pull stop backup start migrate checks || { log "état de la mise à jour illisible"; return 1; }
+  update_publish
+  log "mise à jour d'EJBCA $cur vers $to"
+  # 1. tirage : l'ancienne image continue de servir
+  uprog step pull running
+  if ! "$PODMAN" image exists "$image" >/dev/null 2>&1; then
+    pulled=1
+    timeout 1800 "$PODMAN" pull --quiet "$image" >/dev/null 2>&1 || { uprog step pull failed; uprog set state=failed "message=Tirage de l'image impossible (accès à docker.io ?) : rien n'a été modifié" "finishedAt=$(date +%s)"; log "tirage de l'image $image impossible (accès à docker.io ? sinon : podman load d'une archive)"; return 1; }
+  fi
+  todig="$("$PODMAN" image inspect --format '{{.Digest}}' "$image" 2>/dev/null | head -n1 | tr -d '\r\n')"
+  [[ "$todig" =~ ^sha256:[0-9a-f]{64}$ ]] || { uprog step pull failed; uprog set state=failed "message=Empreinte de l'image illisible : rien n'a été modifié" "finishedAt=$(date +%s)"; log "empreinte de l'image illisible"; return 1; }
+  # l'image qu'on vient de tirer est celle que Docker Hub annonçait à la dernière recherche (une étiquette republiée entre-temps se détecte ici) ; une image déjà présente
+  # (chargée à la main, hors ligne) n'est pas jugée : on ne peut pas savoir d'où elle vient
+  expect="$(python3 "$HELPER" update-digest "$CHK" "$to" 2>/dev/null || true)"
+  if [[ "$pulled" -eq 1 && -n "$expect" && "$expect" != "$todig" ]]; then
+    uprog step pull failed; uprog set state=failed "message=L'image tirée n'a pas l'empreinte annoncée par Docker Hub à la dernière recherche (étiquette republiée ?) : rien n'a été modifié ; relancer la recherche" "finishedAt=$(date +%s)"
+    log "l'image tirée ($todig) n'a pas l'empreinte annoncée par Docker Hub ($expect) : relancer la recherche de versions"; return 1
+  fi
+  uprog set "toDigest=$todig"; uprog step pull "done"
+  # 2. arrêt (la base ne bouge plus : la sauvegarde est cohérente avec le volume)
+  uprog step stop running
+  if ! "$SYSCTL" stop "$SERVICE" >/dev/null 2>&1; then
+    "$SYSCTL" start "$SERVICE" >/dev/null 2>&1 || true
+    uprog step stop failed; uprog set state=failed "message=Arrêt du conteneur impossible : rien n'a été modifié" "finishedAt=$(date +%s)"; log "arrêt du conteneur impossible"; return 1
+  fi
+  uprog step stop "done"
+  # 3. sauvegarde ; si elle échoue, l'ancienne image repart telle quelle
+  uprog step backup running
+  if ! read -r cas certs bytes < <(update_backup "$bdir"); then
+    rm -rf --one-file-system "$bdir"; "$SYSCTL" start "$SERVICE" >/dev/null 2>&1 || true
+    uprog step backup failed; uprog set state=failed "message=Sauvegarde de retour arrière impossible : rien n'a été modifié, l'ancienne version repart" "finishedAt=$(date +%s)"; return 1
+  fi
+  uprog set "backup=$(basename "$bdir")" "certsAtBackup=$certs" "casAtBackup=$cas" "backupBytes=$bytes"; uprog step backup "done"
+  # 4. nouvelle image : unité et instance réécrites, démarrage (EJBCA migre la base tout seul)
+  uprog step start running
+  render_quadlet "$IMAGE_REPO@$todig" > "$QUADLET.new"; chmod 0644 "$QUADLET.new"; mv -f "$QUADLET.new" "$QUADLET"
+  write_instance "$host" "$to" "$todig" "$nets"
+  "$SYSCTL" daemon-reload
+  if ! "$SYSCTL" start "$SERVICE" >/dev/null 2>&1; then
+    uprog step start failed; log "la nouvelle image ne démarre pas : retour arrière"
+    uprog set "reason=start"; auto_rollback "$bdir" "$cur"; return 1
+  fi
+  uprog step start "done"; uprog step migrate running
+  if ! wait_health "${DDI_PKI_UPDATE_WAIT:-1200}"; then
+    uprog step migrate failed; log "EJBCA $to n'est pas en bonne santé après $(( ${DDI_PKI_UPDATE_WAIT:-1200} / 60 )) minutes : retour arrière"
+    uprog set "reason=health"; auto_rollback "$bdir" "$cur"; return 1
+  fi
+  uprog step migrate "done"; uprog step checks running
+  if ! update_checks "$cas"; then
+    uprog step checks failed; log "contrôles en échec après la mise à jour : retour arrière"
+    uprog set "reason=checks"; auto_rollback "$bdir" "$cur"; return 1
+  fi
+  uprog step checks "done"
+  dbtag_set "$to"
+  cmd_status || true
+  uprog set state=pending "message=EJBCA $to est en service : à valider (retour arrière possible tant que vous ne l'avez pas fait)" "finishedAt=$(date +%s)"
+  printf 'EJBCA %s est en service (depuis %s) : tous les contrôles passent. Validez la mise à jour, ou revenez en arrière.' "$to" "$cur"
+}
+
+update_validate() {
+  [[ "$(job_get state)" = pending ]] || { log "aucune mise à jour n'attend de validation"; return 1; }
+  uprog set state=validated "message=Mise à jour vers EJBCA $(job_get to) validée : le retour arrière n'est plus proposé ; la sauvegarde est gardée ${UPDATE_KEEP_DAYS} jours" "finishedAt=$(date +%s)"
+  printf 'Mise à jour validée : EJBCA %s. La sauvegarde de retour arrière est gardée %s jours dans %s.' "$(job_get to)" "$UPDATE_KEEP_DAYS" "$UPD"
+}
+
+update_rollback() {
+  local st b d certs lost=""
+  st="$(job_get state)"; b="$(job_get backup)"
+  case "$st" in pending|failed|running) ;; *) log "aucune mise à jour à annuler"; return 1 ;; esac
+  [[ "$b" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9.]+(\.[0-9]+)?$ ]] || { log "aucun point de retour n'est enregistré pour cette mise à jour"; return 1; }
+  d="$UPD/$b"; [[ -d "$d" && ! -L "$d" ]] || { log "point de retour introuvable ($d)"; return 1; }
+  certs="$(certs_now)"
+  if [[ "$certs" -ge 0 && "$(job_get certsAtBackup)" -ge 0 ]] 2>/dev/null; then
+    lost=$(( certs - $(job_get certsAtBackup) )); [[ "$lost" -gt 0 ]] || lost=""
+  fi
+  uprog set "reason=manual"
+  update_rollback_run "$d" || return 1
+  [[ -z "$lost" ]] || lost=" $lost certificat(s) émis depuis la mise à jour ne sont plus connus d'EJBCA."
+  printf 'Retour arrière effectué : EJBCA %s est de nouveau en service.%s' "$(job_get from)" "$lost"
+}
+
+# maintenance : tâche interrompue, anciens points de retour, recherche quotidienne
+update_maintain() {
+  [[ -f "$INST" && ! -L "$INST" ]] || return 0
+  local st last
+  st="$(job_get state)"
+  if [[ "$st" = running ]]; then   # le verrou est à nous : aucune mise à jour ne tourne, celle-ci s'est interrompue
+    uprog set state=failed "message=Mise à jour interrompue (arrêt de la machine ou du service ?) : revenir en arrière depuis l'onglet « Mise à jour » si la PKI ne répond plus" "finishedAt=$(date +%s)"
+  fi
+  if [[ -d "$UPD" ]]; then
+    local keep; keep="$(job_get backup)"; [[ "$(job_get state)" = pending || "$(job_get state)" = failed ]] || keep=""
+    find "$UPD" -mindepth 1 -maxdepth 1 -type d -name '2*Z-*' -mtime +"$UPDATE_KEEP_DAYS" ! -name "${keep:-.none.}" -exec rm -rf --one-file-system {} + 2>/dev/null || true
+  fi
+  last="$(json_get checkedAt < "$CHK" 2>/dev/null || true)"; [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  if [[ "${DDI_PKI_NO_UPDATE_CHECK:-0}" != 1 ]] && (( $(date +%s) - last >= UPDATE_CHECK_EVERY )); then update_check >/dev/null 2>&1 || true; fi
 }
 
 # minuteur : publie l'état et renouvelle les CRL des autorités du DDI (EJBCA n'a aucun service qui le fasse : sans cela elles expirent)
@@ -951,6 +1290,7 @@ cmd_maintain() {
   purge_certs
   # secrets mis de côté par une restauration (--force) : 14 jours, pas plus (ce sont des secrets)
   find "$PETC" -mindepth 1 -maxdepth 1 -type d -name 'pre-restore.*' -mtime +14 -exec rm -rf --one-file-system {} + 2>/dev/null || true
+  update_maintain || true
   [[ -f "$INST" && ! -L "$INST" && "$(health_body)" = ALLOK ]] || return 0
   ensure_profiles || true   # une instance saine reçoit ses profils tout de suite, pas seulement à la première émission
   [[ -f "$RUN/pki-cas.json" ]] || return 0
@@ -978,6 +1318,7 @@ for c in d.get("cas", []):
 
 # ---- Demande de la console (sans privilège) : revalidée ici en totalité par pki-helper.py ----
 # Formats : {"action":"apply",…} | {"action":"start|stop|restart|status|uninstall|reset"} | {"action":"ca_root|ca_issuing",…} | {"action":"ca_import|ca_import_p12|ca_crl|ca_rootcrl","name":"…"}
+#           | {"action":"update_check|update_validate|update_rollback"} | {"action":"update_apply","image"}
 #           | {"action":"cert_issue","id","ca","profile","cn","o","ou","c","dns","ip","mail","upn"} | {"action":"cert_revoke","ca","serial","reason"[,"id"]}
 cmd_request() {
   local rq="$GEN/.pki-request" raw="" out="" rc=0 ok=false k v action=""
@@ -1004,6 +1345,10 @@ cmd_request() {
     cert_issue) out="$( ( cert_issue "${R[id]}" "${R[ca]}" "${R[profile]}" "${R[dn]}" "${R[altname]:-}" ) 2>&1)" || rc=$? ;;
     cert_revoke) out="$( ( cert_revoke "${R[ca]}" "${R[serial]}" "${R[reason]}" ) 2>&1)" || rc=$? ;;
     recovery_set) out="$( ( recovery_set "$IN_DIR/recovery.pem" ) 2>&1)" || rc=$? ;;
+    update_check) out="$( ( update_check ) 2>&1)" || rc=$? ;;
+    update_apply) out="$( ( update_apply "${R[image]}" ) 2>&1)" || rc=$? ;;
+    update_validate) out="$( ( update_validate ) 2>&1)" || rc=$? ;;
+    update_rollback) out="$( ( update_rollback ) 2>&1)" || rc=$? ;;
     *) out="demande invalide"; rc=1 ;;
   esac
   [[ "$rc" -eq 0 ]] && ok=true
@@ -1038,6 +1383,10 @@ case "$cmd" in
   ca-rootcrl) ca_rootcrl "${1:-}"; echo; cmd_status ;;
   cert-issue) cert_issue "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}"; echo; cmd_status ;;
   cert-revoke) cert_revoke "${1:-}" "${2:-}" "${3:-}"; echo; cmd_status ;;
+  update-check) update_check; echo; cmd_status ;;
+  update-apply) update_apply "${1:-}"; echo; cmd_status ;;
+  update-validate) update_validate; echo; cmd_status ;;
+  update-rollback) update_rollback; echo; cmd_status ;;
   recovery-set) recovery_set "${1:-$IN_DIR/recovery.pem}"; echo; cmd_status ;;
   secrets-pack) secrets_pack "${1:-}" ;;
   secrets-verify) secrets_verify "$@" ;;

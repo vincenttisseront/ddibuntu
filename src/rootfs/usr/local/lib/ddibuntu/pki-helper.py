@@ -22,6 +22,13 @@ Sous-commandes :
   bundle-extract           (0.14.5) revalide et extrait une telle archive (types, noms, tailles, ejbca.env et instance.json) sous un dossier temporaire
   recovery-check           (0.14.5) contrôle le certificat de récupération déposé par la console (RSA, 3072 bits au moins, chiffrement possible)
   recovery-info            (0.14.5) empreinte, taille et fin de validité du certificat de récupération enregistré
+  update-policy            (0.14.7) « ok » ou le motif du refus d'une mise à jour de l'image (même version, plus ancienne, plus ancienne que la base, saut de version majeure)
+  update-cmp               (0.14.7) compare deux versions (-1, 0, 1)
+  update-check-write       (0.14.7) analyse les étiquettes publiées par Docker Hub et écrit le résultat de la recherche de nouvelles versions
+  update-job               (0.14.7) tient l'état de la mise à jour en cours (étapes, contrôles, sauvegarde de retour arrière)
+  update-publish           (0.14.7) construit pki-update.json (recherche + mise à jour en cours) pour la console
+  update-digest            (0.14.7) empreinte annoncée par Docker Hub pour une étiquette lors de la dernière recherche (vide si inconnue)
+  update-crl-urls          (0.14.7) adresses locales des CRL des autorités actives (contrôle après une mise à jour)
 """
 import base64
 import calendar
@@ -155,7 +162,7 @@ def parse_request():
         return 1
     a = d.get("action")
     out = []
-    if a in ("start", "stop", "restart", "status", "uninstall", "reset", "recovery_set") and set(d) == {"action"}:
+    if a in ("start", "stop", "restart", "status", "uninstall", "reset", "recovery_set", "update_check", "update_validate", "update_rollback") and set(d) == {"action"}:
         out = [("action", a)]
     elif a == "apply":
         img, host, nets = d.get("image"), d.get("hostname"), d.get("nets", [])
@@ -177,6 +184,11 @@ def parse_request():
             if by != "external" and not valid_name(by):
                 return 1
             out.append(("signedBy", by))
+    elif a == "update_apply":
+        img = d.get("image")
+        if not (set(d) == {"action", "image"} and isinstance(img, str) and IMAGE_RE.fullmatch(img)):
+            return 1
+        out = [("action", a), ("image", img)]
     elif a == "ca_import_p12":
         if not valid_name(d.get("name")):
             return 1
@@ -1307,6 +1319,252 @@ def cmd_recovery_info(argv):
     return 0
 
 
+# ---- Mises à jour de l'image d'EJBCA (0.14.7) ----
+VER_RE = re.compile(r"([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{1,3})")
+DOCS_BASE = "https://docs.keyfactor.com/ejbca/latest/"
+DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
+JOB_STATES = ("idle", "running", "pending", "validated", "failed", "rolled_back")
+JOB_KEYS_STR = ("state", "step", "from", "to", "fromDigest", "toDigest", "message", "backup", "reason")
+JOB_KEYS_INT = ("startedAt", "finishedAt", "updatedAt", "certsAtBackup", "casAtBackup", "backupBytes")
+
+
+def ver(t):
+    m = VER_RE.fullmatch(t) if isinstance(t, str) else None
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def update_policy(cur, dbtag, target):
+    """« ok » ou le motif du refus. La base ne se rouvre jamais avec une image plus ancienne que celle qui l'a migrée ; un saut de version
+    majeure n'est pas essayé (le DDI ne valide que les mises à jour à l'intérieur d'une série, par exemple 9.3.7 → 9.6.3)."""
+    c, t = ver(cur), ver(target)
+    d = ver(dbtag) or c
+    if not (c and d and t):
+        return "invalid"
+    if t == c:
+        return "same"
+    if t < d:
+        return "older_than_db"
+    if t < c:
+        return "older"
+    if t[0] != c[0]:
+        return "major_jump"
+    return "ok"
+
+
+def notes_of(t):
+    v = ver(t)
+    if not v:
+        return {}
+    return {"release": "%sejbca-%d-%d-release-notes" % (DOCS_BASE, v[0], v[1]), "upgrade": "%sejbca-%d-%d-upgrade-notes" % (DOCS_BASE, v[0], v[1])}
+
+
+def kind_of(cur, target):
+    c, t = ver(cur), ver(target)
+    return "major" if t[0] != c[0] else ("minor" if t[1] != c[1] else "patch")
+
+
+def _atomic_json(path, obj):
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".upd.", dir=d)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f, ensure_ascii=False)
+            f.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _read_json(path):
+    try:
+        with open(path, "rb") as f:
+            d = json.loads(f.read(1 << 20).decode("utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def cmd_update_policy(argv):
+    if len(argv) != 3:
+        return 2
+    r = update_policy(argv[0], argv[1], argv[2])
+    print(r)
+    return 0 if r == "ok" else 1
+
+
+def cmd_update_cmp(argv):
+    a, b = (ver(x) for x in argv[:2]) if len(argv) == 2 else (None, None)
+    if not (a and b):
+        return 2
+    print((a > b) - (a < b))
+    return 0
+
+
+def cmd_update_check_write(argv):
+    # update-check-write FICHIER COURANTE ÉTIQUETTE_DE_LA_BASE (TAGS.json | --error CODE) : écrit la recherche ; une erreur garde la dernière liste connue
+    if len(argv) != 4:
+        return 2
+    path, cur, dbtag, src = argv
+    old = _read_json(path)
+    out = {"checkedAt": int(time.time()), "error": "", "latest": old.get("latest"), "available": old.get("available", [])}
+    if src == "--error":
+        return 2
+    if src.startswith("--error="):
+        out["error"] = re.sub(r"[^a-z_]", "", src[8:])[:40] or "error"
+    else:
+        try:
+            with open(src, "rb") as f:
+                d = json.loads(f.read(4 << 20).decode("utf-8"))
+            rows = d["results"]
+            if not isinstance(rows, list):
+                raise ValueError("results n'est pas une liste")
+        except (OSError, ValueError, KeyError):
+            out["error"] = "bad_answer"
+            _atomic_json(path, out)
+            return 0
+        seen, items = set(), []
+        for r in rows[:200]:
+            if not isinstance(r, dict):
+                continue
+            t = r.get("name")
+            if not (isinstance(t, str) and ver(t)) or t in seen or ver(t) <= (ver(cur) or (0, 0, 0)):
+                continue
+            seen.add(t)
+            why = update_policy(cur, dbtag, t)
+            dg = r.get("digest")
+            at = r.get("last_updated")
+            items.append({"tag": t, "pushedAt": at[:10] if isinstance(at, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}.*", at) else "",
+                          "kind": kind_of(cur, t), "allowed": why == "ok", "reason": "" if why == "ok" else why,
+                          "digest": dg if isinstance(dg, str) and DIGEST_RE.fullmatch(dg) else "", "notes": notes_of(t)})
+        items.sort(key=lambda i: ver(i["tag"]), reverse=True)
+        out["available"] = items[:20]
+        ok = [i for i in items if i["allowed"]]
+        out["latest"] = ok[0]["tag"] if ok else None
+    _atomic_json(path, out)
+    return 0
+
+
+def cmd_update_job(argv):
+    # update-job FICHIER init DE VERS EMPREINTE ÉTAPE… | set clé=valeur… | step ÉTAPE ÉTAT | check ID OK(true|false) DÉTAIL | steps ÉTAPE…
+    if len(argv) < 2:
+        return 2
+    path, op, args = argv[0], argv[1], argv[2:]
+    job = _read_json(path)
+    now = int(time.time())
+    if op == "init":
+        if len(args) < 4 or not (ver(args[0]) and ver(args[1])):
+            return 2
+        job = {"state": "running", "step": args[3], "from": args[0], "to": args[1], "fromDigest": args[2], "toDigest": "", "message": "", "backup": "",
+               "startedAt": now, "finishedAt": 0, "updatedAt": now, "certsAtBackup": -1, "casAtBackup": -1, "backupBytes": 0, "reason": "",
+               "steps": [{"id": x, "status": "todo"} for x in args[3:]], "checks": []}
+    elif op == "set":
+        for kv in args:
+            k, _, v = kv.partition("=")
+            if k in JOB_KEYS_STR:
+                if k == "state" and v not in JOB_STATES:
+                    return 2
+                if k in ("fromDigest", "toDigest") and v and not DIGEST_RE.fullmatch(v):
+                    return 2
+                job[k] = re.sub(r"[\x00-\x1f\x7f]", " ", v)[:300]
+            elif k in JOB_KEYS_INT and re.fullmatch(r"-?[0-9]{1,12}", v):
+                job[k] = int(v)
+            else:
+                return 2
+    elif op == "steps":
+        job["steps"] = [{"id": x, "status": "todo"} for x in args if re.fullmatch(r"[a-z_]{1,24}", x)]
+        job["checks"] = []
+        if job["steps"]:
+            job["step"] = job["steps"][0]["id"]
+    elif op == "step":
+        if len(args) != 2 or args[1] not in ("todo", "running", "done", "failed") or not re.fullmatch(r"[a-z_]{1,24}", args[0]):
+            return 2
+        steps = job.setdefault("steps", [])
+        row = next((x for x in steps if x.get("id") == args[0]), None)
+        if row is None:
+            row = {"id": args[0], "status": "todo"}
+            steps.append(row)
+        row["status"] = args[1]
+        if args[1] == "running":
+            job["step"] = args[0]
+    elif op == "check":
+        if len(args) < 2 or args[1] not in ("true", "false") or not re.fullmatch(r"[a-z_]{1,24}", args[0]):
+            return 2
+        checks = [c for c in job.get("checks", []) if c.get("id") != args[0]]
+        checks.append({"id": args[0], "ok": args[1] == "true", "detail": re.sub(r"[\x00-\x1f\x7f]", " ", " ".join(args[2:]))[:200]})
+        job["checks"] = checks
+    else:
+        return 2
+    job["updatedAt"] = now
+    _atomic_json(path, job)
+    return 0
+
+
+def cmd_update_publish(argv):
+    # update-publish RECHERCHE.json TÂCHE.json COURANTE ÉTIQUETTE_DE_LA_BASE NOMBRE_DE_CERTIFICATS_ACTUEL (-1 si illisible) : JSON public
+    if len(argv) != 5:
+        return 2
+    chk, jobp, cur, dbtag, certs = argv
+    c, job = _read_json(chk), _read_json(jobp)
+    try:
+        certs_now = int(certs)
+    except ValueError:
+        certs_now = -1
+    keep = ("state", "step", "from", "to", "fromDigest", "toDigest", "message", "backup", "startedAt", "finishedAt", "updatedAt", "certsAtBackup", "casAtBackup",
+            "backupBytes", "reason", "steps", "checks")
+    pub = {k: job[k] for k in keep if k in job}
+    can_rollback = bool(job.get("backup")) and job.get("state") in ("pending", "failed", "running")
+    pub["rollbackAvailable"] = can_rollback
+    since = None
+    if can_rollback and certs_now >= 0 and isinstance(job.get("certsAtBackup"), int) and job["certsAtBackup"] >= 0:
+        since = max(0, certs_now - job["certsAtBackup"])
+    # la liste de Docker Hub date de la dernière recherche : elle est rejugée ici par rapport à la version installée AUJOURD'HUI (après une mise à jour,
+    # ce qui est devenu ancien disparaît sans attendre la recherche suivante, et le motif de refus suit la nouvelle base)
+    avail = []
+    for it in c.get("available", []):
+        t = it.get("tag") if isinstance(it, dict) else None
+        if not (isinstance(t, str) and ver(t) and ver(cur) and ver(t) > ver(cur)):
+            continue
+        why = update_policy(cur, dbtag or cur, t)
+        it = dict(it, kind=kind_of(cur, t), allowed=why == "ok", reason="" if why == "ok" else why)
+        avail.append(it)
+    ok_tags = [i["tag"] for i in avail if i["allowed"]]
+    out = {"at": int(time.time()), "current": cur, "dbTag": dbtag or cur, "checkedAt": c.get("checkedAt", 0), "checkError": c.get("error", ""),
+           "latest": ok_tags[0] if ok_tags else None, "available": avail, "job": pub if pub.get("state") else None, "certsSince": since,
+           "docs": {"upgrading": DOCS_BASE + "ejbca-upgrade-notes"}}
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+def cmd_update_digest(argv):
+    # update-digest RECHERCHE.json ÉTIQUETTE → empreinte (sha256:…) annoncée par Docker Hub ; rien si elle est inconnue
+    if len(argv) != 2 or not ver(argv[1]):
+        return 2
+    for it in _read_json(argv[0]).get("available", []):
+        if isinstance(it, dict) and it.get("tag") == argv[1] and isinstance(it.get("digest"), str) and DIGEST_RE.fullmatch(it["digest"]):
+            print(it["digest"])
+    return 0
+
+
+def cmd_update_crl_urls(argv):
+    # update-crl-urls PKI-CAS.json PORT : une adresse locale (127.0.0.1) par CRL d'autorité active ; l'adresse publique, elle, dépend du DNS
+    if len(argv) != 2 or not re.fullmatch(r"[0-9]{2,5}", argv[1]):
+        return 2
+    d = _read_json(argv[0])
+    for ca in d.get("cas", []):
+        u = ca.get("crlUrl") if ca.get("state") == "active" else None
+        if not (isinstance(u, str) and u.startswith("http")):
+            continue
+        r = urllib.parse.urlsplit(u)
+        if r.path.startswith("/ejbca/") and "\n" not in u and "\t" not in u:
+            print("%s\thttp://127.0.0.1:%s%s?%s" % (ca.get("name", ""), argv[1], r.path, r.query))
+    return 0
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     args = sys.argv[2:]
@@ -1342,6 +1600,20 @@ def main():
         return cmd_recovery_check(args)
     if cmd == "recovery-info":
         return cmd_recovery_info(args)
+    if cmd == "update-policy":
+        return cmd_update_policy(args)
+    if cmd == "update-cmp":
+        return cmd_update_cmp(args)
+    if cmd == "update-check-write":
+        return cmd_update_check_write(args)
+    if cmd == "update-job":
+        return cmd_update_job(args)
+    if cmd == "update-publish":
+        return cmd_update_publish(args)
+    if cmd == "update-digest":
+        return cmd_update_digest(args)
+    if cmd == "update-crl-urls":
+        return cmd_update_crl_urls(args)
     sys.stderr.write(__doc__)
     return 2
 

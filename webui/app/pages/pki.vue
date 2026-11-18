@@ -1,16 +1,17 @@
 <script setup lang="ts">
 // PKI du DDI (0.14.0) — EJBCA Community dans un conteneur Podman, sur CE nœud : installation, démarrage / arrêt, état, nom public (URL gravée dans
 // les certificats), réseaux autorisés, enregistrement DNS ; 0.14.1 : autorités (composant PkiCas) et remise à zéro d'une PKI vide ; 0.14.2 : publication des autorités dans l'AD
-// (composant PkiAd) ; 0.14.3 : certificats (composant PkiCerts : émission, liste, révocation) ; 0.14.5 : sauvegarde et clé de récupération (composant PkiRecovery).
+// (composant PkiAd) ; 0.14.3 : certificats (composant PkiCerts : émission, liste, révocation) ; 0.14.5 : sauvegarde et clé de récupération (composant PkiRecovery) ; 0.14.7 : mises à jour de la version d'EJBCA (composant PkiUpdate).
 // Le service est piloté par root (ddibuntu-pki) à partir d'une demande déposée par la console : après chaque action on attend le résultat publié.
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm(); const fmt = useFmt()
-const tab = useHashTab('state', ['state', 'cas', 'certs', 'ad', 'recovery'])
-const tabs = computed(() => [{ label: t('pki.tab_state'), value: 'state', icon: 'i-lucide-badge-check' }, { label: t('pki.tab_cas'), value: 'cas', icon: 'i-lucide-shield-check' }, { label: t('pki.tab_certs'), value: 'certs', icon: 'i-lucide-file-badge' }, { label: t('pki.tab_ad'), value: 'ad', icon: 'i-lucide-building-2' }, { label: t('pki.tab_recovery'), value: 'recovery', icon: 'i-lucide-archive-restore' }])
+const tab = useHashTab('state', ['state', 'cas', 'certs', 'ad', 'recovery', 'update'])
+const tabs = computed(() => [{ label: t('pki.tab_state'), value: 'state', icon: 'i-lucide-badge-check' }, { label: t('pki.tab_cas'), value: 'cas', icon: 'i-lucide-shield-check' }, { label: t('pki.tab_certs'), value: 'certs', icon: 'i-lucide-file-badge' }, { label: t('pki.tab_ad'), value: 'ad', icon: 'i-lucide-building-2' }, { label: t('pki.tab_recovery'), value: 'recovery', icon: 'i-lucide-archive-restore' }, { label: t('pki.tab_update'), value: 'update', icon: 'i-lucide-circle-arrow-up' }])
 
 const data = ref<any>(null), busy = ref(''), err = ref('')
 const status = computed(() => data.value?.status ?? null)
 const result = computed(() => data.value?.result ?? null)
-const waiting = computed(() => !!busy.value || !!data.value?.requestPending)
+const updateRunning = computed(() => data.value?.updateJob?.state === 'running')
+const waiting = computed(() => !!busy.value || !!data.value?.requestPending || updateRunning.value)
 const installed = computed(() => !!status.value?.installed)
 const form = reactive({ hostname: '', nets: '' })
 let formLoaded = false
@@ -75,7 +76,8 @@ async function createDns() {
 let timer: ReturnType<typeof setTimeout> | undefined, stopped = false
 async function follow() {
   if (stopped) return
-  if (status.value?.state === 'starting' && !data.value?.requestPending && !busy.value) {
+  if (updateRunning.value) await load()   // 0.14.7 : une mise à jour dure plusieurs minutes ; on suit son état même hors de l'onglet « Mise à jour »
+  if (status.value?.state === 'starting' && !data.value?.requestPending && !busy.value && !updateRunning.value) {
     try { await api.call('POST', '/pki/status', {}, { silent: true }); await settle() } catch { /* prochaine boucle */ }
   }
   if (!stopped) timer = setTimeout(follow, 10000)
@@ -99,6 +101,7 @@ await load()
     <PkiCerts v-else-if="tab === 'certs'" :status="status" :waiting="waiting" />
     <PkiAd v-else-if="tab === 'ad'" />
     <PkiRecovery v-else-if="tab === 'recovery'" :waiting="waiting" @changed="load" />
+    <PkiUpdate v-else-if="tab === 'update'" :status="status" :waiting="waiting" @changed="load" />
     <template v-else>
     <p class="text-sm text-muted">{{ t('pki.intro') }}</p>
     <UAlert v-if="!installed && status?.dataPresent && !status.secretsPresent" color="error" variant="subtle" icon="i-lucide-key-round" :title="t('pki.secrets_missing_title')" :description="t('pki.secrets_missing_body')" data-test="pki-secrets-missing" />

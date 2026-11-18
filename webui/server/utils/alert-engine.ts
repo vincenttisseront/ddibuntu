@@ -6,6 +6,7 @@ import { getSetting, inRecovery, one, query, setSetting, tx } from './db'
 import { readLocalHealth } from './health'
 import { readBackupResult, readBackupStatus } from './backup'
 import { readPkiStatus } from './pki'
+import { readPkiUpdate } from './pki-update'
 import { subnetUsage } from './ipam-usage'
 import { getFound, getLastRun, getSchedule, viaDhcp } from './discovery-schedule'
 import { evaluate, SEVERITY_RANK } from './alert-rules'
@@ -15,9 +16,9 @@ import { notifyAll } from './alert-notify'
 import type { Delivery, Kind, NotifyEvent } from './alert-notify'
 
 export async function gatherSnapshot(nowSec = Math.floor(Date.now() / 1000)): Promise<Snapshot> {
-  const [cluster, localHealth, backup, backupResult, subnets, pki] = await Promise.all([readClusterState(), readLocalHealth(), readBackupStatus(), readBackupResult(), subnetUsage().catch(() => []), readPkiStatus().catch(() => null)])
+  const [cluster, localHealth, backup, backupResult, subnets, pki, pkiUpdate] = await Promise.all([readClusterState(), readLocalHealth(), readBackupStatus(), readBackupResult(), subnetUsage().catch(() => []), readPkiStatus().catch(() => null), readPkiUpdate().catch(() => null)])
   const hygiene = await gatherHygiene().catch(() => undefined)
-  return { now: nowSec, cluster, localHealth, backup, backupResult, pki, subnets, hygiene }
+  return { now: nowSec, cluster, localHealth, backup, backupResult, pki, pkiUpdate, subnets, hygiene }
 }
 
 async function gatherHygiene() {
