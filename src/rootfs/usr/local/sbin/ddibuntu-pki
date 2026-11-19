@@ -28,6 +28,7 @@ PDATA="${DDI_PKI_DATA:-/var/lib/ddibuntu/pki}"                # volume du conten
 QDIR="${DDI_PKI_QUADLET_DIR:-/etc/containers/systemd}"        # unités Quadlet
 PODMAN="${DDI_PKI_PODMAN:-podman}"
 APT_GET="${DDI_PKI_APT_GET:-apt-get}"                        # 0.14.6 : installation de Podman s'il manque
+SELFUPDATE_CMD="${DDI_PKI_SELFUPDATE:-/usr/local/sbin/ddibuntu-selfupdate}"   # 0.14.11 : pose du paquet embarqué dans l'archive de mise à jour
 SYSCTL="${DDI_PKI_SYSTEMCTL:-systemctl}"
 CURL="${DDI_PKI_CURL:-curl}"
 FW_BIN="${DDI_FW_BIN:-/usr/local/sbin/ddibuntu-fw}"
@@ -146,10 +147,17 @@ tag_of() { printf '%s' "${1##*:}"; }   # docker.io/keyfactor/ejbca-ce:9.6.3 → 
 gen_secret() { python3 -c 'import secrets,string; print("".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(40)))'; }
 
 have_podman() { command -v "$PODMAN" >/dev/null 2>&1; }
-# 0.14.6 : le paquet podman n'est posé que par l'ISO ; une appliance mise à jour en ligne ne l'a donc pas. L'installation de la PKI le pose elle-même
-# (accès au dépôt apt de la machine requis). Un échec n'abîme rien : l'installation s'arrête avant toute création, avec la commande à lancer à la main.
+# 0.14.6 : le paquet podman n'est posé que par l'ISO ; une appliance mise à jour en ligne ne l'a donc pas. L'installation de la PKI le pose elle-même.
+# 0.14.11 : l'archive de mise à jour embarque podman et ses dépendances (la mise à jour les pose sur chaque nœud de données) ; si ce nœud ne les a pas
+# (mis à jour par une version plus ancienne), on les repose d'abord depuis l'archive signée de la dernière release — sans dépôt apt —, puis apt en secours.
+# Un échec n'abîme rien : l'installation s'arrête avant toute création, avec la commande à lancer à la main.
 install_podman() {
   have_podman && return 0
+  if [[ -x "$SELFUPDATE_CMD" ]]; then
+    log "podman n'est pas installé : pose du paquet embarqué dans la dernière release (ddibuntu-selfupdate packages ; quelques minutes)"
+    timeout 1500 "$SELFUPDATE_CMD" packages >/dev/null 2>&1 || log "avertissement : le paquet embarqué n'a pas pu être posé ($(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("packages_message",""))' /var/lib/ddibuntu/update-status.json 2>/dev/null | cut -c1-200)) ; essai par apt"
+    have_podman && { log "podman installé (paquet embarqué)"; return 0; }
+  fi
   command -v "$APT_GET" >/dev/null 2>&1 || { log "podman n'est pas installé et apt-get est introuvable : installer le paquet podman à la main"; return 1; }
   log "podman n'est pas installé : installation du paquet par apt (nécessaire à la PKI ; quelques minutes)"
   export DEBIAN_FRONTEND=noninteractive
@@ -1571,7 +1579,7 @@ state_import() {
 # ---- Unité et image de CE nœud, d'après instance.json (identique sur les deux nœuds de données) ----
 PULL_LOCK="${DDI_PKI_PULL_LOCK:-/run/ddibuntu-pki-pull.lock}"
 SU_IMG=none SU_CHANGED=0
-sync_unit() {   # définit SU_IMG (none | ready | pulling | missing) et SU_CHANGED (l'unité Quadlet vient d'être réécrite)
+sync_unit() {   # définit SU_IMG (none | ready | pulling | missing | nopodman) et SU_CHANGED (l'unité Quadlet vient d'être réécrite)
   local digest ref
   SU_IMG=none SU_CHANGED=0
   [[ -f "$INST" && ! -L "$INST" ]] || return 0
@@ -1582,6 +1590,8 @@ sync_unit() {   # définit SU_IMG (none | ready | pulling | missing) et SU_CHANG
   render_quadlet "$ref" > "$QUADLET.new"; chmod 0644 "$QUADLET.new"
   if [[ ! -f "$QUADLET" ]] || ! cmp -s "$QUADLET.new" "$QUADLET"; then mv -f "$QUADLET.new" "$QUADLET"; SU_CHANGED=1; "$SYSCTL" daemon-reload >/dev/null 2>&1 || true
   else rm -f "$QUADLET.new"; fi
+  # 0.14.11 : Podman absent de CE nœud (mis à jour par une version qui ne posait pas le paquet) : ni test d'image ni tirage possibles, et « missing » (image à tirer) serait trompeur
+  have_podman || { SU_IMG=nopodman; return 0; }
   if "$PODMAN" image exists "$ref" >/dev/null 2>&1; then SU_IMG=ready; return 0; fi
   # image absente : tirage en arrière-plan (un tirage dure des minutes ; il ne doit ni tenir le verrou de la PKI ni retarder « follow », qui aligne aussi BIND et Kea)
   if ( exec 8>"$PULL_LOCK"; ! flock -n 8 ) 2>/dev/null; then SU_IMG=pulling; return 0; fi
@@ -1592,6 +1602,7 @@ cmd_pull_image() {   # appelé en arrière-plan : tire l'image d'instance.json, 
   exec 8>"$PULL_LOCK"; flock -n 8 || return 0
   local digest; digest="$(instance_get digest)"
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { log "pull-image : pas d'empreinte d'image dans instance.json"; return 1; }
+  have_podman || { log "pull-image : podman n'est pas installé sur ce nœud (ddibuntu-selfupdate packages le pose)"; return 1; }
   "$PODMAN" image exists "$IMAGE_REPO@$digest" >/dev/null 2>&1 && return 0
   log "tirage de l'image $IMAGE_REPO@$digest (secours du cluster)"
   timeout 1800 "$PODMAN" pull --quiet "$IMAGE_REPO@$digest" >/dev/null || { log "tirage de l'image impossible (accès à docker.io ?) : ce nœud ne pourra pas reprendre la PKI avant d'avoir l'image"; return 1; }

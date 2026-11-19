@@ -23,7 +23,7 @@ const sync = computed(() => ej.value?.sync ?? null)
 const syncBad = computed(() => !!sync.value && (sync.value.state === 'failed' || sync.value.state === 'conflict'))
 const blocked = computed(() => local.value?.blocked ?? null)
 const mark = computed(() => ej.value?.mark ?? null)
-const reason = (r: any) => (r.v.blocked ? t(`pki.cl.blocked.${r.v.blocked}`) : !r.v.installed ? t('pki.cl.why_not_installed') : r.v.image !== 'ready' ? t('pki.cl.why_image') : !r.synced ? t('pki.cl.why_sync') : '')
+const reason = (r: any) => (r.v.blocked ? t(`pki.cl.blocked.${r.v.blocked}`) : !r.v.installed ? t('pki.cl.why_not_installed') : r.v.image === 'nopodman' ? t('pki.cl.why_nopodman') : r.v.image !== 'ready' ? t('pki.cl.why_image') : !r.synced ? t('pki.cl.why_sync') : '')
 </script>
 
 <template>

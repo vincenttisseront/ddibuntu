@@ -25,13 +25,21 @@ describe('mises à jour en ligne : lecture de l\'état', () => {
     expect(s.current).toBe(''); expect(s.latest).toBe(''); expect(s.available).toBe(false); expect(s.url).toBe('')
     expect(s.state).toBe('idle'); expect(s.checkedAt).toBe(0); expect(s.notes).toBe(''); expect(s.error.length).toBe(300)
   })
+  it('0.14.11 : état des paquets embarqués repris, valeurs hostiles écartées', async () => {
+    put({ packages_state: 'failed', packages_message: 'paquet(s) non installé(s) : podman' })
+    expect(await readUpdateStatus()).toMatchObject({ packagesState: 'failed', packagesMessage: 'paquet(s) non installé(s) : podman' })
+    put({ packages_state: '<script>', packages_message: 'm'.repeat(5000) })
+    const s = (await readUpdateStatus())!
+    expect(s.packagesState).toBe(''); expect(s.packagesMessage.length).toBe(300)
+    put({}); expect(await readUpdateStatus()).toMatchObject({ packagesState: '', packagesMessage: '' })
+  })
   it('« available » exige une version valide', async () => {
     put({ latest: 'abc', available: true }); expect((await readUpdateStatus())!.available).toBe(false)
   })
 })
 
 describe('mises à jour en ligne : occupation', () => {
-  const base = { current: '', latest: '', available: false, notes: '', url: '', publishedAt: '', checkedAt: 0, message: '', error: '', target: '' }
+  const base = { current: '', latest: '', available: false, notes: '', url: '', publishedAt: '', checkedAt: 0, message: '', error: '', target: '', packagesState: '', packagesMessage: '' }
   it('actif et récent = occupé ; terminé, en échec, ou périmé = libre', () => {
     const now = 2_000_000
     expect(isBusy({ ...base, state: 'installing', updatedAt: now - 10 }, now)).toBe(true)

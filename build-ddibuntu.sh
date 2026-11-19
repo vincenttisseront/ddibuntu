@@ -24,6 +24,10 @@ KEYRING="${DDI_KEYRING:-/usr/share/keyrings/ubuntu-archive-keyring.gpg}"
 CD_KEY_FPRS="${DDI_CD_KEY_FPRS:-843938DF228D22F7B3742BC0D94AA3F0EFE21092}"
 DOCKER_IMAGE="ubuntu:24.04"
 DDI_PACKAGES="nftables whiptail postgresql postgresql-client bind9 bind9-utils bind9-dnsutils kea-dhcp4-server kea-admin python3 open-vm-tools patroni etcd-server etcd-client python3-psycopg2 gnupg openssl curl keepalived krb5-user freeradius freeradius-ldap podman"
+# Paquets que la MISE À JOUR EN LIGNE embarque (0.14.11) : l'ISO les installe déjà (liste ci-dessus) mais pas la mise à jour en ligne, si bien qu'un nœud
+# installé avant qu'ils ne servent ne les avait pas (podman pour la PKI, FreeRADIUS pour l'accès réseau). Ils sont posés sur tous les nœuds de données ;
+# l'arbitre d'un cluster n'en a besoin d'aucun. Chaque nom doit aussi figurer dans DDI_PACKAGES (contrôlé par tests/b09-selfupdate.sh).
+DDI_UPDATE_PACKAGES="podman freeradius freeradius-ldap"
 # Node.js : dernière 22.x, vérifiée par la signature de l'équipe de publication (clés ACTIVES, épinglées par empreinte,
 # README de https://github.com/nodejs/release-keys). Une signature par une autre clé est refusée.
 NODE_BASE_URL="${DDI_NODE_URL:-https://nodejs.org/dist/latest-v22.x}"
@@ -34,7 +38,7 @@ SELF="${DDI_SELF:-$0}"
 
 OUT_DIR="$(pwd)"; ISO_IN=""; ISO_SHA=""; ALLOW_UNVERIFIED=0; TIMEOUT=10; SKIP_DEBS=0
 FORCE_DOCKER=0; NO_DOCKER=0; IN_CONTAINER=0; MAKEPS1=0; BUNDLE=0; KEEP_WORK=0; SKIP_NODE=0
-CA_CERT=""; CA_KEYCHAIN=0; INSECURE_TLS=0; CA_STAGED=""; STAGE_DIR=""
+CA_CERT=""; CA_KEYCHAIN=0; INSECURE_TLS=0; CA_STAGED=""; STAGE_DIR=""; UPDATE_DEBS_DIR=""
 
 say() { printf '==> %s\n' "$*"; }
 warn() { printf 'AVERTISSEMENT : %s\n' "$*" >&2; }
@@ -46,8 +50,12 @@ SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 REPO_MODE=0
 if [[ -d "$SELF_DIR/src/rootfs" ]] && [[ -f "$SELF_DIR/src/VERSION" ]] && ! grep -q -x -F -- "$PAYLOAD_MARK" "$SELF" 2>/dev/null; then REPO_MODE=1; fi
 if [[ "$DDI_VERSION" = "@@VERSION@@" ]]; then
-  [[ "$REPO_MODE" = 1 ]] || die "version non renseignée et aucun dépôt (src/) à côté du script"
-  DDI_VERSION="$(tr -d '\n' < "$SELF_DIR/src/VERSION")"
+  # DDI_UPDATE_DEBS_ONLY=1 : le script seul, monté dans un conteneur propre pour télécharger les paquets de la mise à jour (--update-debs) ; il n'a besoin ni de la version ni du dépôt
+  if [[ "${DDI_UPDATE_DEBS_ONLY:-0}" = 1 ]]; then :
+  else
+    [[ "$REPO_MODE" = 1 ]] || die "version non renseignée et aucun dépôt (src/) à côté du script"
+    DDI_VERSION="$(tr -d '\n' < "$SELF_DIR/src/VERSION")"
+  fi
 fi
 
 usage() {
@@ -67,7 +75,9 @@ Usage : ./build-ddibuntu.sh [options]
   --no-docker         forcer la construction native (Linux Ubuntu/Debian, root)
   --makeps1           générer build-ddibuntu.ps1 (lanceur Windows) puis quitter (fichier unique : tools/make-single.sh)
   --stage DOSSIER     (développement) prépare la charge utile depuis le dépôt dans DOSSIER puis quitte
-  --bundle            produit ddibuntu-update-<version>.tar.gz (mise à jour en ligne, sans ISO) dans --out puis quitte
+  --bundle            produit ddibuntu-update-<version>.tar.gz (mise à jour en ligne, sans ISO) dans --out puis quitte ; embarque les paquets
+                      de DDI_UPDATE_PACKAGES, résolus dans un conteneur Ubuntu 24.04 propre (Docker ou Podman), sauf avec --skip-debs
+  --update-debs DIR   (interne) télécharge dans DIR les paquets de la mise à jour en ligne ; à lancer en root dans un conteneur Ubuntu 24.04 propre
   --keep-work         conserver le dossier de travail
   --version           afficher la version
   -h, --help          cette aide
@@ -354,8 +364,8 @@ fetch_node() {           # $1 = dossier de cache ; positionne NODE_TGZ NODE_NAME
   rm -rf "$w"
 }
 
-fetch_debs() {        # $1 = dossier de destination. Résolution relative à l'image de base courante.
-  local d="$1"
+fetch_debs() {        # $1 = dossier de destination, $2 = paquets (défaut : DDI_PACKAGES). Résolution relative à l'image de base courante.
+  local d="$1" pk="${2:-$DDI_PACKAGES}"
   export DEBIAN_FRONTEND=noninteractive
   mkdir -p "$d/partial"
   # Les miroirs Ubuntu (surtout security.ubuntu.com) sont parfois en cours de synchronisation : l'index annonce un paquet
@@ -363,9 +373,9 @@ fetch_debs() {        # $1 = dossier de destination. Résolution relative à l'i
   local try=1
   while :; do
     apt-get update -qq -o Acquire::Retries=3
-    # shellcheck disable=SC2086  # DDI_PACKAGES est une liste de noms de paquets
+    # shellcheck disable=SC2086  # $pk est une liste de noms de paquets
     if apt-get install -y -qq --download-only --no-install-recommends -o Acquire::Retries=3 \
-      -o APT::Sandbox::User=root -o Dir::Cache::archives="$d" -o APT::Keep-Downloaded-Packages=1 $DDI_PACKAGES >/dev/null; then
+      -o APT::Sandbox::User=root -o Dir::Cache::archives="$d" -o APT::Keep-Downloaded-Packages=1 $pk >/dev/null; then
       break
     fi
     [[ "$try" -lt 4 ]] || die "téléchargement des paquets impossible après $try essais (miroir Ubuntu incohérent : réessayez plus tard)"
@@ -373,7 +383,7 @@ fetch_debs() {        # $1 = dossier de destination. Résolution relative à l'i
     try=$((try + 1)); sleep 30; rm -rf /var/lib/apt/lists/*
   done
   rm -rf "$d/partial" "$d/lock"
-  ls "$d"/*.deb >/dev/null 2>&1 || die "aucun paquet téléchargé : la liste « $DDI_PACKAGES » est peut-être déjà installée sur cette machine (utiliser Docker)"
+  ls "$d"/*.deb >/dev/null 2>&1 || die "aucun paquet téléchargé : la liste « $pk » est peut-être déjà installée sur cette machine (utiliser Docker)"
   ( cd "$d" && sha256sum ./*.deb | sed 's| \./| |' > SHA256SUMS )
 }
 
@@ -494,10 +504,45 @@ build_native() {
   say "SHA-256  : $(cut -d' ' -f1 "$out.sha256")"
 }
 
-# Archive de mise à jour en ligne : MÊMES rootfs.tar et console.tar.gz que l'ISO (un seul chemin de code), sans Ubuntu,
-# sans paquets ni Node. Elle est signée à la publication (SHA256SUMS + Ed25519, voir docs/RELEASING.md).
+# Paquets de la mise à jour en ligne (0.14.11) : fermeture de dépendances de DDI_UPDATE_PACKAGES, résolue dans un conteneur Ubuntu 24.04 PROPRE
+# (comme pour l'ISO : sur un hôte quelconque, des bibliothèques déjà présentes manqueraient à la fermeture). Le nœud n'a ainsi besoin ni d'Internet ni
+# d'un dépôt apt en bon état au moment de la mise à jour. $1 = dossier de destination (debs/ de l'archive).
+bundle_debs() {
+  local d="$1" cli="" self try=1
+  self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  mkdir -p "$d"
+  if [[ "${DDI_CLEAN_CONTAINER:-0}" = 1 ]]; then
+    # Déjà dans un conteneur Ubuntu 24.04 PROPRE (make-iso.ps1 lance « --bundle » dans ubuntu:24.04, où Docker n'est pas disponible) : résolution sur place.
+    # L'appelant garantit la propreté (aucun paquet ajouté) : sinon la fermeture de dépendances serait incomplète.
+    [[ "$(id -u)" = 0 ]] && have apt-get || die "DDI_CLEAN_CONTAINER=1 demande les droits root et apt-get (conteneur ubuntu:24.04)"
+    say "Paquets de la mise à jour : $DDI_UPDATE_PACKAGES (résolution sur place, conteneur propre indiqué par DDI_CLEAN_CONTAINER=1)"
+    fetch_debs "$d" "$DDI_UPDATE_PACKAGES"
+  else
+    if have docker && docker info >/dev/null 2>&1; then cli=docker
+    elif have podman && podman info >/dev/null 2>&1; then cli=podman
+    else die "ni Docker ni Podman utilisable : les paquets de la mise à jour se résolvent dans un conteneur Ubuntu propre (--skip-debs pour une archive SANS paquets, à ne pas publier ; ou DDI_CLEAN_CONTAINER=1 dans un conteneur ubuntu:24.04 neuf)"; fi
+    say "Paquets de la mise à jour : $DDI_UPDATE_PACKAGES (résolution dans un conteneur $DOCKER_IMAGE propre, via $cli)"
+    # shellcheck disable=SC2016  # le script de « bash -c » est exécuté dans le conteneur : « $0 » et « $1 » sont ses arguments, pas ceux d'ici
+    while ! "$cli" run --rm --platform linux/amd64 -e DDI_UPDATE_DEBS_ONLY=1 -v "$self:/ddibuntu-build.sh:ro" -v "$d:/out" "$DOCKER_IMAGE" \
+        bash -c 'bash /ddibuntu-build.sh --update-debs /out && chown -R "$0:$1" /out' "$(id -u)" "$(id -g)"; do
+      [[ "$try" -lt 3 ]] || die "résolution des paquets de la mise à jour impossible après $try essais"
+      warn "résolution des paquets de la mise à jour échouée (essai $try/3) ; nouvel essai dans 20 s"
+      try=$((try + 1)); sleep 20; rm -rf "${d:?}"/*
+    done
+  fi
+  ls "$d"/*.deb >/dev/null 2>&1 || die "aucun paquet dans $d après la résolution"
+  [[ -s "$d/SHA256SUMS" ]] || die "SHA256SUMS absent de $d"
+  local name; for name in $DDI_UPDATE_PACKAGES; do
+    ls "$d/${name}_"*.deb >/dev/null 2>&1 || die "le paquet demandé « $name » n'est pas dans l'archive de mise à jour"
+  done
+  tr ' ' '\n' <<< "$DDI_UPDATE_PACKAGES" > "$d/REQUESTED"
+  say "Paquets embarqués : $(find "$d" -name '*.deb' | wc -l) fichiers, $(du -sh "$d" | cut -f1)"
+}
+
+# Archive de mise à jour en ligne : MÊMES rootfs.tar et console.tar.gz que l'ISO (un seul chemin de code), sans Ubuntu ni Node, AVEC les paquets de
+# DDI_UPDATE_PACKAGES (debs/, 0.14.11). Elle est signée à la publication (SHA256SUMS + Ed25519, voir docs/RELEASING.md) : les paquets le sont avec elle.
 make_bundle() {
-  local w p b out
+  local w p b out members="rootfs.tar rootfs.tar.sha256 console.tar.gz VERSION"
   w="$(mktemp -d "${TMPDIR:-/tmp}/ddibuntu-bundle.XXXXXX")"; p="$w/payload"; b="$w/b"
   payload_extract "$p"
   mkdir -p "$b" "$OUT_DIR"
@@ -505,8 +550,11 @@ make_bundle() {
   ( cd "$b" && sha256sum rootfs.tar > rootfs.tar.sha256 )
   cp "$p/console/console.tar.gz" "$b/console.tar.gz"
   printf '%s\n' "$DDI_VERSION" > "$b/VERSION"
+  if [[ "$SKIP_DEBS" = 0 ]]; then bundle_debs "$b/debs"; members="$members debs"
+  else warn "archive SANS paquets (--skip-debs) : ne pas la publier, les nœuds installés avant la PKI n'auraient pas podman"; fi
   out="$(cd "$OUT_DIR" && pwd)/ddibuntu-update-${DDI_VERSION}.tar.gz"
-  ( cd "$b" && tar --sort=name --mtime='@1700000000' --owner=0 --group=0 --numeric-owner -czf "$out" rootfs.tar rootfs.tar.sha256 console.tar.gz VERSION )
+  # shellcheck disable=SC2086  # $members est une liste de noms sans espace ni caractère spécial
+  ( cd "$b" && tar --sort=name --mtime='@1700000000' --owner=0 --group=0 --numeric-owner -czf "$out" $members )
   rm -rf "$w"
   say "Archive de mise à jour : $out"
 }
@@ -581,6 +629,7 @@ main() {
       --makeps1) MAKEPS1=1 ;;
       --stage) STAGE_DIR="${2:?--stage attend un dossier}"; shift ;;
       --bundle) BUNDLE=1 ;;
+      --update-debs) UPDATE_DEBS_DIR="${2:?--update-debs attend un dossier}"; shift ;;
       --keep-work) KEEP_WORK=1 ;;
       --version) printf 'DDI-Buntu %s\n' "$DDI_VERSION"; exit 0 ;;
       -h|--help) usage; exit 0 ;;
@@ -592,6 +641,10 @@ main() {
 
   if [[ "$MAKEPS1" = 1 ]]; then make_ps1; exit 0; fi
   if [[ -n "$STAGE_DIR" ]]; then repo_stage "$STAGE_DIR"; say "Charge utile préparée : $STAGE_DIR"; exit 0; fi
+  if [[ -n "$UPDATE_DEBS_DIR" ]]; then
+    [[ "$(id -u)" = 0 ]] || die "--update-debs demande les droits root (à lancer dans un conteneur propre)"
+    fetch_debs "$UPDATE_DEBS_DIR" "$DDI_UPDATE_PACKAGES"; exit 0
+  fi
   if [[ "$BUNDLE" = 1 ]]; then make_bundle; exit 0; fi
 
   local os

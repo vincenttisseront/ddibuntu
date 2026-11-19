@@ -21,7 +21,7 @@ export interface ClusterPreferred { node: string; at: number; by: string }
 // Mise à jour du cluster nœud par nœud : ordre commun (etcd), versions de chaque nœud, avancement publié par chacun.
 export interface ClusterUpdate { order: { target: string; at: number; by: string } | null; versions: Record<string, string>; states: Record<string, { state: string; at: number; msg: string }> }
 // PKI (EJBCA) du cluster (0.14.9), vue d'etcd : état répliqué (empreinte courte, nœud qui l'a publié), préparation de chaque nœud de données, marque « mise à jour en cours ».
-export interface PkiNodeReady { role: 'leader' | 'replica' | 'unknown'; installed: boolean; unit: 'active' | 'inactive'; image: 'none' | 'ready' | 'pulling' | 'missing'; version: string; desired: 'running' | 'stopped'; synced: string; blocked: string | null; at: number }
+export interface PkiNodeReady { role: 'leader' | 'replica' | 'unknown'; installed: boolean; unit: 'active' | 'inactive'; image: 'none' | 'ready' | 'pulling' | 'missing' | 'nopodman'; version: string; desired: 'running' | 'stopped'; synced: string; blocked: string | null; at: number }
 export interface PkiSyncNote { at: number; state: string; message: string; hash: string }
 export interface ClusterEjbca {
   enabled: boolean
@@ -135,7 +135,7 @@ export function parseEjbca(j: any, nodes: ClusterNode[]): ClusterEjbca | null {
       if (!known.has(name) || !v || typeof v !== 'object') continue
       out[name] = {
         role: v.role === 'leader' || v.role === 'replica' ? v.role : 'unknown', installed: v.installed === true, unit: v.unit === 'active' ? 'active' : 'inactive',
-        image: v.image === 'ready' || v.image === 'pulling' || v.image === 'missing' ? v.image : 'none', version: typeof v.version === 'string' && /^[0-9.]{0,20}$/.test(v.version) ? v.version : '',
+        image: v.image === 'ready' || v.image === 'pulling' || v.image === 'missing' || v.image === 'nopodman' ? v.image : 'none', version: typeof v.version === 'string' && /^[0-9.]{0,20}$/.test(v.version) ? v.version : '',
         desired: v.desired === 'stopped' ? 'stopped' : 'running', synced: typeof v.synced === 'string' && SHA12_RE.test(v.synced) ? v.synced : '',
         blocked: typeof v.blocked === 'string' && /^[a-z-]{1,32}$/.test(v.blocked) ? v.blocked : null, at: num(v.at) ?? 0,
       }

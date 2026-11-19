@@ -140,6 +140,31 @@ check "podman déjà présent : apt n'est jamais appelé" env DDI_PKI_APT_GET="$
 expect_nogrep "…vérifié dans le journal" '^apt-get ' "$LOG"
 check "fichier de secrets toujours identique après les refus" cmp "$T_TMP/etc/ejbca.env" "$T_TMP/env.before"
 
+# 0.14.11 : le paquet podman voyage dans l'archive de mise à jour ; sans lui, l'installation le repose d'abord depuis l'archive signée (ddibuntu-selfupdate packages), apt en dernier
+cat > "$B/selfupdate-ok" <<EOS
+#!/bin/bash
+echo "selfupdate \$*" >> "$LOG"
+mkdir -p "$T_TMP/late"; cp "$B/podman" "$T_TMP/late/podman"
+EOS
+cat > "$B/selfupdate-ko" <<EOS
+#!/bin/bash
+echo "selfupdate \$*" >> "$LOG"
+exit 1
+EOS
+chmod +x "$B/selfupdate-ok" "$B/selfupdate-ko"
+rm -f "$LOG"; rm -rf "$T_TMP/late"
+check "sans podman : le paquet embarqué est posé, apt n'est pas sollicité" env DDI_PKI_PODMAN="$T_TMP/late/podman" DDI_PKI_SELFUPDATE="$B/selfupdate-ok" DDI_PKI_APT_GET="$B/apt-fail" "$PKI" apply "$IMG" "$HOST" "172.16.0.0/12"
+expect_grep "…ddibuntu-selfupdate packages a été appelé" '^selfupdate packages$' "$LOG"
+expect_nogrep "…apt n'a pas été appelé" '^apt-get ' "$LOG"
+expect_grep "…puis l'installation de la PKI se poursuit avec ce podman" '^podman ' "$LOG"
+rm -f "$LOG"; rm -rf "$T_TMP/late"
+check "paquet embarqué indisponible : apt prend le relais" env DDI_PKI_PODMAN="$T_TMP/late/podman" DDI_PKI_SELFUPDATE="$B/selfupdate-ko" DDI_PKI_APT_GET="$B/apt-ok" "$PKI" apply "$IMG" "$HOST" "172.16.0.0/12"
+expect_grep "…selfupdate essayé en premier" '^selfupdate packages$' "$LOG"
+expect_grep "…puis apt" 'install -y -qq podman' "$LOG"
+rm -f "$LOG"
+check "podman déjà présent : ni selfupdate ni apt" env DDI_PKI_SELFUPDATE="$B/selfupdate-ko" DDI_PKI_APT_GET="$B/apt-fail" "$PKI" apply "$IMG" "$HOST" "172.16.0.0/12"
+expect_nogrep "…vérifié dans le journal" '^(selfupdate|apt-get) ' "$LOG"
+
 echo "== État =="
 rm -f "$T_TMP/healthy"; touch "$T_TMP/active"
 "$PKI" status; expect_eq "actif, ne répond pas, démarré depuis peu : en démarrage" starting "$(st state)"

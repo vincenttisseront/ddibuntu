@@ -37,6 +37,9 @@ describe('bloc « ejbca » du statut du cluster', () => {
     const e = parse(ej({ nodes: { n1: ready(), n3: ready(), evil: ready(), '../x': ready(), n2: ready() } }))
     expect(Object.keys(e.nodes).sort()).toEqual(['n1', 'n2'])
   })
+  it.each(['none', 'ready', 'pulling', 'missing', 'nopodman'])('état d\'image « %s » conservé (0.14.11 : nopodman = paquet podman absent du nœud)', (img) => {
+    expect(parse(ej({ nodes: { n1: ready({ image: img }), n2: ready({ image: img }) } })).nodes.n2.image).toBe(img)
+  })
   it('valeurs piégées écartées, jamais recopiées', () => {
     const e = parse(ej({
       state: { sha: SHA, by: '<img src=x>', at: 'x' },
@@ -85,6 +88,9 @@ describe('pki-cluster.json de ce nœud', () => {
     expect(b.blocked).toEqual({ reason: 'update-interrupted', node: 'n1', at: 5, from: '9.6.3', to: '9.6.4' })
     expect(pki.parsePkiClusterLocal(JSON.stringify(local({ blocked: { reason: 'cluster-unreachable' } })), NOW)!.blocked).toEqual({ reason: 'cluster-unreachable' })
     expect(pki.parsePkiClusterLocal(JSON.stringify(local({ blocked: { reason: 'x; id' } })), NOW)!.blocked).toBeNull()
+  })
+  it('podman absent de ce nœud (0.14.11) : état « nopodman » conservé', () => {
+    expect(pki.parsePkiClusterLocal(JSON.stringify(local({ image: 'nopodman' })), NOW)!.image).toBe('nopodman')
   })
   it.each(['pas du json', '[]', '{}', '{"at":"x"}', 'null'])('document illisible refusé : %s', (raw) => { expect(pki.parsePkiClusterLocal(raw, NOW)).toBeNull() })
   it('valeurs piégées ramenées aux valeurs sûres', () => {
