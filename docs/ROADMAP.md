@@ -106,6 +106,7 @@ La PKI est **EJBCA Community** (image officielle `keyfactor/ejbca-ce`, Podman + 
 | 17 | 0.14.16 | Correctif : **le service RADIUS ne démarrait pas sous systemd avec EAP-TLS** (module `eap` illisible pour `freerad`) ; contrôle des batteries b29/b30 en tant que `freerad` ; **raison de l'échec du démarrage** (journal) affichée dans « Dernière opération ». |
 | 18 | 0.14.17 | Correctif : **« Déployer » (RADIUS) remettait `/var/lib/ddibuntu` en 0750** et la console ne pouvait plus y écrire (mise à jour, cluster, déploiement : « Erreur interne ») ; le dossier d'état n'est plus modifié s'il existe ; contrôle dans la batterie b28. |
 | 19 | 0.14.18 | **Journal des authentifications RADIUS** : une ligne par décision (poste, MAC, équipement, SSID, certificat, règle qui a décidé, raison du refus) écrite par FreeRADIUS, onglet **Journal** de la console (filtres, compteurs 24 h, motif expliqué en clair et quoi vérifier, diagnostics du démon : équipement inconnu, alerte TLS du poste), « Équipements déployés » au lieu de « Clients actifs », rotation. |
+| 19b | 0.14.19 | Correctif : l'onglet **Journal** de RADIUS affichait une erreur 500 (déclarations mises en commentaire par erreur) ; test sur les sources des composants Vue | ✅ 0.14.19 |
 
 ## Série 0.10.x — gestion complète DNS ↔ IPAM ↔ DHCP (validée le 2026-11-13)
 Dix évolutions, une version chacune, chacune testée (unitaires, e2e, batteries réelles) avant publication. Ordre retenu : les deux plus rentables d'abord, puis celles qui s'appuient dessus.

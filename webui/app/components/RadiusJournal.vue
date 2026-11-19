@@ -10,7 +10,9 @@ interface Ev {
 }
 interface Res { available: boolean; events: Ev[]; counts: { accept: number; reject: number; diag: number }; reasons: { why: string; n: number }[]; truncated: boolean }
 
-const kind = ref<'all' | 'accept' | 'reject' | 'diag'>('all')   // pas de valeur vide : un item de sélecteur ne peut pas valoir '', minutes = ref(1440), q = ref(''), selftest = ref(false), auto = ref(true)
+// pas de valeur vide : un item de sélecteur ne peut pas valoir ''
+const kind = ref<'all' | 'accept' | 'reject' | 'diag'>('all')
+const minutes = ref(1440), q = ref(''), selftest = ref(false), auto = ref(true)
 const data = ref<Res | null>(null), err = ref(''), loading = ref(false), open = ref<string | null>(null)
 const kinds = computed(() => [{ label: t('radius.journal.kind_all'), value: 'all' }, { label: t('radius.journal.kind_accept'), value: 'accept' }, { label: t('radius.journal.kind_reject'), value: 'reject' }, { label: t('radius.journal.kind_diag'), value: 'diag' }])
 const periods = computed(() => [{ label: t('radius.journal.p_1h'), value: 60 }, { label: t('radius.journal.p_24h'), value: 1440 }, { label: t('radius.journal.p_7d'), value: 10080 }, { label: t('radius.journal.p_all'), value: 0 }])

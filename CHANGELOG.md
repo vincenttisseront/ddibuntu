@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.14.19 — « Correctif : l'onglet Journal de RADIUS affichait une erreur 500 »
+
+- **Cause** : en 0.14.18, un commentaire `//` placé au milieu d'une ligne de déclarations de `RadiusJournal.vue` mettait en commentaire `minutes`, `q`, `selftest` et `auto` ; la page plantait au rendu (« minutes is not defined »). Les autres onglets de la page RADIUS n'étaient pas touchés.
+- **Correctif** : les déclarations sont sur leurs propres lignes.
+- **Test** : `unit-vue-comments` contrôle que, dans tous les composants Vue, aucun commentaire `//` n'avale une déclaration de la même ligne (vérifié : le test échoue sur le défaut d'origine). Cette erreur n'était vue ni par le build ni par les tests qui ne rendent pas les pages : à reprendre avec un contrôle de types (`vue-tsc`) dans la CI.
+
 ## 0.14.18 — « RADIUS : journal complet des authentifications »
 
 L'onglet Service ne montrait qu'un « client actif ». On ne pouvait pas savoir qui se connecte, ni pourquoi un poste est refusé. Chaque décision de FreeRADIUS est maintenant écrite dans un journal et lisible dans la console.
