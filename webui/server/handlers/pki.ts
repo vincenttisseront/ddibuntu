@@ -8,7 +8,7 @@ import { logHistory, recSnap } from '../utils/dns-history'
 import { toRelativeName } from '../utils/dns'
 import { normIp } from '../utils/net'
 import {
-  applyBody, depositPkiRequest, imageOf, loadPkiSettings, nodeAddresses, pkiRequestPending, PUBLIC_PORT, readPkiClusterLocal, readPkiResult, readPkiStatus, savePkiSettings, suggestHostname,
+  applyBody, depositPkiRequest, imageOf, loadPkiSettings, nodeAddresses, pkiRequestPending, PUBLIC_PORT, readPkiClusterLocal, readPkiProgress, readPkiResult, readPkiStatus, savePkiSettings, suggestHostname,
 } from '../utils/pki'
 import type { PkiRequest } from '../utils/pki'
 import { readPkiUpdate } from '../utils/pki-update'
@@ -34,7 +34,7 @@ async function dnsState(hostname: string) {
 }
 
 route('GET', '/pki', 'admin', async () => {
-  const [status, result, settings, suggested, upd, cl, local] = await Promise.all([readPkiStatus(), readPkiResult(), loadPkiSettings(), suggestHostname(), readPkiUpdate(), readClusterState(), readPkiClusterLocal()])
+  const [status, result, settings, suggested, upd, cl, local, progress] = await Promise.all([readPkiStatus(), readPkiResult(), loadPkiSettings(), suggestHostname(), readPkiUpdate(), readClusterState(), readPkiClusterLocal(), readPkiProgress()])
   // une instance installée impose son nom et sa version ; sinon, les choix enregistrés, puis la proposition
   // des données conservées (désinstallation ou base d'une installation précédente) imposent leur nom public : il est gravé dans leurs certificats
   const fixed = !!(status && !status.installed && status.dataPresent && status.dataHostname)
@@ -47,7 +47,7 @@ route('GET', '/pki', 'admin', async () => {
   // dans un cluster, le nom public doit pointer vers l'adresse virtuelle (elle suit le leader), pas vers l'adresse d'un seul nœud
   const dns = await dnsState(hostname)
   if (cl?.vip?.address) dns.suggested = [cl.vip.address.split('/')[0]!, ...dns.suggested.filter((a) => a !== cl.vip!.address.split('/')[0])]
-  return { status, result, cluster, requestPending: await pkiRequestPending(), updateJob, settings, suggestedHostname: suggested, hostname, locked: !!status?.installed, hostnameFixed: fixed, dns,
+  return { status, result, progress, cluster, requestPending: await pkiRequestPending(), updateJob, settings, suggestedHostname: suggested, hostname, locked: !!status?.installed, hostnameFixed: fixed, dns,
     endpoints: { port: PUBLIC_PORT, health: base ? `${base}/healthcheck/ejbcahealth` : null } }
 })
 

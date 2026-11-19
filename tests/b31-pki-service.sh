@@ -188,6 +188,30 @@ req '{"action":"apply","image":"'"$IMG"'","hostname":"pki.lab.test;id","nets":[]
 req '{"action":"apply","image":"'"$IMG"'","hostname":"pki.lab.test","nets":["10.0.0.0/8; reboot"]}'; expect_eq "réseau piégé refusé" False "$(res ok)"
 req '{"action":"apply","image":"'"$IMG"'","hostname":"pki.lab.test","nets":["10.9.0.0/16"]}'; expect_eq "apply valide par la console : ok" True "$(res ok)"
 expect_grep "…réseaux enregistrés" '"nets": "10\.9\.0\.0/16"' "$T_TMP/etc/instance.json"
+# 0.14.12 : suivi en direct (pki-progress.json) : étapes publiées par root, fichier public, aucune donnée de la demande
+PG="$T_TMP/run/pki-progress.json"; pg() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$PG" "$1"; }
+expect_eq "suivi : l'installation par la console est terminée" "done" "$(pg 'd["state"]')"
+expect_eq "suivi : l'action est « apply »" apply "$(pg 'd["action"]')"
+expect_eq "suivi : les 5 étapes de l'installation" "podman,prepare,image,unit,start" "$(pg '",".join(x["id"] for x in d["steps"])')"
+expect_eq "suivi : toutes les étapes sont faites" "done" "$(pg '",".join(sorted(set(x["status"] for x in d["steps"])))')"
+expect_eq "suivi : le fichier est lisible par la console (0644)" 644 "$(stat -c %a "$PG")"
+check "suivi : ni le nom public ni les réseaux de la demande n'y figurent" bash -c "! grep -qE 'pki.lab.test|10.9.0.0' '$PG'"
+req '{"action":"apply","image":"'"$IMG"'","hostname":"autre.lab.test","nets":[]}'
+expect_eq "suivi : une demande refusée par root se termine en échec" failed "$(pg 'd["state"]')"
+expect_eq "suivi : …l'étape en cours est marquée échouée" failed "$(pg '[x["status"] for x in d["steps"] if x["status"] != "todo"][-1]')"
+req '{"action":"restart"}'
+expect_eq "suivi : une autre action a une étape unique « work »" "work" "$(pg '",".join(x["id"] for x in d["steps"])')"
+expect_eq "suivi : …terminée" "done" "$(pg 'd["state"]')"
+req '{"action":"status"}'
+expect_eq "suivi : « status » ne touche pas au suivi" restart "$(pg 'd["action"]')"
+HELPER_PY="$RFS/usr/local/lib/ddibuntu/pki-helper.py"
+python3 "$HELPER_PY" progress "$PG" begin apply podman prepare image; python3 "$HELPER_PY" progress "$PG" step prepare running $'détail\ntrès long '"$(printf 'x%.0s' $(seq 1 200))"
+expect_eq "suivi : l'étape qui commence clôt la précédente" "done,running,todo" "$(pg '",".join(x["status"] for x in d["steps"])')"
+expect_eq "suivi : le détail est borné (120 caractères, sans saut de ligne)" 120 "$(pg 'len(d["steps"][1]["detail"])')"
+check "suivi : identifiant d'étape invalide refusé" bash -c "! python3 '$HELPER_PY' progress '$PG' step 'Bad Id' running"
+check "suivi : état d'étape invalide refusé" bash -c "! python3 '$HELPER_PY' progress '$PG' step podman exploded"
+python3 "$HELPER_PY" progress "$PG" end false
+expect_eq "suivi : un échec marque l'étape en cours comme échouée" "done,failed,todo" "$(pg '",".join(x["status"] for x in d["steps"])')"
 printf '%s' '{"action":"stop"}' > "$T_TMP/gen/.pki-request"; ln -sf /etc/passwd "$T_TMP/gen/.pki-request" 2>/dev/null; "$PKI" request >/dev/null 2>&1
 check "un lien symbolique en guise de demande n'est pas suivi" test ! -e "$T_TMP/gen/.pki-request" -a ! -L "$T_TMP/gen/.pki-request"
 

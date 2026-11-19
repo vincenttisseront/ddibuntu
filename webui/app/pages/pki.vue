@@ -10,11 +10,13 @@ const tabs = computed(() => [{ label: t('pki.tab_state'), value: 'state', icon: 
 const data = ref<any>(null), busy = ref(''), err = ref('')
 const status = computed(() => data.value?.status ?? null)
 const result = computed(() => data.value?.result ?? null)
+const progress = computed(() => data.value?.progress ?? null)
+const progressRunning = computed(() => progress.value?.state === 'running' && !progress.value?.stale)   // 0.14.12 : root traite une demande (installation…)
 const updateRunning = computed(() => data.value?.updateJob?.state === 'running')
 // 0.14.9 : dans un cluster, seul le leader pilote la PKI ; sur le secondaire et sur l'arbitre la page est en lecture seule (root refuserait de toute façon)
 const cluster = computed(() => data.value?.cluster ?? null)
 const passive = computed(() => { const c = cluster.value; return !!c && !c.stale && (c.nodeRole !== 'data' || (!!c.leader && c.leader !== c.node)) })
-const waiting = computed(() => !!busy.value || !!data.value?.requestPending || updateRunning.value || passive.value)
+const waiting = computed(() => !!busy.value || !!data.value?.requestPending || progressRunning.value || updateRunning.value || passive.value)
 const installed = computed(() => !!status.value?.installed)
 const form = reactive({ hostname: '', nets: '' })
 let formLoaded = false
@@ -29,7 +31,7 @@ async function load() {
   } catch (e: any) { err.value = e?.info?.message ?? '' }
 }
 async function settle() {   // attend que root ait traité la demande (le résultat est publié, la demande disparaît)
-  for (let i = 0; i < 80; i++) { await new Promise((r) => setTimeout(r, 1500)); await load(); if (!data.value?.requestPending) return }
+  for (let i = 0; i < 80; i++) { await new Promise((r) => setTimeout(r, 1500)); await load(); if (!data.value?.requestPending && !progressRunning.value) return }
 }
 async function send(path: string, body: Record<string, unknown> = {}) {
   if (waiting.value) return false
@@ -79,13 +81,13 @@ async function createDns() {
 let timer: ReturnType<typeof setTimeout> | undefined, stopped = false
 async function follow() {
   if (stopped) return
-  if (updateRunning.value) await load()   // 0.14.7 : une mise à jour dure plusieurs minutes ; on suit son état même hors de l'onglet « Mise à jour »
-  if (status.value?.state === 'starting' && !data.value?.requestPending && !busy.value && !updateRunning.value) {
+  if (updateRunning.value || progressRunning.value || data.value?.requestPending) await load()   // 0.14.7 : une mise à jour dure plusieurs minutes ; 0.14.12 : de même pour une installation (étapes en direct), même après la fin de settle()
+  if (status.value?.state === 'starting' && !data.value?.requestPending && !busy.value && !updateRunning.value && !progressRunning.value) {
     try { await api.call('POST', '/pki/status', {}, { silent: true }); await settle() } catch { /* prochaine boucle */ }
   }
-  if (!stopped) timer = setTimeout(follow, 10000)
+  if (!stopped) timer = setTimeout(follow, progressRunning.value || data.value?.requestPending ? 2000 : 10000)
 }
-onMounted(() => { timer = setTimeout(follow, 10000) })
+onMounted(() => { timer = setTimeout(follow, progressRunning.value ? 2000 : 10000) })
 onBeforeUnmount(() => { stopped = true; if (timer) clearTimeout(timer) })
 
 const badge = computed(() => {
@@ -100,6 +102,7 @@ await load()
 
 <template>
   <div class="flex flex-col gap-3">
+    <PkiProgress :progress="progress" :status="status" :result="result" />
     <UTabs v-model="tab" :items="tabs" :content="false" :aria-label="t('nav.pki')" />
     <PkiCas v-if="tab === 'cas'" :status="status" :waiting="waiting" :settle="settle" :result="result" @changed="load" />
     <PkiCerts v-else-if="tab === 'certs'" :status="status" :waiting="waiting" />
