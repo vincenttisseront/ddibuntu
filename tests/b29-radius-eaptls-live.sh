@@ -198,6 +198,11 @@ expect_eq "request apply (pki) : code 0" 0 "$rc"
 expect_eq "…dépôt PKI effacé (clé privée jamais conservée)" no "$([ -e "$D/gen/radius-pki" ] && echo yes || echo no)"
 expect_nogrep "…résultat sans clé privée" 'PRIVATE KEY' "$D/run/radius-result.json"
 expect_eq "…statut : EAP-TLS actif" True "$(rj "$D/run/radius-status.json" eap.enabled)"
+# 0.14.16 : sous systemd le démon (et son contrôle de démarrage) tourne en tant que freerad, pas en root : le faux systemctl de cette batterie le lançait en root,
+# ce qui avait masqué un fichier (mods-enabled/eap) illisible pour freerad. Contrôle EN TANT QUE freerad, comme le service réel.
+check "…le démon, EN TANT QUE freerad, lit toute l'arborescence (freeradius -Cx)" runuser -u freerad -- /usr/sbin/freeradius -d "$D/etc" -Cx -lstdout
+expect_eq "…aucun fichier de l'arborescence hors du groupe freerad (liens symboliques exceptés)" "" "$(find "$D/etc" ! -type l ! -group freerad)"
+expect_eq "…aucun fichier lisible par tous (clés)" "" "$(find "$D/etc" -type f -perm -004)"
 expect_eq "…aucun fichier temporaire de PKI oublié" 0 "$(find /tmp -maxdepth 1 -name 'ddi-radius-pki.*' 2>/dev/null | wc -l)"
 tree_hash() { (cd "$D/etc" && find . -type f -o -type l | sort | xargs -I{} sh -c 'printf "%s " {}; readlink {} || sha256sum < {}' | sha256sum); }
 h1="$(tree_hash)"

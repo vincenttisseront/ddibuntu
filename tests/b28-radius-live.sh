@@ -122,6 +122,11 @@ f="$(clients 'client "nouveau" {
 	nas_type = other
 }
 ')"
+# 0.14.16 : la raison lue dans le journal du service accompagne l'échec (faux journalctl) ; rien d'autre que des lignes d'erreur
+printf '#!/bin/bash\necho "Starting - reading configuration files ..."\necho "Unable to open file \\"/etc/ddibuntu/radius/mods-enabled/eap\\": Permission denied"\necho "Errors reading or parsing /etc/ddibuntu/radius/radiusd.conf"\necho "freeradius.service: Failed with result exit-code."\n' > "$D/bin/journalctl"; chmod +x "$D/bin/journalctl"
+DDI_RADIUS_JOURNALCTL="$D/bin/journalctl" "$RAD" apply "$f" >"$D/why.out" 2>&1
+expect_grep "…la raison du journal est donnée" 'journal : Unable to open file .*Permission denied Errors reading' "$D/why.out"
+expect_nogrep "…sans les lignes sans erreur ni le bruit de systemd" 'Starting - reading|Failed with result' "$D/why.out"
 check_fail "démarrage impossible : apply échoue" "$RAD" apply "$f"
 h2="$(cd "$D/etc" && find . -type f -o -type l | sort | xargs -I{} sh -c 'printf "%s " {}; readlink {} || sha256sum < {}' | sha256sum)"
 expect_eq "…ancienne arborescence restaurée à l'identique" "$h1" "$h2"

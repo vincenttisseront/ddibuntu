@@ -103,6 +103,7 @@ La PKI est **EJBCA Community** (image officielle `keyfactor/ejbca-ce`, Podman + 
 | 14 | 0.14.13 | Correctif : **autorités de la PKI en arbre de dépendance** (hiérarchie compacte à gauche, détail complet de l'autorité cliquée à droite ; racines du DDI, racines hors ligne, autorités reprises) et **première CRL refaite à 7 jours** après le réglage de la période (`ca createcrl`). |
 | 15 | 0.14.14 | Correctif : **noms proposés par défaut** dans les formulaires de la PKI (certificat : d'après le profil, le domaine du DDI et le premier numéro libre, ou le nom de la demande de certificat fournie ; noms DNS / UPN ; autorités ; PKCS#12 ; SCEP), toujours modifiables. |
 | 16 | 0.14.15 | Correctif : noms proposés (suite) : **dialogue du certificat du serveur RADIUS** (`radius.<domaine>`, nom DNS qui suit), **organisation / unité / pays** repris de l'autorité choisie ou de la demande de certificat, message d'orientation vers l'onglet RADIUS pour le profil « Serveur RADIUS ». |
+| 17 | 0.14.16 | Correctif : **le service RADIUS ne démarrait pas sous systemd avec EAP-TLS** (module `eap` illisible pour `freerad`) ; contrôle des batteries b29/b30 en tant que `freerad` ; **raison de l'échec du démarrage** (journal) affichée dans « Dernière opération ». |
 
 ## Série 0.10.x — gestion complète DNS ↔ IPAM ↔ DHCP (validée le 2026-11-13)
 Dix évolutions, une version chacune, chacune testée (unitaires, e2e, batteries réelles) avant publication. Ordre retenu : les deux plus rentables d'abord, puis celles qui s'appuient dessus.
