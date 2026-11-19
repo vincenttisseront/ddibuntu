@@ -184,6 +184,56 @@ udp_listen 1812 && ko "arrêt : le port 1812 est refermé" "encore ouvert" || ok
 send "$SELF" | grep -q 'Received' && ko "arrêt : plus aucune réponse attendue" || ok "arrêt : plus aucune réponse"
 expect_eq "arrêt : pare-feu refermé" "set RADIUS_NETS " "$(grep '^set RADIUS_NETS' "$D/fw.log" | tail -1)"
 
+echo "== Cluster : RADIUS actif sur le leader seulement (0.15.0) =="
+cat > "$D/bin/cluster" <<SH
+#!/bin/bash
+[ "\$1" = role ] || exit 2
+cat "$D/role"
+SH
+chmod +x "$D/bin/cluster"
+export DDI_CLUSTER_CONF="$D/cluster.conf" DDI_CLUSTER_CMD="$D/bin/cluster"
+creq() {   # creq ACTION : dépose une demande de la console et la fait traiter
+  rm -f "$D/gen/radius-clients.conf"
+  [ "$1" = apply ] && cp "$(clients)" "$D/gen/radius-clients.conf"
+  printf '{"action":"%s"}' "$1" > "$D/gen/.radius-request"; "$RAD" request >/dev/null 2>&1
+}
+creq apply   # hors cluster : comme avant
+expect_eq "hors cluster : le déploiement fonctionne" True "$(rj "$D/run/radius-result.json" ok)"
+: > "$D/cluster.conf"; printf replica > "$D/role"
+creq apply
+expect_eq "secondaire : « Déployer » refusé" False "$(rj "$D/run/radius-result.json" ok)"
+expect_grep "secondaire : la raison est dite" 'secondaire du cluster' "$D/run/radius-result.json"
+creq stop
+expect_eq "secondaire : « Arrêter » refusé aussi" False "$(rj "$D/run/radius-result.json" ok)"
+creq crl
+expect_eq "secondaire : l'envoi de CRL est refusé aussi" False "$(rj "$D/run/radius-result.json" ok)"
+expect_eq "…rien n'a été modifié : le service tourne encore" True "$(rj "$D/run/radius-status.json" active)"
+"$RAD" align leader >/dev/null 2>&1; rc=$?
+expect_eq "align leader : code 0" 0 "$rc"
+expect_eq "align leader : ne touche pas au service" True "$(rj "$D/run/radius-status.json" active)"
+"$RAD" align replica >/dev/null 2>&1; rc=$?
+expect_eq "align replica : code 0" 0 "$rc"
+expect_eq "align replica : le service est arrêté" False "$(rj "$D/run/radius-status.json" active)"
+udp_listen 1812 && ko "align replica : le port 1812 est refermé" "encore ouvert" || ok "align replica : le port 1812 est refermé"
+send "$SELF" | grep -q 'Received' && ko "align replica : plus aucune réponse" "répond encore" || ok "align replica : plus aucune réponse (la borne bascule sur l'adresse virtuelle)"
+"$RAD" align replica >/dev/null 2>&1; rc=$?
+expect_eq "align replica : répété sans effet (idempotent)" 0 "$rc"
+check_fail "align : rôle inconnu refusé" "$RAD" align arbitre
+printf leader > "$D/role"; creq apply
+expect_eq "leader : « Déployer » accepté" True "$(rj "$D/run/radius-result.json" ok)"
+expect_eq "leader : le service tourne" True "$(rj "$D/run/radius-status.json" active)"
+send "$SELF" | grep -q 'Received' && ok "leader : le service répond" || ko "leader : le service répond" "aucune réponse"
+printf witness > "$D/role"; creq apply
+expect_eq "arbitre : « Déployer » refusé" False "$(rj "$D/run/radius-result.json" ok)"
+expect_grep "arbitre : la raison est dite" "arbitre du cluster" "$D/run/radius-result.json"
+printf 'n importe quoi' > "$D/role"; creq stop
+expect_eq "rôle inconnu : refusé par prudence" False "$(rj "$D/run/radius-result.json" ok)"
+expect_eq "…le service tourne toujours (on ne coupe rien dans le doute)" True "$(rj "$D/run/radius-status.json" active)"
+rm -f "$D/cluster.conf"; unset DDI_CLUSTER_CONF DDI_CLUSTER_CMD; export DDI_CLUSTER_CONF="$D/aucun-cluster.conf"
+creq stop
+expect_eq "hors cluster : « Arrêter » fonctionne toujours" True "$(rj "$D/run/radius-result.json" ok)"
+expect_grep "ddibuntu-cluster follow aligne RADIUS avec le rôle Patroni" '^  \( cmd_radius_align "\$role" \)' "$RFS/usr/local/sbin/ddibuntu-cluster"
+
 echo "== Pare-feu : seuls les clients atteignent 1812/1813 =="
 export DDI_FW_CONF="$D/fw.conf" DDI_NFT_FILE="$D/fw.nft" DDI_FW_STATE="$D/fwstate"
 "$FW" set ADMIN_NETS "10.0.0.0/24" >/dev/null

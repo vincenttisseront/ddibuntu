@@ -42,6 +42,7 @@ describe('classement des motifs', () => {
     ['ddibuntu : annuaire indisponible ou compte ambigu', 'directory_down'],
     ['ddibuntu : regle 3 : refus', 'rule_deny'], ['ddibuntu : aucune regle ne correspond (refus par defaut)', 'no_rule'],
     ['ddibuntu : certificat valide, aucune regle d\'acces (refus par defaut)', 'no_rule'],
+    ['eap: No mutually acceptable types found', 'eap_method'], ['Peer NAK received', 'eap_method'],
     ['unknown CA', 'unknown_ca'], ['certificate unknown', 'cert_refused'], ['handshake failure', 'no_cert'],
     ['', 'unknown'], ['quelque chose d\'inattendu', 'other'],
   ])('« %s » → %s', (reason, why) => { expect(classify(reason)).toBe(why) })

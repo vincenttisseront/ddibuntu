@@ -651,6 +651,15 @@ print(h if isinstance(h,str) and re.fullmatch(r"none|[0-9a-f]{64}",h) and d.get(
   fi
 }
 
+# RADIUS suit le leader (0.15.0) : le service ne tourne que sur le leader (derrière l'adresse virtuelle) ; un secondaire l'arrête. La console du nouveau leader le redéploie.
+RADIUS_CMD="${DDI_RADIUS_CMD:-/usr/local/sbin/ddibuntu-radius}"
+cmd_radius_align() {   # $1 = leader | replica
+  [ "${C[NODE_ROLE]}" = data ] || return 0
+  [ -x "$RADIUS_CMD" ] || [ -n "${DDI_RADIUS_CMD:-}" ] || return 0
+  "$RADIUS_CMD" align "$1" >/dev/null || log "follow : alignement de RADIUS en échec (voir le journal « ddibuntu-radius »)"
+  return 0
+}
+
 # role : rôle de CE nœud pour les outils locaux (ddibuntu-pki) : leader | replica | witness | unknown
 cmd_role() {
   conf_load
@@ -1993,6 +2002,7 @@ cmd_follow() {
   local marker="$STATE/kea-applied" role margs="" content=""
   role="$(patroni_role)"; [ -n "$role" ] || { log "follow : rôle Patroni inconnu (réessai à la prochaine échéance)"; return 0; }
   ( cmd_pki_align "$role" ) || log "follow : alignement de la PKI non terminé (réessai à la prochaine échéance)"
+  ( cmd_radius_align "$role" ) || log "follow : alignement de RADIUS non terminé (réessai à la prochaine échéance)"
   if [ "$role" = replica ]; then
     local rows tmpd n s b names=""
     rows="$(psql_local -d "$db" -At -F ' ' -c "select name, sha256, translate(encode(convert_to(content, 'UTF8'), 'base64'), E'\n', '') from rendered_configs order by name" 2>/dev/null)" || { log "follow : base répliquée illisible (réessai)"; return 0; }

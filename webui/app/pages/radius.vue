@@ -94,6 +94,16 @@ await load()
         </dl>
         <p v-else class="text-sm text-muted">{{ t('radius.never_hint') }}</p>
         <p class="text-xs text-dimmed mt-3">{{ t('radius.node_note') }}</p>
+        <div v-if="data?.cluster" class="mt-3 rounded-md border border-default p-3 text-sm space-y-1" data-test="radius-cluster">
+          <p class="flex flex-wrap items-center gap-2">
+            <UBadge :color="data.cluster.role === 'leader' ? 'success' : 'neutral'" variant="subtle" :label="data.cluster.role === 'leader' ? t('radius.cl_active') : t('radius.cl_standby')" data-test="radius-cluster-role" />
+            <span>{{ data.cluster.role === 'leader' ? t('radius.cl_active_body') : t('radius.cl_standby_body', { leader: data.cluster.leader ?? '?' }) }}</span>
+          </p>
+          <p v-if="data.cluster.vip" class="text-xs text-muted" data-test="radius-cluster-vip">{{ t('radius.cl_vip', { vip: data.cluster.vip.address }) }}</p>
+          <p v-if="data.cluster.role === 'leader' && data.cluster.follow" class="text-xs" :class="data.cluster.follow.ok === false ? 'text-error' : 'text-muted'" data-test="radius-cluster-follow">
+            {{ t('radius.cl_follow', { date: fmt.dateTime(data.cluster.follow.at * 1000), state: data.cluster.follow.ok === null ? t('radius.cl_follow_run') : data.cluster.follow.ok ? t('radius.cl_follow_ok') : data.cluster.follow.message }) }}
+          </p>
+        </div>
         <p v-if="result" class="text-xs mt-2" :class="result.ok ? 'text-muted' : 'text-error'" data-test="radius-result">{{ t('radius.last') }} {{ fmt.dateTime(result.at * 1000) }} — {{ resultText }}</p>
         <p v-if="data?.requestPending" class="text-xs text-muted mt-2" role="status">{{ t('radius.pending') }}</p>
         <p v-if="data?.rules?.pending" class="text-xs text-warning mt-2" role="status" data-test="radius-rules-pending">{{ t('radius.rules_pending') }}</p>
