@@ -79,9 +79,13 @@ export const sealSecret = (s: string) => encryptSecret(s)
 // ---- Dépôt de la demande et lecture de l'état publié par root ----
 export interface EapStatus { enabled: boolean; server: { subject: string; notAfter: number | null } | null; cas: number; checkCrl: boolean; crls: Array<{ issuer: string; nextUpdate: number | null }> }
 export interface AuthzStatus { enabled: boolean; rules: number; servers: string[] }
-export interface RadiusStatus { at: number; installed: boolean; version: string; configured: boolean; active: boolean; enabled: boolean; clients: number; eap: EapStatus; authz: AuthzStatus; ldapModule: boolean }
+/** Jonction de CE nœud au domaine (PEAP-MSCHAPv2) publiée par root : sans secret. `trust` : null = non mesuré (winbindd arrêté). */
+export interface WinbindStatus { joined: boolean; realm: string; netbios: string; computer: string; at: number | null; active: boolean; trust: boolean | null }
+export interface RadiusStatus { winbind: WinbindStatus; at: number; installed: boolean; version: string; configured: boolean; active: boolean; enabled: boolean; clients: number; eap: EapStatus; authz: AuthzStatus; ldapModule: boolean }
 /** Règles d'accès déposées pour root : DONNÉES seulement (rules.json, ldap.json, ldap-ca.pem), jamais de texte de configuration. */
-export interface AuthzDeposit { rules: string; ldap: string; caPem?: string }
+export interface AuthzDeposit { rules: string; ldap: string; caPem?: string; auth?: string }
+/** Compte qui joint le domaine : transmis une fois à root (fichier 0600 écrasé après usage), jamais conservé par la console. */
+export interface JoinDeposit { realm: string; netbios: string; servers: string[]; user?: string; password?: string }
 export interface RadiusResult { at: number; action: string; ok: boolean; message: string }
 export async function readRadiusStatus(): Promise<RadiusStatus | null> {
   try {
@@ -93,7 +97,10 @@ export async function readRadiusStatus(): Promise<RadiusStatus | null> {
       crls: (Array.isArray(e.crls) ? e.crls : []).slice(0, 64).map((c: any) => ({ issuer: String(c?.issuer ?? '').slice(0, 300), nextUpdate: typeof c?.next_update === 'number' ? c.next_update * 1000 : null })) }
     const z = j.authz ?? {}
     const authz: AuthzStatus = { enabled: z.enabled === true, rules: Number(z.rules) || 0, servers: (Array.isArray(z.servers) ? z.servers : []).slice(0, 5).map((x: unknown) => String(x).slice(0, 300)) }
-    return { at: j.at, installed: j.installed === true, version: String(j.version ?? '').slice(0, 24), configured: j.configured === true, active: j.active === true, enabled: j.enabled === true, clients: Number(j.clients) || 0, eap, authz, ldapModule: j.ldap_module === true }
+    const w = j.winbind ?? {}
+    const winbind: WinbindStatus = { joined: w.joined === true, realm: String(w.realm ?? '').slice(0, 253), netbios: String(w.netbios ?? '').slice(0, 15), computer: String(w.computer ?? '').slice(0, 15),
+      at: typeof w.at === 'number' ? w.at * 1000 : null, active: w.active === true, trust: typeof w.trust === 'boolean' ? w.trust : null }
+    return { at: j.at, installed: j.installed === true, version: String(j.version ?? '').slice(0, 24), configured: j.configured === true, active: j.active === true, enabled: j.enabled === true, clients: Number(j.clients) || 0, eap, authz, ldapModule: j.ldap_module === true, winbind }
   } catch { return null }
 }
 export async function readRadiusResult(): Promise<RadiusResult | null> {
@@ -107,6 +114,7 @@ export async function radiusRequestPending(): Promise<boolean> {
   try { await fs.lstat(join(cfg().generatedDir, '.radius-request')); return true } catch { return false }
 }
 export type RadiusRequest = { action: 'apply'; clients: string; pki?: PkiDeposit; authz?: AuthzDeposit } | { action: 'stop' } | { action: 'status' } | { action: 'crl'; crls: Record<string, string> }
+  | { action: 'join'; join: JoinDeposit } | { action: 'leave'; join?: JoinDeposit }
 /** Écrit le dossier radius-pki/ (fichiers 0600 : la clé privée n'est lisible que du propriétaire et de root ; root les efface après traitement). */
 async function writePkiDir(dir: string, files: Record<string, string>, crls: Record<string, string>) {
   const root = join(dir, 'radius-pki')
@@ -126,6 +134,14 @@ async function writeAuthzDir(dir: string, a: AuthzDeposit) {
   await fs.writeFile(join(root, 'rules.json'), a.rules, { mode: 0o600 })
   await fs.writeFile(join(root, 'ldap.json'), a.ldap, { mode: 0o600 })
   if (a.caPem) await fs.writeFile(join(root, 'ldap-ca.pem'), a.caPem, { mode: 0o600 })
+  if (a.auth) await fs.writeFile(join(root, 'auth.json'), a.auth, { mode: 0o600 })
+}
+/** Écrit le dossier radius-join/ (join.json 0600 : il porte le mot de passe du compte qui joint ; root l'écrase après usage). */
+async function writeJoinDir(dir: string, j: JoinDeposit) {
+  const root = join(dir, 'radius-join')
+  await fs.rm(root, { recursive: true, force: true })
+  await fs.mkdir(root, { recursive: true, mode: 0o750 })
+  await fs.writeFile(join(root, 'join.json'), JSON.stringify(j) + '\n', { mode: 0o600 })
 }
 export async function depositRadiusRequest(req: RadiusRequest): Promise<{ requestedAt: number }> {
   const dir = cfg().generatedDir
@@ -138,7 +154,15 @@ export async function depositRadiusRequest(req: RadiusRequest): Promise<{ reques
     await fs.writeFile(join(dir, 'radius-clients.conf'), req.clients, { mode: 0o640 })
   }
   if (req.action === 'crl') await writePkiDir(dir, {}, req.crls)
+  if (req.action === 'join' || req.action === 'leave') {
+    await fs.rm(join(dir, 'radius-join'), { recursive: true, force: true })
+    if (req.join) await writeJoinDir(dir, req.join)
+  }
+  // si la demande ne peut pas être écrite, le mot de passe déposé ne doit pas rester sur le disque
+  try { await writeRequestFile(dir, req) } catch (e) { await fs.rm(join(dir, 'radius-join'), { recursive: true, force: true }); throw e }
+  return { requestedAt: Math.floor(Date.now() / 1000) }
+}
+async function writeRequestFile(dir: string, req: RadiusRequest) {
   // la demande est écrite EN DERNIER : root est déclenché par sa modification, les fichiers déposés sont donc déjà en place
   await fs.writeFile(join(dir, '.radius-request'), JSON.stringify(req.action === 'apply' && req.pki ? { action: 'apply', pki: true, ...(req.authz ? { authz: true } : {}) } : { action: req.action }) + '\n', { mode: 0o640 })
-  return { requestedAt: Math.floor(Date.now() / 1000) }
 }

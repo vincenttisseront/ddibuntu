@@ -68,6 +68,8 @@ in_target systemctl enable ddibuntu-firstboot.service nftables.service postgresq
 in_target systemctl disable kea-dhcp4-server.service
 # FreeRADIUS ne démarre que sur ordre de la console (ddibuntu-radius) et jamais avec la configuration du paquet (client « localhost » à secret connu)
 in_target systemctl disable freeradius.service 2>/dev/null || true
+# 0.16.0 : winbindd du paquet (ni jonction ni configuration) ne doit jamais tourner : RADIUS utilise sa propre unité (ddibuntu-radius-winbind), démarrée par « ddibuntu-radius »
+in_target systemctl disable winbind.service nmbd.service smbd.service 2>/dev/null || true
 # Cluster : etcd et Patroni ne démarrent QUE sur ordre de « ddibuntu-cluster » (le paquet etcd démarrerait sinon un magasin en clair sur 127.0.0.1)
 in_target groupadd -f ddicluster
 in_target systemctl disable etcd.service patroni.service keepalived.service 2>/dev/null || true
@@ -78,7 +80,7 @@ for f in usr/local/sbin/ddibuntu-apply usr/local/sbin/ddibuntu-setup usr/local/s
          usr/local/bin/ddibuntu-menu usr/local/lib/ddibuntu/common.sh etc/ddibuntu/nftables.nft \
          etc/ssh/sshd_config.d/10-ddibuntu.conf etc/sysctl.d/90-ddibuntu.conf \
          usr/local/sbin/ddibuntu-db-init usr/local/sbin/ddibuntu-reload usr/local/lib/ddibuntu/console-start \
-         usr/local/sbin/ddibuntu-selfupdate usr/local/sbin/ddibuntu-cluster usr/local/sbin/ddibuntu-ad usr/local/sbin/ddibuntu-backup usr/local/sbin/ddibuntu-radius etc/systemd/system/freeradius.service.d/ddibuntu.conf usr/local/sbin/ddibuntu-health usr/local/lib/ddibuntu/wal-archive.sh usr/local/lib/ddibuntu/cluster-drill.py etc/ddibuntu/backup.conf etc/postgresql/16/main/conf.d/ddibuntu-archive.conf etc/ddibuntu/update.conf etc/ddibuntu/update-pubkey.pem \
+         usr/local/sbin/ddibuntu-selfupdate usr/local/sbin/ddibuntu-cluster usr/local/sbin/ddibuntu-ad usr/local/sbin/ddibuntu-backup usr/local/sbin/ddibuntu-radius etc/systemd/system/freeradius.service.d/ddibuntu.conf etc/systemd/system/ddibuntu-radius-winbind.service usr/local/sbin/ddibuntu-health usr/local/lib/ddibuntu/wal-archive.sh usr/local/lib/ddibuntu/cluster-drill.py etc/ddibuntu/backup.conf etc/postgresql/16/main/conf.d/ddibuntu-archive.conf etc/ddibuntu/update.conf etc/ddibuntu/update-pubkey.pem \
          opt/ddibuntu/console/app/server/index.mjs; do
   [ -f "$TARGET/$f" ] || fail "fichier attendu absent après déploiement : /$f"
 done

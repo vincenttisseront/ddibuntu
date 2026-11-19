@@ -10,6 +10,7 @@ import { buildDeposit, crlSetDigest, readiness } from '../utils/radius-pki'
 import { loadPki, savePki, withPki } from '../utils/radius-pki-store'
 import { decryptSecret } from '../utils/auth'
 import { authzDigest, authzProblems, buildAuthzDeposit } from '../utils/radius-authz'
+import { loadAuth } from '../utils/radius-auth'
 import { getPushed, loadCompiled, setPushed } from '../utils/radius-rules-store'
 import { dirPassword, loadDir } from '../utils/radius-dir-store'
 import { readJournal, type JournalKind } from '../utils/radius-journal'
@@ -32,7 +33,7 @@ async function renameClientInRules(cl: { query: (t: string, p?: unknown[]) => Pr
 /** Résumé des règles pour l'onglet « Service » : combien d'actives, et si la liste enregistrée diffère de ce qui est déployé. */
 async function rulesBrief() {
   const { compiled } = await loadCompiled(), dir = await loadDir()
-  const digest = authzDigest(compiled, dir, dir.bindPasswordEnc ? dirPassword(dir) : null)
+  const digest = authzDigest(compiled, dir, dir.bindPasswordEnc ? dirPassword(dir) : null, await loadAuth())
   return { active: compiled.length, pending: digest !== ((await getPushed()) ?? 'none') }
 }
 
@@ -51,7 +52,7 @@ async function clusterBrief() {
 }
 route('GET', '/radius', 'viewer', async () => {
   const n = await one<{ n: number; on: number }>('select count(*)::int as n, count(*) filter (where enabled)::int as on from radius_clients')
-  return { status: await readRadiusStatus(), result: await readRadiusResult(), requestPending: await radiusRequestPending(), pki: pkiBrief(await loadPki()), clients: n?.n ?? 0, enabledClients: n?.on ?? 0, max: MAX_CLIENTS, rules: await rulesBrief(), journal: await journalBrief(), cluster: await clusterBrief() }
+  return { auth: await loadAuth(), status: await readRadiusStatus(), result: await readRadiusResult(), requestPending: await radiusRequestPending(), pki: pkiBrief(await loadPki()), clients: n?.n ?? 0, enabledClients: n?.on ?? 0, max: MAX_CLIENTS, rules: await rulesBrief(), journal: await journalBrief(), cluster: await clusterBrief() }
 })
 
 // Journal des authentifications de CE nœud : acceptées, refusées (avec le certificat, la règle et la raison), et les diagnostics du démon
@@ -125,15 +126,15 @@ route('POST', '/radius/apply', 'admin', async (c) => {
   const dep = r.ready ? buildDeposit(pki, decryptSecret(pki.server!.keyEnc)) : undefined
   // règles d'accès : sans règle active, root déploie le refus par défaut ; avec des règles, EAP-TLS et l'annuaire doivent être prêts (sinon on ne déploie rien)
   const { compiled } = await loadCompiled(), dir = await loadDir(), st = await readRadiusStatus()
-  const password = dir.bindPasswordEnc ? dirPassword(dir) : null
-  const problems = authzProblems({ rules: compiled, pkiEmpty: r.empty, pkiReady: r.ready, dir, password, ldapModule: st ? st.ldapModule : null })
+  const password = dir.bindPasswordEnc ? dirPassword(dir) : null, auth = await loadAuth()
+  const problems = authzProblems({ rules: compiled, pkiEmpty: r.empty, pkiReady: r.ready, dir, password, ldapModule: st ? st.ldapModule : null, auth })
   if (problems.length) fail(409, 'radius_authz_not_ready', undefined, { problems })
-  const authz = compiled.length && dep ? buildAuthzDeposit(compiled, dir, password!) : undefined
+  const authz = compiled.length && dep ? buildAuthzDeposit(compiled, dir, password!, auth) : undefined
   const req = { action: 'apply' as const, clients: renderClientsConf(rows), pki: dep, authz }
   const prev = await resultBeforeDeposit()
   const out = await deposit(c, req, { clients: rows.filter((x) => x.enabled).length, eap: !!dep, checkCrl: dep?.checkCrl ?? null, rules: compiled.length })
   await notePending('apply', out.requestedAt, prev, req)   // devient « le déploiement » quand root l'a accepté : c'est ce que rejouera le nouveau leader
-  await setPushed(authzDigest(compiled, dir, password))
+  await setPushed(authzDigest(compiled, dir, password, auth))
   // les CRL déployées sont celles-ci : la tâche planifiée n'en renvoie une nouvelle (et ne redémarre le service) que si elles changent
   if (dep) await withPki(async () => { const s = await loadPki(); await savePki({ ...s, crlPushed: crlSetDigest(s) }) })
   return out

@@ -23,11 +23,11 @@ KEYRING="${DDI_KEYRING:-/usr/share/keyrings/ubuntu-archive-keyring.gpg}"
 # Empreinte de la clé « Ubuntu CD Image Automatic Signing Key (2012) » : seule signature acceptée.
 CD_KEY_FPRS="${DDI_CD_KEY_FPRS:-843938DF228D22F7B3742BC0D94AA3F0EFE21092}"
 DOCKER_IMAGE="ubuntu:24.04"
-DDI_PACKAGES="nftables whiptail postgresql postgresql-client bind9 bind9-utils bind9-dnsutils kea-dhcp4-server kea-admin python3 open-vm-tools patroni etcd-server etcd-client python3-psycopg2 gnupg openssl curl keepalived krb5-user freeradius freeradius-ldap podman"
+DDI_PACKAGES="nftables whiptail postgresql postgresql-client bind9 bind9-utils bind9-dnsutils kea-dhcp4-server kea-admin python3 open-vm-tools patroni etcd-server etcd-client python3-psycopg2 gnupg openssl curl keepalived krb5-user freeradius freeradius-ldap podman winbind samba-common-bin"
 # Paquets que la MISE À JOUR EN LIGNE embarque (0.14.11) : l'ISO les installe déjà (liste ci-dessus) mais pas la mise à jour en ligne, si bien qu'un nœud
 # installé avant qu'ils ne servent ne les avait pas (podman pour la PKI, FreeRADIUS pour l'accès réseau). Ils sont posés sur tous les nœuds de données ;
 # l'arbitre d'un cluster n'en a besoin d'aucun. Chaque nom doit aussi figurer dans DDI_PACKAGES (contrôlé par tests/b09-selfupdate.sh).
-DDI_UPDATE_PACKAGES="podman freeradius freeradius-ldap"
+DDI_UPDATE_PACKAGES="podman freeradius freeradius-ldap winbind samba-common-bin"
 # Node.js : dernière 22.x, vérifiée par la signature de l'équipe de publication (clés ACTIVES, épinglées par empreinte,
 # README de https://github.com/nodejs/release-keys). Une signature par une autre clé est refusée.
 NODE_BASE_URL="${DDI_NODE_URL:-https://nodejs.org/dist/latest-v22.x}"

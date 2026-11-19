@@ -48,8 +48,8 @@ export function openApply(enc: string | null | undefined): ApplyRequest | null {
   }
   if (j.authz !== undefined) {
     const a = j.authz
-    if (!out.pki || !a || typeof a !== 'object' || !isStr(a.rules, 2_000_000) || !isStr(a.ldap, 100_000) || (a.caPem !== undefined && !isStr(a.caPem, 200_000))) return null
-    out.authz = { rules: a.rules, ldap: a.ldap, ...(a.caPem !== undefined ? { caPem: a.caPem } : {}) } satisfies AuthzDeposit
+    if (!out.pki || !a || typeof a !== 'object' || !isStr(a.rules, 2_000_000) || !isStr(a.ldap, 100_000) || (a.caPem !== undefined && !isStr(a.caPem, 200_000)) || (a.auth !== undefined && !isStr(a.auth, 4096))) return null
+    out.authz = { rules: a.rules, ldap: a.ldap, ...(a.caPem !== undefined ? { caPem: a.caPem } : {}), ...(a.auth !== undefined ? { auth: a.auth } : {}) } satisfies AuthzDeposit
   }
   return out
 }

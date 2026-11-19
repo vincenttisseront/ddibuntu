@@ -19,7 +19,7 @@ openssl genpkey -algorithm ed25519 -out "$W/evil.pem" 2>/dev/null
 echo "== Système simulé 0.4.0 =="
 mk "$R/usr/local/lib/ddibuntu/VERSION" 0.4.0; cp "$COMMON" "$R/usr/local/lib/ddibuntu/common.sh"
 mk "$R/etc/ddibuntu/update.conf" 'REPO="acme/ddibuntu"'
-mk "$R/usr/local/lib/ddibuntu/update-packages" "podman freeradius freeradius-ldap"
+mk "$R/usr/local/lib/ddibuntu/update-packages" "podman freeradius freeradius-ldap winbind samba-common-bin"
 cp "$W/pub.pem" "$R/etc/ddibuntu/update-pubkey.pem"
 mk "$R/etc/ddibuntu/firewall.conf" 'ADMIN_NETS="10.1.0.0/16"'
 mk "$R/etc/ddibuntu/nftables.nft" "REGLES ADMIN"
@@ -224,9 +224,9 @@ export PATH="$FB:$PATH"
 mkdeb() { printf 'Package: %s\nVersion: %s\nArchitecture: %s\n' "$2" "$3" "${4:-amd64}" > "$1/$2_$3_${4:-amd64}.deb"; }
 mkdebs() { # dossier : podman et ses dépendances, comme dans l'archive de la release
   local d="$1"; rm -rf "$d"; mkdir -p "$d"
-  mkdeb "$d" podman 4.9.3+ds1-1ubuntu0.2; mkdeb "$d" freeradius 3.2.5-3; mkdeb "$d" freeradius-ldap 3.2.5-3; mkdeb "$d" conmon 2.1.10-1
+  mkdeb "$d" podman 4.9.3+ds1-1ubuntu0.2; mkdeb "$d" freeradius 3.2.5-3; mkdeb "$d" freeradius-ldap 3.2.5-3; mkdeb "$d" winbind 4.19.5-1; mkdeb "$d" samba-common-bin 4.19.5-1; mkdeb "$d" conmon 2.1.10-1
   mkdeb "$d" perl-base 5.38.2-3.2; mkdeb "$d" libfoo 1.1; mkdeb "$d" libautre 1.0 i386
-  printf 'podman\nfreeradius\nfreeradius-ldap\n' > "$d/REQUESTED"
+  printf 'podman\nfreeradius\nfreeradius-ldap\nwinbind\nsamba-common-bin\n' > "$d/REQUESTED"
   ( cd "$d" && sha256sum ./*.deb > SHA256SUMS )
 }
 resetdb() { printf 'perl-base 5.40.0-1\nlibfoo 1.0\nca-certificates 20990101\n' > "$FAKE_DB"; rm -f "$FD"/dpkg-count "$FD"/dpkg-calls "$FD"/apt-calls "$FD"/dpkg-mode "$FD"/apt-mode "$R/var/lib/ddibuntu/packages-attempt"; }
@@ -266,7 +266,7 @@ echo "-- 9c. dpkg échoue : apt-get en secours --"
 resetdb; echo fail > "$FD/dpkg-mode"; echo ok > "$FD/apt-mode"
 mkrelease 0.7.2 "$W/priv.pem" "$W/debs-ok"
 expect_eq "apply 0.7.2 : code 0" 0 "$(req '{"action":"apply","version":"0.7.2"}')"
-expect_grep "…apt-get appelé avec les paquets demandés" "install -y -qq --no-install-recommends podman freeradius freeradius-ldap" "$FD/apt-calls"
+expect_grep "…apt-get appelé avec les paquets demandés" "install -y -qq --no-install-recommends podman freeradius freeradius-ldap winbind samba-common-bin" "$FD/apt-calls"
 expect_eq "…podman posé par apt" yes "$(have podman)"
 expect_eq "…état des paquets : ok" ok "$(jget "$ST" packages_state)"
 expect_eq "…policy-rc.d d'origine restauré" ORIGINAL "$(cat "$R/usr/sbin/policy-rc.d")"
@@ -362,11 +362,11 @@ mk "$R/usr/local/sbin/ddibuntu-selfupdate" '#!/bin/sh' 755
 resetdb; rm -f "$FD/sdrun-calls" "$FD/follow.log"; unset DDI_TEST
 pkg_step
 expect_grep "paquet manquant : récupération lancée en arrière-plan" "--unit=ddibuntu-packages .*ddibuntu-selfupdate packages --auto" "$FD/sdrun-calls"
-expect_grep "…le journal nomme les paquets manquants" "paquets manquants : podman freeradius freeradius-ldap" "$FD/follow.log"
+expect_grep "…le journal nomme les paquets manquants" "paquets manquants : podman freeradius freeradius-ldap winbind samba-common-bin" "$FD/follow.log"
 mkdir -p "$R/var/lib/ddibuntu"; : > "$R/var/lib/ddibuntu/packages-attempt"; rm -f "$FD/sdrun-calls"
 pkg_step
 expect_eq "essai récent (< 6 h) : rien n'est relancé" no "$([[ -e "$FD/sdrun-calls" ]] && echo yes || echo no)"
-rm -f "$R/var/lib/ddibuntu/packages-attempt"; printf 'podman 4.9.3\nfreeradius 3.2.5\nfreeradius-ldap 3.2.5\n' > "$FAKE_DB"
+rm -f "$R/var/lib/ddibuntu/packages-attempt"; printf 'podman 4.9.3\nfreeradius 3.2.5\nfreeradius-ldap 3.2.5\nwinbind 4.19\nsamba-common-bin 4.19\n' > "$FAKE_DB"
 pkg_step
 expect_eq "rien ne manque : rien n'est lancé" no "$([[ -e "$FD/sdrun-calls" ]] && echo yes || echo no)"
 resetdb; chmod 644 "$R/usr/local/sbin/ddibuntu-selfupdate"

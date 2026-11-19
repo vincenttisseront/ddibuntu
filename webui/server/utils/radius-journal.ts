@@ -56,6 +56,10 @@ export function classify(reason: string): string {
   if (/regle \d+ : refus/.test(r)) return 'rule_deny'
   if (r.includes('aucune regle')) return 'no_rule'
   if (r.includes('unknown client') || r.includes('equipement inconnu')) return 'unknown_client'
+  if (r.includes('identifiant non pris en charge')) return 'identity_unsupported'
+  if (r.includes('domaine inconnu')) return 'domain_unknown'
+  if (r.includes('nom netbios')) return 'netbios_missing'
+  if (r.includes('wrong_password') || r.includes('password is incorrect') || r.includes('invalid credentials') || r.includes('bind as user failed') || r.includes('logon failure')) return 'bad_password'
   return 'other'
 }
 
