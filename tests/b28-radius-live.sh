@@ -20,6 +20,7 @@ D="$T_TMP"; chmod 0755 "$D"   # le démon abandonne ses privilèges (freerad) : 
 mkdir -p "$D/gen" "$D/run" "$D/state" "$D/bin"
 export DDI_LIBDIR="$RFS/usr/local/lib/ddibuntu" DDI_RADIUS_DIR="$D/etc" DDI_RADIUS_LOCK="$D/lock" DDI_STATE_DIR="$D/state" DDI_RUN_DIR="$D/run" DDI_GENERATED_DIR="$D/gen"
 export DDI_RADIUS_SYSTEMCTL="$D/bin/systemctl" DDI_FW_BIN="$D/bin/fw"
+export DDI_RADIUS_AUTHLOG_DIR="$D/authlog" DDI_CONSOLE_GROUP=daemon
 SELF="0123456789abcdef0123456789abcdef"; WLC="abcdefABCDEF._~+=:@,;()!*-0123"
 
 # faux systemctl : le service est un vrai freeradius lancé sur l'arborescence générée ; « fail » dans $D/failstart simule un démarrage impossible
@@ -94,7 +95,7 @@ expect_grep "message : 2 clients" 'démarré \(2 client' "$D/apply.out"
 expect_eq "clients.conf : 0640 root:freerad" "640 root freerad" "$(stat -c '%a %U %G' "$D/etc/clients.conf")"
 expect_eq "radiusd.conf : 0640 root:freerad" "640 root freerad" "$(stat -c '%a %U %G' "$D/etc/radiusd.conf")"
 expect_eq "un seul site activé (pas de site « default » du paquet)" "ddibuntu" "$(ls "$D/etc/sites-enabled")"
-expect_eq "modules limités à la liste blanche" "always attr_filter preprocess" "$(ls "$D/etc/mods-enabled" | tr '\n' ' ' | sed 's/ $//')"
+expect_eq "modules limités à la liste blanche" "always attr_filter ddibuntu_authlog expr preprocess" "$(ls "$D/etc/mods-enabled" | tr '\n' ' ' | sed 's/ $//')"
 expect_nogrep "aucun secret par défaut du paquet" 'testing123' "$D/etc/clients.conf"
 expect_eq "statut publié : actif" True "$(rj "$D/run/radius-status.json" active)"
 expect_eq "statut publié : 2 clients (sans le client d'essai)" 2 "$(rj "$D/run/radius-status.json" clients)"
@@ -103,6 +104,18 @@ udp_listen 1812 && ok "démon : écoute l'authentification (UDP 1812)" || ko "d�
 udp_listen 1813 && ok "démon : écoute la comptabilité (UDP 1813)" || ko "démon : écoute la comptabilité (UDP 1813)" "port non ouvert"
 expect_eq "pare-feu : réseaux des clients transmis" "set RADIUS_NETS 10.10.0.0/24,192.0.2.7/32" "$(sed -n 1p "$D/fw.log")"
 expect_eq "pare-feu : puis application" "apply" "$(sed -n 2p "$D/fw.log")"
+
+echo "== Journal des authentifications : droits, une ligne par refus, valeurs piégées =="
+AL="$D/authlog/radius-auth.log"
+expect_eq "dossier du journal : 2750 freerad:groupe de la console (setgid)" "2750 freerad daemon" "$(stat -c '%a %U %G' "$D/authlog")"
+printf 'User-Name = "we|ird\\"na\x27me=", User-Password = "x", Calling-Station-Id = "aa:bb:cc:dd:ee:ff|zz", Message-Authenticator = 0x00\n' | radclient -t 2 -r 1 127.0.0.1:1812 auth "$SELF" >/dev/null 2>&1
+sleep 0.5
+expect_eq "journal : fichier 0640 freerad:groupe de la console" "640 freerad daemon" "$(stat -c '%a %U %G' "$AL" 2>/dev/null)"
+lastline="$(tail -n 1 "$AL" 2>/dev/null)"
+expect_eq "refus journalisé sur UNE ligne de 18 champs (les « | » des valeurs sont neutralisés)" 18 "$(printf '%s' "$lastline" | awk -F'|' '{print NF}')"
+expect_eq "…version, résultat et équipement" "v1 reject ddi-selftest" "$(printf '%s' "$lastline" | awk -F'|' '{print $1" "$3" "$5}')"
+expect_eq "…nom présenté : « | », guillemet, apostrophe, « = » codés" 'we=7Cird=22na=27me=3D' "$(printf '%s' "$lastline" | awk -F'|' '{print $4}')"
+expect_eq "…adresse MAC : « | » codé" 'aa:bb:cc:dd:ee:ff=7Czz' "$(printf '%s' "$lastline" | awk -F'|' '{print $7}')"
 r="$(send "$SELF")"
 echo "$r" | grep -q 'Received Access-Reject' && ok "bon secret : Access-Reject authentique (aucune règle d'accès : refus par défaut)" || ko "bon secret : Access-Reject attendu" "$(echo "$r" | tail -3 | tr '\n' ' ')"
 r="$(send "wrongsecretwrongsecretwrong")"

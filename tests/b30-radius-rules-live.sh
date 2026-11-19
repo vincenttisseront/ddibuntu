@@ -26,6 +26,7 @@ bash "$ROOT/tests/samba-lab.sh" extra "$LAB" >"$D/lab-extra.out" 2>&1 || { ko "a
 mkdir -p "$D/gen" "$D/run" "$D/state" "$D/bin" "$D/pki"
 export DDI_LIBDIR="$RFS/usr/local/lib/ddibuntu" DDI_RADIUS_DIR="$D/etc" DDI_RADIUS_LOCK="$D/lock" DDI_STATE_DIR="$D/state" DDI_RUN_DIR="$D/run" DDI_GENERATED_DIR="$D/gen"
 export DDI_RADIUS_SYSTEMCTL="$D/bin/systemctl" DDI_FW_BIN="$D/bin/fw"
+export DDI_RADIUS_AUTHLOG_DIR="$D/authlog" DDI_CONSOLE_GROUP=daemon
 SELF="0123456789abcdef0123456789abcdef"; BINDPW='Passw0rd-svc-radius-1!'
 FX="$ROOT/tests/radius-rules-cases.json"; GOLD="$ROOT/tests/radius-rules-compiled.json"
 
@@ -191,7 +192,7 @@ echo "== Déploiement avec règles =="
 expect_grep "message : règles d'accès comptées" 'Règles d.accès : 7 règle' "$D/apply.out"
 expect_eq "module ldap : 0640 root:freerad (il contient le mot de passe de liaison)" "640 root freerad" "$(stat -c '%a %U %G' "$D/etc/mods-enabled/ldap")"
 expect_eq "autorité LDAPS installée : 0640 root:freerad" "640 root freerad" "$(stat -c '%a %U %G' "$D/etc/certs/ldap-ca.pem")"
-expect_eq "modules : liste blanche + eap + ldap + expr" "always attr_filter eap expr ldap preprocess" "$(find "$D/etc/mods-enabled" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+expect_eq "modules : liste blanche + eap + ldap + expr" "always attr_filter ddibuntu_authlog eap expr ldap preprocess" "$(find "$D/etc/mods-enabled" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
 expect_eq "statut publié : règles actives" True "$(rj "$D/run/radius-status.json" authz.enabled)"
 expect_eq "statut publié : 7 règles" 7 "$(rj "$D/run/radius-status.json" authz.rules)"
 expect_eq "statut publié : module LDAP présent" True "$(rj "$D/run/radius-status.json" ldap_module)"
@@ -205,7 +206,7 @@ localize
 expect_eq "service actif" yes "$("$D/bin/systemctl" is-active x && echo yes || echo no)"
 expect_nogrep "le démon ne signale aucune erreur de configuration" 'Error:|Failed to|rlm_ldap.*failed' "$D/daemon.out"
 
-RLOG=/var/log/freeradius/radius.log
+RLOG="$D/authlog/radius.log"; AL="$D/authlog/radius-auth.log"
 mac="AA-BB-CC-DD-EE-FF"
 eap() {   # eap CERT_BASE CLIENT SSID : sortie d'eapol_test (SSID « - » : aucun)
   local n="$1" c="${2:-wifi-ctrl}" ssid="${3:--}" cf; cf="$(mktemp "$D/eap.XXXXXX")"
@@ -276,11 +277,15 @@ while IFS='|' read -r id base client ssid decision code rule vlan pool timeout f
   [ "${B30_SHOW:-}" = "$id" ] && { echo "$r" > /tmp/b30-show.txt; }
   if [ "$decision" = accept ]; then
     echo "$last" | grep -q '^SUCCESS' && ok "$id : accepté" || ko "$id : accepté attendu" "$(echo "$r" | tail -3)"
+    # journal des authentifications : une ligne « accept » avec l'identité retenue et la règle qui a décidé (numéro et nom)
+    expect_grep "$id : journal d'authentifications : accepté, identité et règle $rule" '\|accept\|.*\|(user|computer):[^|]+\|regle '"$rule"' : [^|]*\|$' <(tail -n 1 "$AL")
     # attributs de réponse reçus par l'équipement (VLAN, pool, durée, Filter-Id, attributs constructeur)
     echo "$r" > "$D/out.$id"; rc2="$(python3 "$D/replycheck.py" "$D/out.$id" "$vlan" "$pool" "$timeout" "$filter" "$attrs")"
     [ "$rc2" = OK ] && ok "$id : attributs de réponse conformes (VLAN, pool, durée, Filter-Id, constructeur ; rien de plus)" || ko "$id : attributs de réponse" "$rc2"
   else
     echo "$last" | grep -q '^FAILURE' && ok "$id : refusé" || ko "$id : refus attendu" "$(echo "$r" | tail -3)"
+    if [ "$code" = rule_reject ]; then expect_grep "$id : journal d'authentifications : refusé, règle $rule" '\|reject\|.*\|ddibuntu : regle '"$rule"' : refus$' <(tail -n 1 "$AL")
+    else expect_grep "$id : journal d'authentifications : refusé, ${WHY[$code]}" '\|reject\|.*\|ddibuntu : '"${WHY[$code]}"'[^|]*$' <(tail -n 1 "$AL"); fi
     if [ "$code" = rule_reject ]; then expect_grep "$id : journal « règle $rule : refus »" "Login incorrect.*regle $rule : refus" <(lastlog 8)
     else expect_grep "$id : journal « ${WHY[$code]} »" "Login incorrect.*${WHY[$code]}" <(lastlog 8); fi
   fi
@@ -386,7 +391,7 @@ expect_eq "…le service précédent répond toujours" SUCCESS "$(verdict alice 
 echo "== Retrait des règles : retour au refus par défaut =="
 deploy "$DEP"; rc=$?
 expect_eq "déploiement sans règles : code 0" 0 "$rc"
-expect_eq "…modules : plus de module LDAP" "always attr_filter eap preprocess" "$(find "$D/etc/mods-enabled" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+expect_eq "…modules : plus de module LDAP" "always attr_filter ddibuntu_authlog eap expr preprocess" "$(find "$D/etc/mods-enabled" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
 expect_eq "…statut publié : règles inactives" False "$(rj "$D/run/radius-status.json" authz.enabled)"
 expect_eq "…alice, valide, est refusée" FAILURE "$(verdict alice wifi-ctrl "Corp Wifi")"
 expect_grep "…journal : certificat valide, aucune règle d'accès" 'Login incorrect.*aucune regle d.acces' <(lastlog 8)

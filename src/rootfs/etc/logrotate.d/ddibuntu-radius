@@ -1,0 +1,14 @@
+# DDI-Buntu : journal des authentifications RADIUS (radius-auth.log) et journal technique de FreeRADIUS (radius.log).
+# Les deux fichiers sont écrits par FreeRADIUS (compte freerad) et lus par la console (groupe ddiconsole) : « copytruncate » garde le
+# fichier, son propriétaire et son groupe, et ne demande aucun rechargement du service. La console relit le fichier par position :
+# elle repart du début quand il est tronqué.
+/var/log/ddibuntu-radius/*.log {
+	daily
+	rotate 14
+	maxsize 100M
+	missingok
+	notifempty
+	compress
+	delaycompress
+	copytruncate
+}

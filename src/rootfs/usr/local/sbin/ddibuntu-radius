@@ -25,9 +25,11 @@ SYSCTL="${DDI_RADIUS_SYSTEMCTL:-systemctl}"
 JOURNALCTL="${DDI_RADIUS_JOURNALCTL:-journalctl}"
 FW_BIN="${DDI_FW_BIN:-/usr/local/sbin/ddibuntu-fw}"
 GROUP="${DDI_RADIUS_GROUP:-freerad}"
+AUTHLOG_DIR="${DDI_RADIUS_AUTHLOG_DIR:-/var/log/ddibuntu-radius}"   # journal des authentifications : écrit par FreeRADIUS, lu par la console (groupe ddiconsole) — jamais le reste de /var/log/freeradius
+CONSOLE_GROUP="${DDI_CONSOLE_GROUP:-ddiconsole}"
 SERVICE="freeradius.service"
 BACKUP="$STATE/radius-backup"
-MODULES="always attr_filter preprocess"                 # modules du paquet réellement utilisés par le site (le module eap est généré, pas celui du paquet)
+MODULES="always attr_filter preprocess expr"            # modules du paquet réellement utilisés par le site (le module eap est généré, pas celui du paquet) ; expr : %{escape:} du journal et règles d'accès
 LDAP_SO="${DDI_RADIUS_LDAP_SO:-/usr/lib/freeradius/rlm_ldap.so}"   # module LDAP : paquet freeradius-ldap (séparé du paquet freeradius)
 MAX_CLIENTS_BYTES=1048576
 
@@ -478,7 +480,9 @@ block(["# 1. identité portée par le certificat : UPN (utilisateur), sinon nom 
        "\t\t&Tmp-String-6 := 'dNSHostName'", "\t\t&Tmp-String-7 := 'computer'", "\t}", "}", "else {"], 2)
 deny("certificat sans identite (ni UPN ni nom DNS)", 3)
 block(["}", "if (!&control:Tmp-String-1) {"], 2); deny("identite du certificat vide", 3)
-block(["}", "# 2. compte dans l'annuaire (échec ou résultat ambigu = refus)", "ldap", "if (notfound) {"], 2); deny("compte introuvable dans l'annuaire", 3)
+block(["}", "# identité retenue, conservée pour le journal (session-state : survit jusqu'à la réponse finale, contrairement à la requête de ce tour)",
+       "update outer.session-state {", "\t&Tmp-String-1 := \"%{control:Tmp-String-0}:%{control:Tmp-String-1}\"", "}",
+       "# 2. compte dans l'annuaire (échec ou résultat ambigu = refus)", "ldap", "if (notfound) {"], 2); deny("compte introuvable dans l'annuaire", 3)
 block(["}", "elsif (!(updated || ok)) {"], 2); deny("annuaire indisponible ou compte ambigu", 3)
 block(["}", "# 3. état du compte : mêmes critères que la console (désactivé, verrouillé, expiré ; attributs illisibles = refus)",
        "if (!&control:Tmp-String-3 || &control:Tmp-String-3 !~ /^[0-9]{1,10}$/) {"], 2); deny("attributs du compte illisibles", 3)
@@ -504,6 +508,7 @@ for r in out:
     block(["if (%s) {" % (" && ".join(cond) if cond else "&control:Tmp-String-0")], 2)
     if r["act"] == "accept":
         if r["reply"]: block(["\tupdate outer.reply {"] + ["\t\t" + x for x in r["reply"]] + ["\t}"], 2)
+        block(["\tupdate outer.session-state {", "\t\t&Tmp-String-0 := " + sq("regle %d : %s" % (r["n"], r["label"])), "\t}"], 2)
         block(["\tupdate config {", "\t\t&Auth-Type := Accept", "\t}", "\treturn"], 2)
     else:
         block(["\tupdate config {", "\t\t&Auth-Type := Reject", "\t}", "\tupdate outer.request {", "\t\t&Module-Failure-Message := \"ddibuntu : regle %d : refus\"" % r["n"], "\t}", "\treturn"], 2)
@@ -521,6 +526,50 @@ put("ldap.mod", "\n".join(L) + "\n"); put("site.conf", "\n".join(S) + "\n")
 if ca_ok: put("ldap-ca.pem", "".join(CERT.findall(ca_txt)))
 print("rules=%d servers=%s" % (len(out), ",".join(urls)))
 PY
+}
+
+# ---- Journal des authentifications ----
+# Une ligne par décision (Access-Accept ou Access-Reject), champs séparés par « | », valeurs passées par %{escape:} : tout caractère hors liste
+# sûre (dont « | », guillemets, retours à la ligne) devient « =XX » (hexadécimal, octet par octet), la console le décode. Format versionné (« v1 »).
+# Colonnes : v1|heure(epoch)|résultat|nom présenté|équipement (client)|adresse de l'équipement|MAC du poste|station appelée (borne:SSID)|NAS-Identifier|
+#            sujet|émetteur|série|fin de validité (certificat)|UPN|nom DNS|identité retenue|décision (règle)|raison
+authlog_format() {
+  local f="v1|%l|$1" x why=''
+  [[ "$1" = reject ]] && why='%{Module-Failure-Message}'   # la raison n'a de sens que pour un refus (le message d'un tour précédent ne doit pas coller à une acceptation)
+  for x in '%{User-Name}' '%{client:shortname}' '%{%{Packet-Src-IP-Address}:-%{Packet-Src-IPv6-Address}}' '%{Calling-Station-Id}' '%{Called-Station-Id}' '%{NAS-Identifier}' \
+           '%{%{session-state:TLS-Client-Cert-Subject}:-%{TLS-Client-Cert-Subject}}' '%{%{session-state:TLS-Client-Cert-Issuer}:-%{TLS-Client-Cert-Issuer}}' \
+           '%{%{session-state:TLS-Client-Cert-Serial}:-%{TLS-Client-Cert-Serial}}' '%{%{session-state:TLS-Client-Cert-Expiration}:-%{TLS-Client-Cert-Expiration}}' \
+           '%{%{session-state:TLS-Client-Cert-Subject-Alt-Name-Upn}:-%{TLS-Client-Cert-Subject-Alt-Name-Upn}}' '%{%{session-state:TLS-Client-Cert-Subject-Alt-Name-Dns}:-%{TLS-Client-Cert-Subject-Alt-Name-Dns}}' \
+           '%{session-state:Tmp-String-1}' '%{session-state:Tmp-String-0}' "$why"; do
+    if [[ -n "$x" ]]; then f+="|%{escape:$x}"; else f+="|"; fi
+  done
+  printf '%s' "$f"
+}
+write_authlog_module() {
+  local f="$RDIR/mods-enabled/ddibuntu_authlog"
+  cat > "$f" <<EOF
+# Généré par ddibuntu-radius : journal des authentifications (lu par la console). Ne pas modifier à la main.
+linelog ddibuntu_authlog_ok {
+	filename = $AUTHLOG_DIR/radius-auth.log
+	permissions = 0640
+	escape_filenames = no
+	format = "$(authlog_format accept)"
+}
+linelog ddibuntu_authlog_ko {
+	filename = $AUTHLOG_DIR/radius-auth.log
+	permissions = 0640
+	escape_filenames = no
+	format = "$(authlog_format reject)"
+}
+EOF
+  chown root:"$GROUP" "$f" && chmod 0640 "$f"
+}
+# dossier du journal : propriétaire = le compte du démon (il y crée le fichier), groupe = la console (lecture seule), setgid pour que le fichier garde ce groupe
+ensure_authlog_dir() {
+  local g="$CONSOLE_GROUP"
+  getent group "$g" >/dev/null || g="$GROUP"
+  install -d -m 2750 -o "${DDI_RADIUS_USER:-freerad}" -g "$g" "$AUTHLOG_DIR" || return 1
+  chown "${DDI_RADIUS_USER:-freerad}:$g" "$AUTHLOG_DIR" 2>/dev/null; chmod 2750 "$AUTHLOG_DIR" 2>/dev/null; return 0
 }
 
 # ---- Arborescence FreeRADIUS gérée par DDI-Buntu ----
@@ -551,7 +600,7 @@ hostname_lookups = no
 log {
 	destination = files
 	colourise = no
-	file = \${logdir}/radius.log
+	file = $AUTHLOG_DIR/radius.log
 	syslog_facility = daemon
 	stripped_names = no
 	auth = yes
@@ -647,7 +696,9 @@ EOF
 	session {
 	}
 	post-auth {
+		ddibuntu_authlog_ok
 		Post-Auth-Type REJECT {
+			ddibuntu_authlog_ko
 			attr_filter.access_reject
 EOF
   [[ "$eap" = eap ]] && printf '\t\t\teap\n'
@@ -739,7 +790,6 @@ build_tree() {   # $1 = clients.conf validé ; $2 = instantané PKI validé (opt
   [[ -d "$(dirname "$RDIR")" ]] || install -d -m 0755 "$(dirname "$RDIR")"
   install -d -m 0750 -o root -g "$GROUP" "$RDIR" "$RDIR/sites-available" "$RDIR/sites-enabled" "$RDIR/mods-enabled"
   local m mods="$MODULES"
-  [[ -n "${4:-}" ]] && mods="$MODULES expr"
   wipe_ldap "$RDIR"    # le module LDAP porte le mot de passe de liaison : écrasé avant suppression
   find "$RDIR/mods-enabled" "$RDIR/sites-enabled" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
   wipe_certs "$RDIR"   # jamais de clé ni de certificat d'un déploiement précédent : réinstallés depuis la PKI validée, ou absents
@@ -748,6 +798,8 @@ build_tree() {   # $1 = clients.conf validé ; $2 = instantané PKI validé (opt
     ln -s "$STOCK/mods-available/$m" "$RDIR/mods-enabled/$m"
   done
   ln -sfn "$STOCK/mods-config" "$RDIR/mods-config"
+  ensure_authlog_dir || { log "dossier du journal des authentifications ($AUTHLOG_DIR) impossible à créer"; return 1; }
+  write_authlog_module
   ln -s ../sites-available/ddibuntu "$RDIR/sites-enabled/ddibuntu"
   write_radiusd_conf
   if [[ -n "${2:-}" ]]; then

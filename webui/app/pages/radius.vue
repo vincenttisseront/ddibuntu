@@ -5,8 +5,8 @@
 // déposée par la console : après chaque action on attend la publication du résultat (même mécanique que le pare-feu).
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm(); const fmt = useFmt()
 const { isAdmin } = useRole()
-const tab = useHashTab('service', ['service', 'clients', 'directory', 'certs', 'rules', 'import'])
-const tabs = computed(() => [{ label: t('radius.tab_service'), value: 'service', icon: 'i-lucide-radio-tower' }, { label: t('radius.tab_clients'), value: 'clients', icon: 'i-lucide-router' }, ...(isAdmin.value ? [{ label: t('radius.tab_directory'), value: 'directory', icon: 'i-lucide-network' }, { label: t('radius.tab_certs'), value: 'certs', icon: 'i-lucide-shield-check' }, { label: t('radius.tab_rules'), value: 'rules', icon: 'i-lucide-list-checks' }, { label: t('radius.tab_import'), value: 'import', icon: 'i-lucide-file-input' }] : [])])
+const tab = useHashTab('service', ['service', 'clients', 'journal', 'directory', 'certs', 'rules', 'import'])
+const tabs = computed(() => [{ label: t('radius.tab_service'), value: 'service', icon: 'i-lucide-radio-tower' }, { label: t('radius.tab_clients'), value: 'clients', icon: 'i-lucide-router' }, { label: t('radius.tab_journal'), value: 'journal', icon: 'i-lucide-scroll-text' }, ...(isAdmin.value ? [{ label: t('radius.tab_directory'), value: 'directory', icon: 'i-lucide-network' }, { label: t('radius.tab_certs'), value: 'certs', icon: 'i-lucide-shield-check' }, { label: t('radius.tab_rules'), value: 'rules', icon: 'i-lucide-list-checks' }, { label: t('radius.tab_import'), value: 'import', icon: 'i-lucide-file-input' }] : [])])
 
 const data = ref<any>(null), busy = ref<'' | 'apply' | 'stop' | 'test'>(''), err = ref(''), probe = ref<any>(null)
 const status = computed(() => data.value?.status ?? null)
@@ -84,6 +84,9 @@ await load()
           <div><dt class="text-muted">{{ t('radius.version') }}</dt><dd class="font-mono">{{ status.version || '—' }}</dd></div>
           <div><dt class="text-muted">{{ t('radius.boot') }}</dt><dd>{{ status.enabled ? t('common.yes') : t('common.no') }}</dd></div>
           <div><dt class="text-muted">{{ t('radius.clients_active') }}</dt><dd class="num">{{ status.clients }}</dd></div>
+          <div><dt class="text-muted">{{ t('radius.auth24') }}</dt><dd data-test="radius-auth24">
+            <template v-if="data?.journal?.available && (data.journal.accept || data.journal.reject)">{{ t('radius.auth24_value', { ok: data.journal.accept, ko: data.journal.reject }) }} · <a href="#journal" class="text-primary underline" @click.prevent="tab = 'journal'">{{ t('radius.auth24_go') }}</a></template>
+            <template v-else>{{ t('radius.auth24_none') }}</template></dd></div>
           <div><dt class="text-muted">{{ t('radius.eap') }}</dt><dd data-test="radius-eap">{{ status.eap?.enabled ? t('radius.eap_on') : t('radius.eap_off') }}</dd></div>
           <div><dt class="text-muted">{{ t('radius.rules_state') }}</dt><dd data-test="radius-rules-state">{{ status.authz?.enabled ? t('radius.rules_on', { n: status.authz.rules }) : t('radius.rules_off') }}</dd></div>
           <div><dt class="text-muted">{{ t('radius.ports') }}</dt><dd class="font-mono">1812, 1813</dd></div>
@@ -105,6 +108,7 @@ await load()
       <p v-if="isAdmin" class="text-xs text-dimmed">{{ t('radius.test_hint') }}</p>
     </div>
 
+    <RadiusJournal v-else-if="tab === 'journal'" />
     <RadiusDirectory v-else-if="tab === 'directory' && isAdmin" />
     <RadiusPki v-else-if="tab === 'certs' && isAdmin" :eap="status?.eap ?? null" />
     <RadiusRules v-else-if="tab === 'rules' && isAdmin" @changed="load" />

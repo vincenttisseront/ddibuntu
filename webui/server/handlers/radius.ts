@@ -1,7 +1,7 @@
 // Accès réseau — service RADIUS (0.13.0, itération 1) : clients (contrôleurs Wi-Fi, passerelles VPN, commutateurs) et état du service de CE nœud.
 // Les secrets partagés sont chiffrés au repos et ne sont montrés qu'une fois (création, régénération). Le service lui-même est piloté par root
 // (ddibuntu-radius) à partir d'une demande déposée par la console ; voir utils/radius.ts.
-import { audit, fail, intParam, route } from '../utils/router'
+import { audit, fail, intParam, qint, qstr, route } from '../utils/router'
 import { one, query, tx } from '../utils/db'
 import { cfg } from '../utils/config'
 import { clientBody, depositRadiusRequest, genSecret, MAX_CLIENTS, radiusRequestPending, readRadiusResult, readRadiusStatus, renderClientsConf, sealSecret, selftestSecret } from '../utils/radius'
@@ -12,6 +12,7 @@ import { decryptSecret } from '../utils/auth'
 import { authzDigest, authzProblems, buildAuthzDeposit } from '../utils/radius-authz'
 import { getPushed, loadCompiled, setPushed } from '../utils/radius-rules-store'
 import { dirPassword, loadDir } from '../utils/radius-dir-store'
+import { readJournal, type JournalKind } from '../utils/radius-journal'
 
 export const registered = true
 const COLS = 'id, name, address::text as address, usage, enabled, comment, created_at, updated_at'
@@ -33,9 +34,24 @@ async function rulesBrief() {
   return { active: compiled.length, pending: digest !== ((await getPushed()) ?? 'none') }
 }
 
+/** Compteurs des dernières 24 h pour l'onglet « Service » (hors tests de la console). */
+async function journalBrief() {
+  const j = await readJournal({ limit: 1 })
+  return { available: j.available, accept: j.counts.accept, reject: j.counts.reject, diag: j.counts.diag, truncated: j.truncated }
+}
+
 route('GET', '/radius', 'viewer', async () => {
   const n = await one<{ n: number; on: number }>('select count(*)::int as n, count(*) filter (where enabled)::int as on from radius_clients')
-  return { status: await readRadiusStatus(), result: await readRadiusResult(), requestPending: await radiusRequestPending(), pki: pkiBrief(await loadPki()), clients: n?.n ?? 0, enabledClients: n?.on ?? 0, max: MAX_CLIENTS, rules: await rulesBrief() }
+  return { status: await readRadiusStatus(), result: await readRadiusResult(), requestPending: await radiusRequestPending(), pki: pkiBrief(await loadPki()), clients: n?.n ?? 0, enabledClients: n?.on ?? 0, max: MAX_CLIENTS, rules: await rulesBrief(), journal: await journalBrief() }
+})
+
+// Journal des authentifications de CE nœud : acceptées, refusées (avec le certificat, la règle et la raison), et les diagnostics du démon
+// (équipement inconnu, alerte TLS du poste). Filtres : résultat, texte libre (poste, MAC, équipement, certificat, raison), depuis N minutes.
+route('GET', '/radius/events', 'viewer', async (c) => {
+  const kind = qstr(c, 'kind', 10)
+  if (kind !== undefined && !['accept', 'reject', 'diag'].includes(kind)) fail(400, 'invalid_query')
+  const minutes = qint(c, 'minutes', 0, 0, 60 * 24 * 30)
+  return readJournal({ kind: kind as JournalKind | undefined, q: qstr(c, 'q', 100), since: minutes ? Date.now() - minutes * 60_000 : undefined, limit: qint(c, 'limit', 200, 1, 1000), selftest: qstr(c, 'selftest', 1) === '1' })
 })
 
 route('GET', '/radius/clients', 'viewer', async () => ({ items: await query(`select ${COLS} from radius_clients order by name`) }))

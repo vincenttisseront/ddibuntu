@@ -1,5 +1,16 @@
 # Journal des modifications
 
+## 0.14.18 — « RADIUS : journal complet des authentifications »
+
+L'onglet Service ne montrait qu'un « client actif ». On ne pouvait pas savoir qui se connecte, ni pourquoi un poste est refusé. Chaque décision de FreeRADIUS est maintenant écrite dans un journal et lisible dans la console.
+
+- **Journal** : une ligne par décision (acceptée ou refusée) dans `/var/log/ddibuntu-radius/radius-auth.log` (format `v1`, 18 champs séparés par `|`, valeurs échappées) : date, décision, identité, équipement (NAS), adresse du NAS, MAC du poste, SSID, certificat (sujet, émetteur, série, expiration, UPN, DNS), règle d'accès qui a décidé (numéro et nom), motif du refus. Le dossier est lisible par le groupe de la console (`freerad:ddiconsole`, 2750). Rotation quotidienne (`/etc/logrotate.d/ddibuntu-radius`, 14 jours, 100 Mo).
+- **Console** : nouvel onglet **Journal** de la page RADIUS (filtres par décision, période, texte, ligne détaillée). Chaque refus est expliqué en clair avec ce qu'il faut vérifier : certificat révoqué ou expiré, autorité inconnue, mauvais usage du certificat, absence de certificat, compte absent / désactivé / verrouillé / expiré, annuaire injoignable, règle de refus, aucune règle applicable, version de TLS. L'onglet Service affiche les compteurs des dernières 24 h. « Clients actifs » devient « Équipements déployés ».
+- **Diagnostics du démon** : deux situations qui n'arrivent jamais jusqu'à une décision sont lues dans `radius.log` : paquet d'un **équipement inconnu** (non déclaré dans l'onglet Équipements : ignoré en silence par FreeRADIUS) et **alerte TLS envoyée par le poste** (par exemple « unknown CA » : le poste ne fait pas confiance à l'autorité du serveur). C'est le cas typique d'un poste Windows qui n'arrive pas à se connecter.
+- **Déplacement** : le journal technique `radius.log` est désormais dans `/var/log/ddibuntu-radius/`.
+- **Tests** : `b28`, `b29`, `b30` (vrai FreeRADIUS, vraies poignées de main) contrôlent le contenu du journal, y compris le motif de chaque refus et la règle qui accepte ; `unit-radius-journal` ; `e2e-iter58`. Les lignes de diagnostic sont vérifiées sur la sortie réelle du démon (3.2.5), ce qui a corrigé un doublon d'alerte TLS.
+- **Limites** : le journal est propre à chaque nœud (la console lit le fichier du nœud sur lequel elle est ouverte) ; seuls les 4 derniers Mo sont lus ; un équipement inconnu n'apparaît que par le diagnostic de `radius.log`.
+
 ## 0.14.17 — « Correctif : « Déployer » (RADIUS) remettait /var/lib/ddibuntu en 0750 et bloquait la console »
 
 Après un déploiement RADIUS, la console échouait avec « Erreur interne » sur tout ce qui écrit dans `/var/lib/ddibuntu/generated` : « Rechercher une mise à jour » (`.update-request`), les actions du cluster (`.cluster-action`), puis « Déployer » lui-même (`radius-authz`). Le journal de la console donnait `EACCES: permission denied`, et le dossier `/var/lib/ddibuntu` était en `root:root 0750` : l'utilisateur `ddiconsole` ne pouvait plus le traverser.

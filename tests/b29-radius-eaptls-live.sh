@@ -19,6 +19,7 @@ D="$T_TMP"; chmod 0755 "$D"
 mkdir -p "$D/gen" "$D/run" "$D/state" "$D/bin" "$D/pki"
 export DDI_LIBDIR="$RFS/usr/local/lib/ddibuntu" DDI_RADIUS_DIR="$D/etc" DDI_RADIUS_LOCK="$D/lock" DDI_STATE_DIR="$D/state" DDI_RUN_DIR="$D/run" DDI_GENERATED_DIR="$D/gen"
 export DDI_RADIUS_SYSTEMCTL="$D/bin/systemctl" DDI_FW_BIN="$D/bin/fw"
+export DDI_RADIUS_AUTHLOG_DIR="$D/authlog" DDI_CONSOLE_GROUP=daemon
 SELF="0123456789abcdef0123456789abcdef"
 
 cat > "$D/bin/systemctl" <<SH
@@ -99,7 +100,7 @@ expect_grep "message : EAP-TLS activé" 'EAP-TLS activé' "$D/apply.out"
 expect_eq "certs/ : 0750 root:freerad" "750 root freerad" "$(stat -c '%a %U %G' "$D/etc/certs")"
 expect_eq "server.key : 0640 root:freerad" "640 root freerad" "$(stat -c '%a %U %G' "$D/etc/certs/server.key")"
 expect_eq "module eap généré (plus de lien vers le paquet)" "regular file" "$(stat -c '%F' "$D/etc/mods-enabled/eap")"
-expect_eq "modules : liste blanche + eap" "always attr_filter eap preprocess" "$(find "$D/etc/mods-enabled" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+expect_eq "modules : liste blanche + eap" "always attr_filter ddibuntu_authlog eap expr preprocess" "$(find "$D/etc/mods-enabled" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
 expect_grep "EAP-TLS seul (pas d'autre méthode)" 'default_eap_type = tls' "$D/etc/mods-enabled/eap"
 expect_nogrep "aucun mot de passe de clé en clair dans la configuration" 'private_key_password' "$D/etc/mods-enabled/eap"
 expect_grep "révocations vérifiées" 'check_crl = yes' "$D/etc/mods-enabled/eap"
@@ -113,7 +114,7 @@ expect_eq "statut publié : 2 autorités" 2 "$(rj "$D/run/radius-status.json" ea
 expect_eq "statut publié : 1 CRL" 1 "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["eap"]["crls"]))' "$D/run/radius-status.json")"
 
 echo "== Poignées de main EAP-TLS réelles (eapol_test) =="
-RLOG=/var/log/freeradius/radius.log
+RLOG="$D/authlog/radius.log"; AL="$D/authlog/radius-auth.log"
 eap() {   # eap CERT KEY [TLS13=1|0] : sortie d'eapol_test
   local c="$1" k="$2" v13="${3:-1}" cf="$D/eap.$RANDOM.conf"
   { echo 'network={'; echo ' key_mgmt=WPA-EAP'; echo ' eap=TLS'; echo ' identity="test@lab.test"'; echo " ca_cert=\"$P/root/ca.pem\""
@@ -220,11 +221,30 @@ expect_eq "…arborescence restaurée à l'identique (certificats compris)" "$h1
 rm -f "$D/failstart"
 expect_eq "…aucune sauvegarde (avec ses clés) ne reste" no "$([ -e "$D/state/radius-backup" ] && echo yes || echo no)"
 
+echo "== Poste qui ne fait pas confiance au serveur : l'alerte TLS du poste arrive au journal du démon =="
+cf="$D/eap.untrust.conf"
+{ echo 'network={'; echo ' key_mgmt=WPA-EAP'; echo ' eap=TLS'; echo ' identity="test@lab.test"'; echo " ca_cert=\"$P/xroot/ca.pem\""; echo " client_cert=\"$P/alice.pem\""; echo " private_key=\"$P/alice.key\""; echo '}'; } > "$cf"
+r="$(eapol_test -c "$cf" -a 127.0.0.1 -p 1812 -s "$SELF" -t 8 2>&1)"
+echo "$r" | tail -1 | grep -q '^FAILURE' && ok "poste sans confiance dans l'autorité du serveur : refusé" || ko "poste sans confiance : refus attendu" "$(echo "$r" | tail -3)"
+sleep 1
+[ -n "${B29_SHOW:-}" ] && { echo "--- journal technique (alertes) ---"; grep -n -i 'alert\|unknown ca' "$RLOG" | tail -6; echo "--- dernier refus du journal d'authentifications ---"; tail -n 1 "$AL"; }
+expect_grep "journal technique : l'alerte TLS envoyée par le poste est lisible (« Alert read »)" 'Alert read:fatal' "$RLOG"
+
+echo "== Journal des authentifications : certificat et raison de chaque décision =="
+expect_eq "journal : fichier 0640 freerad:groupe de la console, dossier 2750" "640 freerad daemon 2750" "$(stat -c '%a %U %G' "$AL" | tr -d '\n'; printf ' %s' "$(stat -c '%a' "$D/authlog")")"
+expect_eq "journal : toutes les lignes ont 18 champs (aucune valeur ne casse le format)" 0 "$(awk -F'|' 'NF!=18' "$AL" | wc -l)"
+expect_grep "journal : certificat révoqué (bob) : sujet, série, UPN et raison" '\|reject\|.*\|/CN=3Dbob\|/CN=3DLab Issuing CA\|1003\|[^|]*\|bob@lab.test\|.*certificate revoked$' "$AL"
+expect_grep "journal : certificat expiré (old)" '\|reject\|.*\|/CN=3Dold\|.*certificate has expired$' "$AL"
+expect_grep "journal : mauvais usage (badeku)" '\|reject\|.*\|/CN=3Dbadeku\|.*unsuitable certificate purpose$' "$AL"
+expect_grep "journal : autorité inconnue (foreign) : émetteur et raison" '\|reject\|.*\|/CN=3Dforeign\|/CN=3DAutre Emettrice\|.*unable to get local issuer certificate$' "$AL"
+expect_grep "journal : acceptation (alice) : sujet, UPN, et aucune raison" '\|accept\|.*\|/CN=3Dalice\|/CN=3DLab Issuing CA\|1001\|[^|]*\|alice@lab.test\|[^|]*\|[^|]*\|[^|]*\|$' "$AL"
+expect_nogrep "journal : aucune clé privée ni secret dans le fichier" 'PRIVATE KEY|'"$SELF" "$AL"
+
 echo "== Retour à un déploiement sans PKI =="
 "$RAD" apply "$(clients)" >/dev/null 2>&1; rc=$?
 expect_eq "apply sans PKI : code 0" 0 "$rc"
 expect_eq "…plus de certificats ni de clé sur le disque" no "$([ -e "$D/etc/certs" ] && echo yes || echo no)"
-expect_eq "…module eap retiré" "always attr_filter preprocess" "$(find "$D/etc/mods-enabled" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+expect_eq "…module eap retiré" "always attr_filter ddibuntu_authlog expr preprocess" "$(find "$D/etc/mods-enabled" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
 expect_nogrep "…plus de serveur virtuel de décision" 'ddibuntu-check-eap-tls' "$D/etc/sites-available/ddibuntu"
 expect_eq "…statut : EAP-TLS inactif" False "$(rj "$D/run/radius-status.json" eap.enabled)"
 r="$(eap "$P/alice.pem" "$P/alice.key" 1)"; echo "$r" | tail -1 | grep -q '^FAILURE' && ok "…un certificat valide n'ouvre aucun accès (EAP non configuré)" || ko "…refus attendu" "$(echo "$r" | tail -2)"
