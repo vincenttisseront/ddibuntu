@@ -196,6 +196,7 @@ describe('liste, recherche, filtres', () => {
   it('liste les certificats finaux des émettrices du DDI, du plus récent au plus ancien, sans ManagementCA ni certificats d\'autorité', async () => {
     const r = (await admin.get('/api/pki/certs?limit=200')).json
     expect(r.total).toBe(65); expect(r.issuers).toEqual(['Lab-Sub'])
+    expect(r.issuerDns).toEqual({ 'Lab-Sub': SUBDN })   // 0.14.15 : le formulaire d'émission en reprend l'organisation, l'unité et le pays
     expect(r.rows.map((x: any) => x.fingerprint)).not.toContain(F.mgt!.fp)
     expect(r.rows.map((x: any) => x.subject)).not.toContain(SUBDN)
     const subjects = r.rows.map((x: any) => x.subject)

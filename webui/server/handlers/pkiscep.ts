@@ -26,7 +26,7 @@ route('GET', '/pki/scep', 'admin', async () => {
   const [st, scep, pub, pending] = await Promise.all([readPkiStatus(), readPkiScep(), readPkiCas(), pkiRequestPending()])
   // seules les émettrices actives du DDI délivrent des certificats finaux ; SCEP exige une clé RSA (le PKCS#7 de l'équipement est chiffré pour elle)
   const issuers = (pub?.cas ?? []).filter((x) => x.kind === 'issuing' && x.state === 'active' && x.managed)
-    .map((x) => ({ name: x.name, keyAlg: x.keyAlg, keyBits: x.keyBits, rsa: x.keyAlg === 'RSA', sha256: x.sha256, certUrl: x.files.cert ? `/pki/cas/${x.name}/cert` : '' }))
+    .map((x) => ({ name: x.name, dn: x.dn, keyAlg: x.keyAlg, keyBits: x.keyBits, rsa: x.keyAlg === 'RSA', sha256: x.sha256, certUrl: x.files.cert ? `/pki/cas/${x.name}/cert` : '' }))
   return {
     installed: !!st?.installed, state: st?.state ?? 'absent', ready: st?.state === 'healthy', hostname: st?.hostname ?? '', requestPending: pending,
     alias: SCEP_ALIAS, challengeLen: CHALLENGE_LEN, scep, issuers,
