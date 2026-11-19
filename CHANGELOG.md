@@ -1,5 +1,15 @@
 # Journal des modifications
 
+## 0.14.14 — « PKI du DDI : noms proposés par défaut dans les formulaires »
+
+Retour : les champs « Nom » arrivaient vides ; ils proposent maintenant un nom cohérent avec ce qu'on crée, que l'on remplace librement.
+
+- **Émission d'un certificat** : le nom (CN) est proposé d'après le **profil** et le **domaine du DDI** (déduit du nom public de la PKI), au premier numéro libre : `serveur-01.lab.test`, `poste-01.lab.test`, `equipement-01.lab.test`, `utilisateur-01` (sans domaine pour un utilisateur). Il suit le profil tant qu'on n'a pas écrit dans le champ. **Avec une demande de certificat** (collée ou choisie en fichier, PEM ou DER), c'est le **nom de la demande** qui est proposé : sans cela, le nom du formulaire — qui prime sur celui de la demande — aurait remplacé en silence le vrai nom du demandeur par un nom inventé.
+- **Noms DNS / UPN** : préremplis d'après le nom (un nom complet devient le nom DNS ; pour un utilisateur, `nom@domaine` devient l'identifiant UPN), avec la même règle : ce que l'on a écrit n'est jamais écrasé. Le champ obligatoire « Noms DNS » n'est plus vide par défaut.
+- **Création d'une autorité** : nom et CN proposés au premier numéro libre (`DDI-Issuing-1` / « DDI Issuing CA 1 », `DDI-Root-1` / « DDI Root CA 1 ») ; **reprise d'un PKCS#12** : `Imported-CA-1`. **Préenregistrement SCEP** : même principe que pour les certificats.
+- Tests : `webui/tests/unit-pki-names.test.ts` (nouveau, 33 : domaine, numéros libres, noms proposés, noms lus dans de vraies demandes `openssl` en PEM, DER et UTF-8, nom alternatif ignoré, branchement des trois écrans, textes fr/en).
+- **Limite** : le nom lu dans une demande est celui de son sujet ; ses noms alternatifs ne sont pas lus (les « Noms DNS » proposés viennent du nom, à corriger si la demande en porte d'autres).
+
 ## 0.14.13 — « PKI du DDI : autorités en arbre, première CRL à 7 jours »
 
 Retours du premier essai : la page « Autorités » empilait une grande carte par autorité (illisible dès deux ou trois), et la CRL d'une autorité neuve affichait « expire dans moins de 24 h ».

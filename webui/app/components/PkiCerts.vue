@@ -55,7 +55,7 @@ const dlName = (r: any, k: 'cert' | 'chain') => `${cnOf(r.subject).replace(/[^A-
 
 // ---- Émission ----
 const SAN_KEYS = ['dns', 'ip', 'mail', 'upn'] as const
-const emptyIssue = () => ({ open: false, mode: 'csr' as 'csr' | 'p12', ca: '', profile: 'machine', cn: '', o: '', ou: '', c: 'FR', dns: '', ip: '', mail: '', upn: '', pem: '', alg: 'ecp256', password: '', show: false, compat: false,
+const emptyIssue = () => ({ open: false, mode: 'csr' as 'csr' | 'p12', ca: '', profile: 'machine', cn: '', cnAuto: '', csrCn: '', dnsAuto: '', upnAuto: '', o: '', ou: '', c: 'FR', dns: '', ip: '', mail: '', upn: '', pem: '', alg: 'ecp256', password: '', show: false, compat: false,
   err: '', busy: false, done: null as null | { id: string; serial: string; notAfter: string; subject: string; certificate: string; chain: string; file?: string } })
 const iss = reactive(emptyIssue())
 const files = reactive<{ csr: File | null }>({ csr: null })
@@ -68,9 +68,33 @@ const needText = computed(() => (profile.value?.needAny ?? []).map((k: string) =
 const issueOk = computed(() => !!iss.ca && !!iss.cn.trim() && sanOk.value && (iss.mode === 'csr' ? !!iss.pem.trim() || !!files.csr : iss.password.length >= 8))
 const profileItems = computed(() => profiles.value.map((p) => ({ value: p.key, label: `${t(`pki.cert.profile.${p.key}`)} — ${t('pki.cert.days', { n: p.days })}` })))
 const algItems = [{ value: 'ecp256', label: 'ECDSA P-256' }, { value: 'ecp384', label: 'ECDSA P-384' }, { value: 'rsa2048', label: 'RSA 2048' }, { value: 'rsa3072', label: 'RSA 3072' }]
+// Nom proposé (0.14.14) : celui de la demande de certificat si on en fournit une, sinon un nom d'après le profil, le domaine du DDI et le premier numéro libre.
+// Tant que l'utilisateur n'a pas touché au champ, la proposition suit le profil et la demande ; dès qu'il écrit, plus rien n'y touche.
+const takenCns = computed(() => rows.value.map((r) => cnOf(r.subject)))
+const profilePrefix = () => t(`pki.name.${['server', 'machine', 'user', 'network'].includes(iss.profile) ? iss.profile : 'other'}`)
+const autoCn = () => (iss.mode === 'csr' && iss.csrCn) || suggestCertName(profilePrefix(), domainOf(props.status?.hostname), iss.profile !== 'user', takenCns.value)
+function refreshCn() { const was = iss.cn === iss.cnAuto; iss.cnAuto = autoCn(); if (was) iss.cn = iss.cnAuto }
 function openIssue(mode: 'csr' | 'p12') {
   Object.assign(iss, emptyIssue(), { open: true, mode, ca: issuers.value.length === 1 ? issuers.value[0] : f.ca || issuers.value[0] || '' }); files.csr = null
+  refreshCn()
 }
+// Noms DNS / UPN proposés d'après le nom, avec la même règle : on ne touche pas à ce que l'utilisateur a écrit
+function refreshSans() {
+  const a = suggestSans(iss.profile, iss.cn, domainOf(props.status?.hostname))
+  if (iss.dns === iss.dnsAuto) iss.dns = a.dns
+  if (iss.upn === iss.upnAuto) iss.upn = a.upn
+  iss.dnsAuto = a.dns; iss.upnAuto = a.upn
+}
+watch(() => [iss.cn, iss.profile], () => { if (iss.open) refreshSans() })
+watch(() => iss.profile, () => { if (iss.open) refreshCn() })
+watch(() => iss.pem, (v) => { if (iss.open && iss.mode === 'csr' && !files.csr) { iss.csrCn = csrCommonName(v) ?? ''; refreshCn() } })
+watch(() => files.csr, async (file) => {
+  if (!iss.open || iss.mode !== 'csr') return
+  iss.csrCn = ''
+  if (file && file.size <= 16384) { try { iss.csrCn = csrCommonName(new Uint8Array(await file.arrayBuffer())) ?? '' } catch { /* fichier illisible : pas de nom proposé */ } }
+  else if (!file) iss.csrCn = csrCommonName(iss.pem) ?? ''
+  refreshCn()
+})
 function pickCsr(ev: Event) { files.csr = (ev.target as HTMLInputElement).files?.[0] ?? null }
 async function csrBlob(): Promise<{ pem: string } | { der: string }> {
   if (!files.csr) return { pem: iss.pem }
