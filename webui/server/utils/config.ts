@@ -33,6 +33,9 @@ export function cfg() {
     adStatusFile: e.DDI_AD_STATUS ?? '/run/ddibuntu/ad-status.json',
     // service RADIUS (ddibuntu-radius, root) : état du service et résultat de la dernière demande
     radiusStatusFile: e.DDI_RADIUS_STATUS ?? '/run/ddibuntu/radius-status.json',
+    // journal des authentifications RADIUS (écrit par FreeRADIUS, lisible par le groupe ddiconsole) et fenêtre lue en fin de fichier
+    radiusAuthLogDir: e.DDI_RADIUS_AUTHLOG_DIR ?? '/var/log/ddibuntu-radius',
+    radiusAuthLogMaxBytes: Math.max(10_000, num(e.DDI_RADIUS_AUTHLOG_MAX_BYTES, 4_000_000)),
     radiusResultFile: e.DDI_RADIUS_RESULT ?? '/run/ddibuntu/radius-result.json',
     radiusPort: num(e.DDI_RADIUS_PORT, 1812),
     // service PKI (ddibuntu-pki, root) : état de l'instance EJBCA et résultat de la dernière demande
