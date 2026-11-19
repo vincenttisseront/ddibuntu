@@ -1,5 +1,15 @@
 # Journal des modifications
 
+## 0.14.16 — « RADIUS : le service démarre sous systemd (droits du module EAP), raison de l'échec affichée »
+
+Premier déploiement réel du RADIUS avec EAP-TLS : « le service ne démarre pas ; configuration précédente restaurée ». Le journal de FreeRADIUS donnait la cause : `Unable to open file "/etc/ddibuntu/radius/mods-enabled/eap": Permission denied`.
+
+- **Correctif** : le fichier du module EAP (`mods-enabled/eap`) était créé en `root:root 0640` (umask 027) et jamais attribué au groupe `freerad`, contrairement aux autres fichiers de l'arborescence. Sous systemd, le démon **et son contrôle de démarrage** tournent en `freerad` : ils ne pouvaient pas le lire. Le fichier est maintenant `root:freerad 0640`. Les déploiements sans EAP-TLS (clients seuls) n'étaient pas concernés ; tout déploiement avec EAP-TLS l'était.
+- **Pourquoi les tests ne l'avaient pas vu** : leur faux `systemctl` lançait FreeRADIUS en **root** (qui lit tout). Les batteries `b29` et `b30` (arborescence avec PKI, puis avec règles d'accès et module LDAP) lancent maintenant `freeradius -Cx` **en tant que `freerad`**, comme le service réel, et vérifient qu'aucun fichier de l'arborescence n'est hors du groupe `freerad` ni lisible par tous. Avant le correctif, ce contrôle reproduit exactement l'erreur ci-dessus (2 échecs en `b29`).
+- **Raison de l'échec affichée** : quand le service ne démarre pas, « Dernière opération » donne maintenant les lignes d'erreur du journal du service (au plus deux, courtes, sans le bruit de systemd), lues avant le retour arrière. Plus besoin du terminal pour comprendre.
+- Après la mise à jour du nœud, relancer « Déployer » (onglet Service) ; refaire de même sur chaque nœud RADIUS.
+- **Non essayé** : sous un vrai systemd sur un nœud (seulement `freeradius -Cx` en `freerad` dans le banc). Si une autre cause empêche le démarrage, sa raison s'affichera désormais dans « Dernière opération ».
+
 ## 0.14.15 — « PKI du DDI : noms proposés (suite), dialogue du serveur RADIUS, orientation vers l'onglet RADIUS »
 
 Suite de la 0.14.14 : le dialogue du certificat du serveur RADIUS était resté sans proposition, et les autres champs (organisation, unité, pays, noms DNS) arrivaient vides.

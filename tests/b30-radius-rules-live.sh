@@ -195,6 +195,9 @@ expect_eq "modules : liste blanche + eap + ldap + expr" "always attr_filter eap 
 expect_eq "statut publié : règles actives" True "$(rj "$D/run/radius-status.json" authz.enabled)"
 expect_eq "statut publié : 7 règles" 7 "$(rj "$D/run/radius-status.json" authz.rules)"
 expect_eq "statut publié : module LDAP présent" True "$(rj "$D/run/radius-status.json" ldap_module)"
+# 0.14.16 : sous systemd le démon tourne en freerad (le faux systemctl le lance en root) : toute l'arborescence, module LDAP et site de décision compris, doit lui être lisible
+check "le démon, EN TANT QUE freerad, lit toute l'arborescence (freeradius -Cx)" runuser -u freerad -- /usr/sbin/freeradius -d "$D/etc" -Cx -lstdout
+expect_eq "aucun fichier de l'arborescence hors du groupe freerad (liens symboliques exceptés)" "" "$(find "$D/etc" ! -type l ! -group freerad)"
 expect_nogrep "mot de passe de liaison : absent du résultat publié" "$(printf '%s' "$BINDPW" | sed 's/[][\.*^$/]/\\&/g')" "$D/run/radius-status.json"
 expect_nogrep "…de la sortie de apply" "$(printf '%s' "$BINDPW" | sed 's/[][\.*^$/]/\\&/g')" "$D/apply.out"
 expect_nogrep "…du site généré" "$(printf '%s' "$BINDPW" | sed 's/[][\.*^$/]/\\&/g')" "$D/etc/sites-available/ddibuntu"

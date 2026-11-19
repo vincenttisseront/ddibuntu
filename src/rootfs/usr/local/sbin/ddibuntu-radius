@@ -22,6 +22,7 @@ RUN="${DDI_RUN_DIR:-/run/ddibuntu}"
 STATE="${DDI_STATE_DIR:-/var/lib/ddibuntu}"
 RADIUSD="${DDI_RADIUSD:-/usr/sbin/freeradius}"
 SYSCTL="${DDI_RADIUS_SYSTEMCTL:-systemctl}"
+JOURNALCTL="${DDI_RADIUS_JOURNALCTL:-journalctl}"
 FW_BIN="${DDI_FW_BIN:-/usr/local/sbin/ddibuntu-fw}"
 GROUP="${DDI_RADIUS_GROUP:-freerad}"
 SERVICE="freeradius.service"
@@ -717,6 +718,8 @@ eap {
 	}
 }
 EOF
+  # 0.14.16 : sous systemd le démon et son contrôle de démarrage tournent en freerad : sans le groupe (umask 027 : root:root 0640), « Permission denied » et le service ne démarre pas
+  chown root:"$GROUP" "$RDIR/mods-enabled/eap" && chmod 0640 "$RDIR/mods-enabled/eap"
 }
 install_pki() {   # $1 = instantané validé (validate_pki) ; $2 = true|false (vérification des CRL)
   local c="$RDIR/certs" f
@@ -812,9 +815,11 @@ cmd_apply() {   # $1 = clients.conf ; $2 = dossier PKI déposé (optionnel : san
   if ! { "$SYSCTL" enable "$SERVICE" >/dev/null 2>&1 && "$SYSCTL" restart "$SERVICE" >/dev/null 2>&1; }; then rc=1; fi
   if [[ "$rc" -eq 0 ]]; then sleep 1; [[ "$(svc_state is-active)" = true ]] || rc=1; fi
   if [[ "$rc" -ne 0 ]]; then
+    # 0.14.16 : la raison est dans le journal du service (lue AVANT le retour arrière, qui le redémarre) : lignes d'erreur seulement, courtes, sans rien d'autre
+    local why; why="$("$JOURNALCTL" -u "$SERVICE" -n 40 --no-pager -o cat 2>/dev/null | grep -iE 'error|unable|failed|denied|refused|in use|cannot|invalid' | grep -v 'Failed with result\|Failed to start' | tail -n 2 | tr '\n' ' ' | tr -d '\000-\037' | cut -c1-200)" || why=""
     restore_tree; wipe_backup
     if [[ "$had" -eq 1 ]]; then "$SYSCTL" restart "$SERVICE" >/dev/null 2>&1 || true; else "$SYSCTL" disable --now "$SERVICE" >/dev/null 2>&1 || true; fi
-    log "le service ne démarre pas ; configuration précédente restaurée"; return 1
+    log "le service ne démarre pas ; configuration précédente restaurée${why:+ (journal : ${why% })}"; return 1
   fi
   warn="$(fw_open "$nets")"
   wipe_backup
