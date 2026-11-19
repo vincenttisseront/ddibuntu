@@ -802,7 +802,8 @@ cmd_apply() {   # $1 = clients.conf ; $2 = dossier PKI déposé (optionnel : san
   elif [[ -n "$authzsrc" ]]; then
     log "règles d'accès : EAP-TLS (PKI) est requis"; return 1
   fi
-  install -d -m 0750 "$STATE" 2>/dev/null || true
+  # ne JAMAIS changer les droits d'un dossier existant : « install -d -m » les réimpose, et /var/lib/ddibuntu doit rester traversable par la console (ddiconsole)
+  [[ -d "$STATE" ]] || install -d -m 0755 "$STATE" 2>/dev/null || true
   rm -rf "$BACKUP"; install -d -m 0700 "$BACKUP"
   if [[ -d "$RDIR" ]]; then cp -a "$RDIR" "$BACKUP/tree"; had=1; fi
   if ! build_tree "$file" "$snap" "$check_crl" "$authzsnap"; then restore_tree; wipe_backup; return 1; fi
