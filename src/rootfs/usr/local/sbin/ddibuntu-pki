@@ -580,8 +580,10 @@ ca_create_root() {   # $1 nom, $2 DN, $3 alg, $4 jours
   ca_exists "$name" || { done_work; log "l'autorité n'a pas été créée (voir le journal du conteneur)"; return 1; }
   write_meta "$name" root self "$alg"
   local warn=""; ca_defaults "$name" || warn=" AVERTISSEMENT : adresses publiques non enregistrées dans l'autorité."
+  # 0.14.12 : la CRL créée par « ca init » a la période par défaut d'EJBCA (1 jour) : on la refait avec la période réglée par ca_defaults (7 jours)
+  cli_run ca createcrl --caname "$name" >/dev/null || warn+=" AVERTISSEMENT : première CRL non créée."
   done_work
-  printf 'Racine « %s » créée (auto-signée : sa clé est dans la base du DDI, pour un laboratoire).%s' "$name" "$warn"
+  printf 'Racine « %s » créée (auto-signée ; sa clé est conservée dans la base du DDI).%s' "$name" "$warn"
 }
 
 ca_create_issuing() {   # $1 nom, $2 DN, $3 alg, $4 jours, $5 signeur (external | nom d'une racine du DDI)
@@ -625,6 +627,7 @@ except Exception: print("")')" = root ]] || { done_work; log "« $by » n'est pa
     ca_exists "$name" || { done_work; log "l'autorité n'a pas été créée (voir le journal du conteneur)"; return 1; }
     write_meta "$name" issuing "$by" "$alg"
     ca_defaults "$name" || warn=" AVERTISSEMENT : adresses publiques non enregistrées dans l'autorité."
+    cli_run ca createcrl --caname "$name" >/dev/null || warn+=" AVERTISSEMENT : première CRL non créée."   # 0.14.12 : période de 7 jours, pas celle de « ca init » (1 jour)
     done_work
     printf 'Émettrice « %s » créée et signée par la racine « %s » du DDI.%s' "$name" "$by" "$warn"
   fi

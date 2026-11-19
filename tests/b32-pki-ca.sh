@@ -490,6 +490,8 @@ expect_grep "réglages : adresse de CRL publiée" "ca editca --caname Lab-Root -
 expect_grep "réglages : adresse du certificat d'autorité" "ca editca --caname Lab-Root --field certificateAiaDefaultCaIssuerUri --value http://$HOST:8080/ejbca/publicweb/webdist/certdist\?cmd=cacert&issuer=" "$LOG"
 expect_grep "réglages : période de CRL de 7 jours" 'ca editca --caname Lab-Root --field CRLPeriod --value 604800000$' "$LOG"
 expect_grep "réglages : recouvrement de CRL d'un jour" 'ca editca --caname Lab-Root --field CRLOverlapTime --value 86400000$' "$LOG"
+# 0.14.12 : la CRL créée par « ca init » a la période par défaut d'EJBCA (1 jour) : elle est refaite APRÈS le réglage de la période (7 jours)
+check "racine : première CRL refaite après le réglage de la période" bash -c "[ \$(grep -n 'ca editca --caname Lab-Root --field CRLOverlapTime' '$LOG' | head -1 | cut -d: -f1) -lt \$(grep -n 'ca createcrl --caname Lab-Root\$' '$LOG' | head -1 | cut -d: -f1) ]"
 check "mémoire de l'autorité : sorte racine" grep -q '"kind": "root"' "$T/data/ca/Lab-Root/meta.json"
 check "le dossier de travail partagé avec le conteneur est vidé" test -z "$(ls -A "$WORKH" 2>/dev/null)"
 req '{"action":"ca_root","name":"Lab-Root","alg":"rsa3072","days":3650,"cn":"Autre"}'
@@ -506,6 +508,7 @@ echo "== Émettrice signée par la racine du DDI =="
 req '{"action":"ca_issuing","name":"Lab-Sub","alg":"ecp256","days":1825,"cn":"Lab Sub CA","signedBy":"Lab-Root"}'
 expect_eq "émettrice interne acceptée" true "$RES_OK"
 expect_grep "init : signée par l'identifiant de la racine (2000)" 'ca init --caname Lab-Sub --dn CN=Lab Sub CA --tokenType soft --tokenPass null --keyspec prime256v1 --keytype ECDSA -v 1825 --policy null -s SHA256withECDSA --signedby 2000$' "$LOG"
+check "émettrice du DDI : première CRL refaite après le réglage de la période" bash -c "[ \$(grep -n 'ca editca --caname Lab-Sub --field CRLOverlapTime' '$LOG' | head -1 | cut -d: -f1) -lt \$(grep -n 'ca createcrl --caname Lab-Sub\$' '$LOG' | head -1 | cut -d: -f1) ]"
 check "mémoire : signée par Lab-Root" grep -q '"signedBy": "Lab-Root"' "$T/data/ca/Lab-Sub/meta.json"
 req '{"action":"ca_issuing","name":"X1","alg":"ecp256","days":1825,"cn":"X","signedBy":"Inconnue"}'
 expect_eq "signeur inexistant refusé" false "$RES_OK"

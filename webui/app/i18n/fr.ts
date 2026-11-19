@@ -3243,6 +3243,8 @@ const messages: Record<string, string> = {
   "pki.ca.not_ready": "La PKI doit être « En service » pour créer ou renouveler une autorité.",
   "pki.ca.add_issuing": "Créer une émettrice",
   "pki.ca.add_root": "Créer une racine (clé conservée par le DDI)",
+  "pki.ca.tree": "Arbre des autorités",
+  "pki.ca.has_warning": "Cette autorité a un avertissement",
   "pki.ca.empty": "Aucune autorité pour l'instant.",
   "pki.ca.kind.root": "Racine",
   "pki.ca.kind.issuing": "Émettrice",

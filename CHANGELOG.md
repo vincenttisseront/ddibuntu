@@ -1,5 +1,14 @@
 # Journal des modifications
 
+## 0.14.13 — « PKI du DDI : autorités en arbre, première CRL à 7 jours »
+
+Retours du premier essai : la page « Autorités » empilait une grande carte par autorité (illisible dès deux ou trois), et la CRL d'une autorité neuve affichait « expire dans moins de 24 h ».
+
+- **Autorités en arbre de dépendance.** À gauche, la hiérarchie compacte : racine du DDI, ses émettrices en dessous ; racines **hors ligne** et leurs émettrices ; autorités reprises. Chaque ligne donne le nom, le type, la fin de validité (ou l'état : « Attend son certificat »), et une icône d'avertissement si l'autorité en a un. **Un clic ouvre à droite tout le détail** (nom distinctif, validité, clé, signeur, empreinte, CRL, publication Active Directory, avertissements, signature hors ligne, téléchargements, renouvellement de la CRL) : la carte d'avant, mais pour la seule autorité choisie. Sur petit écran l'arbre passe au-dessus du détail. La construction de l'arbre (`app/utils/pkiTree.ts`) rattache chaque autorité à son signeur, ne perd ni ne duplique aucune autorité, et une boucle de signatures ou un signeur disparu ne la fait ni boucler ni masquer.
+- **Première CRL à 7 jours.** `ca init` d'EJBCA crée la CRL avec la période par défaut (1 jour) ; le réglage à 7 jours ne venait qu'après, d'où l'avertissement « CRL < 24 h » sur une autorité toute neuve jusqu'au prochain renouvellement. `ddibuntu-pki` refait maintenant la CRL (`ca createcrl`) **après** le réglage de la période, à la création d'une racine et d'une émettrice signée par le DDI. Si cette étape échoue, la création réussit quand même et le message le signale.
+- Tests : `webui/tests/unit-pki-tree.test.ts` (nouveau : rattachement, racines hors ligne, signeur inconnu, niveaux, guides, boucle, liste vide), `b32` (+2 contrôles : la CRL est refaite après le réglage de la période, racine et émettrice).
+- **Non essayé** : la CRL à 7 jours avec un vrai EJBCA (doublure uniquement) ; l'arbre a été vérifié sur des données publiées à la main (bureau et mobile), pas sur un cluster.
+
 ## 0.14.12 — « PKI du DDI : suivi en direct de l'installation, aide à la création de la racine »
 
 Retours du premier essai sur un vrai cluster : cliquer sur « Installer » n'affichait que « Demande envoyée », puis rien jusqu'à un rafraîchissement manuel ; et la fenêtre « Créer une émettrice » ne disait pas comment obtenir une racine.

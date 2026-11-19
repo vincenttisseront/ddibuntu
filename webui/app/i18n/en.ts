@@ -3243,6 +3243,8 @@ const messages: Record<string, string> = {
   "pki.ca.not_ready": "The PKI must be \"In service\" to create or renew an authority.",
   "pki.ca.add_issuing": "Create an issuing CA",
   "pki.ca.add_root": "Create a root (key kept by the DDI)",
+  "pki.ca.tree": "Authority tree",
+  "pki.ca.has_warning": "This authority has a warning",
   "pki.ca.empty": "No authority yet.",
   "pki.ca.kind.root": "Root",
   "pki.ca.kind.issuing": "Issuing CA",
