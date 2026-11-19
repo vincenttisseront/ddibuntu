@@ -113,7 +113,7 @@ export async function readPkiStatus(): Promise<PkiStatus | null> {
 /** PKI et cluster, vus de CE nœud (écrits par « ddibuntu-pki align », chaque minute) : rôle, unité, image de secours, consigne d'arrêt, blocage éventuel. */
 export interface PkiClusterLocal {
   at: number; ageSeconds: number; stale: boolean
-  role: 'leader' | 'replica' | 'unknown'; installed: boolean; unit: 'active' | 'inactive'; image: 'none' | 'ready' | 'pulling' | 'missing'
+  role: 'leader' | 'replica' | 'unknown'; installed: boolean; unit: 'active' | 'inactive'; image: 'none' | 'ready' | 'pulling' | 'missing' | 'nopodman'
   desired: 'running' | 'stopped'; version: string
   blocked: { reason: 'update-interrupted' | 'cluster-unreachable'; node?: string; at?: number; from?: string; to?: string } | null
 }
@@ -129,7 +129,7 @@ export function parsePkiClusterLocal(raw: string, nowSec = Date.now() / 1000): P
         ...(typeof b.to === 'string' ? { to: b.to.replace(/[^0-9A-Za-z._:/@-]/g, '').slice(0, 60) } : {}) } : null
   return {
     at: Math.trunc(j.at), ageSeconds: age, stale: age > 180, role: j.role === 'leader' || j.role === 'replica' ? j.role : 'unknown', installed: j.installed === true,
-    unit: j.unit === 'active' ? 'active' : 'inactive', image: j.image === 'ready' || j.image === 'pulling' || j.image === 'missing' ? j.image : 'none',
+    unit: j.unit === 'active' ? 'active' : 'inactive', image: j.image === 'ready' || j.image === 'pulling' || j.image === 'missing' || j.image === 'nopodman' ? j.image : 'none',
     desired: j.desired === 'stopped' ? 'stopped' : 'running', version: typeof j.version === 'string' && /^[0-9.]{0,20}$/.test(j.version) ? j.version : '', blocked,
   }
 }

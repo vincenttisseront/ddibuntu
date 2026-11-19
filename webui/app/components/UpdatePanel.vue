@@ -54,6 +54,7 @@ async function install() {
       </dl>
       <UAlert v-if="st && st.state === 'failed'" class="mb-3" color="error" variant="subtle" icon="i-lucide-circle-x" :title="t('update.failed')" :description="st.error" />
       <UAlert v-else-if="st && st.error && !busy" class="mb-3" color="warning" variant="subtle" icon="i-lucide-wifi-off" :title="t('update.check_error')" :description="st.error" />
+      <UAlert v-if="st && st.packagesState === 'failed' && !busy" class="mb-3" color="warning" variant="subtle" icon="i-lucide-package-x" :title="t('update.packages_failed')" :description="st.packagesMessage" data-test="update-packages-failed" />
       <UAlert v-if="busy" class="mb-3" color="info" variant="subtle" icon="i-lucide-loader" :title="waitingRestart ? t('update.state.restarting') : t(`update.state.${st?.state ?? 'checking'}`)" :description="t('update.busy_hint')" />
       <UAlert v-else-if="st && !st.available && st.latest && !st.error" class="mb-3" color="success" variant="subtle" icon="i-lucide-circle-check" :title="t('update.up_to_date')" />
       <div class="flex gap-2">

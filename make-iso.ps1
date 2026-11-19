@@ -63,7 +63,7 @@ Write-Host "==> Termine. ISO dans : $Out" -ForegroundColor Green
 if ($Bundle -or $SigningKey) {
     $ver = (Get-Content -LiteralPath (Join-Path $Root 'src\VERSION') -Raw).Trim()
     Write-Host "==> [3/3] Archive de mise a jour $ver"
-    & docker run --rm -v "${Root}:/ddi-src:ro" -v "${Out}:/ddi-out" ubuntu:24.04 bash /ddi-src/build-ddibuntu.sh --bundle --out /ddi-out
+    & docker run --rm --platform linux/amd64 -e DDI_CLEAN_CONTAINER=1 -v "${Root}:/ddi-src:ro" -v "${Out}:/ddi-out" ubuntu:24.04 bash /ddi-src/build-ddibuntu.sh --bundle --out /ddi-out
     if ($LASTEXITCODE -ne 0) { Fail "la construction de l'archive a echoue (code $LASTEXITCODE)" }
     if ($SigningKey) {
         if (-not (Test-Path -LiteralPath $SigningKey)) { Fail "cle de signature introuvable : $SigningKey" }

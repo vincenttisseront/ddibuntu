@@ -215,6 +215,19 @@ expect_eq "n2 : image prête" "ready" "$(cj 2 image)"
 expect_eq "n2 : toujours arrêté" "no" "$(active 2)"
 expect_eq "n2 : unité inactive publiée" "inactive" "$(cj 2 unit)"
 
+echo "== 0.14.11 : podman absent d'un nœud (mis à jour par une version qui ne posait pas le paquet) =="
+mv "$B/d2/podman" "$B/d2/podman.off"
+SR0="$(wc -l < "$B/d2/sdrun.log")"
+check "n2 : align replica sans podman" pki 2 align replica
+expect_eq "n2 : état d'image « nopodman » (et non « absente »)" "nopodman" "$(cj 2 image)"
+expect_eq "n2 : aucun tirage d'image lancé en vain" "$SR0" "$(wc -l < "$B/d2/sdrun.log")"
+check "n2 : follow publie l'état dans etcd" cl 2 follow
+expect_eq "status : n2 signalé « nopodman » aux autres nœuds" "nopodman" "$(cl 1 status 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["ejbca"]["nodes"]["n2"]["image"])')"
+check_fail "n2 : pull-image sans podman échoue proprement" pki 2 pull-image
+mv "$B/d2/podman.off" "$B/d2/podman"
+check "n2 : align replica (podman revenu)" pki 2 align replica
+expect_eq "n2 : image de nouveau prête" "ready" "$(cj 2 image)"
+
 echo "== Préparation de chaque nœud, publiée dans etcd (visible dans « status ») =="
 check "n1 : align leader (déjà en marche)" pki 1 align leader
 check "n1 : follow (pki-sync + alignement + préparation)" cl 1 follow

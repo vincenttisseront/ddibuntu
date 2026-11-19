@@ -12,6 +12,8 @@ const STALE_SECONDS = 60 * 60
 export interface UpdateStatus {
   current: string; latest: string; available: boolean; notes: string; url: string; publishedAt: string
   checkedAt: number; state: string; message: string; error: string; target: string; updatedAt: number
+  /** 0.14.11 : paquets embarqués (podman, freeradius…) : « ok » | « failed » | « downloading » | « installing » ; message lisible en cas d'échec */
+  packagesState: string; packagesMessage: string
 }
 
 const str = (v: unknown, max: number) => (typeof v === 'string' ? v.replace(/\0/g, '').slice(0, max) : '')
@@ -29,6 +31,7 @@ export async function readUpdateStatus(): Promise<UpdateStatus | null> {
     notes: str(d.notes, 4000), url: /^https:\/\/[^\s"'<>]+$/.test(url) ? url : '', publishedAt: str(d.published_at, 40),
     checkedAt: num(d.checked_at), state: STATES.includes(d.state) ? d.state : 'idle', message: str(d.message, 300), error: str(d.error, 300),
     target: ver(d.target), updatedAt: num(d.updated_at),
+    packagesState: ['ok', 'failed', 'downloading', 'installing'].includes(d.packages_state) ? d.packages_state : '', packagesMessage: str(d.packages_message, 300),
   }
 }
 

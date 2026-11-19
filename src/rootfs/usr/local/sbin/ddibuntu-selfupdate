@@ -8,6 +8,7 @@
 #   check              interroge GitHub, écrit l'état (aucune installation)
 #   request            traite la demande déposée par la console (check | apply <version>)
 #   apply <version>    installe cette version si c'est la dernière release signée
+#   packages [--auto]  (re)pose les paquets embarqués (podman, freeradius…) qui manquent, depuis l'archive signée de la dernière release
 #
 # Variables de test : DDI_ROOT, DDI_TEST=1, DDI_UPDATE_API, DDI_UPDATE_PUBKEY, DDI_NO_SYSTEMD=1
 set -euo pipefail
@@ -39,6 +40,11 @@ WEB="${DDI_UPDATE_WEB:-https://github.com}"
 APP="$DDI_ROOT/opt/ddibuntu"
 REPO=""; AUTO_CHECK=1
 MAX_BUNDLE=$((400 * 1024 * 1024))
+# Paquets que la mise à jour sait poser SANS accès au dépôt apt : ils voyagent dans l'archive (debs/). Même liste que DDI_UPDATE_PACKAGES de build-ddibuntu.sh (tests/b09 le vérifie).
+PKGLIST="$DDI_LIBDIR/update-packages"
+PKGWORK="$DDI_STATEDIR/packages-work"
+PKG_ATTEMPT="$DDI_STATEDIR/packages-attempt"
+PKG_LOG="$DDI_STATEDIR/packages-install.log"
 
 log() { printf 'ddibuntu-selfupdate: %s\n' "$*"; logger -t ddibuntu-selfupdate -- "$*" 2>/dev/null || true; }
 
@@ -178,6 +184,157 @@ cmd_check() {
   return 0
 }
 
+# Télécharge l'archive de la release lue par fetch_release, puis vérifie la signature Ed25519 de SHA256SUMS et l'empreinte de l'archive.
+# $1 = dossier de travail (recréé) ; $2 = 1 pour publier l'avancement dans l'état de la mise à jour. Échec : retour 1 et motif dans FV_ERR.
+FV_ERR=""
+fetch_verified() {
+  local w="$1" report="${2:-0}" want_hash got_hash
+  FV_ERR=""
+  rm -rf "$w"; mkdir -p "$w"; chmod 0700 "$w"
+  [ "$report" != 1 ] || st state=downloading "message=Téléchargement de la version $LATEST"
+  gh_curl -H 'Accept: application/octet-stream' --max-filesize 1048576 "$SUMS_URL" -o "$w/SHA256SUMS" || { FV_ERR="téléchargement de SHA256SUMS impossible"; return 1; }
+  gh_curl -H 'Accept: application/octet-stream' --max-filesize 4096 "$SIG_URL" -o "$w/SHA256SUMS.sig" || { FV_ERR="téléchargement de la signature impossible"; return 1; }
+  gh_curl -H 'Accept: application/octet-stream' --max-filesize "$MAX_BUNDLE" "$BUNDLE_URL" -o "$w/$BUNDLE_NAME" || { FV_ERR="téléchargement de $BUNDLE_NAME impossible"; return 1; }
+  [ "$report" != 1 ] || st state=verifying "message=Vérification de la signature et de l'empreinte"
+  openssl pkeyutl -verify -pubin -inkey "$PUBKEY" -rawin -in "$w/SHA256SUMS" -sigfile "$w/SHA256SUMS.sig" >/dev/null 2>&1 \
+    || { FV_ERR="SIGNATURE INVALIDE : la mise à jour est refusée (rien n'a été modifié)"; return 1; }
+  want_hash="$(awk -v n="$BUNDLE_NAME" '$2 == n || $2 == "*" n {print $1; exit}' "$w/SHA256SUMS")"
+  [[ "$want_hash" =~ ^[0-9a-f]{64}$ ]] || { FV_ERR="$BUNDLE_NAME absent de SHA256SUMS signé"; return 1; }
+  got_hash="$(sha256sum "$w/$BUNDLE_NAME" | cut -d' ' -f1)"
+  [ "$want_hash" = "$got_hash" ] || { FV_ERR="somme SHA-256 de $BUNDLE_NAME incorrecte : mise à jour refusée"; return 1; }
+  return 0
+}
+
+# ---- paquets embarqués (debs/ de l'archive) ----
+# Rôle du nœud d'après cluster.conf : l'arbitre (witness) ne reçoit aucun paquet ; un nœud seul ou de données, si.
+node_role() {
+  local f="${DDI_CLUSTER_CONF:-/etc/ddibuntu-cluster/cluster.conf}" r=""
+  if [ -r "$f" ]; then r="$(sed -n 's/^NODE_ROLE=\([a-z]*\)$/\1/p' "$f" | head -1)"; fi
+  printf '%s' "${r:-data}"
+}
+# shellcheck disable=SC2016  # ${Status} est le format de dpkg-query, pas une variable
+pkg_installed() { [ "$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null || true)" = "install ok installed" ]; }
+pkg_list() { if [ -r "$PKGLIST" ]; then tr -s ' \t\n' ' ' < "$PKGLIST"; fi; }
+pkg_missing() {   # noms (séparés par des espaces) des paquets de la liste qui ne sont pas installés
+  local p out=""
+  for p in $(pkg_list); do pkg_installed "$p" || out="$out${out:+ }$p"; done
+  printf '%s' "$out"
+}
+# Un service installé par un paquet démarre aussitôt : sur une appliance, rien ne doit démarrer ni redémarrer pendant la pose (policy-rc.d 101).
+pkg_block_on() {
+  local pc="$DDI_ROOT/usr/sbin/policy-rc.d"
+  mkdir -p "$(dirname "$pc")"
+  if [ -e "$pc" ] && [ ! -e "$pc.ddi-orig" ]; then mv -f "$pc" "$pc.ddi-orig"; fi
+  printf '#!/bin/sh\nexit 101\n' > "$pc"; chmod 0755 "$pc"
+}
+pkg_block_off() {
+  local pc="$DDI_ROOT/usr/sbin/policy-rc.d"
+  rm -f "$pc"
+  if [ -e "$pc.ddi-orig" ]; then mv -f "$pc.ddi-orig" "$pc"; fi
+}
+# install_bundled_packages DOSSIER : pose les paquets de DOSSIER (debs/) qui manquent ou sont plus anciens ; jamais de rétrogradation.
+#   1. dpkg sur le strict nécessaire (paquets demandés absents ou plus anciens, et dépendances absentes) ; si dpkg refuse, sur tout ce qui est plus récent ;
+#   2. si un paquet demandé manque encore : apt-get install en secours (dépôt de la machine).
+# Retour 0 : rien à faire ou tout est posé ; 1 : échec (motif dans PKG_MSG). N'annule jamais une mise à jour : l'appelant avertit et continue.
+PKG_MSG=""
+install_bundled_packages() {
+  local dir="$1" deb f pkg ver cur arch req="" r missing want_any=0 rc=0
+  local -a min=() all=() aptpkgs=()
+  PKG_MSG=""
+  [ -d "$dir" ] || { PKG_MSG="aucun paquet embarqué dans cette archive"; return 1; }
+  [ -s "$dir/SHA256SUMS" ] || { PKG_MSG="debs/SHA256SUMS absent : paquets embarqués refusés"; return 1; }
+  ( cd "$dir" && sha256sum -c --quiet SHA256SUMS >/dev/null 2>&1 ) || { PKG_MSG="empreinte d'un paquet embarqué incorrecte : paquets refusés"; return 1; }
+  [ -r "$dir/REQUESTED" ] && req="$(tr -s ' \t\n' ' ' < "$dir/REQUESTED")"
+  for r in $req; do [[ "$r" =~ ^[a-z0-9][a-z0-9+.-]*$ ]] || { PKG_MSG="liste des paquets demandés invalide"; return 1; }; done
+  for deb in "$dir"/*.deb; do
+    [ -f "$deb" ] || continue
+    f="$(basename "$deb")"; [[ "$f" =~ ^[A-Za-z0-9._+~%-]+\.deb$ ]] || { PKG_MSG="nom de paquet embarqué invalide : ${f:0:60}"; return 1; }
+    pkg="$(dpkg-deb -f "$deb" Package 2>/dev/null)"; ver="$(dpkg-deb -f "$deb" Version 2>/dev/null)"; arch="$(dpkg-deb -f "$deb" Architecture 2>/dev/null)"
+    { [ -n "$pkg" ] && [ -n "$ver" ]; } || { PKG_MSG="paquet embarqué illisible : ${f:0:60}"; return 1; }
+    case "$arch" in all|amd64) ;; *) continue ;; esac
+    # shellcheck disable=SC2016
+    cur="$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)"
+    pkg_installed "$pkg" || cur=""
+    if [ -z "$cur" ] || dpkg --compare-versions "$ver" gt "$cur"; then
+      all+=("$deb")
+      if [ -z "$cur" ]; then min+=("$deb"); want_any=1
+      else case " $req " in *" $pkg "*) min+=("$deb"); want_any=1 ;; *) ;; esac
+      fi
+      log "  paquet $pkg : ${cur:-absent} -> $ver"
+    fi
+  done
+  if [ "$want_any" = 0 ] || [ "${#min[@]}" -eq 0 ]; then log "paquets embarqués : rien à installer (déjà présents ou à jour)"; return 0; fi
+  : > "$PKG_LOG" 2>/dev/null || true
+  (
+    trap pkg_block_off EXIT
+    pkg_block_on
+    if DEBIAN_FRONTEND=noninteractive timeout 900 dpkg --force-confold --force-confdef -i "${min[@]}" >>"$PKG_LOG" 2>&1; then exit 0; fi
+    echo "--- dpkg a refusé le strict nécessaire : nouvel essai avec tous les paquets plus récents ---" >>"$PKG_LOG"
+    DEBIAN_FRONTEND=noninteractive timeout 900 dpkg --force-confold --force-confdef -i "${all[@]}" >>"$PKG_LOG" 2>&1
+  ) || rc=$?
+  missing=""
+  for r in $req; do pkg_installed "$r" || missing="$missing${missing:+ }$r"; done
+  if [ "$rc" -ne 0 ] || [ -n "$missing" ]; then
+    # secours : dépôt apt de la machine (utile si dpkg bute sur une dépendance absente de l'archive)
+    if [ -n "$missing" ] && command -v apt-get >/dev/null 2>&1; then
+      log "paquets embarqués non posés par dpkg${missing:+ ($missing)} : essai par apt-get (dépôt de la machine)"
+      (
+        trap pkg_block_off EXIT
+        pkg_block_on
+        read -ra aptpkgs <<< "$missing"
+        DEBIAN_FRONTEND=noninteractive timeout 1500 apt-get -o DPkg::Lock::Timeout=120 install -y -qq --no-install-recommends "${aptpkgs[@]}" >>"$PKG_LOG" 2>&1
+      ) || true
+      missing=""
+      for r in $req; do pkg_installed "$r" || missing="$missing${missing:+ }$r"; done
+    fi
+  fi
+  if [ -n "$missing" ]; then
+    PKG_MSG="paquet(s) non installé(s) : $missing ($(tail -n 2 "$PKG_LOG" 2>/dev/null | tr '\n' ' ' | cut -c1-300)) ; voir $PKG_LOG"
+    return 1
+  fi
+  # freeradius s'active seul à l'installation : il ne doit tourner que sur ordre de la console, jamais avec la configuration du paquet
+  if [ ! -d "$DDI_CONFDIR/radius" ] && [ "${DDI_NO_SYSTEMD:-0}" != 1 ]; then systemctl disable freeradius.service >/dev/null 2>&1 || true; fi
+  log "paquets embarqués installés (${#min[@]} fichier(s))"
+  return 0
+}
+
+# packages [--auto] : rattrape les paquets qui manquent (nœud mis à jour par une version qui n'en posait aucun, installation échouée, paquet retiré).
+# Retélécharge l'archive SIGNÉE de la dernière release (même vérification que pour une mise à jour) et n'en extrait que debs/.
+# --auto : appelé par « follow » ; au plus un essai toutes les 6 h ; rien sur l'arbitre.
+cmd_packages() {
+  local auto=0 miss
+  [ "${1:-}" != --auto ] || auto=1
+  [ "$(node_role)" != witness ] || return 0
+  miss="$(pkg_missing)"
+  if [ -z "$miss" ]; then st packages_state=ok "packages_message=" || true; return 0; fi
+  if [ "$auto" = 1 ] && [ -e "$PKG_ATTEMPT" ] && [ -n "$(find "$PKG_ATTEMPT" -mmin -360 2>/dev/null)" ]; then return 0; fi
+  : > "$PKG_ATTEMPT"
+  log "paquets manquants : $miss : récupération depuis l'archive signée de la dernière release"
+  local fail=""
+  load_conf
+  if [ ! -f "$PUBKEY" ]; then fail="clé publique de signature absente ($PUBKEY)"
+  else
+    st packages_state=downloading "packages_message=Récupération des paquets : $miss"
+    local frc=0; fetch_release || frc=$?
+    if [ "$frc" -ne 0 ]; then fail="impossible de lire la dernière release sur GitHub (code $frc)"
+    elif [ -z "$BUNDLE_URL" ] || [ -z "$SUMS_URL" ] || [ -z "$SIG_URL" ]; then fail="la release $LATEST n'a pas tous ses fichiers signés"
+    elif ! fetch_verified "$PKGWORK" 0; then fail="$FV_ERR"
+    elif ! tar -xzf "$PKGWORK/$BUNDLE_NAME" -C "$PKGWORK" debs 2>/dev/null || [ ! -d "$PKGWORK/debs" ]; then fail="la release $LATEST n'embarque pas de paquets (elle date d'avant la 0.14.11)"
+    else
+      st packages_state=installing "packages_message=Installation des paquets : $miss"
+      if ! install_bundled_packages "$PKGWORK/debs"; then fail="$PKG_MSG"; fi
+    fi
+  fi
+  rm -rf "$PKGWORK"
+  if [ -n "$fail" ]; then
+    log "paquets : échec : $fail"
+    st packages_state=failed "packages_message=Paquets non installés ($miss) : $fail"
+    return 1
+  fi
+  st packages_state=ok "packages_message="
+  log "paquets installés"
+}
+
 # ---- installation ----
 rollback_needed=0; OLD_CONSOLE=""; BACKUP_DIR=""
 svc() { if [ "${DDI_NO_SYSTEMD:-0}" = 1 ]; then return 0; fi; systemctl "$@"; }
@@ -223,20 +380,7 @@ cmd_apply() {
     local why; why="$("${DDI_CLUSTER_CMD:-/usr/local/sbin/ddibuntu-cluster}" rolling-check "$LATEST" 2>&1 >/dev/null)" \
       || die "mise à jour progressive du cluster : ${why:-refusée}"
   fi
-  rm -rf "$WORKDIR"; mkdir -p "$WORKDIR"; chmod 0700 "$WORKDIR"
-  st state=downloading "message=Téléchargement de la version $LATEST"
-  gh_curl -H 'Accept: application/octet-stream' --max-filesize 1048576 "$SUMS_URL" -o "$WORKDIR/SHA256SUMS" || die "téléchargement de SHA256SUMS impossible"
-  gh_curl -H 'Accept: application/octet-stream' --max-filesize 4096 "$SIG_URL" -o "$WORKDIR/SHA256SUMS.sig" || die "téléchargement de la signature impossible"
-  gh_curl -H 'Accept: application/octet-stream' --max-filesize "$MAX_BUNDLE" "$BUNDLE_URL" -o "$WORKDIR/$BUNDLE_NAME" || die "téléchargement de $BUNDLE_NAME impossible"
-
-  st state=verifying "message=Vérification de la signature et de l'empreinte"
-  openssl pkeyutl -verify -pubin -inkey "$PUBKEY" -rawin -in "$WORKDIR/SHA256SUMS" -sigfile "$WORKDIR/SHA256SUMS.sig" >/dev/null 2>&1 \
-    || die "SIGNATURE INVALIDE : la mise à jour est refusée (rien n'a été modifié)"
-  local want_hash got_hash
-  want_hash="$(awk -v n="$BUNDLE_NAME" '$2 == n || $2 == "*" n {print $1; exit}' "$WORKDIR/SHA256SUMS")"
-  [[ "$want_hash" =~ ^[0-9a-f]{64}$ ]] || die "$BUNDLE_NAME absent de SHA256SUMS signé"
-  got_hash="$(sha256sum "$WORKDIR/$BUNDLE_NAME" | cut -d' ' -f1)"
-  [ "$want_hash" = "$got_hash" ] || die "somme SHA-256 de $BUNDLE_NAME incorrecte : mise à jour refusée"
+  fetch_verified "$WORKDIR" 1 || die "$FV_ERR"
 
   mkdir -p "$WORKDIR/b"
   tar -xzf "$WORKDIR/$BUNDLE_NAME" -C "$WORKDIR/b" || die "archive de mise à jour illisible"
@@ -246,6 +390,10 @@ cmd_apply() {
   ( cd "$WORKDIR/b" && sha256sum -c --quiet rootfs.tar.sha256 ) || die "rootfs.tar corrompu"
   if tar -tf "$WORKDIR/b/rootfs.tar" | grep -qE '(^|/)\.\.(/|$)'; then die "chemin dangereux dans rootfs.tar"; fi
   if tar -tzf "$WORKDIR/b/console.tar.gz" | grep -qE '(^|/)\.\.(/|$)|^/'; then die "chemin dangereux dans console.tar.gz"; fi
+  if [ -e "$WORKDIR/b/debs" ] || [ -L "$WORKDIR/b/debs" ]; then   # paquets embarqués (0.14.11+) : dossier de fichiers ordinaires, rien d'autre
+    [ -d "$WORKDIR/b/debs" ] && [ ! -L "$WORKDIR/b/debs" ] || die "debs/ invalide dans l'archive"
+    [ -z "$(find "$WORKDIR/b/debs" -mindepth 1 \( ! -type f -o -name '.*' \) -print -quit)" ] || die "debs/ contient autre chose que des fichiers ordinaires"
+  fi
   local avail; avail="$(df -Pk "$DDI_STATEDIR" | awk 'NR==2{print $4}')"
   [ "${avail:-0}" -ge 1048576 ] || die "moins de 1 Go libre : mise à jour refusée"
 
@@ -265,6 +413,14 @@ cmd_apply() {
   tar -C "$DDI_ROOT/" -czf "$BACKUP_DIR/replaced-files.tar.gz" --numeric-owner -T "$list" || { rm -f "$list"; die "sauvegarde des fichiers remplacés impossible"; }
   rm -f "$list"
   cp "$DDI_STATEDIR/installed-version" "$BACKUP_DIR/installed-version" 2>/dev/null || true
+
+  # ---- paquets embarqués : AVANT le déploiement (la nouvelle version trouve podman en place) ; un échec n'arrête pas la mise à jour ----
+  local pkgwarn=""
+  if [ -d "$WORKDIR/b/debs" ] && [ "$(node_role)" != witness ]; then
+    st state=installing "message=Installation des paquets embarqués (podman, freeradius)"
+    if install_bundled_packages "$WORKDIR/b/debs"; then st packages_state=ok "packages_message="
+    else pkgwarn="$PKG_MSG"; log "avertissement : $PKG_MSG"; st packages_state=failed "packages_message=$PKG_MSG"; fi
+  fi
 
   # ---- déploiement ----
   st state=installing "message=Installation de la version $LATEST"
@@ -311,7 +467,7 @@ cmd_apply() {
   printf '%s -> %s le %s (en ligne)\n' "$cur" "$LATEST" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$DDI_STATEDIR/update-history"
   find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | tail -n +4 | while IFS= read -r f; do rm -rf "$f"; done
   rm -rf "$WORKDIR"
-  st state=done "current=$LATEST" "latest=$LATEST" available=0 "message=Mise à jour vers $LATEST terminée" error= "checked_at=$(date +%s)"
+  st state=done "current=$LATEST" "latest=$LATEST" available=0 "message=Mise à jour vers $LATEST terminée${pkgwarn:+ (avertissement : paquets non installés — $pkgwarn)}" error= "checked_at=$(date +%s)"
   log "mise à jour $cur -> $LATEST terminée"
 }
 
@@ -340,5 +496,6 @@ case "${1:-}" in
   check) load_conf; if [ "$AUTO_CHECK" = 0 ] && [ "${2:-}" = --auto ]; then exit 0; fi; cmd_check ;;
   request) cmd_request ;;
   apply) cmd_apply "${2:-}" ;;
-  *) echo "Usage : ddibuntu-selfupdate check [--auto] | request | apply <version>" >&2; exit 2 ;;
+  packages) cmd_packages "${2:-}" ;;
+  *) echo "Usage : ddibuntu-selfupdate check [--auto] | request | apply <version> | packages [--auto]" >&2; exit 2 ;;
 esac

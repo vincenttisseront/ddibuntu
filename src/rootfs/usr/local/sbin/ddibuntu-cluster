@@ -718,7 +718,7 @@ try: d = json.load(open(sys.argv[1]))
 except Exception: raise SystemExit(0)
 syn = os.environ["SYN"]
 out = {"node": os.environ["NODE"], "role": d.get("role") if d.get("role") in ("leader", "replica") else "unknown", "installed": bool(d.get("installed")),
-       "unit": d.get("unit") if d.get("unit") in ("active", "inactive") else "inactive", "image": d.get("image") if d.get("image") in ("none", "ready", "pulling", "missing") else "none",
+       "unit": d.get("unit") if d.get("unit") in ("active", "inactive") else "inactive", "image": d.get("image") if d.get("image") in ("none", "ready", "pulling", "missing", "nopodman") else "none",
        "version": str(d.get("version", ""))[:20], "desired": d.get("desired") if d.get("desired") in ("running", "stopped") else "running",
        "synced": syn[:12] if re.fullmatch(r"none|[0-9a-f]{64}", syn) else "", "blocked": (d.get("blocked") or {}).get("reason") if isinstance(d.get("blocked"), dict) else None}
 print(json.dumps(out, ensure_ascii=False, sort_keys=True), end="")' "$f" 2>/dev/null)" || return 0
@@ -1961,10 +1961,29 @@ print(json.dumps(d, ensure_ascii=False))' > "$t" 2>/dev/null; then
   publish_drills || true
   return 0
 }
+# pkg_step (nœud de données) : un paquet de la mise à jour (podman, freeradius…) manque. C'est le cas d'un nœud mis à jour par une version qui n'en posait aucun
+# (0.14.10 → 0.14.11 : c'est l'ancien script qui s'exécute) : « ddibuntu-selfupdate packages --auto » les repose depuis l'archive signée de la dernière release,
+# en arrière-plan (« follow » aligne aussi Kea, BIND et la PKI : il ne doit pas attendre un téléchargement). Un essai toutes les 6 h au plus.
+pkg_step() {
+  local list="${DDI_LIBDIR:-$ROOT/usr/local/lib/ddibuntu}/update-packages" su="${DDI_SELFUPDATE_CMD:-$ROOT/usr/local/sbin/ddibuntu-selfupdate}" p miss=""
+  local -a pk=()
+  [ -r "$list" ] && [ -x "$su" ] || return 0
+  read -ra pk < "$list" || true
+  for p in "${pk[@]}"; do
+    # shellcheck disable=SC2016  # ${Status} est le format de dpkg-query
+    [ "$(dpkg-query -W -f='${Status}' "$p" 2>/dev/null || true)" = "install ok installed" ] || miss="$miss $p"
+  done
+  [ -n "$miss" ] || return 0
+  [ -z "$(find "$ROOT/var/lib/ddibuntu/packages-attempt" -mmin -360 2>/dev/null)" ] || return 0
+  if [ -n "${DDI_TEST:-}" ]; then log "follow : paquets manquants :$miss"; return 0; fi
+  log "follow : paquets manquants :$miss : récupération lancée en arrière-plan (ddibuntu-selfupdate packages)"
+  systemd-run --quiet --no-block --collect --unit=ddibuntu-packages "$su" packages --auto >/dev/null 2>&1 || true
+}
 cmd_follow() {
   conf_load; publish_state || true
   ( update_step ) || log "follow : étape de mise à jour du cluster non terminée (réessai à la prochaine échéance)"
   [ "${C[NODE_ROLE]}" = data ] || return 0
+  ( pkg_step ) || true
   install -d -m 0700 "$STATE"
   if [ "${C[CA_NODE]}" = 1 ]; then ensure_xfr_key; fi
   ( cmd_ad_sync ) || log "follow : synchronisation Kerberos non terminée (réessai à la prochaine échéance)"
