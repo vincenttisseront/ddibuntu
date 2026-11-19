@@ -63,7 +63,8 @@ const dlName = (c: any, k: string) => ({ cert: `${c.name}.pem`, chain: `${c.name
 const ALGS = [{ value: 'rsa3072', label: 'RSA 3072' }, { value: 'rsa4096', label: 'RSA 4096' }, { value: 'ecp256', label: 'ECDSA P-256' }, { value: 'ecp384', label: 'ECDSA P-384' }]
 const cr = reactive({ open: false, kind: 'issuing' as 'root' | 'issuing', name: '', cn: '', o: '', ou: '', c: 'FR', alg: 'rsa3072', days: 1825, signedBy: 'external', chain: '', err: '', busy: false })
 function openCreate(kind: 'root' | 'issuing') {
-  Object.assign(cr, { open: true, kind, name: '', cn: '', o: '', ou: '', c: 'FR', alg: 'rsa3072', days: kind === 'root' ? 3650 : 1825, signedBy: 'external', chain: '', err: '', busy: false })
+  // Nom et CN proposés (0.14.14) : DDI-Issuing-1 / « DDI Issuing CA 1 », au premier numéro libre ; à remplacer librement
+  Object.assign(cr, { open: true, kind, ...suggestCaNames(kind, cas.value.map((c) => c.name)), o: '', ou: '', c: 'FR', alg: 'rsa3072', days: kind === 'root' ? 3650 : 1825, signedBy: 'external', chain: '', err: '', busy: false })
   files.chain = null
 }
 const signerItems = computed(() => [{ value: 'external', label: t('pki.ca.signer_external') }, ...(data.value?.signers ?? []).map((n: string) => ({ value: n, label: t('pki.ca.signer_ddi', { name: n }) }))])
@@ -81,7 +82,7 @@ async function createCa() {
 
 // ---- Reprise d'une autorité existante (PKCS#12) : le fichier et son mot de passe ne sont gardés que le temps de la requête, puis effacés de l'écran ----
 const pk = reactive({ open: false, name: '', file: null as File | null, password: '', confirm: '', err: '', busy: false })
-function openP12() { Object.assign(pk, { open: true, name: '', file: null, password: '', confirm: '', err: '', busy: false }) }
+function openP12() { Object.assign(pk, { open: true, name: suggestImportName(cas.value.map((c) => c.name)), file: null, password: '', confirm: '', err: '', busy: false }) }
 function pickP12(ev: Event) { pk.file = (ev.target as HTMLInputElement).files?.[0] ?? null }
 const pkValid = computed(() => !!pk.name.trim() && !!pk.file && !!pk.password && pk.confirm.trim() === pk.name.trim())
 async function importP12() {
