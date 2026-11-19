@@ -151,14 +151,19 @@ have_podman() { command -v "$PODMAN" >/dev/null 2>&1; }
 # 0.14.11 : l'archive de mise à jour embarque podman et ses dépendances (la mise à jour les pose sur chaque nœud de données) ; si ce nœud ne les a pas
 # (mis à jour par une version plus ancienne), on les repose d'abord depuis l'archive signée de la dernière release — sans dépôt apt —, puis apt en secours.
 # Un échec n'abîme rien : l'installation s'arrête avant toute création, avec la commande à lancer à la main.
+# ---- Suivi en direct (0.14.12) : pki-progress.json, étapes de la demande en cours (sans donnée de la demande) ; seulement pour une demande de la console (PROG_ON) ----
+prog() { [[ -n "${PROG_ON:-}" ]] || return 0; install -d -m 0755 "$RUN" 2>/dev/null || return 0; python3 "$HELPER" progress "$RUN/pki-progress.json" "$@" >/dev/null 2>&1 || true; }
+pstep() { prog step "$1" running "${2:-}"; }   # $1 = étape, $2 = précision (facultative)
 install_podman() {
   have_podman && return 0
   if [[ -x "$SELFUPDATE_CMD" ]]; then
+    pstep podman "paquet embarqué dans la release"
     log "podman n'est pas installé : pose du paquet embarqué dans la dernière release (ddibuntu-selfupdate packages ; quelques minutes)"
     timeout 1500 "$SELFUPDATE_CMD" packages >/dev/null 2>&1 || log "avertissement : le paquet embarqué n'a pas pu être posé ($(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("packages_message",""))' /var/lib/ddibuntu/update-status.json 2>/dev/null | cut -c1-200)) ; essai par apt"
     have_podman && { log "podman installé (paquet embarqué)"; return 0; }
   fi
   command -v "$APT_GET" >/dev/null 2>&1 || { log "podman n'est pas installé et apt-get est introuvable : installer le paquet podman à la main"; return 1; }
+  pstep podman "apt"
   log "podman n'est pas installé : installation du paquet par apt (nécessaire à la PKI ; quelques minutes)"
   export DEBIAN_FRONTEND=noninteractive
   timeout 300 "$APT_GET" -o DPkg::Lock::Timeout=120 update -qq >/dev/null 2>&1 \
@@ -410,6 +415,7 @@ cmd_apply() {   # $1 = image, $2 = nom public, $3 = réseaux
   valid_image "$image" || { log "image refusée : seule docker.io/keyfactor/ejbca-ce:X.Y.Z est admise"; return 1; }
   valid_pki_host "$host" || { log "nom public invalide : $host"; return 1; }
   nets="$(norm_nets "${3:-}")" || return 1
+  pstep podman
   install_podman || return 1
   tag="$(tag_of "$image")"
   # une instance existante garde son nom (gravé dans les certificats) et son image (la mise à jour a son propre parcours, 0.14.5)
@@ -420,6 +426,7 @@ cmd_apply() {   # $1 = image, $2 = nom public, $3 = réseaux
   if [[ -n "$dbt" && "$(python3 "$HELPER" update-cmp "$tag" "$dbt" 2>/dev/null || echo 0)" = -1 ]]; then
     log "la base a déjà été migrée par EJBCA $dbt : une image plus ancienne ($tag) ne doit pas la rouvrir"; return 1
   fi
+  pstep prepare
   install -d -m 0750 "$PETC"; install -d -m 0755 "$QDIR"
   install -d -m 0750 "$PDATA"; install -d -m 0700 -o "$CONT_UID" -g "$CONT_UID" "$PDATA/persistent" 2>/dev/null || install -d -m 0700 "$PDATA/persistent"
   if [[ -f "$ENVF" && ! -L "$ENVF" && "$(env_get HTTPSERVER_HOSTNAME)" != "$host" ]]; then
@@ -436,17 +443,21 @@ cmd_apply() {   # $1 = image, $2 = nom public, $3 = réseaux
   fi
   write_env "$host" || return 1
   ensure_db || return 1
+  pstep image "$tag"
   if ! "$PODMAN" image exists "$image" >/dev/null 2>&1; then
+    pstep image "$tag : tirage depuis docker.io"
     log "tirage de l'image $image"
     timeout 1800 "$PODMAN" pull --quiet "$image" >/dev/null || { log "tirage de l'image impossible (accès à docker.io ? sinon : podman load d'une archive)"; return 1; }
   fi
   digest="$("$PODMAN" image inspect --format '{{.Digest}}' "$image" 2>/dev/null | head -n1 | tr -d '\r\n')"
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { log "empreinte de l'image illisible"; return 1; }
   ref="$IMAGE_REPO@$digest"
+  pstep unit
   render_quadlet "$ref" > "$QUADLET.new"; chmod 0644 "$QUADLET.new"; mv -f "$QUADLET.new" "$QUADLET"
   write_instance "$host" "$tag" "$digest" "$nets"
   rm -f "$DESIRED"   # installer = vouloir la PKI en marche
   "$SYSCTL" daemon-reload
+  pstep start
   "$SYSCTL" start "$SERVICE" || { log "le démarrage du conteneur a échoué (journalctl -u $SERVICE)"; return 1; }
   [[ -n "$dbt" ]] || dbtag_set "$tag"
   warn="$(fw_open "$nets")"
@@ -1719,11 +1730,16 @@ cmd_request() {
   local -A R=()
   [[ -e "$rq" || -L "$rq" ]] || return 0
   if [[ -f "$rq" && ! -L "$rq" ]]; then raw="$(head -c 4097 "$rq")"; fi
-  rm -f "$rq"
   while IFS=$'\t' read -r k v; do
     if [[ -n "$k" ]]; then R["$k"]="$v"; fi
   done < <(printf '%s' "$raw" | python3 "$HELPER" parse-request 2>/dev/null || true)
   action="${R[action]:-}"
+  # 0.14.12 : le suivi est publié AVANT de consommer la demande : la console voit toujours « demande déposée » ou « en cours », jamais un trou entre les deux
+  if [[ -n "$action" && "$action" != status ]]; then
+    PROG_ON=1
+    if [[ "$action" = apply ]]; then prog begin apply podman prepare image unit start; else prog begin "$action" work; fi
+  fi
+  rm -f "$rq"
   if [[ -n "$action" && "$action" != status ]]; then out="$( ( need_leader ) 2>&1)" || rc=$?; fi
   if [[ "$rc" -eq 0 ]]; then
   case "$action" in
@@ -1764,6 +1780,7 @@ cmd_request() {
   if [[ -z "${R[id]:-}" && "$raw" =~ \"id\"[[:space:]]*:[[:space:]]*\"([0-9a-f]{16})\" ]]; then rm -f "$IN_DIR/${BASH_REMATCH[1]}.scepw" 2>/dev/null || true; fi
   [[ "$action" != recovery_set ]] || rm -f "$IN_DIR/recovery.pem" 2>/dev/null || true
   cmd_status || true
+  prog end "$ok"   # après l'état : la console ne voit « terminé » qu'avec l'état à jour
   [[ -z "$action" || "$action" = status ]] || cluster_kick
   [[ "$ok" = true ]]
 }

@@ -148,6 +148,32 @@ export async function readPkiResult(): Promise<PkiResult | null> {
     return { at: j.at, action: String(j.action ?? '').slice(0, 24), ok: j.ok === true, message: String(j.message ?? '').slice(0, 300), ...(typeof j.ref === 'string' && /^[0-9a-f]{16}$/.test(j.ref) ? { ref: j.ref } : {}) }
   } catch { return null }
 }
+/** 0.14.12 : suivi en direct de la demande traitée par root (étapes, sans donnée de la demande). Une tâche « en cours » sans nouvelle de root depuis 40 minutes est tenue pour abandonnée. */
+export interface PkiProgress {
+  action: string; state: 'running' | 'done' | 'failed'; startedAt: number; at: number; finishedAt: number; ageSeconds: number; stale: boolean
+  steps: Array<{ id: string; status: 'todo' | 'running' | 'done' | 'failed'; detail: string }>
+}
+export const PROGRESS_STALE_SECONDS = 40 * 60
+export function parsePkiProgress(raw: string, nowSec = Date.now() / 1000): PkiProgress | null {
+  let j: any
+  try { j = JSON.parse(raw) } catch { return null }
+  if (!j || typeof j !== 'object' || !Number.isFinite(j.at) || !/^[a-z_]{1,24}$/.test(String(j.action ?? ''))) return null
+  const state = j.state === 'done' || j.state === 'failed' ? j.state as 'done' | 'failed' : 'running'
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : 0)
+  const steps = (Array.isArray(j.steps) ? j.steps : []).slice(0, 12).filter((x: any) => x && /^[a-z_]{1,24}$/.test(String(x.id ?? ''))).map((x: any) => ({
+    id: String(x.id), status: x.status === 'running' || x.status === 'done' || x.status === 'failed' ? x.status as 'running' | 'done' | 'failed' : 'todo' as const,
+    detail: String(x.detail ?? '').replace(/[^\x20-\x7e\u00a0-\u024f]/g, '').slice(0, 120) }))
+  const age = Math.max(0, Math.round(nowSec - n(j.at)))
+  return { action: String(j.action), state, startedAt: n(j.startedAt), at: n(j.at), finishedAt: n(j.finishedAt), ageSeconds: age, stale: state === 'running' && age > PROGRESS_STALE_SECONDS, steps }
+}
+export async function readPkiProgress(): Promise<PkiProgress | null> {
+  try {
+    const f = cfg().pkiProgressFile
+    const st = await fs.stat(f)
+    if (!st.isFile() || st.size > 16 * 1024) return null
+    return parsePkiProgress(await fs.readFile(f, 'utf8'))
+  } catch { return null }
+}
 export async function pkiRequestPending(): Promise<boolean> {
   try { await fs.lstat(join(cfg().generatedDir, '.pki-request')); return true } catch { return false }
 }

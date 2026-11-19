@@ -38,6 +38,7 @@ export function cfg() {
     // service PKI (ddibuntu-pki, root) : état de l'instance EJBCA et résultat de la dernière demande
     pkiStatusFile: e.DDI_PKI_STATUS ?? '/run/ddibuntu/pki-status.json',
     pkiResultFile: e.DDI_PKI_RESULT ?? '/run/ddibuntu/pki-result.json',
+    pkiProgressFile: e.DDI_PKI_PROGRESS ?? '/run/ddibuntu/pki-progress.json',
     pkiClusterFile: e.DDI_PKI_CLUSTER ?? '/run/ddibuntu/pki-cluster.json',
     pkiUpdateFile: e.DDI_PKI_UPDATE ?? '/run/ddibuntu/pki-update.json',
     // SCEP (0.14.8) : alias et équipements préenregistrés, publiés par root (jamais un défi : EJBCA ne garde qu'une empreinte du mot de passe)

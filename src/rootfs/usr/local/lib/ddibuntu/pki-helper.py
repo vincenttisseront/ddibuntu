@@ -25,6 +25,7 @@ Sous-commandes :
   update-policy            (0.14.7) « ok » ou le motif du refus d'une mise à jour de l'image (même version, plus ancienne, plus ancienne que la base, saut de version majeure)
   update-cmp               (0.14.7) compare deux versions (-1, 0, 1)
   update-check-write       (0.14.7) analyse les étiquettes publiées par Docker Hub et écrit le résultat de la recherche de nouvelles versions
+  progress                 (0.14.12) suivi en direct d'une demande de la console (étapes publiées dans pki-progress.json)
   update-job               (0.14.7) tient l'état de la mise à jour en cours (étapes, contrôles, sauvegarde de retour arrière)
   update-publish           (0.14.7) construit pki-update.json (recherche + mise à jour en cours) pour la console
   update-digest            (0.14.7) empreinte annoncée par Docker Hub pour une étiquette lors de la dernière recherche (vide si inconnue)
@@ -1528,14 +1529,14 @@ def kind_of(cur, target):
     return "major" if t[0] != c[0] else ("minor" if t[1] != c[1] else "patch")
 
 
-def _atomic_json(path, obj):
+def _atomic_json(path, obj, mode=0o600):
     d = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(prefix=".upd.", dir=d)
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(obj, f, ensure_ascii=False)
             f.write("\n")
-        os.chmod(tmp, 0o600)
+        os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -1666,6 +1667,52 @@ def cmd_update_job(argv):
         return 2
     job["updatedAt"] = now
     _atomic_json(path, job)
+    return 0
+
+
+def cmd_progress(argv):
+    # progress FICHIER begin ACTION ÉTAPE… | step ÉTAPE running|done|failed [DÉTAIL] | end OK(true|false)
+    # 0.14.12 : suivi en direct d'une demande de la console (étapes, sans aucune donnée de la demande) ; fichier public (0644), jamais de secret
+    if len(argv) < 2:
+        return 2
+    path, op, args = argv[0], argv[1], argv[2:]
+    now = int(time.time())
+    idre = re.compile(r"[a-z_]{1,24}")
+    d = _read_json(path)
+    if op == "begin":
+        if len(args) < 2 or not all(idre.fullmatch(x) for x in args):
+            return 2
+        d = {"action": args[0], "state": "running", "startedAt": now, "at": now, "finishedAt": 0,
+             "steps": [{"id": x, "status": "todo", "detail": ""} for x in args[1:]]}
+        d["steps"][0]["status"] = "running"
+    elif op == "step":
+        if len(args) < 2 or args[1] not in ("running", "done", "failed") or not idre.fullmatch(args[0]):
+            return 2
+        steps = d.setdefault("steps", [])
+        row = next((x for x in steps if x.get("id") == args[0]), None)
+        if row is None:
+            row = {"id": args[0], "status": "todo", "detail": ""}
+            steps.append(row)
+        if args[1] == "running":
+            for x in steps:   # l'étape qui commence clôt celle qui tournait
+                if x.get("status") == "running":
+                    x["status"] = "done"
+        row["status"] = args[1]
+        if len(args) > 2:
+            row["detail"] = re.sub(r"[\x00-\x1f\x7f]", " ", " ".join(args[2:]))[:120]
+    elif op == "end":
+        if len(args) != 1 or args[0] not in ("true", "false"):
+            return 2
+        ok = args[0] == "true"
+        for x in d.get("steps", []):
+            if x.get("status") == "running":
+                x["status"] = "done" if ok else "failed"
+        d["state"] = "done" if ok else "failed"
+        d["finishedAt"] = now
+    else:
+        return 2
+    d["at"] = now
+    _atomic_json(path, d, 0o644)
     return 0
 
 
@@ -1835,6 +1882,8 @@ def main():
         return cmd_update_check_write(args)
     if cmd == "update-job":
         return cmd_update_job(args)
+    if cmd == "progress":
+        return cmd_progress(args)
     if cmd == "update-publish":
         return cmd_update_publish(args)
     if cmd == "update-digest":

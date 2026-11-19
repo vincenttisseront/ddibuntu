@@ -209,6 +209,9 @@ defineExpose({ load })
           <template v-if="cr.kind === 'issuing'">
             <UFormField :label="t('pki.ca.signer')"><USelect v-model="cr.signedBy" :items="signerItems" class="w-full" data-test="pki-ca-signer" /></UFormField>
             <template v-if="cr.signedBy === 'external'">
+              <!-- 0.14.12 : sans racine hors ligne à coller, la seule issue est une racine du DDI : on le dit et on y mène -->
+              <UAlert v-if="!(data?.signers ?? []).length" color="info" variant="subtle" icon="i-lucide-info" :title="t('pki.ca.no_root_title')" :description="t('pki.ca.no_root_body')"
+                :actions="[{ label: t('pki.ca.no_root_go'), color: 'info', variant: 'outline', onClick: () => { cr.open = false; nextTick(() => openCreate('root')) } }]" data-test="pki-ca-no-root" />
               <UFormField :label="t('pki.ca.chain')" :help="t('pki.ca.chain_help')"><UTextarea v-model="cr.chain" :rows="6" class="w-full font-mono text-xs" placeholder="-----BEGIN CERTIFICATE-----" data-test="pki-ca-chain" /></UFormField>
               <UFormField :label="t('pki.ca.or_file')"><input type="file" accept=".pem,.crt,.cer,.der,.p7b" class="text-sm" data-test="pki-ca-chain-file" @change="pick('chain', $event)"></UFormField>
             </template>
