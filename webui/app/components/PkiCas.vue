@@ -45,10 +45,11 @@ function warnings(c: any): string[] {
   }
   return w
 }
-const ordered = computed(() => {
-  const rank: Record<string, number> = { root: 0, extroot: 1, issuing: 2, unknown: 3 }
-  return [...cas.value].sort((a, b) => (rank[a.kind] ?? 9) - (rank[b.kind] ?? 9) || a.name.localeCompare(b.name))
-})
+// Vue en arbre (0.14.13) : la hiérarchie à gauche (racine → émettrices), le détail complet de l'autorité choisie à droite
+const rows = computed(() => pkiTreeRows<any>(cas.value))
+const pickedName = ref('')
+const selected = computed(() => byName.value[pickedName.value] ?? rows.value[0]?.ca ?? null)
+const kindIcon = (k: string) => (k === 'root' ? 'i-lucide-shield-check' : k === 'extroot' ? 'i-lucide-shield-off' : k === 'issuing' ? 'i-lucide-stamp' : 'i-lucide-shield-question')
 const signSnippet = (c: any) => {
   const x = byName.value[c.extRoot]
   return ["cat > ca.ext <<'EOF'", 'basicConstraints=critical,CA:TRUE,pathlen:0', 'keyUsage=critical,keyCertSign,cRLSign', 'subjectKeyIdentifier=hash', 'authorityKeyIdentifier=keyid',
@@ -134,7 +135,23 @@ defineExpose({ load })
     </div>
 
     <p v-if="!cas.length" class="text-sm text-muted" data-test="pki-ca-empty">{{ t('pki.ca.empty') }}</p>
-    <UCard v-for="c in ordered" :key="c.name" :data-test="`pki-ca-${c.name}`">
+    <div v-if="cas.length" class="grid grid-cols-1 lg:grid-cols-[20rem_minmax(0,1fr)] gap-4 items-start">
+    <nav class="flex flex-col gap-1 rounded-lg border border-default p-2 lg:sticky lg:top-2" :aria-label="t('pki.ca.tree')" data-test="pki-ca-tree">
+      <button v-for="r in rows" :key="r.ca.name" type="button" :data-test="`pki-ca-node-${r.ca.name}`" :aria-current="selected?.name === r.ca.name ? 'true' : undefined"
+        class="flex items-center gap-1 rounded-md px-2 py-1.5 text-left text-sm hover:bg-elevated focus-visible:outline-2 focus-visible:outline-primary" :class="selected?.name === r.ca.name ? 'bg-elevated ring-1 ring-primary' : ''"
+        @click="pickedName = r.ca.name">
+        <span v-for="(g, i) in r.guides" :key="i" class="inline-block w-4 shrink-0 self-stretch" :class="g ? 'border-l border-default' : ''" aria-hidden="true" />
+        <span v-if="r.depth" class="inline-block w-3 shrink-0 self-center border-t border-default -ml-0" aria-hidden="true" />
+        <UIcon :name="kindIcon(r.ca.kind)" class="size-4 shrink-0" :class="r.ca.state === 'active' ? 'text-success' : r.ca.state === 'waiting' ? 'text-warning' : 'text-muted'" />
+        <span class="flex min-w-0 flex-1 flex-col">
+          <span class="truncate font-mono font-medium">{{ r.ca.name }}</span>
+          <span class="truncate text-xs text-muted">{{ t(`pki.ca.kind.${r.ca.kind}`) }}<template v-if="r.ca.state !== 'active'"> · <span class="text-warning">{{ t(`pki.ca.state.${r.ca.state}`) }}</span></template><template v-else-if="r.ca.notAfter"> · → {{ r.ca.notAfter.slice(0, 10) }}</template></span>
+        </span>
+        <UIcon v-if="warnings(r.ca).length" name="i-lucide-triangle-alert" class="size-4 shrink-0 text-warning" :aria-label="t('pki.ca.has_warning')" data-test="pki-ca-node-warn" />
+      </button>
+    </nav>
+    <template v-if="selected">
+    <UCard v-for="c in [selected]" :key="c.name" :data-test="`pki-ca-${c.name}`">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-2">
           <span class="font-medium font-mono break-all">{{ c.name }}</span>
@@ -189,6 +206,8 @@ defineExpose({ load })
         <UButton v-if="c.kind === 'extroot'" size="sm" icon="i-lucide-upload" color="neutral" variant="outline" :label="t('pki.ca.rootcrl')" :disabled="!ready || locked" data-test="pki-ca-rootcrl" @click="openRootCrl(c)" />
       </div>
     </UCard>
+    </template>
+    </div>
 
     <!-- Création -->
     <UModal v-model:open="cr.open" :title="cr.kind === 'root' ? t('pki.ca.add_root') : t('pki.ca.add_issuing')" :description="cr.kind === 'root' ? t('pki.ca.root_desc') : t('pki.ca.issuing_desc')">
