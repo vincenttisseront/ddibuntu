@@ -1,0 +1,28 @@
+# DDI-Buntu : winbindd de RADIUS (PEAP-MSCHAPv2). Il ne sert qu'à vérifier les mots de passe des comptes du domaine pour ntlm_auth (FreeRADIUS) :
+# configuration PRIVÉE (smb.conf, krb5.conf, secrets.tdb sous /var/lib/ddibuntu/radius-winbind, jamais /etc/samba), compte machine propre au nœud.
+# Démarré et arrêté UNIQUEMENT par « ddibuntu-radius » (jamais activé à l'installation) : sur un secondaire du cluster il reste arrêté, comme FreeRADIUS.
+[Unit]
+Description=DDI-Buntu RADIUS : winbindd (vérification des mots de passe du domaine)
+Documentation=file:///usr/share/doc/ddibuntu/ARCHITECTURE-CLUSTER.md
+After=network-online.target
+Wants=network-online.target
+# le winbind du paquet utilise le même répertoire /run/samba : jamais les deux à la fois
+Conflicts=winbind.service
+Before=freeradius.service
+ConditionPathExists=/var/lib/ddibuntu/radius-winbind/joined.json
+
+[Service]
+Type=simple
+Environment=KRB5_CONFIG=/var/lib/ddibuntu/radius-winbind/krb5.conf
+ExecStart=/usr/sbin/winbindd --foreground --no-process-group -s /var/lib/ddibuntu/radius-winbind/smb.conf
+RuntimeDirectory=samba
+RuntimeDirectoryPreserve=yes
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=16384
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -5,8 +5,8 @@
 // déposée par la console : après chaque action on attend la publication du résultat (même mécanique que le pare-feu).
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm(); const fmt = useFmt()
 const { isAdmin } = useRole()
-const tab = useHashTab('service', ['service', 'clients', 'journal', 'directory', 'certs', 'rules', 'import'])
-const tabs = computed(() => [{ label: t('radius.tab_service'), value: 'service', icon: 'i-lucide-radio-tower' }, { label: t('radius.tab_clients'), value: 'clients', icon: 'i-lucide-router' }, { label: t('radius.tab_journal'), value: 'journal', icon: 'i-lucide-scroll-text' }, ...(isAdmin.value ? [{ label: t('radius.tab_directory'), value: 'directory', icon: 'i-lucide-network' }, { label: t('radius.tab_certs'), value: 'certs', icon: 'i-lucide-shield-check' }, { label: t('radius.tab_rules'), value: 'rules', icon: 'i-lucide-list-checks' }, { label: t('radius.tab_import'), value: 'import', icon: 'i-lucide-file-input' }] : [])])
+const tab = useHashTab('service', ['service', 'clients', 'journal', 'directory', 'certs', 'auth', 'rules', 'import'])
+const tabs = computed(() => [{ label: t('radius.tab_service'), value: 'service', icon: 'i-lucide-radio-tower' }, { label: t('radius.tab_clients'), value: 'clients', icon: 'i-lucide-router' }, { label: t('radius.tab_journal'), value: 'journal', icon: 'i-lucide-scroll-text' }, ...(isAdmin.value ? [{ label: t('radius.tab_directory'), value: 'directory', icon: 'i-lucide-network' }, { label: t('radius.tab_certs'), value: 'certs', icon: 'i-lucide-shield-check' }, { label: t('radius.tab_auth'), value: 'auth', icon: 'i-lucide-key-round' }, { label: t('radius.tab_rules'), value: 'rules', icon: 'i-lucide-list-checks' }, { label: t('radius.tab_import'), value: 'import', icon: 'i-lucide-file-input' }] : [])])
 
 const data = ref<any>(null), busy = ref<'' | 'apply' | 'stop' | 'test'>(''), err = ref(''), probe = ref<any>(null)
 const status = computed(() => data.value?.status ?? null)
@@ -121,6 +121,7 @@ await load()
     <RadiusJournal v-else-if="tab === 'journal'" />
     <RadiusDirectory v-else-if="tab === 'directory' && isAdmin" />
     <RadiusPki v-else-if="tab === 'certs' && isAdmin" :eap="status?.eap ?? null" />
+    <RadiusAuth v-else-if="tab === 'auth' && isAdmin" />
     <RadiusRules v-else-if="tab === 'rules' && isAdmin" @changed="load" />
     <RadiusNps v-else-if="tab === 'import' && isAdmin" @changed="load" />
 

@@ -67,7 +67,7 @@ S=("$PY" "$(command -v samba-tool)"); C=(--configfile="$SMB")
 
 rm -rf "$D"; mkdir -p "$D"
 "${S[@]}" domain provision --targetdir="$D" --use-rfc2307 --realm=LAB.TEST --domain=LAB --adminpass='Passw0rd-Lab-1!' --server-role=dc \
-  --dns-backend=SAMBA_INTERNAL --option="dns forwarder=127.0.0.1" --host-name=dc1 --host-ip=127.0.0.1 --option="pid directory=$D/run" >"$D/provision.log" 2>&1 || { tail -5 "$D/provision.log" >&2; exit 1; }
+  --dns-backend=SAMBA_INTERNAL --option="dns forwarder=127.0.0.1" --option="ntlm auth=yes" --host-name=dc1 --host-ip=127.0.0.1 --option="pid directory=$D/run" >"$D/provision.log" 2>&1 || { tail -5 "$D/provision.log" >&2; exit 1; }
 mkdir -p "$D/run"
 # le démon ne doit hériter d'aucun descripteur du testeur (sinon spawnSync attendrait sa fin)
 ( cd "$D" || exit 1; setsid nohup /usr/sbin/samba -s "$SMB" -i -M single >"$D/samba.log" 2>&1 </dev/null & echo $! > "$D/samba.pid" )

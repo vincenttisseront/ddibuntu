@@ -1,5 +1,19 @@
 # Journal des modifications
 
+## 0.16.0 — « Identifiant et mot de passe : PEAP-MSCHAPv2 et EAP-TTLS, pour les postes hors domaine »
+
+Un poste Windows qui n'a pas de certificat client (poste hors domaine, ou même joint) échouait avec `eap: No mutually acceptable types found` : le service n'acceptait qu'EAP-TLS. Deux méthodes par **identifiant et mot de passe Active Directory** sont ajoutées. Elles sont **désactivées par défaut** (aucun changement après la mise à jour) et se choisissent dans le nouvel onglet **Mot de passe** de RADIUS, puis « Déployer ».
+
+- **PEAP-MSCHAPv2** (la méthode native de Windows, Android, macOS, iOS) : le mot de passe est vérifié auprès du contrôleur de domaine par `ntlm_auth` et un `winbindd` privé. L'appliance doit donc être **jointe au domaine** (onglet Mot de passe → « Joindre le domaine »). Chaque nœud de données a **son propre compte machine** (`RAD-` + fin du nom d'hôte) : le secret de jonction n'est jamais copié entre nœuds. Le compte qui joint est transmis **une seule fois** à root (fichier 0600 supprimé après usage ; sur un système de fichiers journalisé l'effacement physique n'est pas garanti, d'où le compte dédié à la jonction que nous recommandons) ; la console ne le conserve pas et le journal d'audit ne garde que son nom. Un DC Samba demande `ntlm auth = yes` ; un DC Windows l'accepte par défaut tant que `LmCompatibilityLevel` n'est pas à 5.
+- **EAP-TTLS / PAP** : le mot de passe est vérifié par une liaison LDAPS au nom de l'utilisateur (aucune jonction). Le mot de passe voyage en clair **dans le tunnel TLS** : le poste doit vérifier le certificat du serveur (la console l'écrit dans l'avertissement). Un mot de passe vide est refusé.
+- **Mêmes règles d'accès pour les trois méthodes** : l'identité (`alice`, `DOMAINE\alice`, `alice@domaine`) est ramenée au compte AD, puis groupes, équipement, SSID et réponses s'appliquent comme pour EAP-TLS. La décision est prise **avant** de vérifier le mot de passe : un compte désactivé, verrouillé ou hors règle est refusé sans que son mot de passe soit essayé (chaque essai compte pour le verrouillage AD).
+- **Cluster** : la jonction est propre à chaque nœud ; `winbindd` ne tourne que là où RADIUS tourne (leader), comme FreeRADIUS (`ddibuntu-radius align`). Le déploiement mémorisé pour le nouveau leader porte aussi les méthodes choisies.
+- **Journal** : le motif de refus dit pourquoi (mot de passe invalide, compte verrouillé, hors règle…) même en PEAP, où le démon répond en plusieurs tours.
+- **Validations** : PEAP sans nom NetBIOS, ou une méthode par mot de passe sans aucune règle active, empêchent de déployer (un message clair, rien n'est déposé). PEAP demandé sur un nœud non joint : la méthode n'est pas activée et l'avertissement est affiché.
+- **Paquets** : `winbind` et `samba-common-bin` rejoignent les paquets posés par la mise à jour sur les nœuds de données ; le `winbind` du paquet est désactivé, RADIUS utilise sa propre unité `ddibuntu-radius-winbind.service`.
+- **Tests** : `b40` (vrai FreeRADIUS, vrai Samba AD, vrai `winbindd`/`ntlm_auth` : PEAP et TTLS réels, jonction, départ, états de déploiement, raisons au journal, aucune fuite de mot de passe) ; `unit-radius-auth` ; `e2e-iter60` (réglages, dépôts, secrets absents de la base et de l'audit).
+- **À savoir** : à tester avec votre contrôleur de domaine et un poste réel (TLS 1.3 avec PEAP selon la version de Windows ; l'autorité du certificat du serveur doit être approuvée par les postes).
+
 ## 0.15.0 — « RADIUS actif / passif : le service suit le leader du cluster »
 
 Jusqu'ici « Déployer » n'installait RADIUS que sur le nœud où la console était ouverte : si ce nœud tombait, plus personne ne répondait aux bornes, même avec l'adresse virtuelle. RADIUS fonctionne maintenant comme la PKI : **un seul FreeRADIUS actif, sur le leader PostgreSQL, derrière l'adresse virtuelle** ; le secondaire est en veille et reprend tout seul si le leader tombe.

@@ -194,6 +194,8 @@ deploy_files() {
     ddibuntu-db-init.service ddibuntu-console.service ddibuntu-reload.path ddibuntu-ad-request.path ddibuntu-fw-request.path ddibuntu-radius-request.path ddibuntu-pki-request.path ddibuntu-pki-maint.timer ddibuntu-cluster-setup.path ddibuntu-backup-request.path ddibuntu-backup.timer ddibuntu-health.timer ddibuntu-selfupdate.path ddibuntu-update-check.timer >/dev/null 2>&1 || { fail "activation des services impossible"; return; }
   # le paquet freeradius (nouveau) s'active seul : il ne doit tourner que sur ordre de la console, jamais avec la configuration du paquet
   [ -d "$TARGET/etc/ddibuntu/radius" ] || in_target systemctl disable freeradius.service >/dev/null 2>&1 || true
+  # 0.16.0 : le paquet winbind s'active seul aussi ; RADIUS utilise sa propre unité (ddibuntu-radius-winbind)
+  in_target systemctl disable --now winbind.service nmbd.service smbd.service >/dev/null 2>&1 || true
   # dépôt des sauvegardes : propriété de postgres (l'archivage des journaux WAL s'y écrit sous ce compte)
   mkdir -p "$TARGET/var/lib/ddibuntu/backup/base" "$TARGET/var/lib/ddibuntu/backup/wal"
   in_target chown -R postgres:postgres /var/lib/ddibuntu/backup 2>/dev/null || say "avertissement : dépôt de sauvegarde non attribué à postgres (sera corrigé par le minuteur)"

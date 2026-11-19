@@ -32,6 +32,11 @@ BACKUP="$STATE/radius-backup"
 MODULES="always attr_filter preprocess expr"            # modules du paquet réellement utilisés par le site (le module eap est généré, pas celui du paquet) ; expr : %{escape:} du journal et règles d'accès
 LDAP_SO="${DDI_RADIUS_LDAP_SO:-/usr/lib/freeradius/rlm_ldap.so}"   # module LDAP : paquet freeradius-ldap (séparé du paquet freeradius)
 MAX_CLIENTS_BYTES=1048576
+# 0.16.0 : identifiant + mot de passe. PEAP-MSCHAPv2 exige une jonction au domaine (winbind + ntlm_auth) ; l'état de Samba (secrets.tdb) y reste entre deux déploiements.
+WBSTATE="${DDI_RADIUS_WB_STATE:-$STATE/radius-winbind}"
+NTLM_AUTH="${DDI_NTLM_AUTH:-/usr/bin/ntlm_auth}"
+NET_BIN="${DDI_NET_BIN:-/usr/bin/net}"
+WBSERVICE="ddibuntu-radius-winbind.service"
 CLCONF="${DDI_CLUSTER_CONF:-/etc/ddibuntu-cluster/cluster.conf}"   # 0.15.0 : présent = ce nœud fait partie d'un cluster
 CLUSTER_CMD="${DDI_CLUSTER_CMD:-/usr/local/sbin/ddibuntu-cluster}"
 
@@ -47,6 +52,8 @@ Usage : ddibuntu-radius <commande>
   check FICHIER   valide un fichier de clients (sans rien installer) ; affiche les réseaux à ouvrir au pare-feu
   check-pki DOSSIER  valide un dossier PKI (sans rien installer)
   check-authz DOSSIER FICHIER  valide un dossier de règles d'accès (avec le fichier de clients correspondant) et affiche la configuration générée
+  join            joint cette appliance au domaine (PEAP-MSCHAPv2) : demande déposée par la console (radius-join/join.json), compte utilisé une fois, jamais conservé
+  leave           retire la jonction de CE nœud (PEAP-MSCHAPv2 cesse de fonctionner ici)
 USAGE
 }
 
@@ -110,10 +117,10 @@ cmd_status() {
   [[ -f "$LDAP_SO" ]] && ldapmod=true
   if [[ -x "$RADIUSD" ]]; then installed=true; version="$("$RADIUSD" -v 2>/dev/null | sed -n 's/^radiusd: FreeRADIUS Version \([0-9][0-9.]*\).*/\1/p' | head -n1)" || version=""; fi
   if [[ -f "$RDIR/clients.conf" ]]; then configured=true; nclients="$(grep -c '^client "' "$RDIR/clients.conf" || true)"; nclients=$((nclients > 0 ? nclients - 1 : 0)); fi   # sans le client d'essai local
-  publish radius-status.json "$(V="$version" I="$installed" C="$configured" N="$nclients" A="$(svc_state is-active)" E="$(svc_state is-enabled)" P="$(pki_info)" Z="$(authz_info)" M="$ldapmod" python3 -c '
+  publish radius-status.json "$(V="$version" I="$installed" C="$configured" N="$nclients" A="$(svc_state is-active)" E="$(svc_state is-enabled)" P="$(pki_info)" Z="$(authz_info)" M="$ldapmod" W="$(winbind_info)" python3 -c '
 import json, os, time
 b = lambda k: os.environ[k] == "true"
-print(json.dumps({"at": int(time.time()), "installed": b("I"), "version": os.environ["V"], "configured": b("C"), "active": b("A"), "enabled": b("E"), "clients": int(os.environ["N"]), "ports": [1812, 1813], "eap": json.loads(os.environ["P"]), "authz": json.loads(os.environ["Z"]), "ldap_module": b("M")}))')"
+print(json.dumps({"at": int(time.time()), "installed": b("I"), "version": os.environ["V"], "configured": b("C"), "active": b("A"), "enabled": b("E"), "clients": int(os.environ["N"]), "ports": [1812, 1813], "eap": json.loads(os.environ["P"]), "authz": json.loads(os.environ["Z"]), "ldap_module": b("M"), "winbind": json.loads(os.environ["W"])}))')"
 }
 
 # ---- Validation du fichier déposé par la console : uniquement des blocs « client » de forme imposée ----
@@ -322,7 +329,7 @@ PY
 # repris tel quel dans une directive, et aucun caractère susceptible d'être interprété (guillemet, « $ », « % », « { », saut de ligne) n'y entre.
 # validate_authz SOURCE INSTANTANÉ FICHIER_CLIENTS : écrit INSTANTANÉ/{ldap.mod,site.conf,ldap-ca.pem}. Sortie : « rules=N servers=URL,URL ».
 validate_authz() {
-  python3 - "$@" <<'PY'
+  DDI_WB_STATE="$WBSTATE" DDI_NTLM_AUTH="$NTLM_AUTH" python3 - "$@" <<'PY'
 import json, os, re, subprocess, sys, tempfile, shutil, atexit
 src, snap, clients_file = sys.argv[1], sys.argv[2], sys.argv[3]
 def die(m):
@@ -337,13 +344,14 @@ def read(rel, limit, required=True):
     except UnicodeDecodeError: die("%s : UTF-8 attendu" % rel)
 if os.path.islink(src) or not os.path.isdir(src): die("dossier de dépôt absent")
 # seuls les trois fichiers que dépose la console sont admis (rien d'autre n'est lu ni ne doit survivre dans le dépôt)
-extra = sorted(set(os.listdir(src)) - {"rules.json", "ldap.json", "ldap-ca.pem"})
+extra = sorted(set(os.listdir(src)) - {"rules.json", "ldap.json", "ldap-ca.pem", "auth.json"})
 if extra: die("fichier inattendu dans le dépôt : %s" % extra[0][:40].encode("ascii", "replace").decode())
 try: rules_doc = json.loads(read("rules.json", 4 * 1024 * 1024))
 except ValueError: die("rules.json illisible")
 try: ldap_doc = json.loads(read("ldap.json", 65536))
 except ValueError: die("ldap.json illisible")
 ca_txt = read("ldap-ca.pem", 65536, required=False)
+auth_txt = read("auth.json", 4096, required=False)
 
 CTRL = re.compile(r"[\x00-\x1f\x7f]")
 def text(v, what, lo, hi, rx=None):
@@ -387,6 +395,30 @@ if ca_txt is not None:
         p = subprocess.run(["openssl", "x509", "-in", f, "-noout", "-subject"], capture_output=True, timeout=20)
         if p.returncode != 0: die("ldap-ca.pem : certificat illisible (n° %d)" % (i + 1))
     ca_ok = True
+
+# ---- méthodes par identifiant et mot de passe (0.16.0) : absent = EAP-TLS seulement ----
+WBSTATE = os.environ.get("DDI_WB_STATE", "")
+NTLM_AUTH = os.environ.get("DDI_NTLM_AUTH", "/usr/bin/ntlm_auth")
+NB = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,14}")
+auth_doc = {}
+if auth_txt is not None:
+    try: auth_doc = json.loads(auth_txt)
+    except ValueError: die("auth.json illisible")
+    if not isinstance(auth_doc, dict) or set(auth_doc) - {"peap", "ttls", "netbios"}: die("auth.json : champ inconnu")
+    for k in ("peap", "ttls"):
+        if not isinstance(auth_doc.get(k, False), bool): die("auth.json : %s booléen attendu" % k)
+    if "netbios" in auth_doc and auth_doc["netbios"] != "": text(auth_doc["netbios"], "nom NetBIOS", 1, 15, NB)
+joined = {}
+if WBSTATE and os.path.isfile(os.path.join(WBSTATE, "joined.json")) and not os.path.islink(os.path.join(WBSTATE, "joined.json")):
+    try: joined = json.load(open(os.path.join(WBSTATE, "joined.json")))
+    except ValueError: joined = {}
+    if not isinstance(joined, dict) or not NB.fullmatch(str(joined.get("netbios", ""))): joined = {}
+netbios = joined.get("netbios") or auth_doc.get("netbios") or ""   # le domaine rejoint fait foi (ntlm_auth --domain) : un autre nom saisi dans la console ne peut que casser PEAP
+want_peap, ttls_on = bool(auth_doc.get("peap")), bool(auth_doc.get("ttls"))
+peap_on = want_peap and bool(joined)
+notes = []
+if want_peap and not joined: notes.append("warn: PEAP-MSCHAPv2 demandé mais cette appliance n'est pas jointe au domaine : méthode non activée")
+if (peap_on or ttls_on) and not netbios: notes.append("warn: nom NetBIOS du domaine non renseigné : les identifiants « DOMAINE\\compte » sont refusés")
 
 # ---- règles ----
 if not isinstance(rules_doc, dict) or not isinstance(rules_doc.get("rules"), list): die("rules.json : liste « rules » attendue")
@@ -454,7 +486,7 @@ for n, r in enumerate(rules, 1):
 L = ["# Généré par ddibuntu-radius : lecture seule de l'annuaire (état du compte et groupes imbriqués). Ne pas modifier à la main.", "ldap {"]
 for u in urls: L.append("\tserver = " + dq(u))
 L += ["\tidentity = " + dq(bind_dn), "\tpassword = " + dq(bind_pw), "\tbase_dn = " + dq(base_dn),
-      "\tupdate {", "\t\tcontrol:Tmp-String-3 := 'userAccountControl'", "\t\tcontrol:Tmp-String-4 := 'msDS-User-Account-Control-Computed'", "\t\tcontrol:Tmp-String-5 := 'accountExpires'", "\t}",
+      "\tupdate {", "\t\tcontrol:Tmp-String-3 := 'userAccountControl'", "\t\tcontrol:Tmp-String-4 := 'msDS-User-Account-Control-Computed'", "\t\tcontrol:Tmp-String-5 := 'accountExpires'", "\t\tcontrol:Tmp-String-9 := 'sAMAccountName'", "\t}",
       '\tuser_dn = "LDAP-UserDn"',
       "\tuser {", '\t\tbase_dn = "${..base_dn}"',
       '\t\tfilter = "(&(objectClass=user)(objectCategory=%{control:Tmp-String-7})(%{control:Tmp-String-6}=%{control:Tmp-String-1}))"', "\t\tscope = sub", "\t}",
@@ -518,7 +550,86 @@ for r in out:
     block(["}"], 2)
 block(["", "# 5. refus par défaut"], 2); deny("aucune regle ne correspond (refus par defaut)", 2)
 S += ["\t}", "}"]
-for g in ["ldap.mod", "site.conf", "ldap-ca.pem"]:
+
+# ---- serveur « tunnel » PEAP / EAP-TTLS (0.16.0) ----
+# Mêmes contrôles que la décision EAP-TLS (identité → compte → état du compte → règles dans l'ordre → refus par défaut), exécutés AVANT le mot de passe :
+# un compte désactivé, verrouillé ou hors règles est refusé sans jamais tenter l'authentification. Ensuite seulement le mot de passe est vérifié
+# (EAP-TTLS/PAP : liaison LDAPS de l'utilisateur ; PEAP-MSCHAPv2 : ntlm_auth, via winbind). Ici « reject » refuse vraiment (contrairement au serveur EAP-TLS).
+I = []
+def iemit(lines, ind): I.extend("\t" * ind + l for l in lines)
+# PEAP / TTLS répondent au refus du tunnel par un tour de plus avant l'Access-Reject final (autre requête) : la raison est donc aussi gardée dans l'état de session
+def ideny(msg, ind): iemit(["update outer.request {", '\t&Module-Failure-Message := "ddibuntu : %s"' % msg, "}", "update outer.session-state {", '\t&Module-Failure-Message := "ddibuntu : %s"' % msg, "}", "reject"], ind)
+if peap_on or ttls_on:
+    nbl = netbios.lower()
+    I += ["# Généré par ddibuntu-radius : tunnel PEAP / EAP-TTLS (identifiant et mot de passe). Contrôles d'accès AVANT la vérification du mot de passe.",
+          "server ddibuntu-inner {", "\tauthorize {"]
+    iemit(["# 1. identifiant présenté dans le tunnel : « DOMAINE\\compte », « compte@suffixe » ou « compte » (jeu de caractères restreint : l'identifiant sert d'argument à ntlm_auth)",
+           "if (!&User-Name || &User-Name !~ /^[A-Za-z0-9._@+\\\\-]{1,128}$/) {"], 2)
+    ideny("identifiant non pris en charge", 3)
+    iemit(["}", "if (&User-Name =~ /^([^\\\\]+)\\\\(.+)$/) {"], 2)
+    if nbl:
+        iemit(["\tif (\"%{tolower:%{1}}\" != " + sq(nbl) + ") {"], 2)
+        ideny("domaine inconnu", 4)
+        iemit(["\t}"], 2)
+    else:
+        ideny("nom NetBIOS du domaine non configure", 3)
+    iemit(["\tupdate control {", "\t\t&Tmp-String-0 := 'user'", "\t\t&Tmp-String-1 := \"%{2}\"", "\t\t&Tmp-String-6 := 'sAMAccountName'", "\t\t&Tmp-String-7 := 'person'", "\t}",
+           "}", "elsif (&User-Name =~ /^([^@]+)@(.+)$/) {",
+           "\tupdate control {", "\t\t&Tmp-String-0 := 'user'", "\t\t&Tmp-String-1 := &User-Name", "\t\t&Tmp-String-6 := 'userPrincipalName'", "\t\t&Tmp-String-7 := 'person'", "\t}",
+           "}", "else {",
+           "\tupdate control {", "\t\t&Tmp-String-0 := 'user'", "\t\t&Tmp-String-1 := &User-Name", "\t\t&Tmp-String-6 := 'sAMAccountName'", "\t\t&Tmp-String-7 := 'person'", "\t}",
+           "}",
+           "# identité retenue, conservée pour le journal",
+           "update outer.session-state {", "\t&Tmp-String-1 := \"%{control:Tmp-String-0}:%{control:Tmp-String-1}\"", "}",
+           "# 2. compte dans l'annuaire (échec ou résultat ambigu = refus)", "ldap", "if (notfound) {"], 2); ideny("compte introuvable dans l'annuaire", 3)
+    iemit(["}", "elsif (!(updated || ok)) {"], 2); ideny("annuaire indisponible ou compte ambigu", 3)
+    iemit(["}", "# 3. état du compte : mêmes critères que la console et que EAP-TLS",
+           "if (!&control:Tmp-String-3 || &control:Tmp-String-3 !~ /^[0-9]{1,10}$/) {"], 2); ideny("attributs du compte illisibles", 3)
+    iemit(["}", "if (\"%{expr:%{control:Tmp-String-3} & 2}\" != '0') {"], 2); ideny("compte desactive", 3)
+    iemit(["}", "if (&control:Tmp-String-4 && &control:Tmp-String-4 =~ /^[0-9]{1,10}$/) {", "\tif (\"%{expr:%{control:Tmp-String-4} & 16}\" != '0') {"], 2); ideny("compte verrouille", 4)
+    iemit(["\t}", "}", "elsif (\"%{expr:%{control:Tmp-String-3} & 16}\" != '0') {"], 2); ideny("compte verrouille", 3)
+    iemit(["}", "if (&control:Tmp-String-5 && &control:Tmp-String-5 =~ /^[0-9]{1,18}$/ && &control:Tmp-String-5 != '0') {",
+           "\tif (\"%{expr:%l - (%{control:Tmp-String-5} / 10000000 - 11644473600)}\" =~ /^[0-9]+$/) {"], 2); ideny("compte expire", 4)
+    iemit(["\t}", "}"], 2)
+    if uses_ssid:
+        iemit(["# SSID : suffixe de Called-Station-Id (« AA-BB-CC-DD-EE-FF:SSID »)",
+               "if (\"%{outer.request:Called-Station-Id}\" =~ /^([0-9A-Fa-f]{2}[-:.]?){5}[0-9A-Fa-f]{2}:(.+)$/) {", "\tupdate control {", "\t\t&Tmp-String-2 := \"%{2}\"", "\t}", "}"], 2)
+    iemit(["# 4. règles d'accès, dans l'ordre : la première qui correspond décide (si / sinon si : aucune sortie anticipée, l'authentification suit)"], 2)
+    first = True
+    for r in out:
+        if r["nas"] is not None and len(r["nas"]) == 0: continue
+        if r["kind"] == "computer": continue      # un identifiant et un mot de passe désignent toujours un utilisateur, jamais une machine
+        cond = ["&control:Tmp-String-0 == 'user'"]
+        if r["groups"]: cond.append("(" + " || ".join("LDAP-Group == " + sq(g) for g in r["groups"]) + ")")
+        if r["nas"]: cond.append("(" + " || ".join("\"%%{client:shortname}\" == '%s'" % c for c in r["nas"]) + ")")
+        if r["ssids"]: cond.append("(" + " || ".join("&control:Tmp-String-2 == " + sq(x) for x in r["ssids"]) + ")")
+        iemit(["", "# règle %d : %s (%s)" % (r["n"], r["label"], "accepter" if r["act"] == "accept" else "refuser")] + ([] if first else ["}"]) +
+              [("if (%s) {" if first else "elsif (%s) {") % " && ".join(cond)], 2)
+        first = False
+        if r["act"] == "accept":
+            iemit(["\tupdate control {", "\t\t&Tmp-String-8 := '%d'" % r["n"], "\t}",
+                   "\tupdate outer.session-state {", "\t\t&Tmp-String-0 := " + sq("regle %d : %s" % (r["n"], r["label"])), "\t}"], 2)
+        else:
+            ideny("regle %d : refus" % r["n"], 3)
+    iemit((["}", "else {"] if not first else ["if (1) {"]), 2)
+    ideny("aucune regle ne correspond (refus par defaut)", 3)
+    iemit(["}", "", "# 5. mot de passe : EAP-TTLS/PAP = liaison LDAPS de l'utilisateur ; PEAP (et TTLS) EAP-MSCHAPv2 = module mschap (ntlm_auth) appelé par eap"], 2)
+    if peap_on: iemit(["mschap"], 2)
+    iemit(["if (&User-Password) {", "\tupdate control {", "\t\t&Auth-Type := LDAP", "\t}", "}", "else {", "\teap {", "\t\tok = return", "\t\tupdated = return", "\t}", "}"], 2)
+    I += ["\t}", "\tauthenticate {", "\t\tAuth-Type LDAP {", "\t\t\tldap", "\t\t}", "\t\tAuth-Type eap {", "\t\t\teap", "\t\t}"]
+    if peap_on: I += ["\t\tAuth-Type MS-CHAP {", "\t\t\tmschap", "\t\t}"]
+    I += ["\t}", "\tpost-auth {"]
+    for r in out:
+        if r["act"] == "accept" and r["reply"] and not (r["nas"] is not None and len(r["nas"]) == 0):
+            iemit(["if (&control:Tmp-String-8 == '%d') {" % r["n"], "\tupdate outer.reply {"] + ["\t\t" + x for x in r["reply"]] + ["\t}", "}"], 2)
+    I += ["\t\tPost-Auth-Type REJECT {", "\t\t\tattr_filter.access_reject", "\t\t}", "\t}", "}"]
+M = []
+if peap_on:
+    M = ["# Généré par ddibuntu-radius : vérification MSCHAPv2 par ntlm_auth (winbind, jonction au domaine). Ne pas modifier à la main.", "mschap {",
+         "\tuse_mppe = yes", "\trequire_encryption = yes", "\trequire_strong = yes", "\twith_ntdomain_hack = yes",
+         "\tntlm_auth = \"%s --configfile=%s --allow-mschapv2 --request-nt-key --username=%%{control:Tmp-String-9} --domain=%s --challenge=%%{%%{mschap:Challenge}:-00} --nt-response=%%{%%{mschap:NT-Response}:-00}\"" % (NTLM_AUTH, os.path.join(WBSTATE, "smb.conf"), netbios),
+         "\tntlm_auth_timeout = 10", "}"]
+for g in ["ldap.mod", "site.conf", "ldap-ca.pem", "inner.conf", "mschap.mod", "methods"]:
     p = os.path.join(snap, g)
     if os.path.lexists(p): os.unlink(p)
 def put(name, txt):
@@ -526,8 +637,14 @@ def put(name, txt):
     with os.fdopen(fd, "w", encoding="utf-8") as h: h.write(txt)
 os.makedirs(snap, exist_ok=True)
 put("ldap.mod", "\n".join(L) + "\n"); put("site.conf", "\n".join(S) + "\n")
+if I: put("inner.conf", "\n".join(I) + "\n")
+if M: put("mschap.mod", "\n".join(M) + "\n")
+if I: put("methods", " ".join([m for m, on in (("peap", peap_on), ("ttls", ttls_on)) if on]) + "\n")
 if ca_ok: put("ldap-ca.pem", "".join(CERT.findall(ca_txt)))
 print("rules=%d servers=%s" % (len(out), ",".join(urls)))
+print("methods=%s" % ",".join([m for m, on in (("peap", peap_on), ("ttls", ttls_on)) if on]))
+print("peap=%d ttls=%d" % (peap_on, ttls_on))
+for n in notes: print(n)
 PY
 }
 
@@ -538,7 +655,7 @@ PY
 #            sujet|émetteur|série|fin de validité (certificat)|UPN|nom DNS|identité retenue|décision (règle)|raison
 authlog_format() {
   local f="v1|%l|$1" x why=''
-  [[ "$1" = reject ]] && why='%{Module-Failure-Message}'   # la raison n'a de sens que pour un refus (le message d'un tour précédent ne doit pas coller à une acceptation)
+  [[ "$1" = reject ]] && why='%{%{session-state:Module-Failure-Message}:-%{Module-Failure-Message}}'   # la raison n'a de sens que pour un refus (le message d'un tour précédent ne doit pas coller à une acceptation)
   for x in '%{User-Name}' '%{client:shortname}' '%{%{Packet-Src-IP-Address}:-%{Packet-Src-IPv6-Address}}' '%{Calling-Station-Id}' '%{Called-Station-Id}' '%{NAS-Identifier}' \
            '%{%{session-state:TLS-Client-Cert-Subject}:-%{TLS-Client-Cert-Subject}}' '%{%{session-state:TLS-Client-Cert-Issuer}:-%{TLS-Client-Cert-Issuer}}' \
            '%{%{session-state:TLS-Client-Cert-Serial}:-%{TLS-Client-Cert-Serial}}' '%{%{session-state:TLS-Client-Cert-Expiration}:-%{TLS-Client-Cert-Expiration}}' \
@@ -573,6 +690,190 @@ ensure_authlog_dir() {
   getent group "$g" >/dev/null || g="$GROUP"
   install -d -m 2750 -o "${DDI_RADIUS_USER:-freerad}" -g "$g" "$AUTHLOG_DIR" || return 1
   chown "${DDI_RADIUS_USER:-freerad}:$g" "$AUTHLOG_DIR" 2>/dev/null; chmod 2750 "$AUTHLOG_DIR" 2>/dev/null; return 0
+}
+
+
+# ---- Jonction au domaine (0.16.0) : PEAP-MSCHAPv2 ----
+# MSCHAPv2 ne se vérifie pas par LDAP : seul un contrôleur de domaine (canal sécurisé NETLOGON) connaît le hachage du mot de passe. L'appliance est donc jointe au
+# domaine avec un compte machine PROPRE À CE NŒUD (le mot de passe de ce compte tourne tout seul : on ne copie jamais son état d'un nœud à l'autre), puis winbindd
+# répond à ntlm_auth, appelé par FreeRADIUS. Le compte qui sert à joindre n'est utilisé qu'une fois : écrit dans un fichier root 0600, écrasé aussitôt après.
+winbind_joined() { [[ -f "$WBSTATE/joined.json" && ! -L "$WBSTATE/joined.json" ]]; }
+write_wb_conf() {   # $1 = royaume DNS ; $2 = nom NetBIOS du domaine ; $3 = nom NetBIOS de cette machine ; $4… = contrôleurs de domaine
+  local realm="$1" nb="$2" host="$3" W="$WBSTATE" up srv kdcs="" pws=""; shift 3
+  up="$(printf '%s' "$realm" | tr '[:lower:]' '[:upper:]')"
+  install -d -m 0755 "$W" "$W/run"
+  install -d -m 0750 -o root -g "$GROUP" "$W/state" "$W/cache" "$W/lock"
+  install -d -m 0700 "$W/private"
+  for srv in "$@"; do kdcs+=$'\t\tkdc = '"$srv"$'\n'; pws+="$srv "; done
+  cat > "$W/smb.conf" <<EOF
+# Généré par ddibuntu-radius $(ddi_version) : winbind réservé au service RADIUS (PEAP-MSCHAPv2). Indépendant de /etc/samba. Ne pas modifier à la main.
+[global]
+	workgroup = $nb
+	realm = $up
+	security = ADS
+	server role = member server
+	netbios name = $host
+	password server = ${pws% }
+	kerberos method = secrets only
+	client use spnego principal = no
+	disable netbios = yes
+	smb ports = 445
+	name resolve order = host
+	state directory = $W/state
+	cache directory = $W/cache
+	lock directory = $W/lock
+	private dir = $W/private
+	pid directory = $W/run
+	ncalrpc dir = $W/run/ncalrpc
+	log file = $W/state/log.%m
+	log level = 1
+	max log size = 2000
+	idmap config * : backend = tdb
+	idmap config * : range = 100000-199999
+	winbind use default domain = no
+	winbind enum users = no
+	winbind enum groups = no
+	winbind scan trusted domains = no
+	winbind refresh tickets = no
+	winbind offline logon = no
+	load printers = no
+	printcap name = /dev/null
+	disable spoolss = yes
+	dns proxy = no
+EOF
+  cat > "$W/krb5.conf" <<EOF
+# Généré par ddibuntu-radius : Kerberos pour la jonction au domaine uniquement.
+[libdefaults]
+	default_realm = $up
+	dns_lookup_realm = false
+	dns_lookup_kdc = true
+	rdns = false
+[realms]
+	$up = {
+$kdcs	}
+EOF
+  chmod 0644 "$W/smb.conf" "$W/krb5.conf"
+}
+winbind_stop() {   # rien à arrêter tant que ce nœud n'a jamais été joint (le répertoire n'existe pas) : aucun appel à systemctl sur un nœud qui n'utilise pas PEAP
+  [[ -d "$WBSTATE" ]] || return 0
+  "$SYSCTL" disable --now "$WBSERVICE" >/dev/null 2>&1 || true
+}
+winbind_start() {   # démarre (ou redémarre) winbindd, puis ouvre son canal privilégié à FreeRADIUS (utilisateur freerad) : retour 1 si winbindd ne tient pas
+  winbind_joined || return 1
+  "$SYSCTL" daemon-reload >/dev/null 2>&1 || true
+  { "$SYSCTL" enable "$WBSERVICE" >/dev/null 2>&1 && "$SYSCTL" restart "$WBSERVICE" >/dev/null 2>&1; } || return 1
+  # Samba range le canal privilégié sous « state directory » (le paramètre « winbindd privileged socket directory » n'existe pas dans Samba 4.19)
+  local _ priv="$WBSTATE/state/winbindd_privileged"; for _ in $(seq 1 20); do [[ -S "$priv/pipe" ]] && break; sleep 0.5; done
+  [[ -S "$priv/pipe" ]] || return 1
+  chgrp "$GROUP" "$priv" 2>/dev/null || true; chmod 0750 "$priv" 2>/dev/null || true
+  "$SYSCTL" is-active --quiet "$WBSERVICE" >/dev/null 2>&1
+}
+# Vérifie le dépôt de la console (radius-join/join.json) ; écrit le fichier d'identification de « net » dans $2 (root, 0600). Sortie : realm=…, netbios=…, servers=…
+validate_join() {   # $1 = dossier déposé ; $2 = fichier d'identification à écrire ; $3 = « join » (tous les champs) | « leave » (compte facultatif)
+  python3 - "$@" <<'PY'
+import json, os, re, sys
+src, authf, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+def die(m): sys.stderr.write("jonction refusée : %s\n" % m); sys.exit(1)
+if os.path.islink(src) or not os.path.isdir(src): die("dépôt absent")
+if sorted(os.listdir(src)) != ["join.json"]: die("fichier inattendu dans le dépôt")
+p = os.path.join(src, "join.json")
+if os.path.islink(p) or not os.path.isfile(p) or os.path.getsize(p) > 8192: die("join.json absent ou trop volumineux")
+try: d = json.loads(open(p, encoding="utf-8").read())
+except (ValueError, UnicodeDecodeError): die("join.json illisible")
+if not isinstance(d, dict) or set(d) - {"realm", "netbios", "servers", "user", "password"}: die("champ inconnu")
+CTRL = re.compile(r"[\x00-\x1f\x7f]")
+def text(k, lo, hi, rx=None):
+    v = d.get(k)
+    if not isinstance(v, str) or not (lo <= len(v) <= hi) or CTRL.search(v): die("%s : valeur invalide" % k)
+    if rx is not None and not rx.fullmatch(v): die("%s : caractères refusés" % k)
+    return v
+realm = text("realm", 3, 253, re.compile(r"[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?"))
+if "." not in realm: die("realm : nom DNS du domaine attendu (exemple : exemple.local)")
+nb = text("netbios", 1, 15, re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,14}"))
+servers = d.get("servers")
+if not isinstance(servers, list) or not (1 <= len(servers) <= 5): die("servers : 1 à 5 contrôleurs de domaine attendus")
+H = re.compile(r"[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
+for h in servers:
+    if not isinstance(h, str) or not H.fullmatch(h): die("servers : nom de serveur invalide")
+if len(set(servers)) != len(servers): die("servers : doublon")
+user = d.get("user"); pw = d.get("password")
+if mode == "join" or user is not None or pw is not None:
+    user = text("user", 1, 256); pw = text("password", 1, 256)
+    if "%" in user: die("user : caractère refusé")
+    fd = os.open(authf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as h: h.write("username = %s\npassword = %s\n" % (user, pw))
+print("realm=" + realm); print("netbios=" + nb); print("servers=" + " ".join(servers))
+PY
+}
+wb_field() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n1; }
+cmd_join() {   # $1 = dossier radius-join déposé
+  local src="${1:-}" t out realm nb servers host rc=0 hn
+  [[ -x "$NET_BIN" ]] || { log "jonction : « net » (paquet samba-common-bin) n'est pas installé"; return 1; }
+  [[ -x "$NTLM_AUTH" ]] || { log "jonction : ntlm_auth (paquet winbind) n'est pas installé"; return 1; }
+  t="$(mktemp -d "${TMPDIR:-/tmp}/ddi-radius-join.XXXXXX")"; chmod 0700 "$t"
+  # shellcheck disable=SC2064
+  trap "find '$t' -type f -exec shred -u {} + 2>/dev/null; rm -rf '$t'" EXIT
+  out="$(validate_join "$src" "$t/auth" join)" || return 1
+  realm="$(wb_field "$out" realm)"; nb="$(wb_field "$out" netbios)"; servers="$(wb_field "$out" servers)"
+  hn="$(hostname -s 2>/dev/null | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9\n-' '-' | sed 's/^-*//')"
+  host="${DDI_RADIUS_COMPUTER:-RAD-${hn: -11}}"   # un compte machine distinct par nœud (15 caractères au plus), sans jamais reprendre le nom d'un autre compte
+  host="${host:0:15}"; host="${host%-}"
+  winbind_stop
+  # shellcheck disable=SC2086
+  write_wb_conf "$realm" "$nb" "$host" $servers
+  KRB5CCNAME="FILE:$t/krb5cc" KRB5_CONFIG="$WBSTATE/krb5.conf" timeout 120 "$NET_BIN" ads join -s "$WBSTATE/smb.conf" -S "${servers%% *}" -A "$t/auth" >"$t/join.out" 2>&1 || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    local why; why="$(grep -iE 'NT_STATUS|failed|cannot|unable|denied|logon|insufficient|timed? ?out|unreachable' "$t/join.out" | grep -v 'DNS update' | tail -n 2 | tr '\n' ' ' | tr -d '\000-\037' | cut -c1-240)"
+    log "jonction refusée${why:+ : $why}"
+    winbind_joined || rm -f "$WBSTATE/smb.conf" "$WBSTATE/krb5.conf"
+    return 1
+  fi
+  python3 - "$WBSTATE/joined.json" "$realm" "$nb" "$host" "$servers" <<'PY'
+import json, os, sys, time
+p, realm, nb, host, servers = sys.argv[1:6]
+t = p + ".new"
+with open(t, "w") as h: json.dump({"realm": realm, "netbios": nb, "computer": host, "servers": servers.split(), "at": int(time.time())}, h)
+os.chmod(t, 0o644); os.replace(t, p)
+PY
+  printf "Appliance jointe au domaine %s (compte machine %s). Redéployez le service pour activer PEAP-MSCHAPv2." "$realm" "$host"
+}
+cmd_leave() {   # $1 = dossier radius-join déposé (facultatif : avec un compte, le compte machine est aussi supprimé de l'annuaire)
+  local src="${1:-}" t out="" servers="" rc=0 note=""
+  t="$(mktemp -d "${TMPDIR:-/tmp}/ddi-radius-join.XXXXXX")"; chmod 0700 "$t"
+  # shellcheck disable=SC2064
+  trap "find '$t' -type f -exec shred -u {} + 2>/dev/null; rm -rf '$t'" EXIT
+  if winbind_joined && [[ -n "$src" && -d "$src" && -x "$NET_BIN" ]]; then
+    out="$(validate_join "$src" "$t/auth" leave)" || return 1   # dépôt invalide : rien n'est arrêté, la jonction reste en l'état
+  fi
+  winbind_stop
+  if [[ -n "$out" ]]; then
+    if [[ -f "$t/auth" ]]; then
+      servers="$(wb_field "$out" servers)"
+      KRB5CCNAME="FILE:$t/krb5cc" KRB5_CONFIG="$WBSTATE/krb5.conf" timeout 90 "$NET_BIN" ads leave -s "$WBSTATE/smb.conf" -S "${servers%% *}" -A "$t/auth" >/dev/null 2>&1 || rc=$?
+      if [[ "$rc" -eq 0 ]]; then note=" Compte machine supprimé de l'annuaire."; else note=" AVERTISSEMENT : le compte machine n'a pas pu être supprimé de l'annuaire (à supprimer à la main)."; fi
+    fi
+  fi
+  if [[ -d "$WBSTATE" ]]; then
+    find "$WBSTATE/private" -type f -exec shred -u {} + 2>/dev/null || true
+    rm -rf "$WBSTATE/private" "$WBSTATE/state" "$WBSTATE/cache" "$WBSTATE/lock" "$WBSTATE/run" "$WBSTATE/joined.json" "$WBSTATE/smb.conf" "$WBSTATE/krb5.conf"
+  fi
+  [[ -n "$note" ]] || note=" Le compte machine reste dans l'annuaire (à supprimer à la main)."
+  printf "Jonction retirée de ce nœud : PEAP-MSCHAPv2 ne fonctionne plus ici.%s" "$note"
+}
+joinactive() { "$SYSCTL" is-active --quiet "$WBSERVICE" >/dev/null 2>&1 && echo true || echo false; }
+jointrust() {   # le compte machine est-il toujours accepté par le domaine ? (unknown : non mesuré)
+  winbind_joined && [[ "$(joinactive)" = true && -x "$NET_BIN" ]] || { echo unknown; return 0; }
+  if KRB5_CONFIG="$WBSTATE/krb5.conf" timeout 8 "$NET_BIN" ads testjoin -s "$WBSTATE/smb.conf" >/dev/null 2>&1; then echo true; else echo false; fi
+}
+winbind_info() {   # état de la jonction (sans secret) publié pour la console
+  W="$WBSTATE" A="$(joinactive)" T="$(jointrust)" python3 - <<'PY' 2>/dev/null || echo '{"joined": false}'
+import json, os
+try: d = json.load(open(os.path.join(os.environ["W"], "joined.json")))
+except (OSError, ValueError): print(json.dumps({"joined": False})); raise SystemExit(0)
+t = os.environ["T"]
+print(json.dumps({"joined": True, "realm": str(d.get("realm", ""))[:253], "netbios": str(d.get("netbios", ""))[:15], "computer": str(d.get("computer", ""))[:15],
+                  "at": d.get("at"), "active": os.environ["A"] == "true", "trust": None if t == "unknown" else t == "true"}))
+PY
 }
 
 # ---- Arborescence FreeRADIUS gérée par DDI-Buntu ----
@@ -639,8 +940,8 @@ instantiate {
 \$INCLUDE sites-enabled/
 EOF
 }
-write_site() {   # $1 = eap (« eap » : EAP-TLS actif) ; sans argument : tout accès refusé (itérations 1 et 2) ; $2 = serveur de décision généré (règles d'accès)
-  local v6="" eap="${1:-}" decision="${2:-}"
+write_site() {   # $1 = eap (« eap » : EAP-TLS actif) ; sans argument : tout accès refusé (itérations 1 et 2) ; $2 = serveur de décision généré (règles d'accès) ; $3 = serveur « tunnel » PEAP / TTLS (optionnel)
+  local v6="" eap="${1:-}" decision="${2:-}" inner="${3:-}"
   # écoute IPv6 seulement si la pile IPv6 existe (sinon freeradius refuse de démarrer)
   if [[ -r /proc/net/if_inet6 ]]; then
     v6=$'\tlisten {\n\t\ttype = auth\n\t\tipv6addr = ::\n\t\tport = 1812\n\t}\n\tlisten {\n\t\ttype = acct\n\t\tipv6addr = ::\n\t\tport = 1813\n\t}\n'
@@ -712,6 +1013,7 @@ EOF
 EOF
   if [[ "$eap" = eap && -n "$decision" ]]; then
     cat "$decision"
+    [[ -n "$inner" && -f "$inner" ]] && { printf '\n'; cat "$inner"; }
   elif [[ "$eap" = eap ]]; then
     cat <<'EOF'
 # Appelé par EAP-TLS une fois la poignée de main réussie : la chaîne de confiance, les dates, l'usage et la révocation du certificat client
@@ -732,10 +1034,21 @@ EOF
   fi
   } > "$RDIR/sites-available/ddibuntu"
 }
-write_eap_module() {   # $1 = true|false : vérification des révocations (CRL)
-  local crl=no; [[ "$1" = true ]] && crl=yes
+write_eap_module() {   # $1 = true|false : vérification des révocations (CRL) ; $2 = méthodes par mot de passe actives (« peap », « ttls », séparées par un espace ; vide = EAP-TLS seulement)
+  local crl=no pw="" meth=" ${2:-} "; [[ "$1" = true ]] && crl=yes
+  if [[ "$meth" = *" peap "* || "$meth" = *" ttls "* ]]; then
+    # le tunnel (PEAP / TTLS) est traité par le serveur virtuel « ddibuntu-inner » (voir le site) : mêmes règles d'accès, puis vérification du mot de passe
+    # EAP-MSCHAPv2 (sous-module) exige la section « Auth-Type MS-CHAP » du serveur tunnel, qui n'existe que si PEAP est actif (appliance jointe) : sinon TTLS = PAP seulement
+    local inner_eap=""
+    if [[ "$meth" = *" peap "* ]]; then
+      inner_eap=$'\t\tdefault_eap_type = mschapv2\n'
+      pw=$'\tmschapv2 {\n\t\tsend_error = yes\n\t}\n'
+      pw+=$'\tpeap {\n\t\ttls = tls-common\n\t\tdefault_eap_type = mschapv2\n\t\tcopy_request_to_tunnel = no\n\t\tuse_tunneled_reply = no\n\t\tvirtual_server = "ddibuntu-inner"\n\t}\n'
+    fi
+    [[ "$meth" = *" ttls "* ]] && pw+=$'\tttls {\n\t\ttls = tls-common\n'"$inner_eap"$'\t\tcopy_request_to_tunnel = no\n\t\tuse_tunneled_reply = no\n\t\tvirtual_server = "ddibuntu-inner"\n\t\tinclude_length = yes\n\t}\n'
+  fi
   cat > "$RDIR/mods-enabled/eap" <<EOF
-# Généré par ddibuntu-radius $(ddi_version). EAP-TLS seulement (aucune autre méthode) ; ne pas modifier à la main.
+# Généré par ddibuntu-radius $(ddi_version). EAP-TLS${2:+ + méthodes par mot de passe ($2)} ; ne pas modifier à la main.
 eap {
 	default_eap_type = tls
 	timer_expire = 60
@@ -770,12 +1083,12 @@ eap {
 		# décision d'accès une fois la poignée de main réussie (voir le site) : DOIT être ici, pas dans tls-config
 		virtual_server = "ddibuntu-check-eap-tls"
 	}
-}
+${pw}}
 EOF
   # 0.14.16 : sous systemd le démon et son contrôle de démarrage tournent en freerad : sans le groupe (umask 027 : root:root 0640), « Permission denied » et le service ne démarre pas
   chown root:"$GROUP" "$RDIR/mods-enabled/eap" && chmod 0640 "$RDIR/mods-enabled/eap"
 }
-install_pki() {   # $1 = instantané validé (validate_pki) ; $2 = true|false (vérification des CRL)
+install_pki() {   # $1 = instantané validé (validate_pki) ; $2 = true|false (vérification des CRL) ; $3 = méthodes par mot de passe (voir write_eap_module)
   local c="$RDIR/certs" f
   install -d -m 0750 -o root -g "$GROUP" "$c" "$c/crl"
   install -m 0640 -o root -g "$GROUP" "$1/ca.pem" "$c/ca.pem"
@@ -784,7 +1097,7 @@ install_pki() {   # $1 = instantané validé (validate_pki) ; $2 = true|false (v
   for f in "$1"/crl/*.pem; do [[ -e "$f" ]] && install -m 0640 -o root -g "$GROUP" "$f" "$c/crl/$(basename "$f")"; done
   # FreeRADIUS cherche les CRL par nom de hachage (<hash>.r0) dans ca_path
   compgen -G "$c/crl/*.pem" >/dev/null && openssl rehash "$c/crl" >/dev/null 2>&1
-  write_eap_module "$2"
+  write_eap_module "$2" "${3:-}"
 }
 build_tree() {   # $1 = clients.conf validé ; $2 = instantané PKI validé (optionnel) ; $3 = vérification des CRL (true|false) ; $4 = instantané des règles d'accès validé (optionnel, exige $2)
   [[ -d "$STOCK/mods-available" ]] || { log "modules du paquet freeradius introuvables ($STOCK)"; return 1; }
@@ -806,11 +1119,13 @@ build_tree() {   # $1 = clients.conf validé ; $2 = instantané PKI validé (opt
   ln -s ../sites-available/ddibuntu "$RDIR/sites-enabled/ddibuntu"
   write_radiusd_conf
   if [[ -n "${2:-}" ]]; then
-    install_pki "$2" "${3:-true}"
+    local pw=""; [[ -n "${4:-}" && -f "$4/methods" ]] && pw="$(tr -d '\n' < "$4/methods")"
+    install_pki "$2" "${3:-true}" "$pw"
     if [[ -n "${4:-}" ]]; then
       install -m 0640 -o root -g "$GROUP" "$4/ldap.mod" "$RDIR/mods-enabled/ldap"
+      [[ -f "$4/mschap.mod" ]] && install -m 0640 -o root -g "$GROUP" "$4/mschap.mod" "$RDIR/mods-enabled/mschap"
       [[ -f "$4/ldap-ca.pem" ]] && install -m 0640 -o root -g "$GROUP" "$4/ldap-ca.pem" "$RDIR/certs/ldap-ca.pem"
-      write_site eap "$4/site.conf"
+      write_site eap "$4/site.conf" "$4/inner.conf"
     else write_site eap; fi
   else write_site; fi
   { printf '# Généré par ddibuntu-radius %s à partir de la console (revalidé par root). Ne pas modifier à la main.\n' "$(ddi_version)"; cat "$1"; } > "$RDIR/clients.conf"
@@ -867,6 +1182,11 @@ cmd_apply() {   # $1 = clients.conf ; $2 = dossier PKI déposé (optionnel : san
     restore_tree; wipe_backup
     log "configuration refusée par freeradius : $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ' | cut -c1-200)"; return 1
   fi
+  # PEAP-MSCHAPv2 : winbindd doit tourner AVANT FreeRADIUS (ntlm_auth lui parle) ; sans méthode par mot de passe, winbindd est arrêté
+  local wbwarn=""
+  if [[ -n "$authzsnap" && -f "$authzsnap/mschap.mod" ]]; then
+    winbind_start || wbwarn=" AVERTISSEMENT : winbindd ne démarre pas, PEAP-MSCHAPv2 est indisponible (journal : journalctl -u ${WBSERVICE})."
+  else winbind_stop; fi
   "$SYSCTL" daemon-reload >/dev/null 2>&1 || true
   if ! { "$SYSCTL" enable "$SERVICE" >/dev/null 2>&1 && "$SYSCTL" restart "$SERVICE" >/dev/null 2>&1; }; then rc=1; fi
   if [[ "$rc" -eq 0 ]]; then sleep 1; [[ "$(svc_state is-active)" = true ]] || rc=1; fi
@@ -882,6 +1202,10 @@ cmd_apply() {   # $1 = clients.conf ; $2 = dossier PKI déposé (optionnel : san
   local n; n="$(printf '%s' "$nets" | grep -c . || true)" extra=""
   [[ -n "$snap" ]] && extra=" EAP-TLS activé."
   [[ -n "$authzsnap" ]] && extra="$extra Règles d'accès : $(printf '%s' "$authzout" | sed -n 's/^rules=\([0-9]*\) .*/\1/p') règle(s)."
+  local meths; meths="$(printf '%s' "$authzout" | sed -n 's/^methods=//p' | head -n1)"
+  [[ -z "$meths" ]] || extra="$extra Identifiant et mot de passe : $(printf '%s' "$meths" | sed 's/,/, /g' | tr '[:lower:]' '[:upper:]')."
+  printf '%s' "$authzout" | grep -q '^warn:' && extra="$extra $(printf '%s' "$authzout" | sed -n 's/^warn: /AVERTISSEMENT : /p' | tr '\n' ' ')"
+  extra="$extra$wbwarn"
   printf '%s' "$pkiout" | grep -q '^warn:' && extra="$extra $(printf '%s' "$pkiout" | sed -n 's/^warn: /AVERTISSEMENT : /p' | tr '\n' ' ')"
   printf 'Service RADIUS démarré (%s client(s)).%s%s' "$n" "$extra" "${warn:+ $warn}"
 }
@@ -940,6 +1264,7 @@ cmd_align() {   # $1 = leader | replica : rôle Patroni de ce nœud, donné par 
     replica)
       if [[ "$(svc_state is-active)" = true || "$(svc_state is-enabled)" = true ]]; then
         "$SYSCTL" disable --now "$SERVICE" >/dev/null 2>&1 || true
+        winbind_stop
         log "ce nœud est le secondaire du cluster : le service RADIUS est arrêté (il tourne sur le leader)"
         cmd_status || true
       fi ;;
@@ -949,6 +1274,7 @@ cmd_align() {   # $1 = leader | replica : rôle Patroni de ce nœud, donné par 
 }
 cmd_stop() {
   "$SYSCTL" disable --now "$SERVICE" >/dev/null 2>&1 || true
+  winbind_stop
   local warn; warn="$(fw_open "")"
   printf 'Service RADIUS arrêté.%s' "${warn:+ $warn}"
 }
@@ -956,7 +1282,7 @@ cmd_stop() {
 # ---- Demande de la console (sans privilège) : revalidée ici en totalité ----
 # Format : {"action":"apply","pki":true|false} (avec radius-clients.conf, et radius-pki/ si pki) | {"action":"stop"} | {"action":"status"} | {"action":"crl"} (avec radius-pki/crl/)
 cmd_request() {
-  local rq="$GEN/.radius-request" cf="$GEN/radius-clients.conf" pkid="$GEN/radius-pki" azd="$GEN/radius-authz" raw="" action="" usepki="" useauthz="" out="" rc=0 ok=false
+  local rq="$GEN/.radius-request" cf="$GEN/radius-clients.conf" pkid="$GEN/radius-pki" azd="$GEN/radius-authz" jd="$GEN/radius-join" raw="" action="" usepki="" useauthz="" out="" rc=0 ok=false
   [[ -e "$rq" || -L "$rq" ]] || return 0
   if [[ -f "$rq" && ! -L "$rq" ]]; then raw="$(head -c 4096 "$rq")"; fi
   rm -f "$rq"
@@ -964,15 +1290,19 @@ cmd_request() {
 import json, os
 try: d = json.loads(os.environ["RAW"])
 except Exception: raise SystemExit(0)
-if isinstance(d, dict) and d.get("action") in ("apply", "stop", "status", "crl"): print(d["action"], "pki" if d.get("pki") is True else "-", "authz" if d.get("authz") is True else "-")
+if isinstance(d, dict) and d.get("action") in ("apply", "stop", "status", "crl", "join", "leave"): print(d["action"], "pki" if d.get("pki") is True else "-", "authz" if d.get("authz") is True else "-")
 PY
 ) || true
   local why=""
   case "$action" in apply|stop|crl) why="$(leader_refusal)" || { out="$why"; rc=1; } ;; esac
+  # la jonction se fait sur CHAQUE nœud de données (compte machine propre à chacun), y compris le secondaire : seul l'arbitre n'a rien à joindre
+  case "$action" in join|leave) [[ "$(cluster_state)" != witness ]] || { out="ce nœud est l'arbitre du cluster : il n'héberge pas RADIUS"; rc=1; } ;; esac
   [[ "$rc" -ne 0 ]] || case "$action" in
     apply)
       if [[ -f "$cf" && ! -L "$cf" ]]; then out="$( ( cmd_apply "$cf" "$([[ "$usepki" = pki ]] && echo "$pkid")" "$([[ "$useauthz" = authz ]] && echo "$azd")" ) 2>&1)" || rc=$?; else out="fichier de clients non déposé"; rc=1; fi ;;
     crl) out="$( ( cmd_crl "$pkid" ) 2>&1)" || rc=$? ;;
+    join) out="$( ( cmd_join "$jd" ) 2>&1)" || rc=$? ;;
+    leave) out="$( ( cmd_leave "$jd" ) 2>&1)" || rc=$? ;;
     stop) out="$( ( cmd_stop ) 2>&1)" || rc=$? ;;
     status) out="état publié" ;;
     *) out="demande invalide"; rc=1 ;;
@@ -983,6 +1313,8 @@ PY
   rm -rf "$pkid"
   if [[ -d "$azd" && ! -L "$azd" ]]; then find "$azd" -type f -exec shred -u {} + 2>/dev/null || true; fi   # le mot de passe de liaison ne reste jamais sur le disque
   rm -rf "$azd"
+  if [[ -d "$jd" && ! -L "$jd" ]]; then find "$jd" -type f -exec shred -u {} + 2>/dev/null || true; fi   # le compte qui joint le domaine ne reste jamais sur le disque
+  rm -rf "$jd"
   [[ "$rc" -eq 0 ]] && ok=true
   out="$(printf '%s' "$out" | tr '\n\r' '  ' | sed 's/ddibuntu-radius: //g')"
   log "demande de la console (${action:-invalide}) : ${out:-ok}"
@@ -994,7 +1326,7 @@ PY
 # validation seule : aucun effet, utilisable sans privilège (tests, diagnostic)
 if [[ "${1:-}" = check ]]; then validate_clients "${2:-}"; exit $?; fi
 if [[ "${1:-}" = check-pki ]]; then t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT; validate_pki "${2:-}" "$t"; exit $?; fi
-if [[ "${1:-}" = check-authz ]]; then t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT; validate_authz "${2:-}" "$t" "${3:-}" && { cat "$t/ldap.mod" "$t/site.conf" | sed -E 's/^(\tpassword = ).*/\1"***"/'; }; exit $?; fi
+if [[ "${1:-}" = check-authz ]]; then t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT; validate_authz "${2:-}" "$t" "${3:-}" && { for f in ldap.mod site.conf inner.conf mschap.mod; do if [[ -f "$t/$f" ]]; then cat "$t/$f"; fi; done | sed -E 's/^(\tpassword = ).*/\1"***"/'; }; exit $?; fi
 [[ "$(id -u)" -eq 0 ]] || ddi_die "à lancer en root"
 exec 9>"${DDI_RADIUS_LOCK:-/run/ddibuntu-radius.lock}"
 flock -w 120 9 || ddi_die "une autre demande RADIUS est en cours depuis plus de 2 minutes"
@@ -1006,5 +1338,7 @@ case "$cmd" in
   status) cmd_status ;;
   request) cmd_request ;;
   align) cmd_align "${1:-}" ;;
+  join) cmd_join "${1:-$GEN/radius-join}"; echo; cmd_status ;;
+  leave) cmd_leave "${1:-}"; echo; cmd_status ;;
   *) usage >&2; exit 2 ;;
 esac
