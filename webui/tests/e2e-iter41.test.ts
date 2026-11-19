@@ -39,7 +39,10 @@ const until = async (fn: () => Promise<boolean>, ms = 30000) => { const t = Date
 const sh = (script: string) => { const r = spawnSync('bash', ['-c', `set -e; source ${ROOT}/tests/lib-pki.sh; cd ${P}; ${script}`], { encoding: 'utf8' }); if (r.status !== 0) throw new Error(r.stderr); return r.stdout }
 const rd = (f: string) => readFileSync(join(P, f), 'utf8')
 const rows = async (q: string, p: unknown[] = []) => (await db.query(q, p)).rows
-const rootDone = () => { rmSync(REQ, { force: true }); rmSync(CONF, { force: true }); rmSync(PKIDIR, { recursive: true, force: true }); rmSync(AZDIR, { recursive: true, force: true }) }   // root a traité la demande
+let rootN = 0
+/** Le vrai root publie TOUJOURS un résultat après avoir traité une demande : la console s'en sert pour savoir ce qui a été accepté. */
+const rootAnswered = () => { try { writeFileSync(RESULT, JSON.stringify({ at: Math.floor(Date.now() / 1000), action: JSON.parse(readFileSync(REQ, 'utf8')).action, ok: true, message: `traité ${++rootN}` })) } catch { /* pas de demande en attente */ } }
+const rootDone = () => { rootAnswered(); rmSync(REQ, { force: true }); rmSync(CONF, { force: true }); rmSync(PKIDIR, { recursive: true, force: true }); rmSync(AZDIR, { recursive: true, force: true }) }   // root a traité la demande
 const setStatus = (extra: Record<string, unknown> = {}) => writeFileSync(STATUS, JSON.stringify({ at: 1700000000, installed: true, version: '3.2.5', configured: true, active: true, enabled: true, clients: 1, ldap_module: true,
   eap: { enabled: false, checkCrl: true }, authz: { enabled: false, rules: 0, servers: [] }, ...extra }))
 const rule = (o: Record<string, unknown> = {}) => ({ name: 'Règle', action: 'accept', ...o })

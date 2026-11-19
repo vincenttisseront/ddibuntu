@@ -45,7 +45,10 @@ const dateOf = (days: number) => new Date(Date.now() + days * 86400_000).toISOSt
 const caId = (view: any, name: string) => view.cas.find((c: any) => c.name === name).id
 const getView = async () => (await admin.get('/api/radius/pki')).json
 const setStatus = (eap: Record<string, unknown>) => writeFileSync(STATUS, JSON.stringify({ at: 1700000000, installed: true, version: '3.2.5', configured: true, active: true, enabled: true, clients: 1, eap }))
-const rootDone = () => { rmSync(REQ, { force: true }); rmSync(CONF, { force: true }); rmSync(PKIDIR, { recursive: true, force: true }) }   // root a traité la demande
+let rootN = 0
+/** Le vrai root publie TOUJOURS un résultat après avoir traité une demande : la console s'en sert pour savoir ce qui a été accepté. */
+const rootAnswered = () => { try { writeFileSync(RESULT, JSON.stringify({ at: Math.floor(Date.now() / 1000), action: JSON.parse(readFileSync(REQ, 'utf8')).action, ok: true, message: `traité ${++rootN}` })) } catch { /* pas de demande en attente */ } }
+const rootDone = () => { rootAnswered(); rmSync(REQ, { force: true }); rmSync(CONF, { force: true }); rmSync(PKIDIR, { recursive: true, force: true }) }   // root a traité la demande
 
 beforeAll(async () => {
   mkdirSync(P, { recursive: true }); mkdirSync(GEN, { recursive: true })

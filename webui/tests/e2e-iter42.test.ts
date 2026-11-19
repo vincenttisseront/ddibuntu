@@ -17,6 +17,9 @@ const DBURL = 'postgresql://ddi:ddi-test-pw@127.0.0.1:5432/ddibuntu_test'
 const SETUP_TOKEN = 'jeton-de-test-0123456789abcdef', PW = 'Correct-Horse-Battery-9'
 const TMP = mkdtempSync(join(tmpdir(), 'ddi-s38-')); mkdirSync(join(TMP, 'gen'))
 const GEN = join(TMP, 'gen'), REQ = join(GEN, '.radius-request'), CONF = join(GEN, 'radius-clients.conf'), STATUS = join(TMP, 'rs.json'), RESULT = join(TMP, 'rr.json')
+let rootN = 0
+/** Le vrai root publie TOUJOURS un résultat après avoir traité une demande : la console s'en sert pour savoir ce qui a été accepté. */
+const rootAnswered = () => { try { writeFileSync(RESULT, JSON.stringify({ at: Math.floor(Date.now() / 1000), action: JSON.parse(readFileSync(REQ, 'utf8')).action, ok: true, message: `traité ${++rootN}` })) } catch { /* pas de demande en attente */ } }
 let srv: ChildProcess, db: pg.Client, srvLog = '', fake: Socket, fakePort = 0, fakeMode: 'reject' | 'silent' = 'reject'
 
 class Client {
@@ -146,12 +149,12 @@ describe('RADIUS — demande pour root', () => {
     expect(conf.match(/^client "/gm)).toHaveLength(3)
     expect((await admin.get('/api/radius')).json).toMatchObject({ requestPending: true, clients: 3, enabledClients: 2 })
     code(await admin.post('/api/radius/apply'), 409, 'request_pending'); code(await admin.post('/api/radius/stop'), 409, 'request_pending')
-    rmSync(REQ); rmSync(CONF)   // root a traité la demande
+    rootAnswered(); rmSync(REQ); rmSync(CONF)   // root a traité la demande
     expect((await admin.get('/api/radius')).json.requestPending).toBe(false)
   })
   it('arrêt : demande sans fichier de clients', async () => {
     const r = await admin.post('/api/radius/stop'); expect(r.status, r.text).toBe(200)
-    expect(JSON.parse(readFileSync(REQ, 'utf8'))).toEqual({ action: 'stop' }); expect(existsSync(CONF)).toBe(false); rmSync(REQ)
+    expect(JSON.parse(readFileSync(REQ, 'utf8'))).toEqual({ action: 'stop' }); expect(existsSync(CONF)).toBe(false); rootAnswered(); rmSync(REQ)
   })
   it('l\'état et le résultat publiés par root sont relayés tels quels', async () => {
     writeFileSync(STATUS, JSON.stringify({ at: 1700000000, installed: true, version: '3.2.5', configured: true, active: true, enabled: true, clients: 2, ports: [1812, 1813] }))

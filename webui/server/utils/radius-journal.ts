@@ -45,6 +45,7 @@ export function classify(reason: string): string {
   if (r.includes('certificate unknown') || r.includes('bad certificate')) return 'cert_refused'
   if (r.includes('handshake failure') || r.includes('no certificate') || r.includes('peer did not return a certificate')) return 'no_cert'
   if (r.includes('protocol version')) return 'tls_version'
+  if (r.includes('no mutually acceptable types') || r.includes('peer nak')) return 'eap_method'   // le poste propose une autre méthode que EAP-TLS (PEAP-MSCHAPv2, EAP-TTLS…)
   if (r.includes('sans identite')) return 'no_identity'
   if (r.includes('identite du certificat vide')) return 'no_identity'
   if (r.includes('compte introuvable')) return 'account_missing'

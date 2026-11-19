@@ -32,6 +32,8 @@ BACKUP="$STATE/radius-backup"
 MODULES="always attr_filter preprocess expr"            # modules du paquet réellement utilisés par le site (le module eap est généré, pas celui du paquet) ; expr : %{escape:} du journal et règles d'accès
 LDAP_SO="${DDI_RADIUS_LDAP_SO:-/usr/lib/freeradius/rlm_ldap.so}"   # module LDAP : paquet freeradius-ldap (séparé du paquet freeradius)
 MAX_CLIENTS_BYTES=1048576
+CLCONF="${DDI_CLUSTER_CONF:-/etc/ddibuntu-cluster/cluster.conf}"   # 0.15.0 : présent = ce nœud fait partie d'un cluster
+CLUSTER_CMD="${DDI_CLUSTER_CMD:-/usr/local/sbin/ddibuntu-cluster}"
 
 usage() {
   cat <<'USAGE'
@@ -40,6 +42,7 @@ Usage : ddibuntu-radius <commande>
   stop            arrête et désactive le service, referme le pare-feu
   status          publie l'état (/run/ddibuntu/radius-status.json)
   request         traite la demande déposée par la console (.radius-request + radius-clients.conf)
+  align leader|replica  cluster : RADIUS ne tourne que sur le leader ; sur un secondaire, arrête le service (appelé par « ddibuntu-cluster follow »)
   crl             installe les CRL déposées (radius-pki/crl) sans redémarrer le service
   check FICHIER   valide un fichier de clients (sans rien installer) ; affiche les réseaux à ouvrir au pare-feu
   check-pki DOSSIER  valide un dossier PKI (sans rien installer)
@@ -913,6 +916,37 @@ cmd_crl() {   # $1 = dossier PKI déposé (seul crl/ est lu)
     log "le service ne redémarre pas avec les nouvelles CRL ; anciennes CRL rétablies"; return 1
   fi
 }
+# ---- Cluster (0.15.0) : actif / passif, l'adresse virtuelle suit le leader PostgreSQL (Keepalived) ----
+# RADIUS ne tourne que sur le LEADER : les bornes pointent vers l'adresse virtuelle, qui n'est portée que par le leader. Le secondaire n'a rien d'installé qui réponde :
+# « align replica » arrête le service (un ancien leader rétrogradé cesse donc de répondre) ; la console du nouveau leader redéploie le dernier déploiement
+# (réglages et secrets sont dans la base répliquée) sans que l'administrateur n'ait rien à faire. Hors cluster (pas de cluster.conf), rien ne change.
+in_cluster() { [[ -f "$CLCONF" && ! -L "$CLCONF" ]]; }
+cluster_state() {   # rôle de CE nœud, mesuré en direct : standalone | leader | replica | witness | unknown
+  in_cluster || { printf standalone; return 0; }
+  local r; r="$(timeout 10 "$CLUSTER_CMD" role 2>/dev/null | head -n1 | tr -d '\r\n')" || r=""
+  case "$r" in leader|replica|witness) printf '%s' "$r" ;; *) printf unknown ;; esac
+}
+leader_refusal() {   # imprime la raison et retourne 1 quand ce nœud ne doit rien déployer (dans un cluster, seul le leader le fait)
+  case "$(cluster_state)" in
+    standalone|leader) return 0 ;;
+    replica) printf "ce nœud est le secondaire du cluster : RADIUS se gère depuis le nœud actif (leader PostgreSQL)" ;;
+    witness) printf "ce nœud est l'arbitre du cluster : il n'héberge pas RADIUS" ;;
+    *) printf "le rôle de ce nœud dans le cluster est inconnu (Patroni injoignable ?) : action refusée par prudence" ;;
+  esac
+  return 1
+}
+cmd_align() {   # $1 = leader | replica : rôle Patroni de ce nœud, donné par « ddibuntu-cluster follow »
+  case "${1:-}" in
+    replica)
+      if [[ "$(svc_state is-active)" = true || "$(svc_state is-enabled)" = true ]]; then
+        "$SYSCTL" disable --now "$SERVICE" >/dev/null 2>&1 || true
+        log "ce nœud est le secondaire du cluster : le service RADIUS est arrêté (il tourne sur le leader)"
+        cmd_status || true
+      fi ;;
+    leader) [[ -f "$RUN/radius-status.json" ]] || cmd_status || true ;;   # l'état publié existe toujours : la console sait si le service tourne
+    *) ddi_die "align : « leader » ou « replica » attendu" ;;
+  esac
+}
 cmd_stop() {
   "$SYSCTL" disable --now "$SERVICE" >/dev/null 2>&1 || true
   local warn; warn="$(fw_open "")"
@@ -933,7 +967,9 @@ except Exception: raise SystemExit(0)
 if isinstance(d, dict) and d.get("action") in ("apply", "stop", "status", "crl"): print(d["action"], "pki" if d.get("pki") is True else "-", "authz" if d.get("authz") is True else "-")
 PY
 ) || true
-  case "$action" in
+  local why=""
+  case "$action" in apply|stop|crl) why="$(leader_refusal)" || { out="$why"; rc=1; } ;; esac
+  [[ "$rc" -ne 0 ]] || case "$action" in
     apply)
       if [[ -f "$cf" && ! -L "$cf" ]]; then out="$( ( cmd_apply "$cf" "$([[ "$usepki" = pki ]] && echo "$pkid")" "$([[ "$useauthz" = authz ]] && echo "$azd")" ) 2>&1)" || rc=$?; else out="fichier de clients non déposé"; rc=1; fi ;;
     crl) out="$( ( cmd_crl "$pkid" ) 2>&1)" || rc=$? ;;
@@ -969,5 +1005,6 @@ case "$cmd" in
   stop) cmd_stop; echo; cmd_status ;;
   status) cmd_status ;;
   request) cmd_request ;;
+  align) cmd_align "${1:-}" ;;
   *) usage >&2; exit 2 ;;
 esac

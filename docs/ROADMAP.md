@@ -79,7 +79,7 @@ Un NPS Windows n'existe pas sous Linux : le service est **FreeRADIUS** intégré
 | 4 | 0.13.3 | Règles d'accès : groupe AD → décision, VLAN, pool ; ordre d'évaluation, simulation avant publication | ✅ 0.13.3 (vrai FreeRADIUS + `eapol_test` + Samba AD, mêmes décisions que la simulation sur 15 cas ; **jamais essayé sur un AD Microsoft** ; DN de groupe à échappement hexadécimal refusés) |
 | 5 | 0.13.10 | Import d'un NPS existant (`netsh nps export`) : clients, stratégies, rapport « repris / adapté / non pris en charge » | ✅ 0.13.10 (par fichier ; vrai Samba AD pour la résolution des groupes par SID ; **format non vérifié sur un export réel**, lecture directe par WinRM **reportée**) |
 | 6 | à planifier | Comptabilité (1813), journal des authentifications, alertes | ⬜ |
-| 7 | 0.13.6 | Cluster : deux nœuds actifs, mêmes clients et règles, sans adresse virtuelle | ⬜ |
+| 7 | 0.13.6 | Cluster : **réalisé en 0.15.0 en actif / passif** derrière l'adresse virtuelle (et non en actif / actif : un échange EAP doit rester sur le même serveur) | ✅ 0.15.0 |
 | 8 | 0.13.7 | Liens IPAM / DHCP : VLAN et pools issus de l'IPAM, session ↔ bail ↔ utilisateur dans la traçabilité | ⬜ |
 
 ## Série 0.14.x — PKI du DDI : EJBCA Community intégrée (demande du 2026-11-17)
@@ -107,6 +107,7 @@ La PKI est **EJBCA Community** (image officielle `keyfactor/ejbca-ce`, Podman + 
 | 18 | 0.14.17 | Correctif : **« Déployer » (RADIUS) remettait `/var/lib/ddibuntu` en 0750** et la console ne pouvait plus y écrire (mise à jour, cluster, déploiement : « Erreur interne ») ; le dossier d'état n'est plus modifié s'il existe ; contrôle dans la batterie b28. |
 | 19 | 0.14.18 | **Journal des authentifications RADIUS** : une ligne par décision (poste, MAC, équipement, SSID, certificat, règle qui a décidé, raison du refus) écrite par FreeRADIUS, onglet **Journal** de la console (filtres, compteurs 24 h, motif expliqué en clair et quoi vérifier, diagnostics du démon : équipement inconnu, alerte TLS du poste), « Équipements déployés » au lieu de « Clients actifs », rotation. |
 | 19b | 0.14.19 | Correctif : l'onglet **Journal** de RADIUS affichait une erreur 500 (déclarations mises en commentaire par erreur) ; test sur les sources des composants Vue | ✅ 0.14.19 |
+| 20 | 0.15.0 | **RADIUS actif / passif dans le cluster** : un seul FreeRADIUS sur le leader (derrière l'adresse virtuelle), arrêté sur le secondaire ; « Déployer » mémorise (chiffré) le déploiement accepté et la console du nouveau leader le rejoue ; refus hors leader ; bloc « Cluster » de l'onglet Service | ✅ 0.15.0 (b28 vrai FreeRADIUS, unitaires, e2e ; **bascule réelle non essayée**) |
 
 ## Série 0.10.x — gestion complète DNS ↔ IPAM ↔ DHCP (validée le 2026-11-13)
 Dix évolutions, une version chacune, chacune testée (unitaires, e2e, batteries réelles) avant publication. Ordre retenu : les deux plus rentables d'abord, puis celles qui s'appuient dessus.
