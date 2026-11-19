@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { csrCommonName, domainOf, freeNumber, suggestCaNames, suggestCertName, suggestImportName, suggestSans } from '../app/utils/pkiNames'
+import { csrCommonName, csrSubject, dnParts, domainOf, freeNumber, suggestCaNames, suggestCertName, suggestImportName, suggestRadiusName, suggestSans } from '../app/utils/pkiNames'
 
 const TMP = mkdtempSync(join(tmpdir(), 'ddi-names-'))
 afterAll(() => rmSync(TMP, { recursive: true, force: true }))
@@ -39,6 +39,20 @@ describe('suggestSans', () => {
     expect(suggestSans('user', 'Élodie Martin', 'lab.test').upn).toBe(''); expect(suggestSans('user', 'a@b', 'lab.test').upn).toBe(''); expect(suggestSans('user', 'x', '').upn).toBe('')
   })
 })
+describe('suggestRadiusName', () => {
+  it('radius.<domaine du DDI>, ou « radius » sans domaine', () => { expect(suggestRadiusName('ar-systems.fr')).toBe('radius.ar-systems.fr'); expect(suggestRadiusName('')).toBe('radius') })
+})
+describe('dnParts', () => {
+  it('lit CN, O, OU et C dans n\'importe quel ordre', () => { expect(dnParts('CN=DDI-DC-Issuing-1,OU=DSI,O=AR-SYSTEMS,C=FR')).toEqual({ cn: 'DDI-DC-Issuing-1', ou: 'DSI', o: 'AR-SYSTEMS', c: 'FR' }) })
+  it('virgule échappée gardée dans la valeur, première occurrence retenue', () => { expect(dnParts('CN=A,O=Dupont\\, Fils,O=Autre,OU=x')).toMatchObject({ o: 'Dupont, Fils', ou: 'x' }) })
+  it('vide ou absent', () => { expect(dnParts('')).toEqual({ cn: '', o: '', ou: '', c: '' }); expect(dnParts(undefined)).toEqual({ cn: '', o: '', ou: '', c: '' }) })
+})
+describe('csrSubject (vraie demande openssl)', () => {
+  it('nom, organisation, unité et pays', () => { expect(csrSubject(csr('/C=fr/O=AR-SYSTEMS/OU=DSI/CN=dc01.lab.test'))).toEqual({ cn: 'dc01.lab.test', o: 'AR-SYSTEMS', ou: 'DSI', c: 'FR' }) })
+  it('champs absents : laissés de côté', () => { expect(csrSubject(csr('/CN=x.lab.test'))).toEqual({ cn: 'x.lab.test' }) })
+  it('DER', () => { expect(csrSubject(new Uint8Array(csr('/O=Lab/CN=y.lab.test', [], 'DER')))).toEqual({ cn: 'y.lab.test', o: 'Lab' }) })
+  it('illisible : rien', () => { expect(csrSubject('n\'importe quoi')).toEqual({}); expect(csrSubject(new Uint8Array([1, 2, 3]))).toEqual({}) })
+})
 describe('autorités', () => {
   it('émettrice et racine : nom et CN cohérents, premier numéro libre', () => {
     expect(suggestCaNames('issuing', [])).toEqual({ name: 'DDI-Issuing-1', cn: 'DDI Issuing CA 1' })
@@ -65,7 +79,10 @@ describe('csrCommonName (vraie demande openssl)', () => {
 describe('branchement dans les écrans', () => {
   it('certificats : proposition qui suit le profil et la demande tant que le champ n\'est pas modifié', () => {
     const v = read('../app/components/PkiCerts.vue')
-    for (const k of ['suggestCertName', 'suggestSans', 'csrCommonName', 'refreshCn', 'refreshSans', 'cnAuto', 'dnsAuto', "watch(() => iss.profile"]) expect(v).toContain(k)
+    for (const k of ['suggestCertName', 'suggestSans', 'csrSubject', 'dnParts', 'refreshCn', 'refreshSans', 'refreshOrg', 'cnAuto', 'dnsAuto', 'orgAuto', 'pki-cert-radius-hint', "watch(() => iss.profile"]) expect(v).toContain(k)
+  })
+  it('dialogue RADIUS : nom et noms DNS proposés', () => {
+    const v = read('../app/components/RadiusPki.vue'); for (const k of ['suggestRadiusName', 'refreshDsvDns', 'dnsAuto']) expect(v).toContain(k)
   })
   it('SCEP et autorités', () => {
     expect(read('../app/components/PkiScep.vue')).toContain('suggestCertName'); const c = read('../app/components/PkiCas.vue')
@@ -74,5 +91,6 @@ describe('branchement dans les écrans', () => {
   it.each(['fr', 'en'])('textes %s', (l) => {
     const i = read(`../app/i18n/${l}.ts`)
     for (const k of ['server', 'machine', 'user', 'network', 'other']) expect(i).toContain(`"pki.name.${k}"`)
+    for (const k of ['radius_hint_title', 'radius_hint_body', 'radius_hint_go']) expect(i).toContain(`"pki.cert.${k}"`)
   })
 })

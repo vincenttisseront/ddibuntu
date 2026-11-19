@@ -155,14 +155,22 @@ async function ddiTrust(name: string) {
     await load()
   } catch (e: any) { ddiErr.value = errOf(e) } finally { ddiBusy.value = '' }
 }
-const dsv = reactive({ open: false, ca: '', cn: '', dns: '', ip: '', alg: 'ecp256', busy: false, err: '' })
+const dsv = reactive({ open: false, ca: '', cn: '', cnAuto: '', dnsAuto: '', dns: '', ip: '', alg: 'ecp256', busy: false, err: '' })
 const DDI_ALGS = [{ value: 'ecp256', label: 'ECDSA P-256' }, { value: 'rsa2048', label: 'RSA 2048' }, { value: 'rsa3072', label: 'RSA 3072' }]
 const lines = (v: string) => [...new Set(v.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean))]
 const dsvOk = computed(() => !!dsv.ca && !!dsv.cn.trim() && lines(dsv.dns).length > 0)
 function openDdiServer() {
   const first = ddi.value?.issuers?.find((i: any) => i.trusted) ?? ddi.value?.issuers?.[0]
-  Object.assign(dsv, { open: true, ca: first?.name ?? '', cn: '', dns: '', ip: '', alg: 'ecp256', busy: false, err: '' })
+  Object.assign(dsv, { open: true, ca: first?.name ?? '', cn: '', cnAuto: '', dnsAuto: '', dns: '', ip: '', alg: 'ecp256', busy: false, err: '' })
+  // Nom et noms DNS proposés (0.14.15) : « radius.<domaine du DDI> » (un seul certificat pour les deux nœuds), le nom DNS suit le nom ; à remplacer librement
+  dsv.cn = dsv.cnAuto = suggestRadiusName(domainOf(ddi.value?.hostname)); refreshDsvDns()
 }
+function refreshDsvDns() {
+  const a = suggestSans('server', dsv.cn, domainOf(ddi.value?.hostname)).dns
+  if (dsv.dns === dsv.dnsAuto) dsv.dns = a
+  dsv.dnsAuto = a
+}
+watch(() => dsv.cn, () => { if (dsv.open) refreshDsvDns() })
 async function ddiServer() {
   dsv.busy = true; dsv.err = ''
   try {

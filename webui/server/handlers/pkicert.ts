@@ -51,11 +51,14 @@ function parseQuery(c: Ctx, max: number, def: number): CertQuery {
 route('GET', '/pki/certs', 'admin', async (c) => {
   const q = parseQuery(c, CERT_LIMIT.max, CERT_LIMIT.default)
   const cas = (await readPkiCas())?.cas ?? []
-  const issuers = cas.filter((x) => x.kind === 'issuing' && x.state === 'active' && x.managed).map((x) => x.name)
+  const active = cas.filter((x) => x.kind === 'issuing' && x.state === 'active' && x.managed)
+  const issuers = active.map((x) => x.name)
+  // nom distinctif de chaque émettrice : le formulaire d'émission en reprend l'organisation, l'unité et le pays (0.14.15)
+  const issuerDns = Object.fromEntries(active.map((x) => [x.name, x.dn]))
   const st = await readPkiStatus()
-  if (!issuers.length) return { rows: [], total: 0, issuers, ready: st?.state === 'healthy' }
+  if (!issuers.length) return { rows: [], total: 0, issuers, issuerDns, ready: st?.state === 'healthy' }
   const r = await dbGuard(() => searchCerts(q, cas.filter((x) => x.kind === 'issuing')))
-  return { ...r, issuers, ready: st?.state === 'healthy', limit: q.limit, offset: q.offset }
+  return { ...r, issuers, issuerDns, ready: st?.state === 'healthy', limit: q.limit, offset: q.offset }
 })
 route('GET', '/pki/certs.csv', 'admin', async (c) => {
   const q = parseQuery(c, CERT_LIMIT.csv, CERT_LIMIT.csv)

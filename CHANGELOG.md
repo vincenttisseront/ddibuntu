@@ -1,5 +1,16 @@
 # Journal des modifications
 
+## 0.14.15 — « PKI du DDI : noms proposés (suite), dialogue du serveur RADIUS, orientation vers l'onglet RADIUS »
+
+Suite de la 0.14.14 : le dialogue du certificat du serveur RADIUS était resté sans proposition, et les autres champs (organisation, unité, pays, noms DNS) arrivaient vides.
+
+- **Certificat du serveur RADIUS du DDI** (Accès réseau → Certificats → « Utiliser la PKI du DDI ») : le nom est proposé `radius.<domaine du DDI>` (un seul certificat pour les deux nœuds), et le **nom DNS** suit le nom tant qu'on n'y touche pas.
+- **Organisation, unité et pays** (émission d'un certificat et préenregistrement SCEP) : repris de l'**autorité choisie** (son nom distinctif), et suivent le choix de l'autorité ; avec une demande de certificat, ce sont ceux de la **demande** qui priment (comme le nom : ceux du formulaire remplacent ceux de la demande, un défaut inventé les aurait écrasés en silence). Le pays reste « FR » à défaut. Ce que l'on écrit n'est jamais écrasé.
+- **Orientation** : choisir le profil « Serveur RADIUS » dans PKI → Certificats affiche un message — pour le RADIUS de ce DDI, passer par l'onglet RADIUS, qui fabrique la clé, émet le certificat et l'installe sans demande ni import à la main ; ce formulaire sert à un serveur extérieur qui garde sa clé (LDAPS d'un contrôleur de domaine, autre RADIUS).
+- Console : `GET /pki/certs` renvoie en plus `issuerDns` (nom distinctif de chaque émettrice) et `GET /pki/scep` le `dn` de ses émettrices (champs ajoutés, rien de retiré). Lecture du sujet d'une demande étendue (organisation, unité, pays en plus du nom).
+- Tests : `unit-pki-names` (43 : lecture du sujet d'une vraie demande `openssl`, nom distinctif d'autorité, nom du serveur RADIUS, branchement des dialogues), `e2e-iter51` / `e2e-iter56` (champs ajoutés des réponses).
+- **Limites** : l'adresse IP du serveur RADIUS n'est pas proposée (deux nœuds, pas d'adresse unique) ; les noms DNS d'une demande ne sont pas lus. Non essayé sur le cluster.
+
 ## 0.14.14 — « PKI du DDI : noms proposés par défaut dans les formulaires »
 
 Retour : les champs « Nom » arrivaient vides ; ils proposent maintenant un nom cohérent avec ce qu'on crée, que l'on remplace librement.

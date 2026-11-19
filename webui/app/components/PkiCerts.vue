@@ -2,6 +2,7 @@
 // Certificats de la PKI du DDI (0.14.3) : liste lue dans la base d'EJBCA (lecture seule), recherche et filtres, export CSV, téléchargement, révocation, émission
 // depuis une demande de certificat (la clé reste chez le demandeur) ou avec une clé fabriquée par la console puis remise dans un PKCS#12 (jamais stockée).
 // La console ne signe rien : root revalide la demande et parle à EJBCA ; ici on attend simplement sa réponse (quelques secondes).
+import type { DnParts } from '~/utils/pkiNames'
 const props = defineProps<{ status: any; waiting: boolean }>()
 const { t } = useT(); const api = useApi(); const toast = useToast(); const fmt = useFmt()
 
@@ -55,7 +56,7 @@ const dlName = (r: any, k: 'cert' | 'chain') => `${cnOf(r.subject).replace(/[^A-
 
 // ---- Émission ----
 const SAN_KEYS = ['dns', 'ip', 'mail', 'upn'] as const
-const emptyIssue = () => ({ open: false, mode: 'csr' as 'csr' | 'p12', ca: '', profile: 'machine', cn: '', cnAuto: '', csrCn: '', dnsAuto: '', upnAuto: '', o: '', ou: '', c: 'FR', dns: '', ip: '', mail: '', upn: '', pem: '', alg: 'ecp256', password: '', show: false, compat: false,
+const emptyIssue = () => ({ open: false, mode: 'csr' as 'csr' | 'p12', ca: '', profile: 'machine', cn: '', cnAuto: '', csr: {} as Partial<DnParts>, orgAuto: { o: '', ou: '', c: 'FR' }, dnsAuto: '', upnAuto: '', o: '', ou: '', c: 'FR', dns: '', ip: '', mail: '', upn: '', pem: '', alg: 'ecp256', password: '', show: false, compat: false,
   err: '', busy: false, done: null as null | { id: string; serial: string; notAfter: string; subject: string; certificate: string; chain: string; file?: string } })
 const iss = reactive(emptyIssue())
 const files = reactive<{ csr: File | null }>({ csr: null })
@@ -72,12 +73,20 @@ const algItems = [{ value: 'ecp256', label: 'ECDSA P-256' }, { value: 'ecp384', 
 // Tant que l'utilisateur n'a pas touché au champ, la proposition suit le profil et la demande ; dès qu'il écrit, plus rien n'y touche.
 const takenCns = computed(() => rows.value.map((r) => cnOf(r.subject)))
 const profilePrefix = () => t(`pki.name.${['server', 'machine', 'user', 'network'].includes(iss.profile) ? iss.profile : 'other'}`)
-const autoCn = () => (iss.mode === 'csr' && iss.csrCn) || suggestCertName(profilePrefix(), domainOf(props.status?.hostname), iss.profile !== 'user', takenCns.value)
+const autoCn = () => (iss.mode === 'csr' && iss.csr.cn) || suggestCertName(profilePrefix(), domainOf(props.status?.hostname), iss.profile !== 'user', takenCns.value)
 function refreshCn() { const was = iss.cn === iss.cnAuto; iss.cnAuto = autoCn(); if (was) iss.cn = iss.cnAuto }
 function openIssue(mode: 'csr' | 'p12') {
   Object.assign(iss, emptyIssue(), { open: true, mode, ca: issuers.value.length === 1 ? issuers.value[0] : f.ca || issuers.value[0] || '' }); files.csr = null
-  refreshCn()
+  refreshCn(); refreshOrg()
 }
+// Organisation, unité et pays proposés (0.14.15) : ceux de la demande de certificat si elle en porte, sinon ceux de l'autorité choisie (son nom distinctif), sinon « FR ».
+// Même règle : ce que l'utilisateur a écrit n'est jamais écrasé.
+function refreshOrg() {
+  const dn = dnParts(list.value?.issuerDns?.[iss.ca]), csr = iss.mode === 'csr' ? iss.csr : {}
+  const a = { o: csr.o || dn.o, ou: csr.ou || dn.ou, c: csr.c || dn.c || 'FR' }
+  for (const k of ['o', 'ou', 'c'] as const) { if (iss[k] === iss.orgAuto[k]) iss[k] = a[k]; iss.orgAuto[k] = a[k] }
+}
+watch(() => iss.ca, () => { if (iss.open) refreshOrg() })
 // Noms DNS / UPN proposés d'après le nom, avec la même règle : on ne touche pas à ce que l'utilisateur a écrit
 function refreshSans() {
   const a = suggestSans(iss.profile, iss.cn, domainOf(props.status?.hostname))
@@ -87,13 +96,13 @@ function refreshSans() {
 }
 watch(() => [iss.cn, iss.profile], () => { if (iss.open) refreshSans() })
 watch(() => iss.profile, () => { if (iss.open) refreshCn() })
-watch(() => iss.pem, (v) => { if (iss.open && iss.mode === 'csr' && !files.csr) { iss.csrCn = csrCommonName(v) ?? ''; refreshCn() } })
+watch(() => iss.pem, (v) => { if (iss.open && iss.mode === 'csr' && !files.csr) { iss.csr = csrSubject(v); refreshCn(); refreshOrg() } })
 watch(() => files.csr, async (file) => {
   if (!iss.open || iss.mode !== 'csr') return
-  iss.csrCn = ''
-  if (file && file.size <= 16384) { try { iss.csrCn = csrCommonName(new Uint8Array(await file.arrayBuffer())) ?? '' } catch { /* fichier illisible : pas de nom proposé */ } }
-  else if (!file) iss.csrCn = csrCommonName(iss.pem) ?? ''
-  refreshCn()
+  iss.csr = {}
+  if (file && file.size <= 16384) { try { iss.csr = csrSubject(new Uint8Array(await file.arrayBuffer())) } catch { /* fichier illisible : pas de nom proposé */ } }
+  else if (!file) iss.csr = csrSubject(iss.pem)
+  refreshCn(); refreshOrg()
 })
 function pickCsr(ev: Event) { files.csr = (ev.target as HTMLInputElement).files?.[0] ?? null }
 async function csrBlob(): Promise<{ pem: string } | { der: string }> {
@@ -239,6 +248,8 @@ defineExpose({ load })
             <UFormField :label="t('pki.cert.col_ca')"><USelect v-model="iss.ca" :items="issuers" class="w-full" data-test="pki-cert-ca" /></UFormField>
             <UFormField :label="t('pki.cert.col_profile')"><USelect v-model="iss.profile" :items="profileItems" class="w-full" data-test="pki-cert-profile" /></UFormField>
           </div>
+          <UAlert v-if="iss.profile === 'server'" color="info" variant="subtle" icon="i-lucide-info" :title="t('pki.cert.radius_hint_title')" :description="t('pki.cert.radius_hint_body')"
+            :actions="[{ label: t('pki.cert.radius_hint_go'), color: 'neutral', variant: 'outline', to: '/radius#certs' }]" data-test="pki-cert-radius-hint" />
           <UFormField :label="t('pki.cert.cn')" :help="t('pki.cert.cn_help')"><UInput v-model="iss.cn" class="w-full" maxlength="64" data-test="pki-cert-cn-input" /></UFormField>
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <UFormField :label="t('pki.ca.o')"><UInput v-model="iss.o" class="w-full" maxlength="64" /></UFormField>

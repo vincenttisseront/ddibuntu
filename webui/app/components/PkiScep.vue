@@ -34,7 +34,7 @@ async function toggle(on: boolean) {
 
 // ---- Préenregistrement ----
 const SAN_KEYS = ['dns', 'ip', 'mail', 'upn'] as const
-const emptyOffer = () => ({ open: false, ca: '', profile: 'network', cn: '', cnAuto: '', dnsAuto: '', upnAuto: '', o: '', ou: '', c: 'FR', dns: '', ip: '', mail: '', upn: '', err: '', busy: false,
+const emptyOffer = () => ({ open: false, ca: '', profile: 'network', cn: '', cnAuto: '', orgAuto: { o: '', ou: '', c: 'FR' }, dnsAuto: '', upnAuto: '', o: '', ou: '', c: 'FR', dns: '', ip: '', mail: '', upn: '', err: '', busy: false,
   done: null as null | { cn: string; ca: string; profile: string; challenge: string; offerDays: number; url: string; rearm: boolean } })
 const off = reactive(emptyOffer())
 const locked = computed(() => !ready.value || props.waiting || !!busy.value || off.busy)
@@ -52,7 +52,13 @@ const profileItems = computed(() => profiles.value.map((p) => ({ value: p.key, l
 // Nom proposé (0.14.14) d'après le profil, le domaine du DDI et le premier numéro libre ; il suit le profil tant que l'utilisateur n'a pas écrit dans le champ.
 const autoCn = () => suggestCertName(t(`pki.name.${['server', 'machine', 'user', 'network'].includes(off.profile) ? off.profile : 'other'}`), domainOf(props.status?.hostname), off.profile !== 'user', offers.value.map((o) => o.cn))
 function refreshCn() { const was = off.cn === off.cnAuto; off.cnAuto = autoCn(); if (was) off.cn = off.cnAuto }
-function openOffer() { Object.assign(off, emptyOffer(), { open: true, ca: rsaIssuers.value[0]?.name ?? '' }); refreshCn() }
+function openOffer() { Object.assign(off, emptyOffer(), { open: true, ca: rsaIssuers.value[0]?.name ?? '' }); refreshCn(); refreshOrg() }
+// Organisation, unité et pays proposés d'après le nom distinctif de l'autorité choisie (0.14.15), sans jamais écraser ce que l'utilisateur a écrit
+function refreshOrg() {
+  const dn = dnParts(issuers.value.find((x) => x.name === off.ca)?.dn), a = { o: dn.o, ou: dn.ou, c: dn.c || 'FR' }
+  for (const k of ['o', 'ou', 'c'] as const) { if (off[k] === off.orgAuto[k]) off[k] = a[k]; off.orgAuto[k] = a[k] }
+}
+watch(() => off.ca, () => { if (off.open) refreshOrg() })
 function refreshSans() {
   const a = suggestSans(off.profile, off.cn, domainOf(props.status?.hostname))
   if (off.dns === off.dnsAuto) off.dns = a.dns

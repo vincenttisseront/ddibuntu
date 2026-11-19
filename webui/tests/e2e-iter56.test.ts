@@ -130,6 +130,7 @@ describe('état et préconditions', () => {
     expect(r.json.scep).toBeNull(); expect(r.json.ready).toBe(true); expect(r.json.alias).toBe('ddibuntu'); expect(r.json.challengeLen).toBe(24)
     expect(r.json.issuers.map((x: any) => [x.name, x.rsa])).toEqual([['Lab-SubRSA', true], ['Lab-SubEC', false]])
     expect(r.json.issuers[0].certUrl).toBe('/pki/cas/Lab-SubRSA/cert')
+    expect(typeof r.json.issuers[0].dn).toBe('string'); expect(r.json.issuers[0].dn).not.toBe('')   // 0.14.15 : le préenregistrement reprend l'organisation, l'unité et le pays de l'autorité
   })
   it('un fichier publié hostile (illisible, trop gros) est ignoré', async () => {
     writeFileSync(SCEP, '{pas du json'); expect((await admin.get(S)).json.scep).toBeNull()
