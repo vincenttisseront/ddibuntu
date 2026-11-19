@@ -224,7 +224,10 @@ expect_eq "…aucune sauvegarde (avec ses clés) ne reste" no "$([ -e "$D/state/
 echo "== Poste qui ne fait pas confiance au serveur : l'alerte TLS du poste arrive au journal du démon =="
 cf="$D/eap.untrust.conf"
 { echo 'network={'; echo ' key_mgmt=WPA-EAP'; echo ' eap=TLS'; echo ' identity="test@lab.test"'; echo " ca_cert=\"$P/xroot/ca.pem\""; echo " client_cert=\"$P/alice.pem\""; echo " private_key=\"$P/alice.key\""; echo '}'; } > "$cf"
+n0=$(wc -l < "$AL")
 r="$(eapol_test -c "$cf" -a 127.0.0.1 -p 1812 -s "$SELF" -t 8 2>&1)"
+sleep 1; n1=$(wc -l < "$AL")
+[ "$((n1 - n0))" = 1 ] && tail -n 1 "$AL" | grep -q '^v1|[0-9]*|reject|' && ok "un refus écrit UNE seule ligne au journal, de décision « reject » (aucune ligne « accept » en trop)" || ko "un refus = une ligne reject" "lignes ajoutées : $((n1 - n0)) ; $(tail -n 2 "$AL")"
 echo "$r" | tail -1 | grep -q '^FAILURE' && ok "poste sans confiance dans l'autorité du serveur : refusé" || ko "poste sans confiance : refus attendu" "$(echo "$r" | tail -3)"
 sleep 1
 [ -n "${B29_SHOW:-}" ] && { echo "--- journal technique (alertes) ---"; grep -n -i 'alert\|unknown ca' "$RLOG" | tail -6; echo "--- dernier refus du journal d'authentifications ---"; tail -n 1 "$AL"; }

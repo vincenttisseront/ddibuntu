@@ -106,8 +106,8 @@ async function tail(file: string, max: number): Promise<{ text: string; key: str
     const key = `${st.mtimeMs}:${st.size}:${st.ino}`
     const start = Math.max(0, st.size - max)
     const buf = Buffer.alloc(st.size - start)
-    if (buf.length) await h.read(buf, 0, buf.length, start)
-    let text = buf.toString('utf8')
+    const got = buf.length ? (await h.read(buf, 0, buf.length, start)).bytesRead : 0
+    let text = buf.subarray(0, got).toString('utf8')   // si le fichier a été tronqué pendant la lecture : pas d'octets nuls en fin
     if (start > 0) { const i = text.indexOf('\n'); text = i < 0 ? '' : text.slice(i + 1) }
     return { text, key, truncated: start > 0 }
   } catch { return null } finally { await h?.close().catch(() => undefined) }
