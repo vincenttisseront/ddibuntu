@@ -86,8 +86,10 @@ check_fail "réseau /8 refusé" "$RAD" check "$(clients 'client "gros" {
 check_fail "fichier sans client d'essai refusé" "$RAD" check <(sed '1,/^}$/d' "$(clients)")
 
 echo "== Application réelle : arborescence, démon, trafic =="
+mkdir -p "$D/state"; chmod 0755 "$D/state"   # le dossier d'état existe déjà : la console doit pouvoir le traverser
 "$RAD" apply "$(clients)" >"$D/apply.out" 2>&1; rc=$?
 expect_eq "apply : code 0" 0 "$rc"
+expect_eq "apply : le dossier d'état garde ses droits (0755, traversable par la console)" 755 "$(stat -c '%a' "$D/state")"
 expect_grep "message : 2 clients" 'démarré \(2 client' "$D/apply.out"
 expect_eq "clients.conf : 0640 root:freerad" "640 root freerad" "$(stat -c '%a %U %G' "$D/etc/clients.conf")"
 expect_eq "radiusd.conf : 0640 root:freerad" "640 root freerad" "$(stat -c '%a %U %G' "$D/etc/radiusd.conf")"

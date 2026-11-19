@@ -1,5 +1,15 @@
 # Journal des modifications
 
+## 0.14.17 — « Correctif : « Déployer » (RADIUS) remettait /var/lib/ddibuntu en 0750 et bloquait la console »
+
+Après un déploiement RADIUS, la console échouait avec « Erreur interne » sur tout ce qui écrit dans `/var/lib/ddibuntu/generated` : « Rechercher une mise à jour » (`.update-request`), les actions du cluster (`.cluster-action`), puis « Déployer » lui-même (`radius-authz`). Le journal de la console donnait `EACCES: permission denied`, et le dossier `/var/lib/ddibuntu` était en `root:root 0750` : l'utilisateur `ddiconsole` ne pouvait plus le traverser.
+
+- **Cause** : `ddibuntu-radius` exécutait `install -d -m 0750 "$STATE"` à chaque « Déployer », avec `STATE=/var/lib/ddibuntu`. `install -d -m` réimpose le mode même sur un dossier qui existe. Le démarrage de la console le remettait en 0751 (`chmod go+x`), mais le déploiement suivant le repassait en 0750.
+- **Correctif** : le dossier n'est créé (en 0755) que s'il n'existe pas ; ses droits ne sont jamais modifiés. Il reste traversable par la console.
+- **Test** : la batterie `b28` crée le dossier d'état en 0755 avant le premier « Déployer » et contrôle qu'il garde ce mode ; sans le correctif, ce contrôle échoue (vérifié).
+- **Sur un nœud touché** : `sudo chmod 755 /var/lib/ddibuntu` suffit ; la mise à jour le fait aussi. Vérifier les autres nœuds : `stat -c '%a' /var/lib/ddibuntu` doit donner 755 (ou 751).
+- **Non fait** : « Erreur interne » reste affichée telle quelle pour une erreur de droits ; la raison (`EACCES`, chemin) n'est que dans le journal de la console (`journalctl -u ddibuntu-console`). À revoir avec l'amélioration des journaux RADIUS.
+
 ## 0.14.16 — « RADIUS : le service démarre sous systemd (droits du module EAP), raison de l'échec affichée »
 
 Premier déploiement réel du RADIUS avec EAP-TLS : « le service ne démarre pas ; configuration précédente restaurée ». Le journal de FreeRADIUS donnait la cause : `Unable to open file "/etc/ddibuntu/radius/mods-enabled/eap": Permission denied`.
