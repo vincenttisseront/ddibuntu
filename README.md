@@ -1,22 +1,62 @@
+[English](README.en.md) · **Français**
+
 # DDI-Buntu
 
-Appliance **DDI** (DNS, DHCP, IPAM) sur Ubuntu Server 24.04 LTS, installable par une ISO qui s'installe seule, avec une console d'administration web. *(English: a self-installing DNS/DHCP/IPAM appliance ISO builder with a web console.)*
+**Une appliance DDI complète — DNS, DHCP, IPAM, accès réseau 802.1X et PKI — qui s'installe seule depuis une ISO et se pilote depuis une console web.**
+*(English version: [README.en.md](README.en.md).)*
 
-- **Installation automatique** : l'ISO (BIOS + UEFI) installe tout pendant l'installation ; rien n'est téléchargé au premier démarrage.
-- **Mises à jour en ligne** : la console détecte les nouvelles versions (releases GitHub signées) et les installe sur clic, avec sauvegarde de la base et retour arrière automatique.
-- **Mise à jour par la même ISO** : l'entrée « Update » du menu met à niveau une installation existante en conservant toutes les données.
-- **Console web HTTPS** (français / anglais, thèmes clair et sombre, onglets adressables) : IPAM, DNS (BIND 9), DHCP (Kea), filtrage DNS (RPZ), utilisateurs et audit.
-- **Cockpit de filtrage DNS** à la Pi-hole : journal des requêtes, tops, liste blanche/noire en un clic, pause du blocage.
-- **Accès réseau (RADIUS)** : service FreeRADIUS piloté par la console (clients Wi-Fi / VPN, secrets chiffrés, test d'Access-Request) ; annuaire AD en lecture seule (état du compte, groupes imbriqués) ; EAP-TLS par certificats (autorités de confiance, certificat du serveur, CRL, vérification d'un certificat client) ; règles d'accès ordonnées par groupe AD (décision, VLAN, pool, durée de session) avec simulation avant publication ; import d'un NPS existant et journal des authentifications en cours de construction (voir la feuille de route).
-- **Imports et découverte** : NetBox, Active Directory en direct (LDAP, transfert de zone), exports Windows DHCP/DNS, découverte réseau.
-- **Sauvegarde et restauration à un instant donné** de la base (PITR) : sauvegardes planifiées, journaux archivés en continu, copie externe, restauration depuis la console, cluster compris.
-- **Alertes et supervision** : 23 règles (cluster, quorum, réplication, chaque nœud arbitre compris, sauvegardes, sous-réseaux), mise en silence, notifications par webhook (signé) et e-mail, exportateur Prometheus `/api/metrics`, tableau de bord qui se rafraîchit seul.
-- **Réglages du cluster à chaud** : adresse virtuelle et réseau dédié publiés une fois pour tous les nœuds, **certificats renouvelés automatiquement sans interruption** (la clé ne quitte jamais le nœud, seule l'autorité signe), **changement d'adresse d'un nœud** sans perdre le quorum, avec retour arrière automatique si etcd ne redémarre pas.
-- **Test de bascule guidé** : pré-contrôles, **vraie bascule du primaire mesurée de bout en bout** (fenêtre sans primaire, promotion, réintégration de l'ancien primaire, rattrapage, ligne de temps, continuité WAL), retour au primaire d'origine et **rapport conservé dans le cluster**, depuis la console ou `ddibuntu-cluster drill`; les opérations de topologie sont suspendues pendant le test.
-- **Retour arrière partout** : un point de restauration est créé avant chaque configuration, déploiement ou import ; les changements réseau s'annulent seuls sans confirmation.
-- **Sécurité** : chaîne d'approvisionnement vérifiée (signatures et empreintes), console sans privilège, application privilégiée séparée et contrôlée, pare-feu nftables, durcissement.
+Vous gérez aujourd'hui vos adresses dans un tableur, votre DNS et votre DHCP sur des serveurs Windows, votre Wi-Fi d'entreprise avec un NPS et une autorité AD CS que personne n'ose toucher ? DDI-Buntu réunit tout cela dans **une seule appliance Ubuntu**, avec des composants éprouvés (BIND 9, Kea, FreeRADIUS, EJBCA, PostgreSQL, Patroni) et une console qui les rend lisibles.
 
-> État : version de développement **0.13.9**. Voir « Limites connues » ci-dessous avant tout usage en production.
+![IPAM : l'arbre des réseaux, avec occupation et VLAN (thème sombre)](docs/img/console-ipam-reseaux-sombre.png)
+
+## Pourquoi DDI-Buntu
+
+- **Installé depuis une seule ISO, sans rien télécharger au premier démarrage.** Une ISO (BIOS + UEFI) installe tout, et la même ISO met à niveau une installation existante en gardant vos données.
+- **Une source de vérité.** Allouer une adresse dans l'IPAM crée l'enregistrement DNS (A/AAAA et PTR) et la réservation DHCP dans la même transaction ; les gabarits de réseau appliquent étendue, options et règle de nommage dès la création.
+- **On peut se tromper sans risque.** Un point de restauration est créé avant chaque configuration, déploiement ou import ; les changements réseau s'annulent d'eux-mêmes si vous ne les confirmez pas ; la base se restaure à la minute près (PITR).
+- **Le Wi-Fi et le VPN d'entreprise, sans AD CS ni NPS.** RADIUS (FreeRADIUS) piloté depuis la console, règles d'accès par groupe Active Directory (groupes imbriqués compris), EAP-TLS, PEAP, EAP-TTLS et second facteur, avec une simulation avant déploiement.
+- **Une PKI intégrée.** Autorités, certificats, révocation (CRL), SCEP pour les équipements réseau, publication dans l'Active Directory, et **certificats de postes émis automatiquement** : la clé reste sur le poste, le poste s'authentifie avec son compte d'ordinateur.
+- **Haute disponibilité de bout en bout.** Deux nœuds de données et un arbitre : PostgreSQL (Patroni + etcd), Kea en répartition de charge, BIND primaire/secondaire, adresse virtuelle (Keepalived) qui suit le leader, RADIUS et PKI qui suivent le cluster, **bascule guidée et mesurée** depuis la console.
+- **Vous quittez vos outils actuels sans repartir de zéro.** Import des exports DHCP/DNS de Windows Server, lecture directe de l'Active Directory, import NetBox, import d'un NPS existant, découverte réseau.
+- **Sûr par construction.** Chaîne d'approvisionnement vérifiée (signatures et empreintes), console sans privilège, application privilégiée séparée et contrôlée, pare-feu nftables, secrets chiffrés, journal d'audit complet, export vers un SIEM, SSO OpenID Connect et jetons d'API.
+
+> État : version de développement **0.18.0**. Voir « Limites connues » ci-dessous avant tout usage en production.
+
+## La console en images
+
+Captures prises sur la console réelle (version 0.18.0) avec des données de démonstration fictives.
+
+### Toutes vos adresses, avec leurs noms, leurs MAC et leurs alias DNS
+
+![IPAM : liste des adresses, avec statut, MAC, alias et responsable](docs/img/console-ipam-adresses.png)
+
+### Le DNS qui suit l'IPAM
+
+![DNS : enregistrements d'une zone, avec type, durée de vie et protection](docs/img/console-dns-enregistrements.png)
+
+### DHCP : plages et réservations par réseau
+
+![DHCP : plages d'adresses et réservations d'un réseau](docs/img/console-dhcp-reservations.png)
+
+### Accès réseau : des règles lisibles, jouées de haut en bas
+
+![RADIUS : règles d'accès par type de compte, groupe et équipement](docs/img/console-radius-regles.png)
+
+## Ce que contient la console
+
+Console web HTTPS en français et en anglais, thèmes clair et sombre, onglets adressables, recherche globale (`Ctrl+K`).
+
+| Module | Ce que vous y faites |
+|---|---|
+| **IPAM** | Espaces IP qui se chevauchent, conteneurs / réseaux / pools, VLAN, gabarits, règles de nommage, labels, adresses fantômes, découverte réseau, sources externes (NetBox) |
+| **DNS** (BIND 9) | Zones primaires, secondaires et de redirection, vues, enregistrements, zones inverses, historique avec retour arrière, contrôle de cohérence, limitation de débit (RRL) |
+| **DHCP** (Kea) | Étendues, plages, réservations, classes de clients, baux, haute disponibilité |
+| **Filtrage DNS** | Cockpit façon Pi-hole (journal des requêtes, tops, liste blanche/noire en un clic, pause), listes hosts / domaines / adblock, détection de tunnels DNS |
+| **Accès réseau** (RADIUS) | Clients Wi-Fi, VPN et commutateurs, annuaire Active Directory, EAP-TLS, mot de passe (PEAP, EAP-TTLS), second facteur, règles d'accès avec simulation, journal des authentifications |
+| **PKI** (EJBCA) | Autorités et CRL, certificats, SCEP, publication dans l'AD, certificats de postes, sauvegarde, mises à jour |
+| **Import / AD** | Exports Windows DHCP/DNS, transfert de zone, LDAP, NetBox, NPS |
+| **Cluster** | État, réglages à chaud (adresse virtuelle, réseau dédié, certificats renouvelés sans interruption), test de bascule guidé |
+| **Système** | Alertes (36 règles, mise en silence, webhook signé, e-mail), sauvegardes planifiées et restauration à un instant donné, mises à jour en ligne avec retour arrière automatique, pare-feu |
 
 ## Démarrage rapide
 
@@ -75,7 +115,7 @@ Ajoutez d'abord l'arbitre, puis le second nœud de données. Dès que deux nœud
 
 ## Limites connues
 
-- Jamais exécuté sur **VMware réel**, **Docker Desktop réel** ni **PowerShell 5.1** ; l'interface web n'a pas été pilotée dans un navigateur automatisé.
+- Jamais exécuté sur **VMware réel**, **Docker Desktop réel** ni **PowerShell 5.1**. L'enrôlement automatique des certificats de postes (0.18.0) est vérifié contre un vrai Samba AD, mais pas encore sur un **vrai poste Windows** (`certreq`, tâche planifiée, GPO) : à essayer d'abord sur un poste pilote.
 - Le DDNS reçu par BIND est écrasé au déploiement suivant. Kea 2.4 (Ubuntu 24.04) n'a pas GSS-TSIG : le serveur DNS de l'appliance accepte bien les mises à jour sécurisées des machines du domaine (0.5.6), mais l'envoi des enregistrements DHCP vers les contrôleurs Active Directory en GSS-TSIG (Kea 3.x ou `nsupdate -g`) n'est pas fait. L'authentification Kerberos n'a été essayée qu'avec un KDC MIT, pas avec un vrai Active Directory.
 - Certificat TLS de la console auto-signé ; haute disponibilité en cours de construction (voir ci-dessus) ; pas de règles par client ni par expression régulière dans le filtrage.
 - La découverte réseau lit l'ARP dans `/proc/net/arp` ; le ping dépend des réglages du système.

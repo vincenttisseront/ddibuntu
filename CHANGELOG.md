@@ -1,5 +1,20 @@
 # Journal des modifications
 
+## 0.18.0 — « Les postes obtiennent seuls leur certificat, sans AD CS »
+
+La PKI du DDI émet maintenant les certificats EAP-TLS des postes du domaine, ce qui permet de retirer AD CS. Le poste fabrique sa clé (non exportable, jamais envoyée), s'authentifie en **Kerberos avec son compte d'ordinateur** et reçoit son certificat ; le renouvellement est automatique.
+
+- **Nouvel onglet « Postes »** dans la page PKI : dépôt du keytab du service, réglages, script à déployer, activité des dernières 24 h.
+- **Le nom du certificat vient de l'annuaire, jamais de la demande** : CN = nom court du compte, SAN dNSName = `dNSHostName` de l'AD (ce que lisent déjà les règles d'accès RADIUS). Un poste ne peut obtenir que son propre certificat.
+- **Contrôles avant toute émission** : ticket Kerberos valide et non rejoué, compte d'**ordinateur** du bon domaine, compte actif (ni désactivé, ni verrouillé, ni expiré), membre du **groupe AD d'enrôlement** (imbriqués compris), nom DNS présent. Délai minimal et plafond par poste, plafond global par minute ; chaque refus et chaque émission au journal d'audit.
+- **Keytab du service** (SPN `HTTP/<nom de la console>`) : lu et contrôlé au dépôt (domaine unique, service présent, AES exigé : le compte de service doit être déclaré « compatible AES » dans l'AD, puis son mot de passe renouvelé avant l'export), chiffré en base (il suit donc le cluster), jamais renvoyé ni journalisé. L'acceptation du ticket est faite par un petit assistant (`enroll-gss`, paquet `python3-gssapi`) lancé par la console avec une copie du keytab en mémoire, effacée aussitôt.
+- **Script PowerShell** généré par la console : à déployer par GPO avec `-Install` (tâche planifiée en SYSTEM, vérification quotidienne, renouvellement 30 jours avant l'échéance, reprise sur erreur, jitter de démarrage).
+- **Durcissement après relecture** : limitation, émission et décompte dans un même créneau (des requêtes simultanées d'un même poste n'émettent qu'un certificat) ; nom DNS de l'annuaire refusé s'il ne correspond pas au nom du compte ; script installé sous `Program Files` (et non `ProgramData`, où un utilisateur pouvait préparer le dossier d'une tâche SYSTEM) ; apostrophes typographiques doublées dans le script ; au plus 4 vérifications Kerberos simultanées et 20 refus par minute journalisés avant authentification ; keytab limité au service `HTTP/…` et revérifié à l'activation ; jeton Kerberos refusé avant tout déchiffrement s'il ne commence pas par une étiquette SPNEGO ; nom DNS exigé dans le domaine du compte ; au plus 60 demandes et 20 refus journalisés par minute et par compte ; casse du nom de compte ignorée dans la limitation ; script : émetteur comparé exactement (nom simple) et non par sous-chaîne.
+- Service éteint par défaut ; éteint, la route répond comme une route absente.
+- **Vérifié contre un vrai Samba AD** (`e2e-iter62`) : ticket Kerberos réel du compte `PC003$`, rejeu refusé, utilisateur refusé, ordinateur hors groupe, compte désactivé, limitation.
+- **Non vérifié** : un vrai poste Windows (`certreq`, tâche planifiée, GPO, `Invoke-WebRequest -UseDefaultCredentials` depuis SYSTEM) — à essayer sur un poste pilote avant le déploiement général.
+- Hors de cette version : renouvellement avec révocation de l'ancien certificat, révocation automatique des postes supprimés de l'AD (0.18.1), certificats utilisateur (0.18.2).
+
 ## 0.17.1 — « RADIUS : ce qui attend un déploiement est affiché clairement »
 
 Jusqu'ici seule la liste des règles d'accès signalait « modifications non déployées », et par une phrase discrète de l'onglet Service. Un client ajouté, un secret changé ou un certificat remplacé n'était pas signalé : on pouvait croire le service à jour alors qu'il tournait avec l'ancienne configuration.
