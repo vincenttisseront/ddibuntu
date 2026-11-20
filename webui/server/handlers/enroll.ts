@@ -7,7 +7,7 @@ import { audit, fail, route } from '../utils/router'
 import type { Ctx } from '../utils/router'
 import { query, setSetting } from '../utils/db'
 import { normDn } from '../utils/text'
-import { lookupAccount } from '../utils/radius-dir'
+import { groupExists, lookupAccount } from '../utils/radius-dir'
 import { dirComplete, dirPassword, factoryFor, loadDir } from '../utils/radius-dir-store'
 import { blob, blobBytes, readCaFile, readPkiCas } from '../utils/pki-ca'
 import { DNS_RE } from '../utils/pki-certs'
@@ -18,7 +18,7 @@ import {
 } from '../utils/enroll'
 import { enrollScript } from '../utils/enroll-script'
 import { gpoFiles, gpoScript, trustAnchors } from '../utils/enroll-gpo'
-import { ACCOUNT_RE, GpoError, gpoLdapFactory, pushGpo, pushGpoSerial, smbclientRunner } from '../utils/enroll-gpo-push'
+import { ACCOUNT_RE, createGroup, createOu, GpoError, gpoLdapFactory, pushGpo, pushGpoSerial, smbclientRunner } from '../utils/enroll-gpo-push'
 
 export const registered = true
 
@@ -114,7 +114,12 @@ route('PUT', '/enroll/config', 'admin', async (c) => {
     if (!stored) fail(409, 'enroll_no_keytab')
     const kp = keytabProblem({ entries: stored.entries ?? [], principals: stored.principals, realm: stored.realm }, b.host)
     if (kp) fail(409, `enroll_${kp}`)
-    if (!dirComplete(await loadDir())) fail(409, 'enroll_no_directory')
+    const dir = await loadDir()
+    if (!dirComplete(dir)) fail(409, 'enroll_no_directory')
+    // le groupe doit exister et être un groupe (et non un conteneur comme CN=Computers) : sinon aucun poste ne serait jamais accepté
+    const g = await groupExists(dir, dirPassword(dir), factoryFor(dir), b.groupDn)
+    if (!g.ok) fail(503, 'enroll_directory')
+    if (!g.value) fail(400, 'enroll_group_invalid')
   }
   await setSetting(ENROLL_KEY, b)
   await audit(c, 'enroll.config', 'settings', ENROLL_KEY, { enabled: b.enabled, ca: b.ca, host: b.host, groupDn: b.groupDn, minIntervalSec: b.minIntervalSec, maxPerDay: b.maxPerDay })
@@ -176,8 +181,43 @@ route('GET', '/enroll/gpo-script', 'admin', async (c) => {
 })
 
 // La console met elle-même la GPO en place : l'administrateur fournit l'unité d'organisation et un compte pour CETTE opération (jamais stocké ni journalisé).
-const GpoPush = z.object({ ou: z.string().min(8).max(400).regex(/^[^\x00-\x1f\x7f]+$/), account: z.string().regex(ACCOUNT_RE), password: z.string().min(1).max(256), dry: z.boolean() }).strict()
-const GPO_STATUS: Record<string, number> = { tls: 409, bind: 409, denied: 409, ou: 400, smbclient: 409, unreachable: 502, ldap: 502, smb: 502, no_dc: 502 }
+const DnField = z.string().min(8).max(400).regex(/^[^\x00-\x1f\x7f]+$/)
+const GpoCreds = { account: z.string().regex(ACCOUNT_RE), password: z.string().min(1).max(256) }
+// une cible : une unité d'organisation OU un groupe d'ordinateurs (GPO liée à la racine du domaine, filtrée sur le groupe)
+const GpoPush = z.object({ ou: DnField.optional(), group: DnField.optional(), ...GpoCreds, dry: z.boolean() }).strict().refine((b) => !!b.ou !== !!b.group)
+const GPO_STATUS: Record<string, number> = { tls: 409, bind: 409, denied: 409, ou: 400, ou_missing: 400, ou_container: 400, group: 400, group_missing: 400, group_broad: 400, group_dc: 400, smbclient: 409, unreachable: 502, ldap: 502, smb: 502, no_dc: 502 }
+const OuCreate = z.object({ ou: DnField, ...GpoCreds }).strict()
+const GroupCreate = z.object({ group: DnField, ...GpoCreds }).strict()
+function gpoFail(e: unknown): never {
+  if (e instanceof GpoError) fail(GPO_STATUS[e.reason] ?? 502, `enroll_gpo_${e.reason}`, undefined, e.detail ? { detail: e.detail } : undefined)
+  throw e
+}
+// Crée l'unité d'organisation demandée (avec le même compte à usage unique) quand elle n'existe pas encore : une GPO ne se lie pas à un conteneur « CN= »
+route('POST', '/enroll/gpo/ou', 'admin', async (c) => {
+  const b = await c.body(OuCreate)
+  const dir = await loadDir()
+  if (!dir.urls.length) fail(409, 'enroll_gpo_no_directory')
+  let r
+  try { r = await pushGpoSerial(() => createOu({ urls: dir.urls, ldap: gpoLdapFactory(dir) }, b)) } catch (e) {
+    if (e instanceof GpoError) await audit(c, 'enroll.gpo_refused', 'settings', ENROLL_KEY, { ou: b.ou, account: b.account, reason: e.reason, detail: e.detail })
+    gpoFail(e)
+  }
+  await audit(c, 'enroll.gpo_ou', 'settings', ENROLL_KEY, { ou: r.ou, account: b.account, created: r.created })
+  return r
+})
+// Crée le groupe d'ordinateurs (global, vide) quand il n'existe pas : on y ajoute ensuite les postes, qui doivent redémarrer pour recevoir la GPO
+route('POST', '/enroll/gpo/group', 'admin', async (c) => {
+  const b = await c.body(GroupCreate)
+  const dir = await loadDir()
+  if (!dir.urls.length) fail(409, 'enroll_gpo_no_directory')
+  let r
+  try { r = await pushGpoSerial(() => createGroup({ urls: dir.urls, ldap: gpoLdapFactory(dir) }, b)) } catch (e) {
+    if (e instanceof GpoError) await audit(c, 'enroll.gpo_refused', 'settings', ENROLL_KEY, { group: b.group, account: b.account, reason: e.reason, detail: e.detail })
+    gpoFail(e)
+  }
+  await audit(c, 'enroll.gpo_group', 'settings', ENROLL_KEY, { group: r.group, account: b.account, created: r.created })
+  return r
+})
 route('POST', '/enroll/gpo', 'admin', async (c) => {
   const b = await c.body(GpoPush)
   const dir = await loadDir()
@@ -187,12 +227,9 @@ route('POST', '/enroll/gpo', 'admin', async (c) => {
   try {
     r = await pushGpoSerial(() => pushGpo({ urls: dir.urls, ldap: gpoLdapFactory(dir), smb: smbclientRunner, files: gpoFiles(m.enrollPs1, m.anchors) }, b))
   } catch (e) {
-    if (e instanceof GpoError) {
-      await audit(c, 'enroll.gpo_refused', 'settings', ENROLL_KEY, { ou: b.ou, account: b.account, dry: b.dry, reason: e.reason, detail: e.detail })
-      fail(GPO_STATUS[e.reason] ?? 502, `enroll_gpo_${e.reason}`, undefined, e.detail ? { detail: e.detail } : undefined)
-    }
-    throw e
+    if (e instanceof GpoError) await audit(c, 'enroll.gpo_refused', 'settings', ENROLL_KEY, { ou: b.ou, group: b.group, account: b.account, dry: b.dry, reason: e.reason, detail: e.detail })
+    gpoFail(e)
   }
-  await audit(c, b.dry ? 'enroll.gpo_checked' : 'enroll.gpo_applied', 'settings', ENROLL_KEY, { ou: r.ou, account: b.account, gpoId: r.gpoId, created: r.created, domain: r.domain })
+  await audit(c, b.dry ? 'enroll.gpo_checked' : 'enroll.gpo_applied', 'settings', ENROLL_KEY, { ou: r.ou, group: r.group, account: b.account, gpoId: r.gpoId, created: r.created, domain: r.domain })
   return r
 })

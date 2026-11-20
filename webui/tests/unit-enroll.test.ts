@@ -5,7 +5,8 @@ process.env.DDI_SECRET_KEY = 'cle-secrete-de-test-0123456789abcdefghij'
 import { dnsInDomain, dnsMatchesAccount, domainOfDn, principalAllowed, principalAuditOk, ENROLL_DEFAULTS, enrollBody, enrollComplete, enrollSerial, keytabProblem, machineFromPrincipal, negotiateToken, parseKeytab, preAuthAuditOk, sealKeytab } from '../server/utils/enroll'
 import { enrollScript } from '../server/utils/enroll-script'
 import { gpoScript, mergeExtensions, scriptsIni, trustAnchors } from '../server/utils/enroll-gpo'
-import { ACCOUNT_RE, GpoError, pushGpo } from '../server/utils/enroll-gpo-push'
+import { filterGpoAcl, guidBytes, AUTHENTICATED_USERS, ridOf, APPLY_GROUP_POLICY } from '../server/utils/gpo-acl'
+import { ACCOUNT_RE, createOu, GpoError, pushGpo } from '../server/utils/enroll-gpo-push'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -215,5 +216,41 @@ describe('GPO poussée par la console : briques', () => {
     await expect(pushGpo(d as any, { ou: 'OU=Postes,DC=lab,DC=test', account: 'a@lab.test', password: 'x', dry: true })).rejects.toMatchObject({ reason: 'tls' })
     await expect(pushGpo({ ...d, urls: [] } as any, { ou: 'OU=P,DC=l,DC=t', account: 'a@l.t', password: 'x', dry: true })).rejects.toBeInstanceOf(GpoError)
     expect(touched).toBe(false)
+    await expect(createOu({ urls: ['ldap://b.test'], ldap: () => { touched = true; throw new Error('non') } } as any, { ou: 'OU=P,DC=l,DC=t', account: 'a@l.t', password: 'x' })).rejects.toMatchObject({ reason: 'tls' })
+    expect(touched).toBe(false)
+  })
+})
+
+describe('filtrage de sécurité d\'une GPO (descripteur binaire)', () => {
+  const GROUP = Buffer.from([1, 5, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0x34, 0x12, 0, 0])   // S-1-5-21-1-2-3-4660
+  const sid = (rid: number) => Buffer.from([1, 1, 0, 0, 0, 0, 0, 5, rid, 0, 0, 0])
+  const ace = (type: number, flags: number, mask: number, s: Buffer, obj?: string) => {
+    const head = Buffer.alloc(obj ? 12 : 8); head[0] = type; head[1] = flags; head.writeUInt32LE(mask, 4); if (obj) head.writeUInt32LE(1, 8)
+    const b = Buffer.concat(obj ? [head, guidBytes(obj), s] : [head, s]); b.writeUInt16LE(b.length, 2); return b
+  }
+  const dacl = (aces: Buffer[]) => { const body = Buffer.concat(aces); const h = Buffer.alloc(8); h[0] = 4; h.writeUInt16LE(8 + body.length, 2); h.writeUInt16LE(aces.length, 4); const sd = Buffer.alloc(20); sd[0] = 1; sd.writeUInt16LE(0x8004, 2); sd.writeUInt32LE(20, 16); return Buffer.concat([sd, h, body]) }
+  const parse = (sd: Buffer) => { const out: Array<{ type: number; flags: number; mask: number; sid: Buffer; obj?: Buffer }> = []; const n = sd.readUInt16LE(20 + 4); for (let p = 28, i = 0; i < n; i++) { const len = sd.readUInt16LE(p + 2), t = sd[p]!; out.push(t === 5 ? { type: t, flags: sd[p + 1]!, mask: sd.readUInt32LE(p + 4), obj: sd.subarray(p + 12, p + 28), sid: sd.subarray(p + 28, p + len) } : { type: t, flags: sd[p + 1]!, mask: sd.readUInt32LE(p + 4), sid: sd.subarray(p + 8, p + len) }); p += len } return out }
+  const AU = AUTHENTICATED_USERS, SY = sid(18)
+  const base = () => [ace(0, 2, 0x20094, SY), ace(0, 2, 0x20094, AU), ace(5, 2, 0x100, AU, APPLY_GROUP_POLICY), ace(0, 0x12, 0x20094, sid(32))]
+
+  it('guidBytes : ordre des octets de Windows', () => { expect(guidBytes(APPLY_GROUP_POLICY).toString('hex')).toBe('8ffdacedb3ffd111b41d00a0c968f939'); expect(ridOf(GROUP)).toBe(0x1234) })
+  it('retire le droit d\'appliquer à « Utilisateurs authentifiés », le donne au groupe avant les ACE héritées, garde la lecture', () => {
+    const r = filterGpoAcl(dacl(base()), GROUP); expect(r.changed).toBe(true)
+    const a = parse(r.sd); expect(a).toHaveLength(4)
+    expect(a.some((x) => x.type === 5 && x.sid.equals(AU))).toBe(false)                       // plus d'« appliquer » pour tous
+    expect(a.some((x) => x.type === 0 && x.sid.equals(AU))).toBe(true)                         // la lecture reste
+    const g = a.findIndex((x) => x.type === 5 && x.sid.equals(GROUP)); expect(g).toBeGreaterThanOrEqual(0)
+    expect(a[g]!.obj!.equals(guidBytes(APPLY_GROUP_POLICY))).toBe(true); expect(a[g]!.mask).toBe(0x100); expect(a[g]!.flags).toBe(2)
+    expect(a.findIndex((x) => x.flags & 0x10)).toBeGreaterThan(g)                              // les explicites avant les héritées
+    expect(r.sd.readUInt16LE(20 + 2)).toBe(r.sd.length - 20)                                   // taille de la DACL cohérente
+  })
+  it('est idempotent', () => {
+    const once = filterGpoAcl(dacl(base()), GROUP); const twice = filterGpoAcl(once.sd, GROUP)
+    expect(twice.changed).toBe(false); expect(twice.sd.equals(once.sd)).toBe(true)
+  })
+  it('refuse un descripteur illisible ou qui porte autre chose que la DACL', () => {
+    expect(() => filterGpoAcl(Buffer.alloc(10), GROUP)).toThrow('sd')
+    const withOwner = dacl(base()); withOwner.writeUInt32LE(99, 4); expect(() => filterGpoAcl(withOwner, GROUP)).toThrow('sd')
+    const cut = dacl(base()).subarray(0, 50); expect(() => filterGpoAcl(cut, GROUP)).toThrow('sd')
   })
 })

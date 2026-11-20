@@ -1,5 +1,18 @@
 # Journal des modifications
 
+## 0.20.0 — « Postes : cibler un groupe d'ordinateurs, et des erreurs d'unité plus claires »
+
+Dans l'étape 3 de l'onglet « Postes », la GPO peut maintenant viser **soit une unité d'organisation (conseillé), soit un groupe d'ordinateurs**. Le tout reste piloté depuis la console.
+
+- **Mode groupe** : la GPO `DDI-Buntu enrolement (groupe)` — distincte de celle du mode unité — est liée à la **racine du domaine** et **filtrée** sur le groupe : « Utilisateurs authentifiés » perd le droit *Appliquer la stratégie de groupe* (il garde la lecture, nécessaire depuis MS16-072) et seul le groupe l'obtient. Le filtrage modifie la DACL de l'objet (`nTSecurityDescriptor`, contrôle LDAP SD_FLAGS) ; relancé, il ne duplique ni l'ACE ni le lien. « Simuler » liste les membres du groupe.
+- **Refus** : groupes larges (Domain Computers, Domain Users, Domain Controllers…), groupe contenant un contrôleur de domaine, DN hors du domaine ou qui n'est pas un groupe. Le groupe d'enrôlement est proposé par défaut ; le ciblage de la GPO ne remplace pas l'autorisation côté DDI, qui reste celle du groupe d'enrôlement.
+- **Précaution** : un ordinateur ajouté au groupe doit **redémarrer** pour appliquer la GPO.
+- **Conteneur `CN=Computers`** : message explicite (une GPO ne se lie pas à un conteneur, seulement à une unité d'organisation) ; unité absente : bouton « Créer l'unité » (`POST /api/enroll/gpo/ou`) ; groupe absent : bouton « Créer le groupe » (`POST /api/enroll/gpo/group`). Mêmes identifiants à usage unique que pour la GPO.
+- **Groupe d'enrôlement contrôlé** : à l'activation, la console vérifie dans l'annuaire que le « Groupe autorisé » existe et **est un groupe** ; un conteneur (`CN=Computers`), un compte ou un objet absent sont refusés (`enroll_group_invalid`, 400) au lieu de rejeter ensuite tous les postes sans rien dire. Annuaire injoignable : 503 `enroll_directory`.
+- **Script de repli** `deploy-gpo.ps1` : paramètre `-Group` en plus de `-Ou`.
+- **Vérifié** : contre un Samba AD réel — groupe créé par la console, groupe vide puis avec un membre, refus (large, contrôleur, conteneur, hors domaine, comptes sans droits), SDDL sans l'ACE d'application des authentifiés et avec celle du groupe, GPO de l'unité intacte, relance sans doublon.
+- **Non vérifié** : l'application réelle d'une GPO filtrée sur un client Windows (GPMC, `gpresult`).
+
 ## 0.19.0 — « Postes : la console met la GPO en place »
 
 Dans l'onglet « Postes » (PKI), l'étape 3 met désormais la GPO en place **depuis la console** : l'administrateur indique l'unité d'organisation des postes et un compte (administrateur du domaine, ou compte autorisé à créer des GPO et à les lier à l'unité) **pour cette seule opération**. La console crée la GPO « DDI-Buntu enrolement » dans l'annuaire, dépose ses fichiers dans SYSVOL et la lie à l'unité ; le mot de passe n'est ni stocké, ni audité, ni journalisé, ni renvoyé, et la page le vide dès la réponse. Un bouton « Simuler » vérifie le compte, l'unité et l'accès à SYSVOL sans rien écrire.
