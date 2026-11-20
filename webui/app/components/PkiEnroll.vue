@@ -45,21 +45,41 @@ const cmdSamba = computed(() => [
 ].join('\n'))
 const gpoOu = ref('')
 const ouValue = computed(() => (gpoOu.value.trim() || `OU=Postes,${cmdBaseDn.value}`).replace(/'/g, "''"))
-const gpoAccount = ref(''), gpoPassword = ref(''), gpoBusy = ref(false), gpoErr = ref(''), gpoRes = ref<any>(null)
+const gpoAccount = ref(''), gpoPassword = ref(''), gpoBusy = ref(false), gpoErr = ref(''), gpoErrCode = ref(''), gpoOuNote = ref(''), gpoRes = ref<any>(null)
+const gpoMode = ref<'ou' | 'group'>('ou'), gpoGroup = ref('')
+const groupDn = computed(() => gpoGroup.value.trim() || f.groupDn.trim())
+const GPO_FIXABLE = ['enroll_gpo_ou_missing', 'enroll_gpo_ou_container', 'enroll_gpo_group_missing']
+const modeItems = computed(() => [{ label: t('enroll.gpo_mode_ou'), value: 'ou' }, { label: t('enroll.gpo_mode_group'), value: 'group' }])
+/** Corps commun : une unité d'organisation, ou un groupe d'ordinateurs. */
+const targetBody = () => (gpoMode.value === 'group' ? { group: groupDn.value } : { ou: ouDn.value })
 const ouDn = computed(() => gpoOu.value.trim() || `OU=Postes,${cmdBaseDn.value}`)
-/** Le mot de passe ne sert qu'à cet appel : il est vidé de la page dès la réponse, réussie ou non. */
-async function gpoRun(dry: boolean) {
-  if (!dry && !(await ask(t('enroll.gpo_confirm_title'), t('enroll.gpo_confirm_body', { ou: ouDn.value }), false))) return
-  gpoBusy.value = true; gpoErr.value = ''; gpoRes.value = null
-  try { gpoRes.value = await api.call('POST', '/enroll/gpo', { ou: ouDn.value, account: gpoAccount.value.trim(), password: gpoPassword.value, dry }, { silent: true }) }
-  catch (e: any) { gpoErr.value = errOf(e) } finally { gpoBusy.value = false; gpoPassword.value = '' }
+/** Le mot de passe ne sert qu'à cet appel : il est vidé de la page dès la réponse ; seule une unité manquante ou un conteneur le garde, pour proposer d'en créer une dans la foulée. */
+function gpoDone(e?: any) {
+  gpoBusy.value = false; gpoErr.value = e ? errOf(e) : ''; gpoErrCode.value = e?.info?.code ?? ''
+  if (!GPO_FIXABLE.includes(gpoErrCode.value)) gpoPassword.value = ''
 }
-const cmdGpo = computed(() => [
-  `# ${t('enroll.deploy_c_whatif')}`,
-  `.\\deploy-gpo.ps1 -Ou '${ouValue.value}' -WhatIf`,
-  `# ${t('enroll.deploy_c_apply')}`,
-  `.\\deploy-gpo.ps1 -Ou '${ouValue.value}'`,
-].join('\n'))
+async function gpoRun(dry: boolean) {
+  if (!dry && !(await ask(t('enroll.gpo_confirm_title'), t(gpoMode.value === 'group' ? 'enroll.gpo_confirm_group' : 'enroll.gpo_confirm_body', { ou: ouDn.value, group: groupDn.value }), false))) return
+  gpoBusy.value = true; gpoErr.value = ''; gpoErrCode.value = ''; gpoOuNote.value = ''; gpoRes.value = null
+  try { gpoRes.value = await api.call('POST', '/enroll/gpo', { ...targetBody(), account: gpoAccount.value.trim(), password: gpoPassword.value, dry }, { silent: true }); gpoDone() } catch (e: any) { gpoDone(e) }
+}
+/** Crée la cible manquante avec le même compte : l'unité d'organisation (« Postes-pilotes » quand le champ désigne un conteneur « CN= »), ou le groupe d'ordinateurs. */
+async function gpoCreate() {
+  const group = gpoErrCode.value === 'enroll_gpo_group_missing'
+  const target = group ? groupDn.value : gpoErrCode.value === 'enroll_gpo_ou_container' ? `OU=Postes-pilotes,${cmdBaseDn.value}` : ouDn.value
+  if (!(await ask(t(group ? 'enroll.gpo_group_confirm_title' : 'enroll.gpo_ou_confirm_title'), t(group ? 'enroll.gpo_group_confirm_body' : 'enroll.gpo_ou_confirm_body', { ou: target }), false))) return
+  gpoBusy.value = true; gpoErr.value = ''; gpoErrCode.value = ''; gpoOuNote.value = ''
+  try {
+    const r: any = await api.call('POST', group ? '/enroll/gpo/group' : '/enroll/gpo/ou', { [group ? 'group' : 'ou']: target, account: gpoAccount.value.trim(), password: gpoPassword.value }, { silent: true })
+    if (group) { gpoGroup.value = r.group; gpoOuNote.value = t(r.created ? 'enroll.gpo_group_created' : 'enroll.gpo_group_exists', { ou: r.group }) }
+    else { gpoOu.value = r.ou; gpoOuNote.value = t(r.created ? 'enroll.gpo_ou_created' : 'enroll.gpo_ou_exists', { ou: r.ou }) }
+    gpoDone(); gpoPassword.value = ''
+  } catch (e: any) { gpoDone(e) }
+}
+const cmdGpo = computed(() => {
+  const target = gpoMode.value === 'group' ? `-Group '${groupDn.value.replace(/'/g, "''") || 'CN=Postes-DDI,CN=Users,' + cmdBaseDn.value}'` : `-Ou '${ouValue.value}'`
+  return [`# ${t('enroll.deploy_c_whatif')}`, `.\\deploy-gpo.ps1 ${target} -WhatIf`, `# ${t('enroll.deploy_c_apply')}`, `.\\deploy-gpo.ps1 ${target}`].join('\n')
+})
 const cmdTrust = computed(() => [
   `# ${t('enroll.deploy_c_trust')}`,
   `openssl s_client -connect ${cmdHost.value}:443 -servername ${cmdHost.value} </dev/null 2>/dev/null | openssl x509 -outform PEM > ddi-console.pem`,
@@ -183,7 +203,9 @@ onMounted(() => load())
         <div class="flex flex-col gap-3 px-3 pb-3">
           <p class="text-sm font-medium">{{ t('enroll.gpo_title') }}</p>
           <p class="text-sm text-muted">{{ t('enroll.gpo_help') }}</p>
-          <UFormField :label="t('enroll.deploy_ou')"><UInput v-model="gpoOu" class="w-full font-mono" :placeholder="`OU=Postes,${cmdBaseDn}`" data-test="enroll-gpo-ou" /></UFormField>
+          <UFormField :label="t('enroll.gpo_mode')"><USelect v-model="gpoMode" :items="modeItems" class="w-full md:w-96" data-test="enroll-gpo-mode" /></UFormField>
+          <UFormField v-if="gpoMode === 'ou'" :label="t('enroll.deploy_ou')"><UInput v-model="gpoOu" class="w-full font-mono" :placeholder="`OU=Postes,${cmdBaseDn}`" data-test="enroll-gpo-ou" /></UFormField>
+          <UFormField v-else :label="t('enroll.gpo_group_label')" :help="t('enroll.gpo_group_help')"><UInput v-model="gpoGroup" class="w-full font-mono" :placeholder="f.groupDn || `CN=Postes-DDI,CN=Users,${cmdBaseDn}`" data-test="enroll-gpo-group" /></UFormField>
           <div class="grid gap-3 md:grid-cols-2">
             <UFormField :label="t('enroll.gpo_account')"><UInput v-model="gpoAccount" class="w-full" autocomplete="off" :placeholder="`administrateur@${cmdDomain}`" data-test="enroll-gpo-account" /></UFormField>
             <UFormField :label="t('enroll.gpo_password')"><UInput v-model="gpoPassword" type="password" class="w-full" autocomplete="new-password" data-test="enroll-gpo-password" /></UFormField>
@@ -193,8 +215,12 @@ onMounted(() => load())
             <UButton icon="i-lucide-rocket" :loading="gpoBusy" :disabled="!f.host || !f.ca || !gpoAccount || !gpoPassword" :label="t('enroll.gpo_apply')" data-test="enroll-gpo-apply" @click="gpoRun(false)" />
           </div>
           <UAlert v-if="gpoErr" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="gpoErr" data-test="enroll-gpo-error" />
+          <div v-if="GPO_FIXABLE.includes(gpoErrCode)"><UButton color="neutral" variant="outline" icon="i-lucide-folder-plus" :loading="gpoBusy" :disabled="!gpoAccount || !gpoPassword"
+            :label="t(gpoErrCode === 'enroll_gpo_ou_container' ? 'enroll.gpo_ou_create_default' : gpoErrCode === 'enroll_gpo_group_missing' ? 'enroll.gpo_group_create' : 'enroll.gpo_ou_create')" data-test="enroll-gpo-create" @click="gpoCreate" /></div>
+          <UAlert v-if="gpoOuNote" color="success" variant="subtle" icon="i-lucide-check" :title="gpoOuNote" data-test="enroll-gpo-ou-note" />
           <div v-if="gpoRes" class="rounded-md border border-default p-3 text-sm" data-test="enroll-gpo-result">
             <p class="mb-2 font-medium">{{ gpoRes.dry ? t('enroll.gpo_dry_done') : t('enroll.gpo_done', { id: gpoRes.gpoId }) }}</p>
+            <p v-if="gpoRes.members" class="mb-2 text-muted" data-test="enroll-gpo-members">{{ gpoRes.members.count ? t('enroll.gpo_members', { n: gpoRes.members.count + (gpoRes.members.truncated ? '+' : ''), names: gpoRes.members.names.join(', ') }) : t('enroll.gpo_members_none') }}</p>
             <ul class="space-y-1">
               <li v-for="st in gpoRes.steps" :key="st.id" class="flex items-center gap-2"><UIcon name="i-lucide-check" class="text-success" />
                 <span>{{ t(`enroll.gpo_step_${st.id}`) }} — {{ t(`enroll.gpo_${gpoRes.dry ? 'will' : 'did'}_${st.action}`) }}</span></li>

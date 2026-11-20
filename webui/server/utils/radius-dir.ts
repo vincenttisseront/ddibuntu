@@ -141,6 +141,19 @@ export async function findGroups(s: DirSettings, bindPassword: string, factory: 
   })
 }
 
+/** Le DN désigne-t-il un groupe de l'annuaire ? Un conteneur (CN=Computers), une unité d'organisation, un compte ou un objet absent répondent « non ». */
+export async function groupExists(s: DirSettings, bindPassword: string, factory: Factory, dn: string): Promise<Session<boolean>> {
+  return withService(s, bindPassword, factory, async (c) => {
+    try {
+      const r = await c.search(dn, { scope: 'base', filter: '(objectClass=group)', attributes: ['dn'], sizeLimit: 1 })
+      return r.searchEntries.length > 0
+    } catch (e: any) {
+      if (/NoSuchObject|no such object|\b32\b/i.test(`${e?.name ?? ''} ${e?.code ?? ''} ${e?.message ?? ''}`)) return false
+      throw e
+    }
+  })
+}
+
 // ---- Résolution de groupes par SID (0.13.10, import d'un NPS : les stratégies désignent leurs groupes par SID) ----
 const SID_RE = /^S-1-\d{1,3}(?:-\d{1,10}){1,15}$/
 /** Base de recherche « <SID=S-1-5-21-…> » (DN étendu d'Active Directory et de Samba) : le SID est écrit en clair, sans filtre binaire — essayé contre un vrai Samba AD,

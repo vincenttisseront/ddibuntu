@@ -35,12 +35,15 @@ const TEMPLATE = String.raw`<#
 
    .\deploy-gpo.ps1 -Ou 'OU=Postes,DC=example,DC=org' -WhatIf    : montre ce qui serait fait, sans rien modifier
    .\deploy-gpo.ps1 -Ou 'OU=Postes,DC=example,DC=org'            : cree la GPO, y depose les fichiers, la lie a l'unite d'organisation
+   .\deploy-gpo.ps1 -Group 'CN=Postes-DDI,CN=Users,DC=example,DC=org'
+        : lie la GPO a la racine du domaine et la reserve (filtrage de securite) aux ordinateurs de ce groupe
 
  Ce script peut etre relance sans danger : il ne refait que ce qui manque. Il ne modifie que la GPO qu'il cree (ou retrouve par son nom).
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-  [Parameter(Mandatory = $true)][string]$Ou,
+  [string]$Ou,
+  [string]$Group,
   [string]$GpoName = 'DDI-Buntu enrolement'
 )
 $ErrorActionPreference = 'Stop'
@@ -53,15 +56,30 @@ $ToolScripts = '{40B6664F-4972-11D1-A7CA-0000F87571E3}'
 
 Import-Module GroupPolicy
 Import-Module ActiveDirectory
+if ($Group -and -not $PSBoundParameters.ContainsKey('GpoName')) { $GpoName = 'DDI-Buntu enrolement (groupe)' }   # GPO a part : celle d'une unite d'organisation n'est jamais filtree
 $domain = Get-ADDomain
 $dns = $domain.DNSRoot
 $pdc = $domain.PDCEmulator
-$null = Get-ADOrganizationalUnit -Identity $Ou -Server $pdc   # echoue si l'unite d'organisation n'existe pas
+if ([bool]$Ou -eq [bool]$Group) { throw 'indiquez -Ou (unite d organisation) OU -Group (groupe d ordinateurs), pas les deux' }
+$linkTarget = $Ou
+if ($Ou) {
+  $null = Get-ADOrganizationalUnit -Identity $Ou -Server $pdc   # echoue si l'unite d'organisation n'existe pas
+} else {
+  # groupe d'ordinateurs : la GPO est liee a la racine du domaine, mais seuls les membres du groupe l'appliquent
+  $grp = Get-ADGroup -Identity $Group -Server $pdc
+  $rid = [int]$grp.SID.Value.Split('-')[-1]
+  if (@(513, 514, 515, 516, 521, 498) -contains $rid) { throw 'ce groupe couvre tout le domaine : choisissez un groupe d ordinateurs dedie' }
+  $dcs = @(Get-ADComputer -Server $pdc -LDAPFilter ('(&(|(primaryGroupID=516)(primaryGroupID=521))(memberOf:1.2.840.113556.1.4.1941:=' + $grp.DistinguishedName + '))'))
+  if ($dcs.Count -gt 0) { throw 'ce groupe contient des controleurs de domaine' }
+  $linkTarget = $domain.DistinguishedName
+  $members = @(Get-ADComputer -Server $pdc -LDAPFilter ('(memberOf:1.2.840.113556.1.4.1941:=' + $grp.DistinguishedName + ')'))
+  Write-Host ('postes concernes : ' + $members.Count)
+}
 
 $gpo = Get-GPO -Name $GpoName -Server $pdc -ErrorAction SilentlyContinue
 if (-not $gpo) {
   if (-not $PSCmdlet.ShouldProcess($GpoName, 'creer la GPO')) {
-    Write-Host ('Simulation : la GPO serait creee, puis ' + ($Files.Keys -join ', ') + ' deposes dans son dossier de demarrage, le script declare, et la GPO liee a ' + $Ou + '.')
+    Write-Host ('Simulation : la GPO serait creee, puis ' + ($Files.Keys -join ', ') + ' deposes dans son dossier de demarrage, le script declare, et la GPO liee a ' + $linkTarget + '.')
     return
   }
   $gpo = New-GPO -Name $GpoName -Server $pdc -Comment 'DDI-Buntu : enrolement des certificats de poste'
@@ -122,12 +140,20 @@ if ($changed -and $PSCmdlet.ShouldProcess($gpo.Path, 'declarer l''extension et a
   Write-Host ('version de la GPO : ' + $version)
 }
 
-# 4. liaison a l'unite d'organisation
-$linked = (Get-GPInheritance -Target $Ou -Server $pdc).GpoLinks | Where-Object { $_.GpoId -eq $gpo.Id }
-if (-not $linked) {
-  if ($PSCmdlet.ShouldProcess($Ou, 'lier la GPO')) { $null = New-GPLink -Name $GpoName -Target $Ou -LinkEnabled Yes -Server $pdc; Write-Host ('GPO liee a ' + $Ou) }
+# 4. filtrage de securite (mode groupe) : le groupe applique la GPO, les autres ordinateurs la lisent seulement
+if ($Group -and $PSCmdlet.ShouldProcess($GpoName, 'reserver la GPO au groupe')) {
+  $authUsers = (New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-11').Translate([System.Security.Principal.NTAccount]).Value
+  $null = Set-GPPermission -Name $GpoName -Server $pdc -TargetName $grp.SamAccountName -TargetType Group -PermissionLevel GpoApply
+  $null = Set-GPPermission -Name $GpoName -Server $pdc -TargetName $authUsers -TargetType Group -PermissionLevel GpoRead -Replace
+  Write-Host ('GPO reservee au groupe ' + $grp.SamAccountName)
 }
-Write-Host 'Termine. Sur un poste pilote de cette unite : gpupdate /force, puis redemarrer ; controler ensuite %ProgramFiles%\DDI-Buntu\enroll.log.'
+
+# 5. liaison a l'unite d'organisation (ou a la racine du domaine en mode groupe)
+$linked = (Get-GPInheritance -Target $linkTarget -Server $pdc).GpoLinks | Where-Object { $_.GpoId -eq $gpo.Id }
+if (-not $linked) {
+  if ($PSCmdlet.ShouldProcess($linkTarget, 'lier la GPO')) { $null = New-GPLink -Name $GpoName -Target $linkTarget -LinkEnabled Yes -Server $pdc; Write-Host ('GPO liee a ' + $linkTarget) }
+}
+Write-Host 'Termine. Sur un poste pilote de cette cible : gpupdate /force, puis redemarrer (un poste ajoute a un groupe doit redemarrer) ; controler ensuite %ProgramFiles%\DDI-Buntu\enroll.log.'
 `
 
 /** Empreinte SHA-1 en hexadécimal, comme Windows l'affiche. */
@@ -173,6 +199,8 @@ export function gpoScript(enrollPs1: string, anchors: GpoFiles): string {
 }
 
 export const GPO_NAME = 'DDI-Buntu enrolement'
+/** Ciblage par groupe : une GPO à part (filtrée sur le groupe), pour ne jamais retirer le droit d'appliquer à celle qui sert une unité d'organisation. */
+export const GPO_NAME_GROUP = 'DDI-Buntu enrolement (groupe)'
 /** Extension « scripts » de la stratégie de groupe : à déclarer sur la GPO pour que les postes lisent scripts.ini. */
 export const CSE_SCRIPTS = '{42B5FAAE-6536-11D2-AE5A-0000F87571E3}'
 export const TOOL_SCRIPTS = '{40B6664F-4972-11D1-A7CA-0000F87571E3}'

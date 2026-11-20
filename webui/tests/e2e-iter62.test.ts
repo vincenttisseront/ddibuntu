@@ -280,6 +280,7 @@ describe('enrôlement d\'un poste (Kerberos et annuaire réels)', () => {
     const r = await admin.put('/api/enroll/keytab', { keytab: kt.toString('base64') }); expect(r.status, r.text).toBe(200)
     expect(r.json.principals).toContain('HTTP/ddi.lab.test@LAB.TEST')
     code(await admin.put('/api/enroll/config', cfgBody({ host: 'autre.lab.test' })), 409, 'enroll_keytab_spn')   // le nom de la console doit rester celui du service du keytab
+    for (const bad of ['CN=Computers,DC=lab,DC=test', 'CN=Absent,CN=Users,DC=lab,DC=test', 'CN=Administrator,CN=Users,DC=lab,DC=test']) code(await admin.put('/api/enroll/config', cfgBody({ groupDn: bad })), 400, 'enroll_group_invalid')   // conteneur, objet absent, compte : pas des groupes
     const c = await admin.put('/api/enroll/config', cfgBody()); expect(c.status, c.text).toBe(200)
     expect((await admin.get('/api/enroll')).json.ready).toBe(true)
   })
@@ -417,6 +418,7 @@ describe('GPO mise en place par la console (LDAPS et SMB réels, identifiants à
   const ldap = (base: string, filter: string, ...attrs: string[]) => spawnSync('ldapsearch', ['-LLL', '-o', 'ldif-wrap=no', '-H', 'ldaps://dc1.lab.test', '-D', ADM, '-w', ADM_PW, '-b', base, '-s', 'base', filter, ...attrs],
     { encoding: 'utf8', env: { ...process.env, LDAPTLS_CACERT: join(LAB, 'private/tls/ca.pem') } }).stdout
   const gpoBody = (o: Record<string, unknown> = {}) => ({ ou: OU, account: ADM, password: ADM_PW, dry: false, ...o })
+  let ouGpo = ''
   const guidsOnDisk = () => (existsSync(policies()) ? readdirSync(policies()).filter((x) => x.startsWith('{') && !x.startsWith('{31B2F340') && !x.startsWith('{6AC1786C')) : [])
 
   it('réservé à l\'administrateur ; corps strict (compte, mot de passe, unité d\'organisation)', async (ctx) => {
@@ -428,13 +430,30 @@ describe('GPO mise en place par la console (LDAPS et SMB réels, identifiants à
     if (!lab) return ctx.skip()
     expect(smb('ou', 'create', OU).status).toBe(0)
     const before = guidsOnDisk()
-    for (const ou of ['DC=lab,DC=test', 'OU=Domain Controllers,DC=lab,DC=test', 'OU=Inconnue,DC=lab,DC=test', 'OU=Postes,DC=autre,DC=test']) code(await admin.post('/api/enroll/gpo', gpoBody({ ou })), 400, 'enroll_gpo_ou')
+    for (const ou of ['DC=lab,DC=test', 'OU=Domain Controllers,DC=lab,DC=test', 'OU=Postes,DC=autre,DC=test']) code(await admin.post('/api/enroll/gpo', gpoBody({ ou })), 400, 'enroll_gpo_ou')
+    code(await admin.post('/api/enroll/gpo', gpoBody({ ou: 'OU=Inconnue,DC=lab,DC=test' })), 400, 'enroll_gpo_ou_missing')   // absente : la console propose de la créer
+    for (const ou of ['CN=Computers,DC=lab,DC=test', 'CN=Users,DC=lab,DC=test']) code(await admin.post('/api/enroll/gpo', gpoBody({ ou })), 400, 'enroll_gpo_ou_container')   // un conteneur n'accepte pas de GPO
     code(await admin.post('/api/enroll/gpo', gpoBody({ password: 'Mauvais-1!' })), 409, 'enroll_gpo_bind')
     code(await admin.post('/api/enroll/gpo', gpoBody({ account: 'svc-radius@lab.test', password: BIND_PW })), 409, 'enroll_gpo_denied')   // un compte sans droit d'écriture
     const put = await admin.put('/api/radius/directory', { urls: ['ldap://dc1.lab.test'], baseDn: 'DC=lab,DC=test', bindDn: 'svc-radius@lab.test', bindPassword: BIND_PW, tlsRejectUnauthorized: true, caPem: CA })
     if (put.status === 200) { code(await admin.post('/api/enroll/gpo', gpoBody()), 409, 'enroll_gpo_tls'); expect((await setDir()).status).toBe(200) }
     expect(guidsOnDisk()).toEqual(before)
     expect(ldap(`CN=Policies,CN=System,DC=lab,DC=test`, '(displayName=DDI-Buntu enrolement)', 'cn')).not.toContain('{')
+  })
+  it('création d\'une unité d\'organisation : mêmes garde-fous, jamais deux fois, jamais sans droit', async (ctx) => {
+    if (!lab) return ctx.skip()
+    const mk = (o: Record<string, unknown> = {}) => admin.post('/api/enroll/gpo/ou', { ou: 'OU=Nouvelle,DC=lab,DC=test', account: ADM, password: ADM_PW, ...o })
+    code(await anon.post('/api/enroll/gpo/ou', { ou: OU, account: ADM, password: ADM_PW }), 401, 'unauthenticated'); code(await viewer.post('/api/enroll/gpo/ou', { ou: OU, account: ADM, password: ADM_PW }), 403, 'forbidden')
+    code(await mk({ dry: true }), 400, 'validation')
+    for (const ou of ['DC=lab,DC=test', 'OU=Domain Controllers,DC=lab,DC=test', 'CN=Nouvelle,DC=lab,DC=test', 'OU=Nouvelle,DC=autre,DC=test', 'OU=Fille,OU=Absente,DC=lab,DC=test']) code(await mk({ ou }), 400, 'enroll_gpo_ou')
+    code(await mk({ password: 'Mauvais-1!' }), 409, 'enroll_gpo_bind'); code(await mk({ account: 'svc-radius@lab.test', password: BIND_PW }), 409, 'enroll_gpo_denied')
+    expect(ldap('OU=Nouvelle,DC=lab,DC=test', '(objectClass=*)', 'ou')).not.toContain('ou: Nouvelle')
+    const r = await mk(); expect(r.status, r.text).toBe(200); expect(r.json).toMatchObject({ ou: 'OU=Nouvelle,DC=lab,DC=test', created: true })
+    expect(ldap('OU=Nouvelle,DC=lab,DC=test', '(objectClass=*)', 'ou', 'objectClass')).toContain('objectClass: organizationalUnit')
+    expect((await mk()).json).toMatchObject({ created: false })
+    expect((await audits('enroll.gpo_ou')).length).toBe(2)
+    expect(JSON.stringify(await rows("select detail from audit_log where action like 'enroll.gpo%'"))).not.toContain(ADM_PW)
+    expect(smb('ou', 'delete', 'OU=Nouvelle,DC=lab,DC=test').status).toBe(0)
   })
   it('simulation : vérifie compte, unité et SYSVOL sans rien écrire', async (ctx) => {
     if (!lab) return ctx.skip()
@@ -447,7 +466,7 @@ describe('GPO mise en place par la console (LDAPS et SMB réels, identifiants à
   it('création : objet d\'annuaire, fichiers dans SYSVOL, lien sur l\'unité ; Samba relit la GPO', async (ctx) => {
     if (!lab) return ctx.skip()
     const r = await admin.post('/api/enroll/gpo', gpoBody()); expect(r.status, r.text).toBe(200)
-    const id = r.json.gpoId as string; expect(id).toMatch(/^\{[0-9A-F-]{36}\}$/); expect(r.json.created).toBe(true)
+    const id = r.json.gpoId as string; ouGpo = id; expect(id).toMatch(/^\{[0-9A-F-]{36}\}$/); expect(r.json.created).toBe(true)
     const dir = join(policies(), id), startup = join(dir, 'Machine/Scripts/Startup')
     expect(readFileSync(join(dir, 'GPT.INI'), 'utf8')).toBe('[General]\r\nVersion=1\r\n')
     expect(readdirSync(startup).sort()).toEqual(expect.arrayContaining(['ddi-demarrage.ps1', 'enroll.ps1']))
@@ -481,6 +500,43 @@ describe('GPO mise en place par la console (LDAPS et SMB réels, identifiants à
     const all = JSON.stringify(await rows("select action, detail, entity_id from audit_log where action like 'enroll.gpo%'")) + JSON.stringify(await rows("select key, value from settings where value::text like '%Secret-a-ne-pas-voir%' or value::text like '%Passw0rd-Lab-1%'"))
     expect(all).not.toContain('Secret-a-ne-pas-voir-1!'); expect(all).not.toContain(ADM_PW)
     expect((await audits('enroll.gpo_refused')).length).toBeGreaterThan(0)
+  })
+  it('groupe d\'ordinateurs : GPO liée à la racine et filtrée sur le groupe ; refus des cibles trop larges ; groupe créé par la console', async (ctx) => {
+    if (!lab) return ctx.skip()
+    const G = 'CN=Postes-DDI,CN=Users,DC=lab,DC=test', ROOT = 'DC=lab,DC=test'
+    const g = (o: Record<string, unknown> = {}) => admin.post('/api/enroll/gpo', { group: G, account: ADM, password: ADM_PW, dry: false, ...o })
+    const sddl = (id: string) => { const r = spawnSync(PY, [spawnSync('which', ['samba-tool'], { encoding: 'utf8' }).stdout.trim(), 'dsacl', 'get', `--objectdn=CN=${id},CN=Policies,CN=System,${ROOT}`, '-H', join(LAB, 'private/sam.ldb'), `--configfile=${join(LAB, 'etc/smb.conf')}`], { encoding: 'utf8' }); expect(r.status, r.stderr).toBe(0); return r.stdout }
+    const APPLY = 'OA;CI;CR;edacfd8f-ffb3-11d1-b41d-00a0c968f939;;'
+    code(await admin.post('/api/enroll/gpo', { account: ADM, password: ADM_PW, dry: true }), 400, 'validation'); code(await admin.post('/api/enroll/gpo', gpoBody({ group: G })), 400, 'validation')   // exactement une cible
+    code(await g({ group: 'CN=Postes-DDI,CN=Users,DC=autre,DC=test' }), 400, 'enroll_gpo_group'); code(await g({ group: 'CN=Computers,DC=lab,DC=test' }), 400, 'enroll_gpo_group')   // hors domaine ; un conteneur n'est pas un groupe
+    code(await g(), 400, 'enroll_gpo_group_missing')
+    for (const broad of ['CN=Domain Computers,CN=Users,DC=lab,DC=test', 'CN=Domain Users,CN=Users,DC=lab,DC=test', 'CN=Domain Controllers,CN=Users,DC=lab,DC=test']) code(await g({ group: broad }), 400, 'enroll_gpo_group_broad')
+    // création du groupe par la console
+    const mk = (o: Record<string, unknown> = {}) => admin.post('/api/enroll/gpo/group', { group: G, account: ADM, password: ADM_PW, ...o })
+    code(await anon.post('/api/enroll/gpo/group', { group: G, account: ADM, password: ADM_PW }), 401, 'unauthenticated'); code(await viewer.post('/api/enroll/gpo/group', { group: G, account: ADM, password: ADM_PW }), 403, 'forbidden')
+    code(await mk({ group: 'CN=Un-nom-de-groupe-beaucoup-trop-long,CN=Users,DC=lab,DC=test' }), 400, 'enroll_gpo_group'); code(await mk({ group: 'CN=X,CN=Absent,DC=lab,DC=test' }), 400, 'enroll_gpo_group')
+    code(await mk({ account: 'svc-radius@lab.test', password: BIND_PW }), 409, 'enroll_gpo_denied'); code(await mk({ password: 'Mauvais-1!' }), 409, 'enroll_gpo_bind')
+    expect((await mk()).json).toMatchObject({ group: G, created: true }); expect((await mk()).json).toMatchObject({ created: false })
+    expect(ldap(G, '(objectClass=*)', 'sAMAccountName', 'groupType')).toContain('sAMAccountName: Postes-DDI')
+    // groupe vide, puis avec un ordinateur ; un groupe qui contient un contrôleur de domaine est refusé
+    expect((await g({ dry: true })).json.members).toMatchObject({ count: 0, names: [] })
+    expect(smb('group', 'addmembers', 'Postes-DDI', 'PC003$').status).toBe(0)
+    const dry = await g({ dry: true }); expect(dry.status, dry.text).toBe(200)
+    expect(dry.json.members).toMatchObject({ count: 1, names: ['PC003'], truncated: false }); expect(dry.json.steps.map((x: any) => x.id)).toEqual(['bind', 'group', 'gpo', 'files', 'filter', 'link'])
+    const dc = spawnSync('ldapsearch', ['-LLL', '-H', 'ldaps://dc1.lab.test', '-D', ADM, '-w', ADM_PW, '-b', ROOT, '(&(objectClass=computer)(primaryGroupID=516))', 'sAMAccountName'], { encoding: 'utf8', env: { ...process.env, LDAPTLS_CACERT: join(LAB, 'private/tls/ca.pem') } }).stdout.match(/sAMAccountName: (\S+)/)![1]!
+    expect(smb('group', 'add', 'Postes-DC').status).toBe(0); expect(smb('group', 'addmembers', 'Postes-DC', dc).status).toBe(0)
+    code(await g({ group: 'CN=Postes-DC,CN=Users,DC=lab,DC=test' }), 400, 'enroll_gpo_group_dc')
+    // mise en place : une GPO à part, liée à la racine ; « Utilisateurs authentifiés » ne peut plus l'appliquer, le groupe seul le peut
+    const before = guidsOnDisk(); const r = await g(); expect(r.status, r.text).toBe(200)
+    const id = r.json.gpoId as string; expect(r.json).toMatchObject({ created: true, group: G, ou: ROOT }); expect(id).not.toBe(ouGpo); expect(guidsOnDisk()).toHaveLength(before.length + 1)
+    expect(ldap(`CN=${id},CN=Policies,CN=System,${ROOT}`, '(objectClass=*)', 'displayName')).toContain('displayName: DDI-Buntu enrolement (groupe)')
+    const acl = sddl(id); expect(acl).not.toContain(`${APPLY}AU)`); expect(acl).toMatch(new RegExp(`${APPLY}S-1-5-21-[0-9-]+\\)`)); expect(acl).toMatch(/;;;AU\)/)   // lecture conservée pour les authentifiés
+    expect(ldap(ROOT, '(objectClass=*)', 'gPLink')).toContain(`[LDAP://CN=${id},CN=Policies,CN=System,DC=lab,DC=test;0]`)
+    expect(sddl(ouGpo)).toContain(`${APPLY}AU)`)   // la GPO de l'unité d'organisation n'est pas touchée
+    // relance : même GPO, filtre déjà en place, lien et ACE non dupliqués
+    const again = await g(); expect(again.json).toMatchObject({ created: false, gpoId: id })
+    expect(again.json.steps.find((x: any) => x.id === 'filter').action).toBe('keep'); expect(again.json.steps.find((x: any) => x.id === 'link').action).toBe('keep')
+    expect(sddl(id).split(APPLY).length).toBe(2); expect(ldap(ROOT, '(objectClass=*)', 'gPLink').split(`CN=${id},`).length).toBe(2)
   })
 })
 
