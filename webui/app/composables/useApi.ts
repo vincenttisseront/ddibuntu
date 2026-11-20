@@ -28,7 +28,9 @@ export function useApi() {
     const busy = useState<number>('busy', () => 0)
     if (track) busy.value++
     try {
-      return await $fetch<T>('/api' + url, { method, body: body as any, headers: method === 'GET' ? {} : { 'x-csrf-token': csrf.value } })
+      const res = await $fetch<T>('/api' + url, { method, body: body as any, headers: method === 'GET' ? {} : { 'x-csrf-token': csrf.value } })
+      if (method !== 'GET' && url.startsWith('/radius')) useState<number>('radius-rev', () => 0).value++   // les écrans RADIUS relisent ce qui attend un déploiement
+      return res
     } catch (e: any) {
       const info = describe(e)
       if (isSessionExpired(info.status, info.code) && !opts.silent) { useState<any>('user').value = null; await navigateTo('/login') }

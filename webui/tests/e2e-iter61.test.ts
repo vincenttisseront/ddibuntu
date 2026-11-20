@@ -149,3 +149,39 @@ describe('second facteur — déploiement', () => {
     expect(readFileSync(join(GEN, 'radius-clients.conf'), 'utf8')).not.toContain('virtual_server')
   })
 })
+
+describe('ce qui attend un déploiement', () => {
+  const deploy = async () => (await radius()).deploy
+  const rootDone = async () => { rootAnswers(true); await new Promise((r) => setTimeout(r, 1300)) }   // la réponse de root est datée une seconde plus tard : on attend qu'elle soit passée
+  it('juste après un déploiement : rien en attente', async () => {
+    expect(await deploy()).toEqual({ pending: false, parts: [], never: false })
+  })
+  it('un client ajouté, modifié ou supprimé est « à déployer » ; revenir à l\'état déployé efface l\'attente', async () => {
+    const r = await admin.post('/api/radius/clients', { name: 'sw1', address: '10.20.0.9', usage: 'switch', enabled: true }); expect(r.status, r.text).toBe(200)
+    expect(await deploy()).toEqual({ pending: true, parts: ['clients'], never: false })
+    const id = (await rows("select id from radius_clients where name = 'sw1'"))[0].id
+    expect((await admin.del(`/api/radius/clients/${id}`)).status).toBe(200)
+    expect(await deploy()).toEqual({ pending: false, parts: [], never: false })   // supprimé : l'état redevient celui qui tourne
+  })
+  it('un commentaire ne change rien ; désactiver, l\'adresse ou le secret oui', async () => {
+    await new Promise((r) => setTimeout(r, 1300))   // la réponse précédente de root est datée de la seconde en cours : une réponse identique ne serait pas distinguée de l'ancienne
+    const c = await admin.post('/api/radius/clients', { name: 'sw2', address: '10.20.0.10', usage: 'switch', enabled: true }); expect(c.status).toBe(200)
+    expect((await admin.post('/api/radius/apply')).status).toBe(200); await rootDone(); expect((await deploy()).pending).toBe(false)
+    const id = (await rows("select id from radius_clients where name = 'sw2'"))[0].id
+    const put = (over: Record<string, unknown>) => admin.req('PUT', `/api/radius/clients/${id}`, { name: 'sw2', address: '10.20.0.10', usage: 'switch', enabled: true, mfa: false, ...over })
+    expect((await put({ comment: 'sans effet sur le service' })).status).toBe(200); expect((await deploy()).pending).toBe(false)
+    expect((await put({ enabled: false })).status).toBe(200); expect((await deploy()).parts).toEqual(['clients'])
+    expect((await put({ enabled: true })).status).toBe(200); expect((await deploy()).pending).toBe(false)
+    expect((await put({ address: '10.20.0.11' })).status).toBe(200); expect((await deploy()).parts).toEqual(['clients'])
+    expect((await put({ address: '10.20.0.10' })).status).toBe(200); expect((await deploy()).pending).toBe(false)
+    expect((await admin.post(`/api/radius/clients/${id}/secret`, {})).status).toBe(200); expect((await deploy()).parts).toEqual(['clients'])
+  })
+  it('« Déployer » accepté par root : plus rien en attente ; le résumé ne contient aucun secret', async () => {
+    const ap = await admin.post('/api/radius/apply'); expect([ap.status, ap.json?.data?.code], ap.text).toEqual([200, undefined]); await rootDone()
+    expect(await deploy()).toEqual({ pending: false, parts: [], never: false })
+    expect(JSON.stringify(await rows("select value from settings where key = 'radius_deploy_pushed'"))).toMatch(/[0-9a-f]{64}/)
+  })
+  it('lecture seule : un lecteur voit l\'état (la bannière est la même), sans pouvoir déployer', async () => {
+    expect((await viewer.get('/api/radius')).status).toBe(200); expect((await viewer.post('/api/radius/apply')).status).toBe(403)
+  })
+})
