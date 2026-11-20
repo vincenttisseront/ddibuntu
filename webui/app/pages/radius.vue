@@ -5,8 +5,8 @@
 // déposée par la console : après chaque action on attend la publication du résultat (même mécanique que le pare-feu).
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm(); const fmt = useFmt()
 const { isAdmin } = useRole()
-const tab = useHashTab('service', ['service', 'clients', 'journal', 'directory', 'certs', 'auth', 'rules', 'import'])
-const tabs = computed(() => [{ label: t('radius.tab_service'), value: 'service', icon: 'i-lucide-radio-tower' }, { label: t('radius.tab_clients'), value: 'clients', icon: 'i-lucide-router' }, { label: t('radius.tab_journal'), value: 'journal', icon: 'i-lucide-scroll-text' }, ...(isAdmin.value ? [{ label: t('radius.tab_directory'), value: 'directory', icon: 'i-lucide-network' }, { label: t('radius.tab_certs'), value: 'certs', icon: 'i-lucide-shield-check' }, { label: t('radius.tab_auth'), value: 'auth', icon: 'i-lucide-key-round' }, { label: t('radius.tab_rules'), value: 'rules', icon: 'i-lucide-list-checks' }, { label: t('radius.tab_import'), value: 'import', icon: 'i-lucide-file-input' }] : [])])
+const tab = useHashTab('service', ['service', 'clients', 'journal', 'directory', 'certs', 'auth', 'mfa', 'rules', 'import'])
+const tabs = computed(() => [{ label: t('radius.tab_service'), value: 'service', icon: 'i-lucide-radio-tower' }, { label: t('radius.tab_clients'), value: 'clients', icon: 'i-lucide-router' }, { label: t('radius.tab_journal'), value: 'journal', icon: 'i-lucide-scroll-text' }, ...(isAdmin.value ? [{ label: t('radius.tab_directory'), value: 'directory', icon: 'i-lucide-network' }, { label: t('radius.tab_certs'), value: 'certs', icon: 'i-lucide-shield-check' }, { label: t('radius.tab_auth'), value: 'auth', icon: 'i-lucide-key-round' }, { label: t('radius.tab_mfa'), value: 'mfa', icon: 'i-lucide-smartphone' }, { label: t('radius.tab_rules'), value: 'rules', icon: 'i-lucide-list-checks' }, { label: t('radius.tab_import'), value: 'import', icon: 'i-lucide-file-input' }] : [])])
 
 const data = ref<any>(null), busy = ref<'' | 'apply' | 'stop' | 'test'>(''), err = ref(''), probe = ref<any>(null)
 const status = computed(() => data.value?.status ?? null)
@@ -38,13 +38,14 @@ const probeMsg = computed(() => {
 const resultText = computed(() => (result.value ? `${result.value.ok ? '✔' : '✖'} ${result.value.message}` : ''))
 
 // ---- Clients ----
-const clientCols = computed(() => [{ key: 'name', label: t('common.name'), kind: 'mono' }, { key: 'address', label: t('radius.cl_address'), kind: 'mono' }, { key: 'usage', label: t('radius.cl_usage'), kind: 'badge', trans: 'radius.u' }, { key: 'enabled', label: t('common.enabled'), kind: 'bool' }, { key: 'comment', label: t('common.description') }])
+const clientCols = computed(() => [{ key: 'name', label: t('common.name'), kind: 'mono' }, { key: 'address', label: t('radius.cl_address'), kind: 'mono' }, { key: 'usage', label: t('radius.cl_usage'), kind: 'badge', trans: 'radius.u' }, { key: 'mfa', label: t('radius.cl_mfa_col'), kind: 'bool' }, { key: 'enabled', label: t('common.enabled'), kind: 'bool' }, { key: 'comment', label: t('common.description') }])
 const USAGES = ['wifi', 'vpn', 'switch', 'other']
 const clientFields = computed(() => [
   { key: 'name', label: t('common.name'), type: 'text', required: true, mono: true, hint: t('radius.cl_name_hint') },
   { key: 'address', label: t('radius.cl_address'), type: 'text', required: true, mono: true, hint: t('radius.cl_address_hint'), placeholder: '10.10.0.0/24' },
   { key: 'usage', label: t('radius.cl_usage'), type: 'select', options: USAGES.map((v) => ({ label: t(`radius.u.${v}`), value: v })), default: 'wifi' },
   { key: 'secret', label: t('radius.cl_secret'), type: 'password', hint: t('radius.cl_secret_hint') },
+  { key: 'mfa', label: t('radius.cl_mfa'), type: 'switch', default: false, hint: t('radius.cl_mfa_hint') },
   { key: 'enabled', label: t('common.enabled'), type: 'switch', default: true },
   { key: 'comment', label: t('common.description'), type: 'text' },
 ] as any[])
@@ -122,6 +123,7 @@ await load()
     <RadiusDirectory v-else-if="tab === 'directory' && isAdmin" />
     <RadiusPki v-else-if="tab === 'certs' && isAdmin" :eap="status?.eap ?? null" />
     <RadiusAuth v-else-if="tab === 'auth' && isAdmin" />
+    <RadiusMfa v-else-if="tab === 'mfa' && isAdmin" />
     <RadiusRules v-else-if="tab === 'rules' && isAdmin" @changed="load" />
     <RadiusNps v-else-if="tab === 'import' && isAdmin" @changed="load" />
 

@@ -40,15 +40,15 @@ describe('suggestSans', () => {
   })
 })
 describe('suggestRadiusName', () => {
-  it('radius.<domaine du DDI>, ou « radius » sans domaine', () => { expect(suggestRadiusName('ar-systems.fr')).toBe('radius.ar-systems.fr'); expect(suggestRadiusName('')).toBe('radius') })
+  it('radius.<domaine du DDI>, ou « radius » sans domaine', () => { expect(suggestRadiusName('example.local')).toBe('radius.example.local'); expect(suggestRadiusName('')).toBe('radius') })
 })
 describe('dnParts', () => {
-  it('lit CN, O, OU et C dans n\'importe quel ordre', () => { expect(dnParts('CN=DDI-DC-Issuing-1,OU=DSI,O=AR-SYSTEMS,C=FR')).toEqual({ cn: 'DDI-DC-Issuing-1', ou: 'DSI', o: 'AR-SYSTEMS', c: 'FR' }) })
+  it('lit CN, O, OU et C dans n\'importe quel ordre', () => { expect(dnParts('CN=DDI-DC-Issuing-1,OU=DSI,O=EXAMPLE-ORG,C=FR')).toEqual({ cn: 'DDI-DC-Issuing-1', ou: 'DSI', o: 'EXAMPLE-ORG', c: 'FR' }) })
   it('virgule échappée gardée dans la valeur, première occurrence retenue', () => { expect(dnParts('CN=A,O=Dupont\\, Fils,O=Autre,OU=x')).toMatchObject({ o: 'Dupont, Fils', ou: 'x' }) })
   it('vide ou absent', () => { expect(dnParts('')).toEqual({ cn: '', o: '', ou: '', c: '' }); expect(dnParts(undefined)).toEqual({ cn: '', o: '', ou: '', c: '' }) })
 })
 describe('csrSubject (vraie demande openssl)', () => {
-  it('nom, organisation, unité et pays', () => { expect(csrSubject(csr('/C=fr/O=AR-SYSTEMS/OU=DSI/CN=dc01.lab.test'))).toEqual({ cn: 'dc01.lab.test', o: 'AR-SYSTEMS', ou: 'DSI', c: 'FR' }) })
+  it('nom, organisation, unité et pays', () => { expect(csrSubject(csr('/C=fr/O=EXAMPLE-ORG/OU=DSI/CN=dc01.lab.test'))).toEqual({ cn: 'dc01.lab.test', o: 'EXAMPLE-ORG', ou: 'DSI', c: 'FR' }) })
   it('champs absents : laissés de côté', () => { expect(csrSubject(csr('/CN=x.lab.test'))).toEqual({ cn: 'x.lab.test' }) })
   it('DER', () => { expect(csrSubject(new Uint8Array(csr('/O=Lab/CN=y.lab.test', [], 'DER')))).toEqual({ cn: 'y.lab.test', o: 'Lab' }) })
   it('illisible : rien', () => { expect(csrSubject('n\'importe quoi')).toEqual({}); expect(csrSubject(new Uint8Array([1, 2, 3]))).toEqual({}) })

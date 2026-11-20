@@ -31,6 +31,7 @@ SERVICE="freeradius.service"
 BACKUP="$STATE/radius-backup"
 MODULES="always attr_filter preprocess expr"            # modules du paquet réellement utilisés par le site (le module eap est généré, pas celui du paquet) ; expr : %{escape:} du journal et règles d'accès
 LDAP_SO="${DDI_RADIUS_LDAP_SO:-/usr/lib/freeradius/rlm_ldap.so}"   # module LDAP : paquet freeradius-ldap (séparé du paquet freeradius)
+REST_SO="${DDI_RADIUS_REST_SO:-/usr/lib/freeradius/rlm_rest.so}"   # 0.17.0 : module REST (fournisseur MFA) : paquet freeradius-rest (séparé du paquet freeradius)
 MAX_CLIENTS_BYTES=1048576
 # 0.16.0 : identifiant + mot de passe. PEAP-MSCHAPv2 exige une jonction au domaine (winbind + ntlm_auth) ; l'état de Samba (secrets.tdb) y reste entre deux déploiements.
 WBSTATE="${DDI_RADIUS_WB_STATE:-$STATE/radius-winbind}"
@@ -113,14 +114,15 @@ print(json.dumps({"enabled": True, "rules": n, "servers": servers[:5]}))
 PY
 }
 cmd_status() {
-  local version="" installed=false configured=false nclients=0 ldapmod=false
+  local version="" installed=false configured=false nclients=0 ldapmod=false restmod=false
   [[ -f "$LDAP_SO" ]] && ldapmod=true
+  [[ -f "$REST_SO" ]] && restmod=true
   if [[ -x "$RADIUSD" ]]; then installed=true; version="$("$RADIUSD" -v 2>/dev/null | sed -n 's/^radiusd: FreeRADIUS Version \([0-9][0-9.]*\).*/\1/p' | head -n1)" || version=""; fi
   if [[ -f "$RDIR/clients.conf" ]]; then configured=true; nclients="$(grep -c '^client "' "$RDIR/clients.conf" || true)"; nclients=$((nclients > 0 ? nclients - 1 : 0)); fi   # sans le client d'essai local
-  publish radius-status.json "$(V="$version" I="$installed" C="$configured" N="$nclients" A="$(svc_state is-active)" E="$(svc_state is-enabled)" P="$(pki_info)" Z="$(authz_info)" M="$ldapmod" W="$(winbind_info)" python3 -c '
+  publish radius-status.json "$(V="$version" I="$installed" C="$configured" N="$nclients" A="$(svc_state is-active)" E="$(svc_state is-enabled)" P="$(pki_info)" Z="$(authz_info)" M="$ldapmod" R="$restmod" W="$(winbind_info)" python3 -c '
 import json, os, time
 b = lambda k: os.environ[k] == "true"
-print(json.dumps({"at": int(time.time()), "installed": b("I"), "version": os.environ["V"], "configured": b("C"), "active": b("A"), "enabled": b("E"), "clients": int(os.environ["N"]), "ports": [1812, 1813], "eap": json.loads(os.environ["P"]), "authz": json.loads(os.environ["Z"]), "ldap_module": b("M"), "winbind": json.loads(os.environ["W"])}))')"
+print(json.dumps({"at": int(time.time()), "installed": b("I"), "version": os.environ["V"], "configured": b("C"), "active": b("A"), "enabled": b("E"), "clients": int(os.environ["N"]), "ports": [1812, 1813], "eap": json.loads(os.environ["P"]), "authz": json.loads(os.environ["Z"]), "ldap_module": b("M"), "rest_module": b("R"), "winbind": json.loads(os.environ["W"])}))')"
 }
 
 # ---- Validation du fichier déposé par la console : uniquement des blocs « client » de forme imposée ----
@@ -141,7 +143,8 @@ cur = None
 OPEN = re.compile(r'^client "([^"]*)" \{$')
 KEYS = [("ipaddr", re.compile(r'^ipaddr = ([0-9./]+)$')), ("ipv6addr", re.compile(r'^ipv6addr = ([0-9a-f:./]+)$')),
         ("secret", re.compile(r'^secret = "([^"]*)"$')), ("shortname", re.compile(r'^shortname = ([a-z0-9-]+)$')),
-        ("require_message_authenticator", re.compile(r'^require_message_authenticator = (yes)$')), ("nas_type", re.compile(r'^nas_type = (other)$'))]
+        ("require_message_authenticator", re.compile(r'^require_message_authenticator = (yes)$')), ("nas_type", re.compile(r'^nas_type = (other)$')),
+        ("virtual_server", re.compile(r'^virtual_server = (ddibuntu-mfa)$'))]   # 0.17.0 : seule valeur admise ; le client est alors traité par le serveur MFA (PAP + fournisseur externe)
 for i, raw in enumerate(lines, 1):
     line = raw.strip()
     if cur is None:
@@ -159,6 +162,7 @@ for i, raw in enumerate(lines, 1):
         if cur["shortname"] != cur["name"]: die("client %s : shortname différent du nom" % cur["name"])
         a = cur["addr"]
         if cur["name"] == "ddi-selftest":
+            if "virtual_server" in cur: die("le client d'essai ne peut pas être un client MFA")
             if str(a) != "127.0.0.1/32": die("le client d'essai doit être exactement 127.0.0.1")
             selftest = True
         else:
@@ -344,7 +348,7 @@ def read(rel, limit, required=True):
     except UnicodeDecodeError: die("%s : UTF-8 attendu" % rel)
 if os.path.islink(src) or not os.path.isdir(src): die("dossier de dépôt absent")
 # seuls les trois fichiers que dépose la console sont admis (rien d'autre n'est lu ni ne doit survivre dans le dépôt)
-extra = sorted(set(os.listdir(src)) - {"rules.json", "ldap.json", "ldap-ca.pem", "auth.json"})
+extra = sorted(set(os.listdir(src)) - {"rules.json", "ldap.json", "ldap-ca.pem", "auth.json", "mfa.json", "mfa-ca.pem"})
 if extra: die("fichier inattendu dans le dépôt : %s" % extra[0][:40].encode("ascii", "replace").decode())
 try: rules_doc = json.loads(read("rules.json", 4 * 1024 * 1024))
 except ValueError: die("rules.json illisible")
@@ -352,6 +356,8 @@ try: ldap_doc = json.loads(read("ldap.json", 65536))
 except ValueError: die("ldap.json illisible")
 ca_txt = read("ldap-ca.pem", 65536, required=False)
 auth_txt = read("auth.json", 4096, required=False)
+mfa_txt = read("mfa.json", 16384, required=False)
+mfa_ca_txt = read("mfa-ca.pem", 65536, required=False)
 
 CTRL = re.compile(r"[\x00-\x1f\x7f]")
 def text(v, what, lo, hi, rx=None):
@@ -420,6 +426,55 @@ notes = []
 if want_peap and not joined: notes.append("warn: PEAP-MSCHAPv2 demandé mais cette appliance n'est pas jointe au domaine : méthode non activée")
 if (peap_on or ttls_on) and not netbios: notes.append("warn: nom NetBIOS du domaine non renseigné : les identifiants « DOMAINE\\compte » sont refusés")
 
+# ---- fournisseur MFA (0.17.0) : vérifie « mot de passe + code à usage unique » pour les clients marqués MFA ; absent = aucun client MFA ----
+FIELD = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,39}")
+OAUTH_ID = re.compile(r"[A-Za-z0-9._~-]{1,200}")      # jeu de caractères sans encodage : la valeur est écrite telle quelle dans le corps du formulaire
+OAUTH_SECRET = re.compile(r"[A-Za-z0-9._~-]{0,512}")
+EXTRA_VAL = re.compile(r"[A-Za-z0-9 ._~:/@-]{0,200}")
+TOKEN_URL = re.compile(r"https://(?P<host>[A-Za-z0-9._-]{1,253})(?::(?P<port>[0-9]{1,5}))?(?P<path>/[A-Za-z0-9._~/:@-]{0,300})?")
+mfa = None
+if mfa_txt is not None:
+    try: mfa_doc = json.loads(mfa_txt)
+    except ValueError: die("mfa.json illisible")
+    if not isinstance(mfa_doc, dict) or set(mfa_doc) - {"type", "tokenUrl", "clientId", "clientSecret", "fields", "identity", "otpDigits", "extra", "timeoutSec", "tlsVerify"}: die("mfa.json : champ inconnu")
+    if mfa_doc.get("type") != "oauth2_password": die("mfa.json : type de fournisseur non pris en charge")
+    mu = TOKEN_URL.fullmatch(text(mfa_doc.get("tokenUrl"), "adresse du fournisseur MFA", 9, 400))
+    if not mu: die("adresse du fournisseur MFA : https://hôte[:port]/chemin attendu (aucun paramètre dans l'adresse)")
+    if mu.group("port") is not None and not (1 <= int(mu.group("port")) <= 65535): die("adresse du fournisseur MFA : port invalide")
+    cid = text(mfa_doc.get("clientId"), "identifiant client du fournisseur MFA", 1, 200, OAUTH_ID)
+    csec = text(mfa_doc.get("clientSecret", ""), "secret client du fournisseur MFA", 0, 512, OAUTH_SECRET)
+    flds = mfa_doc.get("fields", {})
+    if not isinstance(flds, dict) or set(flds) - {"identity", "password", "otp"}: die("mfa.json : champs de formulaire invalides")
+    f_id, f_pw, f_otp = (text(flds.get(k, d), "nom de champ " + k, 1, 40, FIELD) for k, d in (("identity", "username"), ("password", "password"), ("otp", "totp")))
+    if len({f_id, f_pw, f_otp}) != 3 or {f_id, f_pw, f_otp} & {"grant_type", "client_id", "client_secret"}: die("mfa.json : noms de champs en double ou réservés")
+    ident = mfa_doc.get("identity", "typed")
+    if ident not in ("typed", "account"): die("mfa.json : identity doit valoir typed ou account")
+    digits = integer(mfa_doc.get("otpDigits", 6), "nombre de chiffres du code", 6, 8)
+    if digits not in (6, 8): die("mfa.json : le code compte 6 ou 8 chiffres")
+    mto = integer(mfa_doc.get("timeoutSec", 5), "délai du fournisseur MFA", 2, 15)
+    if not isinstance(mfa_doc.get("tlsVerify"), bool): die("mfa.json : tlsVerify booléen attendu")
+    extra_p = mfa_doc.get("extra", [])
+    if not isinstance(extra_p, list) or len(extra_p) > 5: die("mfa.json : 5 paramètres supplémentaires au plus")
+    taken = {"grant_type", "client_id", "client_secret", f_id, f_pw, f_otp}
+    for e in extra_p:
+        if not isinstance(e, dict) or set(e) != {"name", "value"}: die("mfa.json : paramètre supplémentaire invalide")
+        text(e["name"], "nom de paramètre", 1, 40, FIELD); text(e["value"], "valeur de paramètre", 0, 200, EXTRA_VAL)
+        if e["name"] in taken: die("mfa.json : paramètre en double ou réservé (%s)" % e["name"][:40])
+        taken.add(e["name"])
+    mfa_ca_ok = False
+    if mfa_ca_txt is not None:
+        CERT2 = re.compile(r"-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+?-----END CERTIFICATE-----\r?\n?")
+        blocks2 = CERT2.findall(mfa_ca_txt)
+        if not blocks2 or CERT2.sub("", mfa_ca_txt).strip() or len(blocks2) > 10: die("mfa-ca.pem : 1 à 10 certificats PEM attendus, rien d'autre")
+        tmp2 = tempfile.mkdtemp(prefix="ddi-mfaca-"); atexit.register(shutil.rmtree, tmp2, True)
+        for i, b in enumerate(blocks2):
+            f = os.path.join(tmp2, "c%d.pem" % i); open(f, "w").write(b)
+            if subprocess.run(["openssl", "x509", "-in", f, "-noout", "-subject"], capture_output=True, timeout=20).returncode != 0: die("mfa-ca.pem : certificat illisible (n° %d)" % (i + 1))
+        mfa_ca_ok = True
+    mfa = {"url": mu.group(0), "origin": "https://" + mu.group("host") + (":" + mu.group("port") if mu.group("port") else ""), "cid": cid, "csec": csec, "f_id": f_id, "f_pw": f_pw, "f_otp": f_otp,
+           "ident": ident, "digits": digits, "timeout": mto, "verify": mfa_doc["tlsVerify"], "extra": extra_p, "ca": mfa_ca_ok}
+elif mfa_ca_txt is not None: die("mfa-ca.pem sans mfa.json")
+
 # ---- règles ----
 if not isinstance(rules_doc, dict) or not isinstance(rules_doc.get("rules"), list): die("rules.json : liste « rules » attendue")
 rules = rules_doc["rules"]
@@ -429,6 +484,14 @@ try: txt = open(clients_file, encoding="utf-8").read()
 except OSError: die("fichier de clients illisible")
 for m in re.finditer(r'^client "([a-z][a-z0-9-]{0,40})" \{$', txt, re.M): known.add(m.group(1))
 known.discard("ddi-selftest")
+# 0.17.0 : clients dont les requêtes PAP passent par le serveur MFA (directive validée par validate_clients)
+mfa_clients, cur_client = [], None
+for ln in txt.split("\n"):
+    ln = ln.strip()
+    m = re.match(r'^client "([a-z][a-z0-9-]{0,40})" \{$', ln)
+    if m: cur_client = m.group(1)
+    elif ln == "virtual_server = ddibuntu-mfa" and cur_client: mfa_clients.append(cur_client)
+if mfa_clients and mfa is None: die("des clients sont marqués MFA (%s) mais aucun fournisseur MFA n'est déposé" % mfa_clients[0][:41])
 NAME = re.compile(r"[a-z][a-z0-9-]{0,40}")
 GDN = re.compile(r"(?:[^\x00-\x1f\x7f\"$%{}`\\]|\\[,+<>;=# \\]){3,512}")
 SSID = re.compile(r"[A-Za-z0-9 ._@#&+=,;:!()/-]{1,32}")
@@ -559,10 +622,9 @@ I = []
 def iemit(lines, ind): I.extend("\t" * ind + l for l in lines)
 # PEAP / TTLS répondent au refus du tunnel par un tour de plus avant l'Access-Reject final (autre requête) : la raison est donc aussi gardée dans l'état de session
 def ideny(msg, ind): iemit(["update outer.request {", '\t&Module-Failure-Message := "ddibuntu : %s"' % msg, "}", "update outer.session-state {", '\t&Module-Failure-Message := "ddibuntu : %s"' % msg, "}", "reject"], ind)
-if peap_on or ttls_on:
-    nbl = netbios.lower()
-    I += ["# Généré par ddibuntu-radius : tunnel PEAP / EAP-TTLS (identifiant et mot de passe). Contrôles d'accès AVANT la vérification du mot de passe.",
-          "server ddibuntu-inner {", "\tauthorize {"]
+# 0.17.0 : contrôles communs au tunnel PEAP / TTLS et au serveur MFA (client dont la requête PAP est vérifiée par un fournisseur externe) : identité → annuaire → état du compte → règles dans l'ordre.
+# Les émetteurs reçoivent les lignes de « tunnel » (listes « outer. ») : pour le serveur MFA, qui n'a pas de tunnel, le préfixe « outer. » est retiré à l'émission.
+def user_checks(iemit, ideny, nbl):
     iemit(["# 1. identifiant présenté dans le tunnel : « DOMAINE\\compte », « compte@suffixe » ou « compte » (jeu de caractères restreint : l'identifiant sert d'argument à ntlm_auth)",
            "if (!&User-Name || &User-Name !~ /^[A-Za-z0-9._@+\\\\-]{1,128}$/) {"], 2)
     ideny("identifiant non pris en charge", 3)
@@ -613,6 +675,12 @@ if peap_on or ttls_on:
             ideny("regle %d : refus" % r["n"], 3)
     iemit((["}", "else {"] if not first else ["if (1) {"]), 2)
     ideny("aucune regle ne correspond (refus par defaut)", 3)
+
+if peap_on or ttls_on:
+    nbl = netbios.lower()
+    I += ["# Généré par ddibuntu-radius : tunnel PEAP / EAP-TTLS (identifiant et mot de passe). Contrôles d'accès AVANT la vérification du mot de passe.",
+          "server ddibuntu-inner {", "\tauthorize {"]
+    user_checks(iemit, ideny, nbl)
     iemit(["}", "", "# 5. mot de passe : EAP-TTLS/PAP = liaison LDAPS de l'utilisateur ; PEAP (et TTLS) EAP-MSCHAPv2 = module mschap (ntlm_auth) appelé par eap"], 2)
     if peap_on: iemit(["mschap"], 2)
     iemit(["if (&User-Password) {", "\tupdate control {", "\t\t&Auth-Type := LDAP", "\t}", "}", "else {", "\teap {", "\t\tok = return", "\t\tupdated = return", "\t}", "}"], 2)
@@ -623,15 +691,72 @@ if peap_on or ttls_on:
         if r["act"] == "accept" and r["reply"] and not (r["nas"] is not None and len(r["nas"]) == 0):
             iemit(["if (&control:Tmp-String-8 == '%d') {" % r["n"], "\tupdate outer.reply {"] + ["\t\t" + x for x in r["reply"]] + ["\t}", "}"], 2)
     I += ["\t\tPost-Auth-Type REJECT {", "\t\t\tattr_filter.access_reject", "\t\t}", "\t}", "}"]
+# ---- serveur « MFA » (0.17.0) ----
+# Les clients marqués MFA (directive « virtual_server = ddibuntu-mfa » du fichier de clients) n'utilisent jamais EAP : mot de passe PAP, avec le code à usage unique collé à la fin.
+# Mêmes contrôles que le tunnel (identité → annuaire → état du compte → règles) AVANT d'appeler le fournisseur : un compte désactivé, verrouillé ou hors règles n'atteint jamais
+# le fournisseur. Ensuite le fournisseur reçoit « mot de passe » et « code » séparés, en HTTPS, et seule sa réponse de succès (2xx) accepte. Ni le mot de passe ni le code ne sont
+# journalisés (journal des authentifications : nom présenté, identité, règle, raison).
+X, MFAMOD = [], []
+if mfa_clients:
+    xemit = lambda lines, ind: X.extend("\t" * ind + l.replace("outer.", "") for l in lines)
+    def xdeny(msg, ind): xemit(["update outer.request {", '\t&Module-Failure-Message := "ddibuntu : %s"' % msg, "}", "update outer.session-state {", '\t&Module-Failure-Message := "ddibuntu : %s"' % msg, "}", "reject"], ind)
+    X += ["# Généré par ddibuntu-radius : clients protégés par un fournisseur MFA externe (PAP : mot de passe + code à usage unique). Ne pas modifier à la main.",
+          "server ddibuntu-mfa {", "\tauthorize {"]
+    xemit(["# 0. PAP seulement : ni EAP, ni CHAP, ni MS-CHAP (le fournisseur a besoin du mot de passe en clair)",
+           "if (&EAP-Message) {"], 2); xdeny("EAP non pris en charge sur un client MFA (PAP seulement)", 3)
+    xemit(["}", "if (!&User-Password) {"], 2); xdeny("mot de passe PAP attendu", 3)
+    xemit(["}"], 2)
+    user_checks(xemit, xdeny, netbios.lower())
+    xemit(["}", "", "# 5. code à usage unique : les %d derniers caractères du mot de passe présenté (mot de passe + code, collés), chiffres seulement" % mfa["digits"],
+           "if (&User-Password =~ /^(.+)([0-9]{%d})$/) {" % mfa["digits"], "\tupdate request {"] +
+          (["\t\t&Tmp-String-0 := &User-Name"] if mfa["ident"] == "typed" else ["\t\t&Tmp-String-0 := &control:Tmp-String-9"]) +
+          ["\t\t&Tmp-String-1 := \"%{1}\"", "\t\t&Tmp-String-2 := \"%{2}\"", "\t}", "\tupdate control {", "\t\t&Auth-Type := ddibuntu-mfa", "\t}", "}", "else {"], 2)
+    xdeny("code a usage unique absent ou mal forme", 3)
+    xemit(["}"] + ([] if mfa["ident"] == "typed" else ["if (!&request:Tmp-String-0) {"]), 2)
+    if mfa["ident"] != "typed":
+        xdeny("identifiant du compte illisible", 3); xemit(["}"], 2)
+    X += ["\t}", "\tauthenticate {", "\t\tAuth-Type ddibuntu-mfa {"]
+    # un refus du module ne doit pas interrompre la section : le motif est choisi ici (reject = 1, etc. : on continue avec ce code de retour)
+    xemit(["ddibuntu_mfa {", "\tok = 1", "\tupdated = 1", "\treject = 1", "\tfail = 1", "\tinvalid = 1", "\tnotfound = 1", "\tuserlock = 1", "}",
+           # « if (ok || updated) » lit le code de retour de l'instruction PRÉCÉDENTE : rien (pas même un « update ») ne doit s'intercaler entre le module et ce test
+           "if (ok || updated) {",
+           "\t# un 2xx ne suffit pas : une page ou un portail qui répond 200 n'est pas un jeton. Le corps doit porter un jeton d'accès (RFC 6749)",
+           "\tif (&reply:REST-HTTP-Body =~ /access_token/) {",
+           "\t\t# la réponse du fournisseur (jeton) ne sert à rien et ne doit jamais atteindre le client : retirée",
+           "\t\tupdate reply {", "\t\t\t&REST-HTTP-Body !* ANY", "\t\t}", "\t\tok", "\t}", "\telse {"], 3)
+    xdeny("fournisseur MFA : erreur, reponse sans jeton d acces", 5)
+    xemit(["\t}", "}", "elsif (reject || userlock || notfound) {"], 3)
+    xdeny("fournisseur MFA : mot de passe ou code refuse", 4)
+    xemit(["}", "else {"], 3)
+    xdeny("fournisseur MFA : erreur, injoignable ou refus (HTTP 4xx autre que 401, 5xx, delai)", 4)
+    xemit(["}"], 3)
+    X += ["\t\t}", "\t}", "\tpreacct {", "\t\tpreprocess", "\t}", "\taccounting {", "\t\tok", "\t}", "\tsession {", "\t}", "\tpost-auth {", "\t\tddibuntu_authlog_ok"]
+    for r in out:
+        if r["act"] == "accept" and r["reply"] and not (r["nas"] is not None and len(r["nas"]) == 0) and r["kind"] != "computer":
+            xemit(["if (&control:Tmp-String-8 == '%d') {" % r["n"], "\tupdate reply {"] + ["\t\t" + x for x in r["reply"]] + ["\t}", "}"], 2)
+    X += ["\t\tPost-Auth-Type REJECT {", "\t\t\tddibuntu_authlog_ko", "\t\t\tattr_filter.access_reject", "\t\t}", "\t}", "}"]
+    # module REST : requête POST « formulaire » vers le point de jeton du fournisseur (flux OAuth2 « mot de passe » : grant_type=password)
+    q = lambda v: v.replace(" ", "+")
+    data = "grant_type=password&client_id=%s" % mfa["cid"] + ("&client_secret=%s" % mfa["csec"] if mfa["csec"] else "") + \
+           "&%s=%%{urlquote:%%{request:Tmp-String-0}}&%s=%%{urlquote:%%{request:Tmp-String-1}}&%s=%%{urlquote:%%{request:Tmp-String-2}}" % (mfa["f_id"], mfa["f_pw"], mfa["f_otp"]) + \
+           "".join("&%s=%s" % (e["name"], q(e["value"])) for e in mfa["extra"])
+    MFAMOD = ["# Généré par ddibuntu-radius : fournisseur MFA (OAuth2, flux « mot de passe » + code à usage unique). Contient le secret client : ne pas copier. Ne pas modifier à la main.", "rest ddibuntu_mfa {",
+              "\ttls {"] + (["\t\tca_path = ${certdir}/mfa-ca"] if mfa["ca"] else []) + ["\t\tcheck_cert = %s" % ("yes" if mfa["verify"] else "no"), "\t\tcheck_cert_cn = %s" % ("yes" if mfa["verify"] else "no"), "\t}",
+              "\tconnect_uri = " + dq(mfa["origin"]), "\tconnect_timeout = 3.0",
+              "\tauthenticate {", "\t\turi = " + dq(mfa["url"]), "\t\tmethod = 'post'", "\t\tbody = 'post'", "\t\tforce_to = 'plain'",   # force_to : la réponse n'est jamais interprétée comme des attributs
+              "\t\tdata = " + dq(data), "\t\ttimeout = %d.0" % mfa["timeout"], "\t\ttls = ${..tls}", "\t}",
+              "\tpool {", "\t\tstart = 0", "\t\tmin = 0", "\t\tmax = 32", "\t\tspare = 1", "\t\tuses = 0", "\t\tretry_delay = 5", "\t\tlifetime = 0", "\t\tidle_timeout = 60", "\t}", "}"]
 M = []
 if peap_on:
     M = ["# Généré par ddibuntu-radius : vérification MSCHAPv2 par ntlm_auth (winbind, jonction au domaine). Ne pas modifier à la main.", "mschap {",
          "\tuse_mppe = yes", "\trequire_encryption = yes", "\trequire_strong = yes", "\twith_ntdomain_hack = yes",
          "\tntlm_auth = \"%s --configfile=%s --allow-mschapv2 --request-nt-key --username=%%{control:Tmp-String-9} --domain=%s --challenge=%%{%%{mschap:Challenge}:-00} --nt-response=%%{%%{mschap:NT-Response}:-00}\"" % (NTLM_AUTH, os.path.join(WBSTATE, "smb.conf"), netbios),
          "\tntlm_auth_timeout = 10", "}"]
-for g in ["ldap.mod", "site.conf", "ldap-ca.pem", "inner.conf", "mschap.mod", "methods"]:
+for g in ["ldap.mod", "site.conf", "ldap-ca.pem", "inner.conf", "mschap.mod", "methods", "mfa.conf", "mfa.mod", "mfa-ca.pem"]:
     p = os.path.join(snap, g)
     if os.path.lexists(p): os.unlink(p)
+import shutil
+shutil.rmtree(os.path.join(snap, "mfa-ca"), ignore_errors=True)
 def put(name, txt):
     fd = os.open(os.path.join(snap, name), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as h: h.write(txt)
@@ -639,11 +764,16 @@ os.makedirs(snap, exist_ok=True)
 put("ldap.mod", "\n".join(L) + "\n"); put("site.conf", "\n".join(S) + "\n")
 if I: put("inner.conf", "\n".join(I) + "\n")
 if M: put("mschap.mod", "\n".join(M) + "\n")
+if X: put("mfa.conf", "\n".join(X) + "\n"); put("mfa.mod", "\n".join(MFAMOD) + "\n")
+if X and mfa["ca"]:   # un certificat par fichier : « openssl rehash » (installation) l'exige, et c'est ca_path (pas ca_file) que rlm_rest applique
+    os.makedirs(os.path.join(snap, "mfa-ca"), mode=0o700, exist_ok=True)
+    for i, blk in enumerate(CERT2.findall(mfa_ca_txt)): put(os.path.join("mfa-ca", "%02d.pem" % (i + 1)), blk if blk.endswith("\n") else blk + "\n")
 if I: put("methods", " ".join([m for m, on in (("peap", peap_on), ("ttls", ttls_on)) if on]) + "\n")
 if ca_ok: put("ldap-ca.pem", "".join(CERT.findall(ca_txt)))
 print("rules=%d servers=%s" % (len(out), ",".join(urls)))
 print("methods=%s" % ",".join([m for m, on in (("peap", peap_on), ("ttls", ttls_on)) if on]))
 print("peap=%d ttls=%d" % (peap_on, ttls_on))
+if X: print("mfa=%s" % ",".join(mfa_clients))
 for n in notes: print(n)
 PY
 }
@@ -940,8 +1070,8 @@ instantiate {
 \$INCLUDE sites-enabled/
 EOF
 }
-write_site() {   # $1 = eap (« eap » : EAP-TLS actif) ; sans argument : tout accès refusé (itérations 1 et 2) ; $2 = serveur de décision généré (règles d'accès) ; $3 = serveur « tunnel » PEAP / TTLS (optionnel)
-  local v6="" eap="${1:-}" decision="${2:-}" inner="${3:-}"
+write_site() {   # $4 = serveur MFA (0.17.0, optionnel) ; $1 = eap (« eap » : EAP-TLS actif) ; sans argument : tout accès refusé (itérations 1 et 2) ; $2 = serveur de décision généré (règles d'accès) ; $3 = serveur « tunnel » PEAP / TTLS (optionnel)
+  local v6="" eap="${1:-}" decision="${2:-}" inner="${3:-}" mfasrv="${4:-}"
   # écoute IPv6 seulement si la pile IPv6 existe (sinon freeradius refuse de démarrer)
   if [[ -r /proc/net/if_inet6 ]]; then
     v6=$'\tlisten {\n\t\ttype = auth\n\t\tipv6addr = ::\n\t\tport = 1812\n\t}\n\tlisten {\n\t\ttype = acct\n\t\tipv6addr = ::\n\t\tport = 1813\n\t}\n'
@@ -1014,6 +1144,7 @@ EOF
   if [[ "$eap" = eap && -n "$decision" ]]; then
     cat "$decision"
     [[ -n "$inner" && -f "$inner" ]] && { printf '\n'; cat "$inner"; }
+    [[ -n "$mfasrv" && -f "$mfasrv" ]] && { printf '\n'; cat "$mfasrv"; }
   elif [[ "$eap" = eap ]]; then
     cat <<'EOF'
 # Appelé par EAP-TLS une fois la poignée de main réussie : la chaîne de confiance, les dates, l'usage et la révocation du certificat client
@@ -1125,15 +1256,23 @@ build_tree() {   # $1 = clients.conf validé ; $2 = instantané PKI validé (opt
       install -m 0640 -o root -g "$GROUP" "$4/ldap.mod" "$RDIR/mods-enabled/ldap"
       [[ -f "$4/mschap.mod" ]] && install -m 0640 -o root -g "$GROUP" "$4/mschap.mod" "$RDIR/mods-enabled/mschap"
       [[ -f "$4/ldap-ca.pem" ]] && install -m 0640 -o root -g "$GROUP" "$4/ldap-ca.pem" "$RDIR/certs/ldap-ca.pem"
-      write_site eap "$4/site.conf" "$4/inner.conf"
+      [[ -f "$4/mfa.mod" ]] && install -m 0640 -o root -g "$GROUP" "$4/mfa.mod" "$RDIR/mods-enabled/ddibuntu_mfa"   # 0.17.0 : contient le secret client du fournisseur
+      if [[ -d "$4/mfa-ca" ]]; then
+        install -d -m 0750 -o root -g "$GROUP" "$RDIR/certs/mfa-ca"
+        install -m 0640 -o root -g "$GROUP" "$4"/mfa-ca/*.pem "$RDIR/certs/mfa-ca/"
+        openssl rehash "$RDIR/certs/mfa-ca" >/dev/null 2>&1 || { log "MFA : autorité du fournisseur illisible (openssl rehash)"; return 1; }
+        chown -R root:"$GROUP" "$RDIR/certs/mfa-ca"
+      fi
+      write_site eap "$4/site.conf" "$4/inner.conf" "$4/mfa.conf"
     else write_site eap; fi
   else write_site; fi
   { printf '# Généré par ddibuntu-radius %s à partir de la console (revalidé par root). Ne pas modifier à la main.\n' "$(ddi_version)"; cat "$1"; } > "$RDIR/clients.conf"
   chown root:"$GROUP" "$RDIR/radiusd.conf" "$RDIR/clients.conf" "$RDIR/sites-available/ddibuntu"
   chmod 0640 "$RDIR/radiusd.conf" "$RDIR/clients.conf" "$RDIR/sites-available/ddibuntu"
 }
-wipe_ldap() {    # $1 = arborescence ; le module LDAP (mot de passe de liaison) est écrasé avant suppression
+wipe_ldap() {    # $1 = arborescence ; le module LDAP (mot de passe de liaison) et le module MFA (secret client) sont écrasés avant suppression
   [[ -f "$1/mods-enabled/ldap" ]] && shred -u "$1/mods-enabled/ldap" 2>/dev/null || true
+  [[ -f "$1/mods-enabled/ddibuntu_mfa" ]] && shred -u "$1/mods-enabled/ddibuntu_mfa" 2>/dev/null || true
   return 0
 }
 wipe_certs() {   # $1 = arborescence ; les clés sont écrasées avant suppression
@@ -1157,6 +1296,7 @@ cmd_apply() {   # $1 = clients.conf ; $2 = dossier PKI déposé (optionnel : san
   [[ -f "$file" && ! -L "$file" ]] || ddi_die "fichier de clients absent"
   [[ "$(stat -c %s "$file")" -le "$MAX_CLIENTS_BYTES" ]] || ddi_die "fichier de clients trop volumineux"
   nets="$(validate_clients "$file")" || return 1
+  if grep -qE '^[[:space:]]*virtual_server = ddibuntu-mfa$' "$file" && [[ -z "$authzsrc" ]]; then log "clients MFA : règles d'accès et fournisseur requis (dépôt des règles absent)"; return 1; fi   # sinon le serveur virtuel ddibuntu-mfa n'existerait pas
   [[ -x "$RADIUSD" ]] || { log "freeradius n'est pas installé"; return 1; }
   if [[ -n "$pkisrc" ]]; then
     snap="$(mktemp -d "${TMPDIR:-/tmp}/ddi-radius-pki.XXXXXX")"; chmod 0700 "$snap"
@@ -1167,6 +1307,7 @@ cmd_apply() {   # $1 = clients.conf ; $2 = dossier PKI déposé (optionnel : san
     if [[ -n "$authzsrc" ]]; then
       [[ -f "$LDAP_SO" ]] || { log "règles d'accès : le module LDAP de FreeRADIUS est absent (paquet freeradius-ldap à installer)"; return 1; }
       authzout="$(validate_authz "$authzsrc" "$snap" "$file")" || return 1
+      if [[ -f "$snap/mfa.mod" && ! -f "$REST_SO" ]]; then log "MFA : le module REST de FreeRADIUS est absent (paquet freeradius-rest à installer)"; return 1; fi
       authzsnap="$snap"
     fi
   elif [[ -n "$authzsrc" ]]; then
@@ -1205,6 +1346,8 @@ cmd_apply() {   # $1 = clients.conf ; $2 = dossier PKI déposé (optionnel : san
   local meths; meths="$(printf '%s' "$authzout" | sed -n 's/^methods=//p' | head -n1)"
   [[ -z "$meths" ]] || extra="$extra Identifiant et mot de passe : $(printf '%s' "$meths" | sed 's/,/, /g' | tr '[:lower:]' '[:upper:]')."
   printf '%s' "$authzout" | grep -q '^warn:' && extra="$extra $(printf '%s' "$authzout" | sed -n 's/^warn: /AVERTISSEMENT : /p' | tr '\n' ' ')"
+  local mfac; mfac="$(printf '%s' "$authzout" | sed -n 's/^mfa=//p' | head -n1)"
+  [[ -z "$mfac" ]] || extra="$extra Clients MFA (mot de passe + code) : $(printf '%s' "$mfac" | sed 's/,/, /g')."
   extra="$extra$wbwarn"
   printf '%s' "$pkiout" | grep -q '^warn:' && extra="$extra $(printf '%s' "$pkiout" | sed -n 's/^warn: /AVERTISSEMENT : /p' | tr '\n' ' ')"
   printf 'Service RADIUS démarré (%s client(s)).%s%s' "$n" "$extra" "${warn:+ $warn}"
@@ -1326,7 +1469,8 @@ PY
 # validation seule : aucun effet, utilisable sans privilège (tests, diagnostic)
 if [[ "${1:-}" = check ]]; then validate_clients "${2:-}"; exit $?; fi
 if [[ "${1:-}" = check-pki ]]; then t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT; validate_pki "${2:-}" "$t"; exit $?; fi
-if [[ "${1:-}" = check-authz ]]; then t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT; validate_authz "${2:-}" "$t" "${3:-}" && { for f in ldap.mod site.conf inner.conf mschap.mod; do if [[ -f "$t/$f" ]]; then cat "$t/$f"; fi; done | sed -E 's/^(\tpassword = ).*/\1"***"/'; }; exit $?; fi
+# shellcheck disable=SC2064
+if [[ "${1:-}" = check-authz ]]; then t="$(mktemp -d)"; trap "find '$t' -type f -exec shred -u {} + 2>/dev/null; rm -rf '$t'" EXIT; validate_authz "${2:-}" "$t" "${3:-}" && { for f in ldap.mod site.conf inner.conf mschap.mod mfa.conf mfa.mod; do if [[ -f "$t/$f" ]]; then cat "$t/$f"; fi; done | sed -E -e 's/^(\tpassword = ).*/\1"***"/' -e 's/(client_secret=)[^&"]*/\1***/'; }; exit $?; fi
 [[ "$(id -u)" -eq 0 ]] || ddi_die "à lancer en root"
 exec 9>"${DDI_RADIUS_LOCK:-/run/ddibuntu-radius.lock}"
 flock -w 120 9 || ddi_die "une autre demande RADIUS est en cours depuis plus de 2 minutes"

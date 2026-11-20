@@ -1,5 +1,19 @@
 # Journal des modifications
 
+## 0.17.0 — « Second facteur (MFA) pour les accès par mot de passe, par client RADIUS »
+
+Une passerelle VPN qui interroge RADIUS en PAP peut maintenant exiger **mot de passe + code à usage unique** : l'utilisateur saisit son mot de passe suivi directement de son code (6 ou 8 chiffres) dans le champ du mot de passe. Le service sépare le code, applique **d'abord** les règles d'accès (compte actif, groupes, équipement), puis demande à un **fournisseur MFA externe** de vérifier le couple. Le résultat est journalisé ; ni le mot de passe ni le code ne le sont.
+
+- **Réglage par client** : case « Second facteur (MFA) » sur chaque client RADIUS (onglet Clients). Les autres clients (le Wi-Fi en EAP-TLS, par exemple) ne changent pas ; un client MFA n'accepte que du PAP (EAP refusé avec un motif clair).
+- **Fournisseur générique** (onglet Second facteur) : le premier type est OAuth2 « mot de passe » (point de jeton HTTPS, identifiant et secret du client, noms des champs identifiant / mot de passe / code, identifiant transmis tel que saisi ou compte trouvé dans l'annuaire, 6 ou 8 chiffres, paramètres fixes supplémentaires, délai, vérification du certificat, autorité propre). Le secret du client est chiffré, jamais renvoyé, jamais journalisé. Bouton « Tester la connexion » (aucun compte réel utilisé).
+- **Sécurités** : secret partagé d'au moins 32 caractères exigé pour un client MFA (40 générés) ; `Message-Authenticator` exigé par client et globalement (protection « Blast-RADIUS ») ; le mot de passe PAP n'est que masqué, pas chiffré, par RADIUS : prévoir un chemin dédié ou un tunnel IPsec entre la passerelle et le DDI (indiqué dans l'écran).
+- **Côté root** (`ddibuntu-radius`) : tout est revalidé champ par champ (`mfa.json`, autorité du fournisseur) ; la configuration du module REST et du serveur virtuel dédié `ddibuntu-mfa` est générée, jamais déposée par la console ; le module REST est dans le nouveau paquet `freeradius-rest`, ajouté aux paquets posés par la mise à jour. Le fournisseur n'est appelé qu'après la décision des règles ; une panne du fournisseur refuse l'accès (jamais d'acceptation par défaut).
+- **Journal** : six nouveaux motifs (second facteur refusé, fournisseur en erreur, code absent, EAP sur un client MFA, mot de passe PAP attendu, identifiant du compte illisible), avec l'action à mener.
+- **Déploiement** : refusé (rien n'est déposé) si un client MFA est actif sans règle d'accès, sans fournisseur réglé, ou si le module REST manque ; l'empreinte des déploiements sans client MFA ne change pas. Le déploiement mémorisé pour le nouveau leader porte aussi le fournisseur.
+- **Tests** : `b42` (vrai FreeRADIUS, vrai Samba AD, faux fournisseur HTTPS : acceptations, refus de chaque motif, panne, lenteur, mode `identité = compte`, champs personnalisés, aucune fuite de secret) ; `unit-radius-mfa` ; `e2e-iter61`.
+- **Corrigé en chemin** : `ca_file` est ignoré par le module REST de FreeRADIUS 3.2.5 (l'autorité du fournisseur est donc posée en dossier haché, `ca_path`).
+- **À savoir** : à tester avec votre fournisseur et votre passerelle réels (longueur du champ mot de passe accepté par le client VPN, méthode PAP, code à usage unique non réutilisable côté fournisseur).
+
 ## 0.16.0 — « Identifiant et mot de passe : PEAP-MSCHAPv2 et EAP-TTLS, pour les postes hors domaine »
 
 Un poste Windows qui n'a pas de certificat client (poste hors domaine, ou même joint) échouait avec `eap: No mutually acceptable types found` : le service n'acceptait qu'EAP-TLS. Deux méthodes par **identifiant et mot de passe Active Directory** sont ajoutées. Elles sont **désactivées par défaut** (aucun changement après la mise à jour) et se choisissent dans le nouvel onglet **Mot de passe** de RADIUS, puis « Déployer ».

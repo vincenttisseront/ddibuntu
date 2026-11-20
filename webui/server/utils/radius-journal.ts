@@ -57,6 +57,13 @@ export function classify(reason: string): string {
   if (r.includes('aucune regle')) return 'no_rule'
   if (r.includes('unknown client') || r.includes('equipement inconnu')) return 'unknown_client'
   if (r.includes('identifiant non pris en charge')) return 'identity_unsupported'
+  // 0.17.0 : client MFA (mot de passe + code vérifiés par le fournisseur)
+  if (r.includes('fournisseur mfa : mot de passe ou code')) return 'mfa_denied'
+  if (r.includes('fournisseur mfa : erreur')) return 'mfa_provider_error'
+  if (r.includes('code a usage unique')) return 'mfa_code_missing'
+  if (r.includes('eap non pris en charge')) return 'mfa_eap'
+  if (r.includes('mot de passe pap attendu')) return 'mfa_pap_expected'
+  if (r.includes('identifiant du compte illisible')) return 'mfa_account_unreadable'
   if (r.includes('domaine inconnu')) return 'domain_unknown'
   if (r.includes('nom netbios')) return 'netbios_missing'
   if (r.includes('wrong_password') || r.includes('password is incorrect') || r.includes('invalid credentials') || r.includes('bind as user failed') || r.includes('logon failure')) return 'bad_password'

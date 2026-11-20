@@ -77,7 +77,7 @@ onMounted(async () => { await load(); if (!j.netbios) j.netbios = f.netbios; if 
           <div class="flex flex-col gap-1"><USwitch v-model="f.peap" :label="t('radius.auth.peap')" data-test="auth-peap" /><p class="text-xs text-muted">{{ t('radius.auth.peap_help') }}</p></div>
           <div class="flex flex-col gap-1"><USwitch v-model="f.ttls" :label="t('radius.auth.ttls')" data-test="auth-ttls" /><p class="text-xs text-muted">{{ t('radius.auth.ttls_help') }}</p></div>
         </div>
-        <UFormField :label="t('radius.auth.netbios')" :help="t('radius.auth.netbios_help')" class="max-w-sm"><UInput v-model="f.netbios" class="w-full font-mono" autocomplete="off" maxlength="15" placeholder="AR-SYSTEMS" data-test="auth-netbios" /></UFormField>
+        <UFormField :label="t('radius.auth.netbios')" :help="t('radius.auth.netbios_help')" class="max-w-sm"><UInput v-model="f.netbios" class="w-full font-mono" autocomplete="off" maxlength="15" placeholder="EXAMPLE" data-test="auth-netbios" /></UFormField>
         <UAlert v-if="f.ttls" color="warning" variant="subtle" icon="i-lucide-shield-alert" :title="t('radius.auth.ttls_warn_title')" :description="t('radius.auth.ttls_warn')" data-test="auth-ttls-warn" />
         <UAlert color="neutral" variant="subtle" icon="i-lucide-info" :description="t('radius.auth.lockout_note')" />
         <div class="flex flex-wrap items-center justify-between gap-2">
@@ -103,8 +103,8 @@ onMounted(async () => { await load(); if (!j.netbios) j.netbios = f.netbios; if 
         <UAlert v-if="f.peap && !joined" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('radius.auth.peap_needs_join')" data-test="auth-peap-needs-join" />
         <form v-if="!joined" class="flex flex-col gap-3" autocomplete="off" @submit.prevent="join">
           <div class="grid gap-3 md:grid-cols-2">
-            <UFormField :label="t('radius.auth.realm')" :help="t('radius.auth.realm_help')"><UInput v-model="j.realm" class="w-full font-mono" autocomplete="off" placeholder="ar-systems.local" data-test="join-realm" /></UFormField>
-            <UFormField :label="t('radius.auth.netbios')"><UInput v-model="j.netbios" class="w-full font-mono" autocomplete="off" maxlength="15" placeholder="AR-SYSTEMS" data-test="join-netbios" /></UFormField>
+            <UFormField :label="t('radius.auth.realm')" :help="t('radius.auth.realm_help')"><UInput v-model="j.realm" class="w-full font-mono" autocomplete="off" placeholder="example.local" data-test="join-realm" /></UFormField>
+            <UFormField :label="t('radius.auth.netbios')"><UInput v-model="j.netbios" class="w-full font-mono" autocomplete="off" maxlength="15" placeholder="EXAMPLE" data-test="join-netbios" /></UFormField>
           </div>
           <UFormField :label="t('radius.auth.servers')" :help="servers.length ? t('radius.auth.servers_help_default', { list: servers.join(', ') }) : t('radius.auth.servers_help')"><UInput v-model="j.servers" class="w-full font-mono" autocomplete="off" data-test="join-servers" /></UFormField>
           <div class="grid gap-3 md:grid-cols-2">

@@ -9,6 +9,7 @@ import { analyze, evaluate, ruleBody, RULES_MAX, ssidFromCalledStation, SSID_RE 
 import { loadCompiled, getPushed, unknownClients } from '../utils/radius-rules-store'
 import { authzDigest, authzProblems } from '../utils/radius-authz'
 import { loadAuth } from '../utils/radius-auth'
+import { loadMfaInput } from '../utils/radius-mfa-store'
 import { dirPassword, factoryFor, loadDir } from '../utils/radius-dir-store'
 import { lookupAccount } from '../utils/radius-dir'
 import { readRadiusStatus } from '../utils/radius'
@@ -24,9 +25,9 @@ const insertArgs = (b: z.output<typeof ruleBody>) => [b.name, b.enabled, b.actio
 async function view() {
   const { rows, clients, compiled } = await loadCompiled()
   const dir = await loadDir(), pki = await loadPki(), r = readiness(pki), st = await readRadiusStatus()
-  const password = dir.bindPasswordEnc ? dirPassword(dir) : null, auth = await loadAuth()
-  const problems = authzProblems({ rules: compiled, pkiEmpty: r.empty, pkiReady: r.ready, dir, password, ldapModule: st ? st.ldapModule : null, auth })
-  const digest = authzDigest(compiled, dir, password, auth), pushed = await getPushed()
+  const password = dir.bindPasswordEnc ? dirPassword(dir) : null, auth = await loadAuth(), mfa = await loadMfaInput()
+  const problems = authzProblems({ rules: compiled, pkiEmpty: r.empty, pkiReady: r.ready, dir, password, ldapModule: st ? st.ldapModule : null, auth, mfa })
+  const digest = authzDigest(compiled, dir, password, auth, mfa), pushed = await getPushed()
   const numOf = new Map(compiled.map((c) => [c.id, c.n]))
   const warnings = [...(compiled.length ? analyze(compiled) : []), ...unknownClients(rows, clients).filter((u) => numOf.has(u.id)).map((u) => ({ code: 'unknown_client' as const, rule: numOf.get(u.id)!, names: u.names }))]
   return { items: rows, numbers: Object.fromEntries(compiled.map((c) => [c.id, c.n])), warnings, problems, max: RULES_MAX, active: compiled.length,

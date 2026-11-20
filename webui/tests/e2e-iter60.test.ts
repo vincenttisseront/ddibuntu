@@ -115,11 +115,11 @@ describe('identifiant et mot de passe', () => {
   })
   it('jonction : la réponse de root est publiée, l\'état « joint » est relayé sans secret', async () => {
     rmSync(REQ, { force: true })
-    writeFileSync(RES, JSON.stringify({ at: NOW() + 2, action: 'join', ok: true, message: 'Appliance jointe au domaine lab.test (compte machine RAD-vmtools-d).' }))
+    writeFileSync(RES, JSON.stringify({ at: NOW() + 2, action: 'join', ok: true, message: 'Appliance jointe au domaine lab.test (compte machine RAD-node-d).' }))
     writeFileSync(ST, JSON.stringify({ at: NOW(), installed: true, version: '3.2.5', configured: true, active: false, enabled: false, clients: 1, ports: [1812, 1813], eap: { enabled: false },
-      winbind: { joined: true, realm: 'LAB.TEST', netbios: 'LAB', computer: 'RAD-vmtools-d', at: NOW(), active: true, trust: true, password: 'ne-doit-pas-passer' } }))
+      winbind: { joined: true, realm: 'LAB.TEST', netbios: 'LAB', computer: 'RAD-node-d', at: NOW(), active: true, trust: true, password: 'ne-doit-pas-passer' } }))
     const r = await radius()
-    expect(r.result).toMatchObject({ action: 'join', ok: true }); expect(r.status.winbind).toEqual({ joined: true, realm: 'LAB.TEST', netbios: 'LAB', computer: 'RAD-vmtools-d', at: r.status.winbind.at, active: true, trust: true })
+    expect(r.result).toMatchObject({ action: 'join', ok: true }); expect(r.status.winbind).toEqual({ joined: true, realm: 'LAB.TEST', netbios: 'LAB', computer: 'RAD-node-d', at: r.status.winbind.at, active: true, trust: true })
     expect(JSON.stringify(r)).not.toContain('ne-doit-pas-passer')
   })
   it('jonction : champs invalides refusés (domaine, NetBIOS, serveur, caractères de contrôle, champ inconnu), lecteur refusé', async () => {

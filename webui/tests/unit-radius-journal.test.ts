@@ -45,6 +45,9 @@ describe('classement des motifs', () => {
     ['eap: No mutually acceptable types found', 'eap_method'],
     ['ddibuntu : identifiant non pris en charge', 'identity_unsupported'], ['ddibuntu : domaine inconnu', 'domain_unknown'], ['ddibuntu : nom NetBIOS du domaine non configure', 'netbios_missing'],
     ['mschap: ERROR: NT_STATUS_WRONG_PASSWORD', 'bad_password'], ['ldap: Bind as user failed', 'bad_password'], ['Peer NAK received', 'eap_method'],
+    ['ddibuntu : fournisseur MFA : mot de passe ou code refuse', 'mfa_denied'], ['ddibuntu : fournisseur MFA : erreur, injoignable ou refus (HTTP 4xx autre que 401, 5xx, delai)', 'mfa_provider_error'],
+    ['ddibuntu : code a usage unique absent ou mal forme', 'mfa_code_missing'], ['ddibuntu : EAP non pris en charge sur un client MFA (PAP seulement)', 'mfa_eap'],
+    ['ddibuntu : mot de passe PAP attendu', 'mfa_pap_expected'], ['ddibuntu : identifiant du compte illisible', 'mfa_account_unreadable'],
     ['unknown CA', 'unknown_ca'], ['certificate unknown', 'cert_refused'], ['handshake failure', 'no_cert'],
     ['', 'unknown'], ['quelque chose d\'inattendu', 'other'],
   ])('« %s » → %s', (reason, why) => { expect(classify(reason)).toBe(why) })

@@ -48,6 +48,7 @@ export const clientBody = z.object({
   address: z.string().trim().min(1).max(64),
   usage: z.enum(USAGES).default('other'),
   secret: z.string().max(128).nullish(),
+  mfa: z.boolean().default(false),   // 0.17.0 : second facteur (mot de passe + code vérifiés par le fournisseur MFA) ; le client n'utilise alors plus EAP
   enabled: z.boolean().default(true),
   comment: z.string().trim().max(500).nullish(),
 }).strict().transform((b, ctx) => {
@@ -58,19 +59,22 @@ export const clientBody = z.object({
   return { ...b, address, secret, comment: b.comment || null }
 })
 
-export interface ClientRow { name: string; address: string; secret_enc: string; enabled: boolean }
+export interface ClientRow { name: string; address: string; secret_enc: string; enabled: boolean; mfa?: boolean }
+/** Un client MFA transporte un mot de passe (masqué par le secret partagé, pas chiffré) : secret long exigé, comme la 0.17.0 le promet à l'administrateur. */
+export const MFA_SECRET_MIN = 32
+export const MFA_SECRET_LEN = 40
 
 /** clients.conf : le client d'essai local, puis les clients actifs (ordre du nom). Forme imposée, relue telle quelle par root. */
 export function renderClientsConf(rows: ClientRow[], selfSecret = selftestSecret()): string {
-  const block = (name: string, address: string, secret: string) => {
+  const block = (name: string, address: string, secret: string, mfa = false) => {
     const c = parseCidr(address)!
     const host = c.prefix === (c.v === 4 ? 32 : 128)
     const addr = host ? cidrToString(c).replace(/\/\d+$/, '') : cidrToString(c)
-    return [`client "${name}" {`, `\t${c.v === 4 ? 'ipaddr' : 'ipv6addr'} = ${addr}`, `\tsecret = "${secret}"`, `\tshortname = ${name}`, '\trequire_message_authenticator = yes', '\tnas_type = other', '}', ''].join('\n')
+    return [`client "${name}" {`, `\t${c.v === 4 ? 'ipaddr' : 'ipv6addr'} = ${addr}`, `\tsecret = "${secret}"`, `\tshortname = ${name}`, '\trequire_message_authenticator = yes', '\tnas_type = other', ...(mfa ? ['\tvirtual_server = ddibuntu-mfa'] : []), '}', ''].join('\n')
   }
   const out = [block(SELFTEST_NAME, '127.0.0.1/32', selfSecret)]
   for (const r of [...rows].filter((x) => x.enabled).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
-    out.push(block(r.name, r.address, decryptSecret(r.secret_enc)))
+    out.push(block(r.name, r.address, decryptSecret(r.secret_enc), r.mfa === true))
   }
   return out.join('\n')
 }
@@ -81,9 +85,9 @@ export interface EapStatus { enabled: boolean; server: { subject: string; notAft
 export interface AuthzStatus { enabled: boolean; rules: number; servers: string[] }
 /** Jonction de CE nœud au domaine (PEAP-MSCHAPv2) publiée par root : sans secret. `trust` : null = non mesuré (winbindd arrêté). */
 export interface WinbindStatus { joined: boolean; realm: string; netbios: string; computer: string; at: number | null; active: boolean; trust: boolean | null }
-export interface RadiusStatus { winbind: WinbindStatus; at: number; installed: boolean; version: string; configured: boolean; active: boolean; enabled: boolean; clients: number; eap: EapStatus; authz: AuthzStatus; ldapModule: boolean }
+export interface RadiusStatus { winbind: WinbindStatus; at: number; installed: boolean; version: string; configured: boolean; active: boolean; enabled: boolean; clients: number; eap: EapStatus; authz: AuthzStatus; ldapModule: boolean; restModule: boolean }
 /** Règles d'accès déposées pour root : DONNÉES seulement (rules.json, ldap.json, ldap-ca.pem), jamais de texte de configuration. */
-export interface AuthzDeposit { rules: string; ldap: string; caPem?: string; auth?: string }
+export interface AuthzDeposit { rules: string; ldap: string; caPem?: string; auth?: string; mfa?: string; mfaCa?: string }
 /** Compte qui joint le domaine : transmis une fois à root (fichier 0600 écrasé après usage), jamais conservé par la console. */
 export interface JoinDeposit { realm: string; netbios: string; servers: string[]; user?: string; password?: string }
 export interface RadiusResult { at: number; action: string; ok: boolean; message: string }
@@ -100,7 +104,7 @@ export async function readRadiusStatus(): Promise<RadiusStatus | null> {
     const w = j.winbind ?? {}
     const winbind: WinbindStatus = { joined: w.joined === true, realm: String(w.realm ?? '').slice(0, 253), netbios: String(w.netbios ?? '').slice(0, 15), computer: String(w.computer ?? '').slice(0, 15),
       at: typeof w.at === 'number' ? w.at * 1000 : null, active: w.active === true, trust: typeof w.trust === 'boolean' ? w.trust : null }
-    return { at: j.at, installed: j.installed === true, version: String(j.version ?? '').slice(0, 24), configured: j.configured === true, active: j.active === true, enabled: j.enabled === true, clients: Number(j.clients) || 0, eap, authz, ldapModule: j.ldap_module === true, winbind }
+    return { at: j.at, installed: j.installed === true, version: String(j.version ?? '').slice(0, 24), configured: j.configured === true, active: j.active === true, enabled: j.enabled === true, clients: Number(j.clients) || 0, eap, authz, ldapModule: j.ldap_module === true, restModule: j.rest_module === true, winbind }
   } catch { return null }
 }
 export async function readRadiusResult(): Promise<RadiusResult | null> {
@@ -135,6 +139,8 @@ async function writeAuthzDir(dir: string, a: AuthzDeposit) {
   await fs.writeFile(join(root, 'ldap.json'), a.ldap, { mode: 0o600 })
   if (a.caPem) await fs.writeFile(join(root, 'ldap-ca.pem'), a.caPem, { mode: 0o600 })
   if (a.auth) await fs.writeFile(join(root, 'auth.json'), a.auth, { mode: 0o600 })
+  if (a.mfa) await fs.writeFile(join(root, 'mfa.json'), a.mfa, { mode: 0o600 })   // porte le secret client du fournisseur MFA : root l'efface après traitement
+  if (a.mfaCa) await fs.writeFile(join(root, 'mfa-ca.pem'), a.mfaCa, { mode: 0o600 })
 }
 /** Écrit le dossier radius-join/ (join.json 0600 : il porte le mot de passe du compte qui joint ; root l'écrase après usage). */
 async function writeJoinDir(dir: string, j: JoinDeposit) {

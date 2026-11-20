@@ -109,6 +109,7 @@ La PKI est **EJBCA Community** (image officielle `keyfactor/ejbca-ce`, Podman + 
 | 19b | 0.14.19 | Correctif : l'onglet **Journal** de RADIUS affichait une erreur 500 (déclarations mises en commentaire par erreur) ; test sur les sources des composants Vue | ✅ 0.14.19 |
 | 20 | 0.15.0 | **RADIUS actif / passif dans le cluster** : un seul FreeRADIUS sur le leader (derrière l'adresse virtuelle), arrêté sur le secondaire ; « Déployer » mémorise (chiffré) le déploiement accepté et la console du nouveau leader le rejoue ; refus hors leader ; bloc « Cluster » de l'onglet Service | ✅ 0.15.0 (b28 vrai FreeRADIUS, unitaires, e2e ; **bascule réelle non essayée**) |
 | 21 | 0.16.0 | **Identifiant et mot de passe** : PEAP-MSCHAPv2 (jonction de chaque nœud au domaine, `winbindd` privé) et EAP-TTLS/PAP (liaison LDAPS), désactivés par défaut, mêmes règles d'accès qu'EAP-TLS, décision avant la vérification du mot de passe, onglet « Mot de passe » |
+| 22 | 0.17.0 | **Second facteur (MFA)** pour les accès PAP (passerelles VPN), réglé par client RADIUS : mot de passe + code à usage unique vérifiés par un fournisseur externe générique (OAuth2 « mot de passe »), décision des règles avant l'appel, secret partagé long exigé, onglet « Second facteur » | 🚧 en cours (b42, unitaires, e2e) |
 
 ## Série 0.10.x — gestion complète DNS ↔ IPAM ↔ DHCP (validée le 2026-11-13)
 Dix évolutions, une version chacune, chacune testée (unitaires, e2e, batteries réelles) avant publication. Ordre retenu : les deux plus rentables d'abord, puis celles qui s'appuient dessus.
