@@ -65,8 +65,8 @@ function smbFailure(out: string, ignore: string[] = []): GpoError | null {
 
 /** smbclient : le mot de passe passe par l'environnement du processus fils (PASSWD), pas par ses arguments (visibles dans la liste des processus). */
 export const smbclientRunner: SmbRunner = (host, user, password, cmds) => new Promise((resolve, reject) => {
-  const p = spawn('smbclient', [`//${host}/SYSVOL`, '-U', user, '-s', '/dev/null', '--option=client signing=mandatory', '-c', cmds.join('; ')],
-    { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C', PASSWD: password, HOME: tmpdir() }, stdio: ['ignore', 'pipe', 'pipe'] })
+  const p = spawn('/usr/bin/smbclient', [`//${host}/SYSVOL`, '-U', user, '-s', '/dev/null', '--option=client signing=mandatory', '-c', cmds.join('; ')],
+    { env: { PATH: '/usr/bin:/bin', LANG: 'C', PASSWD: password, HOME: tmpdir() }, stdio: ['ignore', 'pipe', 'pipe'] })
   let out = ''
   const add = (b: Buffer) => { if (out.length < 65536) out += b.toString('utf8') }
   p.stdout.on('data', add); p.stderr.on('data', add)

@@ -133,11 +133,23 @@ Write-Host 'Termine. Sur un poste pilote de cette unite : gpupdate /force, puis 
 /** Empreinte SHA-1 en hexadécimal, comme Windows l'affiche. */
 const thumbprint = (c: X509Certificate) => c.fingerprint.replace(/:/g, '')
 
+/** Les certificats d'un fichier PEM, sans expression régulière (pas de retour arrière) : de « BEGIN » au « END » suivant. */
+function pemBlocks(pem: string): string[] {
+  const BEGIN = '-----BEGIN CERTIFICATE-----', END = '-----END CERTIFICATE-----', out: string[] = []
+  for (let at = pem.indexOf(BEGIN); at >= 0 && out.length < 16;) {
+    const end = pem.indexOf(END, at + BEGIN.length)
+    if (end < 0) break
+    out.push(pem.slice(at, end + END.length))
+    at = pem.indexOf(BEGIN, end + END.length)
+  }
+  return out
+}
+
 /** Autorités racines (auto-signées) contenues dans des PEM : seules celles-là entrent dans les racines de confiance des postes. */
 export function trustAnchors(...pems: string[]): GpoFiles {
   const out: GpoFiles = {}
   for (const pem of pems) {
-    for (const block of pem.match(/-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----/g) ?? []) {
+    for (const block of pemBlocks(pem)) {
       try {
         const c = new X509Certificate(block)
         if (c.subject === c.issuer && c.verify(c.publicKey)) out[`anchor-${thumbprint(c)}.cer`] = Buffer.from(c.raw)
