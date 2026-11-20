@@ -31,6 +31,9 @@ export function cfg() {
     fwResultFile: e.DDI_FW_RESULT ?? '/run/ddibuntu/fw-result.json',
     fwPendingFile: e.DDI_FW_PENDING ?? '/run/ddibuntu/fw-pending.json',
     adStatusFile: e.DDI_AD_STATUS ?? '/run/ddibuntu/ad-status.json',
+    // enrôlement des postes (0.18.0) : assistant d'acceptation Kerberos (lancé par la console) et dossier du cache anti-rejeu de Kerberos
+    enrollGss: e.DDI_ENROLL_GSS ?? '/usr/local/lib/ddibuntu/enroll-gss',
+    enrollRcacheDir: e.DDI_ENROLL_RCACHE ?? '/var/lib/ddibuntu/generated/enroll-rcache',
     // service RADIUS (ddibuntu-radius, root) : état du service et résultat de la dernière demande
     radiusStatusFile: e.DDI_RADIUS_STATUS ?? '/run/ddibuntu/radius-status.json',
     // journal des authentifications RADIUS (écrit par FreeRADIUS, lisible par le groupe ddiconsole) et fenêtre lue en fin de fichier

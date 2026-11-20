@@ -109,7 +109,7 @@ describe('RADIUS — clients', () => {
     expect(row.secret_enc).not.toContain(wifiSecret)
     for (const path of ['/api/radius/clients', '/api/radius']) expect((await admin.get(path)).text, path).not.toContain(wifiSecret)
     const list = (await viewer.get('/api/radius/clients')).json.items; expect(list).toHaveLength(1)
-    expect(Object.keys(list[0]).sort()).toEqual(['address', 'comment', 'created_at', 'enabled', 'id', 'name', 'updated_at', 'usage'])
+    expect(Object.keys(list[0]).sort()).toEqual(['address', 'comment', 'created_at', 'enabled', 'id', 'mfa', 'name', 'updated_at', 'usage'])
     const aud = await rows("select detail from audit_log where action='radius_client_create'"); expect(JSON.stringify(aud)).not.toContain(wifiSecret)
   })
   it('création avec un secret choisi : il n\'est pas renvoyé ; adresse seule normalisée ; doublons refusés', async () => {

@@ -1,0 +1,49 @@
+#!/usr/bin/python3
+# DDI-Buntu 0.18.0 : acceptation d'un jeton SPNEGO / Kerberos pour l'enrôlement des postes.
+# Lancé par la console (compte ddiconsole, jamais root) avec KRB5_KTNAME = keytab du service (copie 0600 en mémoire, effacée après l'appel) et
+# KRB5RCACHEDIR = dossier du cache anti-rejeu. Lit le jeton (base64) sur l'entrée standard, écrit UNE ligne JSON sur la sortie standard :
+#   {"ok": true, "principal": "POSTE$@REALM", "token": "<base64 ou vide>"}  ou  {"ok": false, "error": "<code>"}
+# Rien d'autre n'est lu ni écrit : pas de réseau, pas de contrôleur de domaine interrogé (le ticket est déchiffré avec la clé du keytab).
+import base64
+import binascii
+import json
+import sys
+
+MAX_TOKEN = 24576
+
+
+def out(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.exit(0)
+
+
+def main():
+    try:
+        import gssapi
+    except Exception:
+        out({"ok": False, "error": "gssapi_missing"})
+    raw = sys.stdin.read(MAX_TOKEN * 2).strip()
+    try:
+        token = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        out({"ok": False, "error": "bad_token"})
+    if not token or len(token) > MAX_TOKEN:
+        out({"ok": False, "error": "bad_token"})
+    try:
+        creds = gssapi.Credentials(usage="accept")
+        ctx = gssapi.SecurityContext(creds=creds, usage="accept")
+        reply = ctx.step(token)
+        if not ctx.complete:
+            out({"ok": False, "error": "incomplete"})
+        name = str(ctx.initiator_name)
+    except gssapi.exceptions.GSSError as e:
+        # message de la bibliothèque : « Request ticket server … not found in keytab », « Clock skew too great », « Request is a replay »…
+        msg = str(e).lower()
+        code = "replay" if "replay" in msg else "clock" if "clock skew" in msg else "keytab" if "keytab" in msg else "rejected"
+        out({"ok": False, "error": code})
+    except Exception:
+        out({"ok": False, "error": "rejected"})
+    out({"ok": True, "principal": name, "token": base64.b64encode(reply).decode() if reply else ""})
+
+
+main()

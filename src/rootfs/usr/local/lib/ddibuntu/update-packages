@@ -1,1 +1,1 @@
-podman freeradius freeradius-ldap freeradius-rest winbind samba-common-bin
+podman freeradius freeradius-ldap freeradius-rest winbind samba-common-bin python3-gssapi

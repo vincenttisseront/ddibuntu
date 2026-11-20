@@ -4,8 +4,8 @@
 // (composant PkiAd) ; 0.14.3 : certificats (composant PkiCerts : émission, liste, révocation) ; 0.14.5 : sauvegarde et clé de récupération (composant PkiRecovery) ; 0.14.7 : mises à jour de la version d'EJBCA (composant PkiUpdate) ; 0.14.8 : SCEP (composant PkiScep).
 // Le service est piloté par root (ddibuntu-pki) à partir d'une demande déposée par la console : après chaque action on attend le résultat publié.
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm(); const fmt = useFmt()
-const tab = useHashTab('state', ['state', 'cas', 'certs', 'scep', 'ad', 'recovery', 'update'])
-const tabs = computed(() => [{ label: t('pki.tab_state'), value: 'state', icon: 'i-lucide-badge-check' }, { label: t('pki.tab_cas'), value: 'cas', icon: 'i-lucide-shield-check' }, { label: t('pki.tab_certs'), value: 'certs', icon: 'i-lucide-file-badge' }, { label: t('pki.tab_scep'), value: 'scep', icon: 'i-lucide-router' }, { label: t('pki.tab_ad'), value: 'ad', icon: 'i-lucide-building-2' }, { label: t('pki.tab_recovery'), value: 'recovery', icon: 'i-lucide-archive-restore' }, { label: t('pki.tab_update'), value: 'update', icon: 'i-lucide-circle-arrow-up' }])
+const tab = useHashTab('state', ['state', 'cas', 'certs', 'enroll', 'scep', 'ad', 'recovery', 'update'])
+const tabs = computed(() => [{ label: t('pki.tab_state'), value: 'state', icon: 'i-lucide-badge-check' }, { label: t('pki.tab_cas'), value: 'cas', icon: 'i-lucide-shield-check' }, { label: t('pki.tab_certs'), value: 'certs', icon: 'i-lucide-file-badge' }, { label: t('pki.tab_enroll'), value: 'enroll', icon: 'i-lucide-monitor-check' }, { label: t('pki.tab_scep'), value: 'scep', icon: 'i-lucide-router' }, { label: t('pki.tab_ad'), value: 'ad', icon: 'i-lucide-building-2' }, { label: t('pki.tab_recovery'), value: 'recovery', icon: 'i-lucide-archive-restore' }, { label: t('pki.tab_update'), value: 'update', icon: 'i-lucide-circle-arrow-up' }])
 
 const data = ref<any>(null), busy = ref(''), err = ref('')
 const status = computed(() => data.value?.status ?? null)
@@ -106,6 +106,7 @@ await load()
     <UTabs v-model="tab" :items="tabs" :content="false" :aria-label="t('nav.pki')" />
     <PkiCas v-if="tab === 'cas'" :status="status" :waiting="waiting" :settle="settle" :result="result" @changed="load" />
     <PkiCerts v-else-if="tab === 'certs'" :status="status" :waiting="waiting" />
+    <PkiEnroll v-else-if="tab === 'enroll'" :status="status" :waiting="waiting" />
     <PkiScep v-else-if="tab === 'scep'" :status="status" :waiting="waiting" />
     <PkiAd v-else-if="tab === 'ad'" />
     <PkiRecovery v-else-if="tab === 'recovery'" :waiting="waiting" @changed="load" />
