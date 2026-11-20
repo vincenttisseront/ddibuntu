@@ -9,6 +9,41 @@ const data = ref<any>(null), err = ref(''), saving = ref(false), loaded = ref(fa
 const f = reactive({ enabled: false, ca: '', host: '', groupDn: '', minIntervalSec: 300, maxPerDay: 6, maxPerMinute: 30 })
 const errOf = (e: any) => e?.info?.message ?? t('err.internal')
 const ready = computed(() => props.status?.state === 'healthy')
+
+// Commandes de création du compte de service et d'export du keytab : le nom de la console vient du formulaire, le domaine est déduit du DN du groupe
+const SVC = 'svc-ddi-enroll'
+const cmdHost = computed(() => f.host.trim().toLowerCase() || 'ddi.example.org')
+const cmdDomain = computed(() => [...f.groupDn.matchAll(/(?:^|,)\s*DC=([^,]+)/gi)].map((m) => m[1]!.trim().toLowerCase()).join('.') || 'example.org')
+const cmdRealm = computed(() => cmdDomain.value.toUpperCase())
+const cmdBaseDn = computed(() => cmdDomain.value.split('.').map((x) => `DC=${x}`).join(','))
+const cmdWindows = computed(() => [
+  `# ${t('enroll.cmd_c_create')}`,
+  `New-ADUser -Name ${SVC} -SamAccountName ${SVC} -AccountPassword (Read-Host -AsSecureString 'Mot de passe temporaire') -Enabled $true -PasswordNeverExpires $true -CannotChangePassword $true`,
+  `# ${t('enroll.cmd_c_aes')}`,
+  `Set-ADUser ${SVC} -KerberosEncryptionType AES128,AES256`,
+  `# ${t('enroll.cmd_c_spn')}`,
+  `setspn -S HTTP/${cmdHost.value} ${SVC}`,
+  `# ${t('enroll.cmd_c_export_win')}`,
+  `ktpass /out C:\\Temp\\ddi-enroll.keytab /princ HTTP/${cmdHost.value}@${cmdRealm.value} /mapuser ${SVC}@${cmdDomain.value} /mapop set /ptype KRB5_NT_PRINCIPAL /crypto AES256-SHA1 +rndpass -setupn`,
+].join('\n'))
+const cmdSamba = computed(() => [
+  `# ${t('enroll.cmd_c_create')}`,
+  `samba-tool user create ${SVC} "$(openssl rand -base64 24)"`,
+  `samba-tool spn add HTTP/${cmdHost.value} ${SVC}`,
+  `# ${t('enroll.cmd_c_aes_samba')}`,
+  `ldapmodify -H ldaps://dc1.${cmdDomain.value} -D administrator@${cmdDomain.value} -W <<'EOF'`,
+  `dn: CN=${SVC},CN=Users,${cmdBaseDn.value}`,
+  `changetype: modify`,
+  `replace: msDS-SupportedEncryptionTypes`,
+  `msDS-SupportedEncryptionTypes: 24`,
+  `EOF`,
+  `samba-tool user setpassword ${SVC} --newpassword="$(openssl rand -base64 24)"`,
+  `# ${t('enroll.cmd_c_export_samba')}`,
+  `samba-tool domain exportkeytab ddi-enroll.keytab --principal=HTTP/${cmdHost.value}@${cmdRealm.value}`,
+  `# ${t('enroll.cmd_c_check')}`,
+  `klist -ke ddi-enroll.keytab`,
+].join('\n'))
+async function copy(v: string) { try { await navigator.clipboard.writeText(v); toast.add({ title: t('common.copied'), color: 'success', icon: 'i-lucide-check' }) } catch { /* presse-papiers indisponible : le texte reste sélectionnable */ } }
 const kt = computed(() => data.value?.keytab ?? null)
 const issuers = computed<string[]>(() => data.value?.issuers ?? [])
 const lim = computed(() => data.value?.limits ?? { minInterval: { min: 30, max: 86400 }, perDay: { min: 1, max: 50 }, perMinute: { min: 1, max: 600 } })
@@ -69,6 +104,17 @@ onMounted(() => load())
     <UCard>
       <template #header><span class="font-medium">{{ t('enroll.step_keytab') }}</span></template>
       <p class="text-sm text-muted mb-2">{{ t('enroll.keytab_help') }}</p>
+      <details class="mb-3 rounded-md border border-default" data-test="enroll-cmds">
+        <summary class="cursor-pointer px-3 py-2 text-sm font-medium">{{ t('enroll.cmd_title') }}</summary>
+        <div class="flex flex-col gap-3 px-3 pb-3">
+          <p class="text-xs text-muted">{{ t('enroll.cmd_note', { host: cmdHost, realm: cmdRealm }) }}</p>
+          <div v-for="b in [{ k: 'win', title: t('enroll.cmd_win'), text: cmdWindows }, { k: 'samba', title: t('enroll.cmd_samba'), text: cmdSamba }]" :key="b.k">
+            <div class="mb-1 flex items-center justify-between"><span class="text-sm">{{ b.title }}</span>
+              <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-copy" :label="t('common.copy')" :data-test="`enroll-cmd-copy-${b.k}`" @click="copy(b.text)" /></div>
+            <pre class="overflow-x-auto rounded-md bg-elevated p-3 text-xs" :data-test="`enroll-cmd-${b.k}`">{{ b.text }}</pre>
+          </div>
+        </div>
+      </details>
       <div v-if="kt" class="text-sm mb-2" data-test="enroll-keytab">
         <div v-for="p in kt.principals" :key="p" class="font-mono">{{ p }}<span class="text-muted"> · kvno {{ kt.kvno[p] }}</span></div>
         <UAlert v-if="kt.problem" color="warning" variant="subtle" :description="t(`err.enroll_${kt.problem}`)" class="mt-2" />
