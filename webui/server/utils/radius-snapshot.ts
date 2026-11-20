@@ -48,8 +48,10 @@ export function openApply(enc: string | null | undefined): ApplyRequest | null {
   }
   if (j.authz !== undefined) {
     const a = j.authz
-    if (!out.pki || !a || typeof a !== 'object' || !isStr(a.rules, 2_000_000) || !isStr(a.ldap, 100_000) || (a.caPem !== undefined && !isStr(a.caPem, 200_000)) || (a.auth !== undefined && !isStr(a.auth, 4096))) return null
-    out.authz = { rules: a.rules, ldap: a.ldap, ...(a.caPem !== undefined ? { caPem: a.caPem } : {}), ...(a.auth !== undefined ? { auth: a.auth } : {}) } satisfies AuthzDeposit
+    if (!out.pki || !a || typeof a !== 'object' || !isStr(a.rules, 2_000_000) || !isStr(a.ldap, 100_000) || (a.caPem !== undefined && !isStr(a.caPem, 200_000)) || (a.auth !== undefined && !isStr(a.auth, 4096))
+      || (a.mfa !== undefined && !isStr(a.mfa, 16_384)) || (a.mfaCa !== undefined && !isStr(a.mfaCa, 65_536))) return null
+    out.authz = { rules: a.rules, ldap: a.ldap, ...(a.caPem !== undefined ? { caPem: a.caPem } : {}), ...(a.auth !== undefined ? { auth: a.auth } : {}),
+      ...(a.mfa !== undefined ? { mfa: a.mfa } : {}), ...(a.mfaCa !== undefined ? { mfaCa: a.mfaCa } : {}) } satisfies AuthzDeposit
   }
   return out
 }

@@ -37,6 +37,7 @@ import * as radiuspki from '../handlers/radiuspki'
 import * as radiusddi from '../handlers/radiusddi'
 import * as radiusdir from '../handlers/radiusdir'
 import * as radiusauth from '../handlers/radiusauth'
+import * as radiusmfa from '../handlers/radiusmfa'
 import * as radiusrules from '../handlers/radiusrules'
 import * as radiusnps from '../handlers/radiusnps'
 import * as pki from '../handlers/pki'
@@ -49,7 +50,7 @@ import * as pkiscep from '../handlers/pkiscep'
 import { dispatch, routeCount } from '../utils/router'
 
 // Chaque module enregistre ses routes à l'évaluation ; on vérifie ici qu'ils ont tous été inclus.
-const modules = [auth, ipam, ipamLabels, dns, dhcp, filtering, importer, system, snapshots, adimport, netbox, discovery, cockpit, cluster, adkrb, search, hygiene, tunnel, backup, alerts, trace, tokens, addrcheck, mfa, sso, ldap, aliases, leasedns, dnshealth, migration, dhcpclasses, reverse, firewall, radius, radiusdir, radiusauth, radiuspki, radiusddi, radiusrules, siem, radiusnps, pki, pkica, pkicert, pkiad, pkirecovery, pkiupdate, pkiscep]
+const modules = [auth, ipam, ipamLabels, dns, dhcp, filtering, importer, system, snapshots, adimport, netbox, discovery, cockpit, cluster, adkrb, search, hygiene, tunnel, backup, alerts, trace, tokens, addrcheck, mfa, sso, ldap, aliases, leasedns, dnshealth, migration, dhcpclasses, reverse, firewall, radius, radiusdir, radiusauth, radiusmfa, radiuspki, radiusddi, radiusrules, siem, radiusnps, pki, pkica, pkicert, pkiad, pkirecovery, pkiupdate, pkiscep]
 if (!modules.every((m) => m.registered) || routeCount() < 50) throw new Error(`[api] routes non enregistrées (${routeCount()})`)
 
 export default defineEventHandler((event) => dispatch(event))

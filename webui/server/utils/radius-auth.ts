@@ -7,7 +7,7 @@ import { getSetting, setSetting } from './db'
 export interface AuthSettings { peap: boolean; ttls: boolean; netbios: string }
 export const AUTH_DEFAULTS: AuthSettings = { peap: false, ttls: false, netbios: '' }
 export const AUTH_KEY = 'radius_auth'
-/** Nom NetBIOS du domaine (« AR-SYSTEMS ») : 15 caractères au plus, comme le contrôle de root. */
+/** Nom NetBIOS du domaine (« EXAMPLE ») : 15 caractères au plus, comme le contrôle de root. */
 export const NETBIOS_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,14}$/
 
 export const authBody = z.object({

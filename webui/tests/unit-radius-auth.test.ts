@@ -21,10 +21,10 @@ describe('réglages', () => {
   it('désactivé par défaut, lecture tolérante', () => {
     expect(normAuth(undefined)).toEqual({ peap: false, ttls: false, netbios: '' })
     expect(normAuth({ peap: 'oui', ttls: 1, netbios: 'x; rm' })).toEqual({ peap: false, ttls: false, netbios: '' })
-    expect(normAuth({ peap: true, ttls: true, netbios: 'AR-SYSTEMS' })).toEqual({ peap: true, ttls: true, netbios: 'AR-SYSTEMS' })
+    expect(normAuth({ peap: true, ttls: true, netbios: 'EXAMPLE' })).toEqual({ peap: true, ttls: true, netbios: 'EXAMPLE' })
   })
   it('nom NetBIOS : 15 caractères, lettres chiffres tiret', () => {
-    for (const ok of ['AR-SYSTEMS', 'LAB', 'A1', 'a'.repeat(15)]) expect(NETBIOS_RE.test(ok), ok).toBe(true)
+    for (const ok of ['EXAMPLE', 'LAB', 'A1', 'a'.repeat(15)]) expect(NETBIOS_RE.test(ok), ok).toBe(true)
     for (const ko of ['', '-X', 'a'.repeat(16), 'A B', 'A\\B', 'A;B', 'é']) expect(NETBIOS_RE.test(ko), ko).toBe(false)
   })
   it('corps de la route : champ inconnu et NetBIOS invalide refusés, NetBIOS vide admis', () => {
