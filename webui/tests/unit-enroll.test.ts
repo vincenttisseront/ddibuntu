@@ -4,6 +4,12 @@ import { describe, expect, it } from 'vitest'
 process.env.DDI_SECRET_KEY = 'cle-secrete-de-test-0123456789abcdefghij'
 import { dnsInDomain, dnsMatchesAccount, domainOfDn, principalAllowed, principalAuditOk, ENROLL_DEFAULTS, enrollBody, enrollComplete, enrollSerial, keytabProblem, machineFromPrincipal, negotiateToken, parseKeytab, preAuthAuditOk, sealKeytab } from '../server/utils/enroll'
 import { enrollScript } from '../server/utils/enroll-script'
+import { gpoScript, mergeExtensions, scriptsIni, trustAnchors } from '../server/utils/enroll-gpo'
+import { ACCOUNT_RE, GpoError, pushGpo } from '../server/utils/enroll-gpo-push'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 function kt(entries: Array<{ comps: string[]; realm: string; enctype: number; kvno?: number; hole?: number }>): Buffer {
   const parts: Buffer[] = [Buffer.from([5, 2])]
@@ -147,5 +153,67 @@ describe('script PowerShell', () => {
   it('refuse une console ou une autorité douteuse', () => {
     for (const h of ['', 'a b', "x'; Remove-Item *; '", 'https://x', 'x.test/../y']) expect(() => enrollScript(h, 'CA'), h).toThrow('enroll_host')
     for (const i of ['', 'x'.repeat(129), 'a\nb']) expect(() => enrollScript('ddi.lab.test', i)).toThrow('enroll_issuer')
+  })
+})
+
+describe('script de mise en place de la GPO', () => {
+  function pems() {
+    const d = mkdtempSync(join(tmpdir(), 'gpo-'))
+    try {
+      const sh = (...a: string[]) => execFileSync('openssl', a, { cwd: d, stdio: 'pipe' })
+      sh('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', 'root.key', '-out', 'root.pem', '-subj', '/CN=Racine essai', '-days', '30')
+      sh('req', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', 'sub.key', '-out', 'sub.csr', '-subj', '/CN=Sub essai')
+      sh('x509', '-req', '-in', 'sub.csr', '-CA', 'root.pem', '-CAkey', 'root.key', '-CAcreateserial', '-out', 'sub.pem', '-days', '30')
+      return { root: readFileSync(join(d, 'root.pem'), 'utf8'), sub: readFileSync(join(d, 'sub.pem'), 'utf8') }
+    } finally { rmSync(d, { recursive: true, force: true }) }
+  }
+  it('ne retient que les autorités racines (auto-signées), une fois chacune, sous un nom dérivé de l\'empreinte', () => {
+    const { root, sub } = pems()
+    const a = trustAnchors(sub + root, root, 'pas un certificat', '')
+    expect(Object.keys(a)).toHaveLength(1); expect(Object.keys(a)[0]).toMatch(/^anchor-[0-9A-F]{40}\.cer$/)
+    expect(a[Object.keys(a)[0]!]!.length).toBeGreaterThan(100)
+    expect(trustAnchors(sub)).toEqual({})
+  })
+  it('embarque enroll.ps1 (avec marque d\'ordre d\'octets), le démarrage et les racines ; CRLF ; aucun gabarit résiduel', () => {
+    const { root } = pems(), a = trustAnchors(root)
+    const s = gpoScript(enrollScript('ddi.lab.test', 'Lab Sub CA'), a)
+    expect(s).not.toContain('__FILES__'); expect(s.replace(/\r\n/g, '')).not.toContain('\n')
+    for (const must of ['SupportsShouldProcess', 'Get-ADOrganizationalUnit', 'New-GPO', 'New-GPLink', 'gPCMachineExtensionNames', 'GPT.INI', 'scripts.ini', '42B5FAAE-6536-11D2-AE5A-0000F87571E3', '40B6664F-4972-11D1-A7CA-0000F87571E3']) expect(s, must).toContain(must)
+    expect(s).not.toContain(String.fromCharCode(96))   // pas de backtick PowerShell : le gabarit est un littéral JavaScript
+    const files = Object.fromEntries([...s.matchAll(/^ {2}'([^']+)' = '([A-Za-z0-9+/=]+)'\r$/gm)].map((m) => [m[1]!, Buffer.from(m[2]!, 'base64')]))
+    expect(Object.keys(files).sort()).toEqual(['ddi-demarrage.ps1', 'enroll.ps1', ...Object.keys(a)].sort())
+    expect([...files['enroll.ps1']!.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]); expect(files['enroll.ps1']!.toString('utf8')).toContain("$Console   = 'ddi.lab.test'")
+    expect(files['ddi-demarrage.ps1']!.toString('ascii')).toContain("-Filter 'anchor-*.cer'"); expect(files['ddi-demarrage.ps1']!.toString('ascii')).toContain("'enroll.ps1') -Install")
+    expect(files[Object.keys(a)[0]!]!.equals(a[Object.keys(a)[0]!]!)).toBe(true)
+    expect([...s].every((ch) => ch.charCodeAt(0) < 128)).toBe(true)   // PowerShell 5.1 lit un fichier sans marque d'ordre d'octets en ANSI : le script reste en ASCII
+  })
+  it('refuse un nom de fichier douteux', () => {
+    expect(() => gpoScript('x', { "a'; Remove-Item *; '.cer": Buffer.from('x') })).toThrow('enroll_gpo_name')
+  })
+})
+
+describe('GPO poussée par la console : briques', () => {
+  it('fusionne l\'extension « scripts » sans toucher aux autres, sans doublon', () => {
+    const E = '[{42B5FAAE-6536-11D2-AE5A-0000F87571E3}{40B6664F-4972-11D1-A7CA-0000F87571E3}]'
+    expect(mergeExtensions('')).toEqual({ value: E, changed: true })
+    expect(mergeExtensions(E)).toEqual({ value: E, changed: false })
+    const other = '[{35378EAC-683F-11D2-A89A-00C04FBBCFA2}{D02B1F72-3407-48AE-BA88-E8213C6761F1}]'
+    expect(mergeExtensions(other)).toEqual({ value: other + E, changed: true })
+    expect(mergeExtensions('[{42B5FAAE-6536-11D2-AE5A-0000F87571E3}{AUTRE}]').value).toBe('[{42B5FAAE-6536-11D2-AE5A-0000F87571E3}{AUTRE}{40B6664F-4972-11D1-A7CA-0000F87571E3}]')
+  })
+  it('scripts.ini : UTF-16 avec marque d\'ordre d\'octets, appelle le script de démarrage depuis SYSVOL', () => {
+    const b = scriptsIni('lab.test', '{ABC}'); expect([...b.subarray(0, 2)]).toEqual([0xff, 0xfe])
+    expect(b.subarray(2).toString('utf16le')).toBe('[Startup]\r\n0CmdLine=powershell.exe\r\n0Parameters=-NoProfile -ExecutionPolicy Bypass -File "\\\\lab.test\\SYSVOL\\lab.test\\Policies\\{ABC}\\Machine\\Scripts\\Startup\\ddi-demarrage.ps1"\r\n')
+  })
+  it('le compte n\'accepte que « utilisateur@domaine » ou « DOMAINE\\utilisateur »', () => {
+    for (const ok of ['admin@lab.test', 'a.b-c_d@exemple.org', 'LAB\\admin']) expect(ACCOUNT_RE.test(ok), ok).toBe(true)
+    for (const ko of ['admin', 'a b@lab.test', 'x%y@lab.test', '-U@lab.test x', 'admin@', 'LAB\\', 'a@b\nc']) expect(ACCOUNT_RE.test(ko), ko).toBe(false)
+  })
+  it('refuse un annuaire sans LDAPS avant toute connexion', async () => {
+    let touched = false
+    const d = { urls: ['ldaps://a.test', 'ldap://b.test'], ldap: () => { touched = true; throw new Error('non') }, smb: async () => ({ ok: true, out: '' }), files: {} }
+    await expect(pushGpo(d as any, { ou: 'OU=Postes,DC=lab,DC=test', account: 'a@lab.test', password: 'x', dry: true })).rejects.toMatchObject({ reason: 'tls' })
+    await expect(pushGpo({ ...d, urls: [] } as any, { ou: 'OU=P,DC=l,DC=t', account: 'a@l.t', password: 'x', dry: true })).rejects.toBeInstanceOf(GpoError)
+    expect(touched).toBe(false)
   })
 })

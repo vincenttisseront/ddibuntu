@@ -9,7 +9,7 @@ import { query, setSetting } from '../utils/db'
 import { normDn } from '../utils/text'
 import { lookupAccount } from '../utils/radius-dir'
 import { dirComplete, dirPassword, factoryFor, loadDir } from '../utils/radius-dir-store'
-import { blob, blobBytes, readPkiCas } from '../utils/pki-ca'
+import { blob, blobBytes, readCaFile, readPkiCas } from '../utils/pki-ca'
 import { DNS_RE } from '../utils/pki-certs'
 import { issueCert } from './pkicert'
 import {
@@ -17,6 +17,8 @@ import {
   machineFromPrincipal, negotiateToken, parseKeytab, preAuthAuditOk, principalAllowed, principalAuditOk, rateVerdict, sealKeytab,
 } from '../utils/enroll'
 import { enrollScript } from '../utils/enroll-script'
+import { gpoFiles, gpoScript, trustAnchors } from '../utils/enroll-gpo'
+import { ACCOUNT_RE, GpoError, gpoLdapFactory, pushGpo, pushGpoSerial, smbclientRunner } from '../utils/enroll-gpo-push'
 
 export const registered = true
 
@@ -152,4 +154,45 @@ route('GET', '/enroll/script', 'admin', async (c) => {
   setResponseHeader(c.event, 'Content-Type', 'text/plain; charset=utf-8')
   setResponseHeader(c.event, 'Content-Disposition', 'attachment; filename="enroll.ps1"')
   return text
+})
+
+// Script de mise en place de la GPO : embarque enroll.ps1 et les racines à confiance (certificat HTTPS de la console s'il est auto-signé, racine de la PKI)
+async function gpoMaterial() {
+  const s = await loadEnroll()
+  if (!s.host || !s.ca) fail(409, 'enroll_incomplete')
+  const ca = (await issuers()).find((x) => x.name === s.ca)
+  if (!ca) fail(409, 'pki_ca_not_issuing')
+  const pems = [process.env.NITRO_SSL_CERT || process.env.DDI_TLS_CERT_PEM || '']
+  for (const k of ['chain', 'cert'] as const) pems.push((await readCaFile(ca.name, k))?.toString('utf8') ?? '')
+  try { return { enrollPs1: enrollScript(s.host, cnOf(ca.dn) || ca.name), anchors: trustAnchors(...pems) } } catch { return fail(409, 'enroll_incomplete') }
+}
+route('GET', '/enroll/gpo-script', 'admin', async (c) => {
+  const m = await gpoMaterial()
+  const text = gpoScript(m.enrollPs1, m.anchors)
+  await audit(c, 'enroll.gpo_script', 'settings', ENROLL_KEY, { anchors: Object.keys(m.anchors).length })
+  setResponseHeader(c.event, 'Content-Type', 'text/plain; charset=utf-8')
+  setResponseHeader(c.event, 'Content-Disposition', 'attachment; filename="deploy-gpo.ps1"')
+  return text
+})
+
+// La console met elle-même la GPO en place : l'administrateur fournit l'unité d'organisation et un compte pour CETTE opération (jamais stocké ni journalisé).
+const GpoPush = z.object({ ou: z.string().min(8).max(400).regex(/^[^\x00-\x1f\x7f]+$/), account: z.string().regex(ACCOUNT_RE), password: z.string().min(1).max(256), dry: z.boolean() }).strict()
+const GPO_STATUS: Record<string, number> = { tls: 409, bind: 409, denied: 409, ou: 400, smbclient: 409, unreachable: 502, ldap: 502, smb: 502, no_dc: 502 }
+route('POST', '/enroll/gpo', 'admin', async (c) => {
+  const b = await c.body(GpoPush)
+  const dir = await loadDir()
+  if (!dir.urls.length) fail(409, 'enroll_gpo_no_directory')
+  const m = await gpoMaterial()
+  let r
+  try {
+    r = await pushGpoSerial(() => pushGpo({ urls: dir.urls, ldap: gpoLdapFactory(dir), smb: smbclientRunner, files: gpoFiles(m.enrollPs1, m.anchors) }, b))
+  } catch (e) {
+    if (e instanceof GpoError) {
+      await audit(c, 'enroll.gpo_refused', 'settings', ENROLL_KEY, { ou: b.ou, account: b.account, dry: b.dry, reason: e.reason, detail: e.detail })
+      fail(GPO_STATUS[e.reason] ?? 502, `enroll_gpo_${e.reason}`, undefined, e.detail ? { detail: e.detail } : undefined)
+    }
+    throw e
+  }
+  await audit(c, b.dry ? 'enroll.gpo_checked' : 'enroll.gpo_applied', 'settings', ENROLL_KEY, { ou: r.ou, account: b.account, gpoId: r.gpoId, created: r.created, domain: r.domain })
+  return r
 })

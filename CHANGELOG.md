@@ -1,5 +1,16 @@
 # Journal des modifications
 
+## 0.19.0 — « Postes : la console met la GPO en place »
+
+Dans l'onglet « Postes » (PKI), l'étape 3 met désormais la GPO en place **depuis la console** : l'administrateur indique l'unité d'organisation des postes et un compte (administrateur du domaine, ou compte autorisé à créer des GPO et à les lier à l'unité) **pour cette seule opération**. La console crée la GPO « DDI-Buntu enrolement » dans l'annuaire, dépose ses fichiers dans SYSVOL et la lie à l'unité ; le mot de passe n'est ni stocké, ni audité, ni journalisé, ni renvoyé, et la page le vide dès la réponse. Un bouton « Simuler » vérifie le compte, l'unité et l'accès à SYSVOL sans rien écrire.
+
+- **Deux protocoles** : LDAPS (serveurs et certificat de l'onglet Annuaire de RADIUS ; jamais de LDAP en clair pour des identifiants d'administrateur) pour l'objet de GPO et le lien ; SMB signé via `smbclient` (nouveau paquet, ajouté à la liste de mise à jour ; mot de passe dans l'environnement du processus fils, jamais en argument) pour SYSVOL.
+- **Garde-fous** : refus de la racine du domaine, de « Domain Controllers » et de toute unité hors du domaine ; une seule opération à la fois ; une GPO du même nom est mise à jour (version +1) et son lien n'est jamais dupliqué ; si l'annuaire échoue après le dépôt dans SYSVOL, le dossier déposé est retiré.
+- **Confiance des postes** : le script de démarrage ajoute aux racines de confiance de l'ordinateur les autorités racines embarquées — le certificat HTTPS de la console s'il est auto-signé, et la racine de la PKI du DDI — puis installe la tâche d'enrôlement, qui démarre aussitôt (premier certificat sans attendre le redémarrage suivant).
+- **Repli** : `deploy-gpo.ps1`, généré par la console, fait la même chose lancé par un administrateur sur un contrôleur de domaine (`-WhatIf`, relançable) ; la marche à suivre manuelle reste, repliée. Les trois scripts PowerShell embarqués passent l'analyse syntaxique de PowerShell 7.
+- **Vérifié** : contre un Samba AD réel (LDAPS + SMB signé) — objet, fichiers de SYSVOL, `gPLink`, relance sans doublon, relecture par `samba-tool gpo`, refus d'unités, de mots de passe et de comptes sans droits, absence du mot de passe dans l'audit et la base.
+- **Non vérifié** : un vrai domaine Windows (GPMC, lecture de `scripts.ini` par les postes, import dans les racines de confiance) ; Kerberos pour SMB (NTLM seul pour l'instant : un domaine qui l'interdit doit utiliser le script de repli). À essayer d'abord avec « Simuler », puis sur une unité pilote.
+
 ## 0.18.2 — « Postes : les instructions pour déployer le script »
 
 Dans l'onglet « Postes » (PKI), l'étape 3 propose maintenant, dans un bloc repliable, la marche à suivre pour déployer `enroll.ps1` par GPO, de l'activation du service au contrôle sur un poste pilote : confiance dans le certificat HTTPS de la console (les postes le vérifient ; auto-signé par défaut) et dans la racine de la PKI du DDI, copie du script dans le dossier de démarrage de la GPO, appel de `powershell.exe … -Install` dans l'onglet « Scripts », liaison à l'unité d'organisation pilote, puis commandes de contrôle (tâche planifiée, journal, certificat obtenu) et essai à la main en SYSTEM avec PsExec. Deux blocs de commandes se copient en un clic.

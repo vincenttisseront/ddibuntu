@@ -43,6 +43,23 @@ const cmdSamba = computed(() => [
   `# ${t('enroll.cmd_c_check')}`,
   `klist -ke ddi-enroll.keytab`,
 ].join('\n'))
+const gpoOu = ref('')
+const ouValue = computed(() => (gpoOu.value.trim() || `OU=Postes,${cmdBaseDn.value}`).replace(/'/g, "''"))
+const gpoAccount = ref(''), gpoPassword = ref(''), gpoBusy = ref(false), gpoErr = ref(''), gpoRes = ref<any>(null)
+const ouDn = computed(() => gpoOu.value.trim() || `OU=Postes,${cmdBaseDn.value}`)
+/** Le mot de passe ne sert qu'à cet appel : il est vidé de la page dès la réponse, réussie ou non. */
+async function gpoRun(dry: boolean) {
+  if (!dry && !(await ask(t('enroll.gpo_confirm_title'), t('enroll.gpo_confirm_body', { ou: ouDn.value }), false))) return
+  gpoBusy.value = true; gpoErr.value = ''; gpoRes.value = null
+  try { gpoRes.value = await api.call('POST', '/enroll/gpo', { ou: ouDn.value, account: gpoAccount.value.trim(), password: gpoPassword.value, dry }, { silent: true }) }
+  catch (e: any) { gpoErr.value = errOf(e) } finally { gpoBusy.value = false; gpoPassword.value = '' }
+}
+const cmdGpo = computed(() => [
+  `# ${t('enroll.deploy_c_whatif')}`,
+  `.\\deploy-gpo.ps1 -Ou '${ouValue.value}' -WhatIf`,
+  `# ${t('enroll.deploy_c_apply')}`,
+  `.\\deploy-gpo.ps1 -Ou '${ouValue.value}'`,
+].join('\n'))
 const cmdTrust = computed(() => [
   `# ${t('enroll.deploy_c_trust')}`,
   `openssl s_client -connect ${cmdHost.value}:443 -servername ${cmdHost.value} </dev/null 2>/dev/null | openssl x509 -outform PEM > ddi-console.pem`,
@@ -164,14 +181,39 @@ onMounted(() => load())
       <details class="mt-3 rounded-md border border-default" data-test="enroll-deploy">
         <summary class="cursor-pointer px-3 py-2 text-sm font-medium">{{ t('enroll.deploy_title') }}</summary>
         <div class="flex flex-col gap-3 px-3 pb-3">
-          <ol class="list-decimal space-y-1.5 pl-5 text-sm text-muted">
-            <li v-for="n in 8" :key="n">{{ t(`enroll.deploy_s${n - 1}`, { domain: cmdDomain }) }}</li>
-          </ol>
-          <div v-for="b in [{ k: 'trust', title: t('enroll.deploy_cmd_trust'), text: cmdTrust }, { k: 'pilot', title: t('enroll.deploy_cmd_pilot'), text: cmdPilot }]" :key="b.k">
-            <div class="mb-1 flex items-center justify-between"><span class="text-sm">{{ b.title }}</span>
-              <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-copy" :label="t('common.copy')" :data-test="`enroll-deploy-copy-${b.k}`" @click="copy(b.text)" /></div>
-            <pre class="overflow-x-auto rounded-md bg-elevated p-3 text-xs" :data-test="`enroll-deploy-${b.k}`">{{ b.text }}</pre>
+          <p class="text-sm font-medium">{{ t('enroll.gpo_title') }}</p>
+          <p class="text-sm text-muted">{{ t('enroll.gpo_help') }}</p>
+          <UFormField :label="t('enroll.deploy_ou')"><UInput v-model="gpoOu" class="w-full font-mono" :placeholder="`OU=Postes,${cmdBaseDn}`" data-test="enroll-gpo-ou" /></UFormField>
+          <div class="grid gap-3 md:grid-cols-2">
+            <UFormField :label="t('enroll.gpo_account')"><UInput v-model="gpoAccount" class="w-full" autocomplete="off" :placeholder="`administrateur@${cmdDomain}`" data-test="enroll-gpo-account" /></UFormField>
+            <UFormField :label="t('enroll.gpo_password')"><UInput v-model="gpoPassword" type="password" class="w-full" autocomplete="new-password" data-test="enroll-gpo-password" /></UFormField>
           </div>
+          <div class="flex flex-wrap gap-2">
+            <UButton color="neutral" variant="outline" icon="i-lucide-search-check" :loading="gpoBusy" :disabled="!f.host || !f.ca || !gpoAccount || !gpoPassword" :label="t('enroll.gpo_check')" data-test="enroll-gpo-check" @click="gpoRun(true)" />
+            <UButton icon="i-lucide-rocket" :loading="gpoBusy" :disabled="!f.host || !f.ca || !gpoAccount || !gpoPassword" :label="t('enroll.gpo_apply')" data-test="enroll-gpo-apply" @click="gpoRun(false)" />
+          </div>
+          <UAlert v-if="gpoErr" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="gpoErr" data-test="enroll-gpo-error" />
+          <div v-if="gpoRes" class="rounded-md border border-default p-3 text-sm" data-test="enroll-gpo-result">
+            <p class="mb-2 font-medium">{{ gpoRes.dry ? t('enroll.gpo_dry_done') : t('enroll.gpo_done', { id: gpoRes.gpoId }) }}</p>
+            <ul class="space-y-1">
+              <li v-for="st in gpoRes.steps" :key="st.id" class="flex items-center gap-2"><UIcon name="i-lucide-check" class="text-success" />
+                <span>{{ t(`enroll.gpo_step_${st.id}`) }} — {{ t(`enroll.gpo_${gpoRes.dry ? 'will' : 'did'}_${st.action}`) }}</span></li>
+            </ul>
+          </div>
+          <p class="mt-2 text-sm font-medium">{{ t('enroll.deploy_auto_title') }}</p>
+          <p class="text-sm text-muted">{{ t('enroll.deploy_auto_help') }}</p>
+          <div><UButton :href="'/api/enroll/gpo-script'" download="deploy-gpo.ps1" icon="i-lucide-download" :disabled="!f.host || !f.ca" :label="t('enroll.deploy_gpo_download')" data-test="enroll-gpo-script" /></div>
+          <CmdBlock :title="t('enroll.deploy_cmd_gpo')" :text="cmdGpo" test="gpo" />
+          <CmdBlock :title="t('enroll.deploy_cmd_pilot')" :text="cmdPilot" test="pilot" />
+          <details class="rounded-md border border-default" data-test="enroll-deploy-manual">
+            <summary class="cursor-pointer px-3 py-2 text-sm font-medium">{{ t('enroll.deploy_manual') }}</summary>
+            <div class="flex flex-col gap-3 px-3 pb-3">
+              <ol class="list-decimal space-y-1.5 pl-5 text-sm text-muted">
+                <li v-for="n in 8" :key="n">{{ t(`enroll.deploy_s${n - 1}`, { domain: cmdDomain }) }}</li>
+              </ol>
+              <CmdBlock :title="t('enroll.deploy_cmd_trust')" :text="cmdTrust" test="trust" />
+            </div>
+          </details>
         </div>
       </details>
     </UCard>

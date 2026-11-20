@@ -259,6 +259,17 @@ describe('réglages', () => {
     expect((await audits('enroll.script')).length).toBeGreaterThan(0)
     void ctx
   })
+  it('le script de GPO embarque enroll.ps1, le démarrage et rien d\'interpolé ; réservé à l\'administrateur', async () => {
+    const r = await admin.get('/api/enroll/gpo-script'); expect(r.status, r.text).toBe(200)
+    expect(r.headers.get('content-disposition')).toContain('deploy-gpo.ps1')
+    expect(r.text).toContain('SupportsShouldProcess'); expect(r.text).toContain("'enroll.ps1' = '"); expect(r.text).toContain("'ddi-demarrage.ps1' = '")
+    expect(r.text).not.toContain('__FILES__')
+    expect(r.text.split('\n').every((l, i, a) => i === a.length - 1 || l.endsWith('\r'))).toBe(true)
+    const b64 = /'enroll\.ps1' = '([A-Za-z0-9+/=]+)'/.exec(r.text)![1]!
+    expect(Buffer.from(b64, 'base64').toString('utf8')).toContain("$Console   = 'ddi.lab.test'")
+    expect((await audits('enroll.gpo_script')).length).toBeGreaterThan(0)
+    code(await anon.get('/api/enroll/gpo-script'), 401, 'unauthenticated'); code(await viewer.get('/api/enroll/gpo-script'), 403, 'forbidden')
+  })
 })
 
 describe('enrôlement d\'un poste (Kerberos et annuaire réels)', () => {
@@ -397,6 +408,79 @@ describe('enrôlement d\'un poste (Kerberos et annuaire réels)', () => {
     await age()
     code(await enrollJson(await enroll(ticket(PC, PCPW), { csr: { pem: newCsr('rsa', 'x').csr }, extra: 1 })), 400, 'validation')
     expect(rootLog.length).toBe(0)
+  })
+})
+
+describe('GPO mise en place par la console (LDAPS et SMB réels, identifiants à usage unique)', () => {
+  const ADM = 'administrator@lab.test', ADM_PW = 'Passw0rd-Lab-1!', OU = 'OU=Postes,DC=lab,DC=test'
+  const policies = () => join(LAB, 'state/sysvol/lab.test/Policies')
+  const ldap = (base: string, filter: string, ...attrs: string[]) => spawnSync('ldapsearch', ['-LLL', '-o', 'ldif-wrap=no', '-H', 'ldaps://dc1.lab.test', '-D', ADM, '-w', ADM_PW, '-b', base, '-s', 'base', filter, ...attrs],
+    { encoding: 'utf8', env: { ...process.env, LDAPTLS_CACERT: join(LAB, 'private/tls/ca.pem') } }).stdout
+  const gpoBody = (o: Record<string, unknown> = {}) => ({ ou: OU, account: ADM, password: ADM_PW, dry: false, ...o })
+  const guidsOnDisk = () => (existsSync(policies()) ? readdirSync(policies()).filter((x) => x.startsWith('{') && !x.startsWith('{31B2F340') && !x.startsWith('{6AC1786C')) : [])
+
+  it('réservé à l\'administrateur ; corps strict (compte, mot de passe, unité d\'organisation)', async (ctx) => {
+    if (!lab) return ctx.skip()
+    code(await anon.post('/api/enroll/gpo', gpoBody()), 401, 'unauthenticated'); code(await viewer.post('/api/enroll/gpo', gpoBody()), 403, 'forbidden')
+    for (const bad of [{ account: 'administrator' }, { account: 'a b@lab.test' }, { account: 'x%secret@lab.test' }, { password: '' }, { ou: 'OU=x' }, { dry: 'oui' }, { extra: 1 }]) code(await admin.post('/api/enroll/gpo', gpoBody(bad)), 400, 'validation')
+  })
+  it('refuse la racine du domaine, « Domain Controllers », une unité inconnue, un mot de passe faux et un annuaire sans LDAPS ; rien n\'est créé', async (ctx) => {
+    if (!lab) return ctx.skip()
+    expect(smb('ou', 'create', OU).status).toBe(0)
+    const before = guidsOnDisk()
+    for (const ou of ['DC=lab,DC=test', 'OU=Domain Controllers,DC=lab,DC=test', 'OU=Inconnue,DC=lab,DC=test', 'OU=Postes,DC=autre,DC=test']) code(await admin.post('/api/enroll/gpo', gpoBody({ ou })), 400, 'enroll_gpo_ou')
+    code(await admin.post('/api/enroll/gpo', gpoBody({ password: 'Mauvais-1!' })), 409, 'enroll_gpo_bind')
+    code(await admin.post('/api/enroll/gpo', gpoBody({ account: 'svc-radius@lab.test', password: BIND_PW })), 409, 'enroll_gpo_denied')   // un compte sans droit d'écriture
+    const put = await admin.put('/api/radius/directory', { urls: ['ldap://dc1.lab.test'], baseDn: 'DC=lab,DC=test', bindDn: 'svc-radius@lab.test', bindPassword: BIND_PW, tlsRejectUnauthorized: true, caPem: CA })
+    if (put.status === 200) { code(await admin.post('/api/enroll/gpo', gpoBody()), 409, 'enroll_gpo_tls'); expect((await setDir()).status).toBe(200) }
+    expect(guidsOnDisk()).toEqual(before)
+    expect(ldap(`CN=Policies,CN=System,DC=lab,DC=test`, '(displayName=DDI-Buntu enrolement)', 'cn')).not.toContain('{')
+  })
+  it('simulation : vérifie compte, unité et SYSVOL sans rien écrire', async (ctx) => {
+    if (!lab) return ctx.skip()
+    const before = guidsOnDisk()
+    const r = await admin.post('/api/enroll/gpo', gpoBody({ dry: true })); expect(r.status, r.text).toBe(200)
+    expect(r.json).toMatchObject({ dry: true, created: true, domain: 'lab.test', ou: OU }); expect(r.json.steps.map((x: any) => x.id)).toEqual(['bind', 'ou', 'gpo', 'files', 'link'])
+    expect(guidsOnDisk()).toEqual(before); expect(ldap(OU, '(objectClass=*)', 'gPLink')).not.toContain('gPLink')
+    expect((await audits('enroll.gpo_checked')).length).toBeGreaterThan(0)
+  })
+  it('création : objet d\'annuaire, fichiers dans SYSVOL, lien sur l\'unité ; Samba relit la GPO', async (ctx) => {
+    if (!lab) return ctx.skip()
+    const r = await admin.post('/api/enroll/gpo', gpoBody()); expect(r.status, r.text).toBe(200)
+    const id = r.json.gpoId as string; expect(id).toMatch(/^\{[0-9A-F-]{36}\}$/); expect(r.json.created).toBe(true)
+    const dir = join(policies(), id), startup = join(dir, 'Machine/Scripts/Startup')
+    expect(readFileSync(join(dir, 'GPT.INI'), 'utf8')).toBe('[General]\r\nVersion=1\r\n')
+    expect(readdirSync(startup).sort()).toEqual(expect.arrayContaining(['ddi-demarrage.ps1', 'enroll.ps1']))
+    expect([...readFileSync(join(startup, 'enroll.ps1')).subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]); expect(readFileSync(join(startup, 'enroll.ps1'), 'utf8')).toContain("$Console   = 'ddi.lab.test'")
+    const ini = readFileSync(join(dir, 'Machine/Scripts/scripts.ini')); expect([...ini.subarray(0, 2)]).toEqual([0xff, 0xfe])
+    expect(ini.subarray(2).toString('utf16le')).toContain(`-File "\\\\lab.test\\SYSVOL\\lab.test\\Policies\\${id}\\Machine\\Scripts\\Startup\\ddi-demarrage.ps1"`)
+    expect(existsSync(join(dir, 'User'))).toBe(true)
+    const o = ldap(`CN=${id},CN=Policies,CN=System,DC=lab,DC=test`, '(objectClass=*)', 'displayName', 'versionNumber', 'gPCMachineExtensionNames', 'gPCFileSysPath', 'flags')
+    expect(o).toContain('displayName: DDI-Buntu enrolement'); expect(o).toContain('versionNumber: 1'); expect(o).toContain('gPCMachineExtensionNames: [{42B5FAAE-6536-11D2-AE5A-0000F87571E3}{40B6664F-4972-11D1-A7CA-0000F87571E3}]')
+    expect(o).toContain(`gPCFileSysPath: \\\\lab.test\\SysVol\\lab.test\\Policies\\${id}`)
+    expect(ldap(OU, '(objectClass=*)', 'gPLink')).toContain(`[LDAP://CN=${id},CN=Policies,CN=System,DC=lab,DC=test;0]`)
+    const st = (...a: string[]) => spawnSync(PY, [spawnSync('which', ['samba-tool'], { encoding: 'utf8' }).stdout.trim(), 'gpo', ...a, '-H', join(LAB, 'private/sam.ldb'), `--configfile=${join(LAB, 'etc/smb.conf')}`], { encoding: 'utf8' })
+    const list = st('listall'); expect(list.stdout, list.stderr).toContain(`GPO          : ${id}`); expect(list.stdout).toContain('display name : DDI-Buntu enrolement')
+    const gl = st('getlink', OU); expect(gl.stdout, gl.stderr).toContain(id)   // Samba relit le lien comme le ferait un contrôleur de domaine
+    expect((await audits('enroll.gpo_applied')).length).toBeGreaterThan(0)
+  })
+  it('relance : la même GPO est mise à jour (version +1), le lien n\'est pas dupliqué', async (ctx) => {
+    if (!lab) return ctx.skip()
+    const first = guidsOnDisk(); expect(first).toHaveLength(1)
+    const r = await admin.post('/api/enroll/gpo', gpoBody()); expect(r.status, r.text).toBe(200)
+    expect(r.json).toMatchObject({ created: false, gpoId: first[0] }); expect(guidsOnDisk()).toEqual(first)
+    expect(readFileSync(join(policies(), first[0]!, 'GPT.INI'), 'utf8')).toBe('[General]\r\nVersion=2\r\n')
+    expect(ldap(`CN=${first[0]},CN=Policies,CN=System,DC=lab,DC=test`, '(objectClass=*)', 'versionNumber')).toContain('versionNumber: 2')
+    expect(ldap(OU, '(objectClass=*)', 'gPLink').split(`CN=${first[0]},`).length).toBe(2)
+    expect(r.json.steps.find((x: any) => x.id === 'link').action).toBe('keep')
+  })
+  it('le mot de passe ne figure ni dans les réponses, ni dans le journal d\'audit, ni dans la base', async (ctx) => {
+    if (!lab) return ctx.skip()
+    const bad = await admin.post('/api/enroll/gpo', gpoBody({ password: 'Secret-a-ne-pas-voir-1!' }))
+    expect(bad.text).not.toContain('Secret-a-ne-pas-voir-1!')
+    const all = JSON.stringify(await rows("select action, detail, entity_id from audit_log where action like 'enroll.gpo%'")) + JSON.stringify(await rows("select key, value from settings where value::text like '%Secret-a-ne-pas-voir%' or value::text like '%Passw0rd-Lab-1%'"))
+    expect(all).not.toContain('Secret-a-ne-pas-voir-1!'); expect(all).not.toContain(ADM_PW)
+    expect((await audits('enroll.gpo_refused')).length).toBeGreaterThan(0)
   })
 })
 
