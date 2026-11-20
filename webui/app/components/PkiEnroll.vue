@@ -112,6 +112,9 @@ onMounted(() => load())
       </template>
       <p v-if="!recent.length" class="text-sm text-muted">{{ t('enroll.no_activity') }}</p>
       <table v-else class="w-full text-sm" data-test="enroll-recent">
+        <thead class="sr-only">
+          <tr><th scope="col">{{ t('enroll.col_when') }}</th><th scope="col">{{ t('enroll.col_machine') }}</th><th scope="col">{{ t('enroll.col_result') }}</th></tr>
+        </thead>
         <tbody>
           <tr v-for="(r, i) in recent" :key="i" class="border-t border-default">
             <td class="py-1 pr-3 whitespace-nowrap text-muted">{{ when(r.at) }}</td>

@@ -52,16 +52,6 @@ const publish = (cas: unknown[]) => writeFileSync(CAS, JSON.stringify({ at: 1700
 const sh = (args: string[], input?: string | Buffer) => spawnSync('openssl', args, { encoding: 'utf8', input })
 const read = (p: string) => readFileSync(p, 'utf8')
 // ---- Autorités et certificats de test (openssl) ----
-function mint(name: string, subject: string, days: number, san: string, ext = 'basicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth'): { pem: string; der: Buffer; serialHex: string; serialDec: string; fp: string } {
-  const f = (s: string) => join(SSL, `${name}.${s}`)
-  sh(['req', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', f('key'), '-out', f('csr'), '-subj', subject])
-  writeFileSync(f('ext'), ext + (san ? `\nsubjectAltName=${san}` : '') + '\n')
-  sh(['x509', '-req', '-in', f('csr'), '-CA', join(SSL, 'sub.pem'), '-CAkey', join(SSL, 'sub.key'), '-CAcreateserial', '-out', f('pem'), '-days', String(days), '-extfile', f('ext')])
-  const pem = read(f('pem'))
-  const der = Buffer.from(pem.replace(/-----[A-Z ]+-----|\s/g, ''), 'base64')
-  const serialHex = sh(['x509', '-in', f('pem'), '-noout', '-serial']).stdout.trim().split('=')[1]!.toUpperCase().replace(/^0+/, '')
-  return { pem, der, serialHex, serialDec: BigInt('0x' + serialHex).toString(10), fp: createHash('sha1').update(der).digest('hex') }
-}
 /** Le « root » simulé : signe vraiment les demandes avec l'émettrice de test, publie dossier + résultat comme ddibuntu-pki. */
 const rootLog: Array<{ req: any; csr: string | null }> = []
 let rootBusy = false, rootDelay = 0, rootRefuse: string | null = null, rootMute = false, rootTimer: NodeJS.Timeout | null = null
@@ -108,7 +98,6 @@ const newCsr = (alg: 'rsa' | 'ec' = 'ec', n = 'x') => {
   else sh(['req', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', k + '.key', '-out', k + '.csr', '-subj', `/CN=${n}`])
   return { csr: read(k + '.csr'), key: k + '.key' }
 }
-const F: Record<string, ReturnType<typeof mint>> = {}
 const LAB = join(TMP, 'lab'), ROOTD = resolve(__dirname, '../..'), PY = '/usr/bin/python3.12', BIND_PW = 'Passw0rd-svc-radius-1!'
 let lab = false, CA = ''
 const smb = (...a: string[]) => spawnSync(PY, [spawnSync('which', ['samba-tool'], { encoding: 'utf8' }).stdout.trim(), ...a, `--configfile=${join(LAB, 'etc/smb.conf')}`], { encoding: 'utf8' })
@@ -170,12 +159,6 @@ beforeAll(async () => {
   writeFileSync(join(SSL, 'ca.ext'), 'basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\n')
   sh(['x509', '-req', '-in', join(SSL, 'sub.csr'), '-CA', join(SSL, 'root.pem'), '-CAkey', join(SSL, 'root.key'), '-CAcreateserial', '-out', join(SSL, 'sub.pem'), '-days', '3000', '-extfile', join(SSL, 'ca.ext')])
   writeFileSync(join(CADIR, 'Lab-Sub', 'cert.pem'), read(join(SSL, 'sub.pem'))); writeFileSync(join(CADIR, 'Lab-Sub', 'chain.pem'), read(join(SSL, 'root.pem')))
-  F.srv = mint('srv', '/CN=radius1.lab.test/O=Lab/C=FR', 700, 'DNS:radius1.lab.test,IP:10.1.2.3')
-  F.usr = mint('usr', '/CN=Jean Dupont/O=Lab/C=FR', 10, 'email:jdupont@lab.test', 'basicConstraints=CA:FALSE\nextendedKeyUsage=clientAuth')
-  F.mac = mint('mac', '/CN=pc01/O=Lab/C=FR', 300, 'DNS:pc01.lab.test', 'basicConstraints=CA:FALSE\nextendedKeyUsage=clientAuth')
-  F.net = mint('net', '/CN=sw1/O=Lab/C=FR', 100, 'DNS:sw1.lab.test')
-  F.oth = mint('oth', '/CN=autre/O=Lab/C=FR', 100, '')
-  F.mgt = mint('mgt', '/CN=mgmt/O=Lab/C=FR', 100, '')
   // copie minimale de la base d'EJBCA (mêmes noms de tables et de colonnes que EJBCA 9)
   db = new pg.Client({ connectionString: DBURL }); await db.connect()
   await db.query('drop schema public cascade; create schema public')
@@ -186,22 +169,6 @@ beforeAll(async () => {
     accountbindingid text, tag text, type int, updatetime bigint, username text, certificaterequest text);
     create table base64certdata (fingerprint text primary key, base64cert text, rowprotection text, rowversion int, certificaterequest text);
     create table cadata (cakey text, secret text)`)
-  const day = 86_400_000, now = Date.now()
-  const ins = async (x: ReturnType<typeof mint>, o: { issuer?: string; subject: string; san?: string; profile: number; status?: number; type?: number; nb?: number; exp?: number; revAt?: number; reason?: number; b64?: boolean }) => {
-    await ej.query(`insert into certificatedata (fingerprint, base64cert, certificateprofileid, endentityprofileid, expiredate, issuerdn, notbefore, revocationdate, revocationreason, serialnumber, status, subjectaltname, subjectdn, type, updatetime, username)
-      values ($1,$2,$3,5020001,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'ddi-x')`,
-      [x.fp, o.b64 === false ? null : x.der.toString('base64'), o.profile, o.exp ?? now + 300 * day, o.issuer ?? SUBDN, o.nb ?? now - day, o.revAt ?? -1, o.reason ?? -1, x.serialDec, o.status ?? 20, o.san ?? '', o.subject, o.type ?? 1, now])
-  }
-  await ins(F.srv!, { subject: 'CN=radius1.lab.test,O=Lab,C=FR', san: 'dNSName=radius1.lab.test, iPAddress=10.1.2.3', profile: 5010001, nb: now - 5 * day, exp: now + 700 * day })
-  await ins(F.usr!, { subject: 'CN=Jean Dupont,O=Lab,C=FR', san: 'rfc822Name=jdupont@lab.test', profile: 5010003, nb: now - 355 * day, exp: now + 10 * day })
-  await ins(F.mac!, { subject: 'CN=pc01,O=Lab,C=FR', san: 'dNSName=pc01.lab.test', profile: 5010002, status: 40, revAt: now - 2 * day, reason: 1, nb: now - 60 * day, exp: now + 300 * day })
-  await ins(F.net!, { subject: 'CN=sw1,O=Lab,C=FR', san: 'dNSName=sw1.lab.test', profile: 5010004, nb: now - 400 * day, exp: now - 35 * day })
-  await ins(F.oth!, { subject: 'CN=autre,O=Lab,C=FR', profile: 12345, nb: now - 20 * day, exp: now + 100 * day })
-  await ins(F.mgt!, { subject: 'CN=mgmt,O=Lab,C=FR', profile: 5010001, issuer: 'CN=ManagementCA,O=EJBCA Sample,C=SE' })
-  await ej.query(`insert into certificatedata (fingerprint, base64cert, certificateprofileid, endentityprofileid, expiredate, issuerdn, notbefore, revocationdate, revocationreason, serialnumber, status, subjectaltname, subjectdn, type, updatetime)
-    values ($1,$2,2,0,$3,$4,$5,-1,-1,'1',20,'', $6, 2, $7)`, ['c'.repeat(40), 'AAAA', now + day, ROOTDN, now - day, SUBDN, now])   // le certificat de l'émettrice : type 2, jamais listé
-  for (let i = 0; i < 60; i++) await ej.query(`insert into certificatedata (fingerprint, certificateprofileid, endentityprofileid, expiredate, issuerdn, notbefore, revocationdate, revocationreason, serialnumber, status, subjectaltname, subjectdn, type, updatetime)
-    values ($1,5010002,5020001,$2,$3,$4,-1,-1,$5,20,'',$6,1,$7)`, [(i + 1).toString(16).padStart(40, 'f'), now + 200 * day, SUBDN, now - (100 + i) * 1000, String(9000 + i), `CN=lot-${String(i).padStart(2, '0')},O=Lab,C=FR`, now])
   await ej.query('revoke all on all tables in schema public from public')
   srv = spawn('node', ['.output/server/index.mjs'], { env: { ...process.env, NODE_ENV: 'production', PORT: String(PORT), NITRO_HOST: '127.0.0.1', DDI_TEST_MODE: '1', DDI_COOKIE_SECURE: 'false', DDI_DATABASE_URL: DBURL,
     DDI_EJBCA_DATABASE_URL: EJURL, DDI_SECRET_KEY: 'cle-secrete-de-test-0123456789abcdefghij', DDI_SETUP_TOKEN: SETUP_TOKEN, DDI_PBKDF2_ITERATIONS: '2000', DDI_GENERATED_DIR: GEN,
