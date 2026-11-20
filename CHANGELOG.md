@@ -1,5 +1,11 @@
 # Journal des modifications
 
+## 0.18.1 — « Postes : les commandes pour créer le compte de service et exporter le keytab »
+
+Dans l'onglet « Postes » (PKI), l'étape 1 propose maintenant, dans un bloc repliable, les commandes à lancer sur le contrôleur de domaine : création du compte de service dédié, chiffrement AES activé **avant** l'export (sans quoi le keytab n'a que du RC4 et la console le refuse), nom de service `HTTP/<console>`, export du keytab, puis contrôle avec `klist -ke`. Deux variantes : Active Directory Windows (PowerShell et `ktpass`) et Samba AD (`samba-tool`). Le nom de la console saisi dans le formulaire et le domaine déduit du groupe sont repris dans les commandes ; chaque bloc se copie en un clic.
+
+- Variante Samba : mêmes commandes que celles jouées contre le vrai Samba AD du test `e2e-iter62`. Variante Windows : options de `ktpass` relues dans la documentation Microsoft, **non exécutées ici** (pas de contrôleur Windows).
+
 ## 0.18.0 — « Les postes obtiennent seuls leur certificat, sans AD CS »
 
 La PKI du DDI émet maintenant les certificats EAP-TLS des postes du domaine, ce qui permet de retirer AD CS. Le poste fabrique sa clé (non exportable, jamais envoyée), s'authentifie en **Kerberos avec son compte d'ordinateur** et reçoit son certificat ; le renouvellement est automatique.
