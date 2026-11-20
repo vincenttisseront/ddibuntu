@@ -20,7 +20,7 @@ Vous gérez aujourd'hui vos adresses dans un tableur, votre DNS et votre DHCP su
 - **Vous quittez vos outils actuels sans repartir de zéro.** Import des exports DHCP/DNS de Windows Server, lecture directe de l'Active Directory, import NetBox, import d'un NPS existant, découverte réseau.
 - **Sûr par construction.** Chaîne d'approvisionnement vérifiée (signatures et empreintes), console sans privilège, application privilégiée séparée et contrôlée, pare-feu nftables, secrets chiffrés, journal d'audit complet, export vers un SIEM, SSO OpenID Connect et jetons d'API.
 
-> État : version de développement **0.18.0**. Voir « Limites connues » ci-dessous avant tout usage en production.
+> État : version de développement **0.18.0**.
 
 ## La console en images
 
@@ -112,13 +112,6 @@ ddibuntu-cluster status          # état JSON
 ddibuntu-cluster switchover      # bascule contrôlée
 ```
 Ajoutez d'abord l'arbitre, puis le second nœud de données. Dès que deux nœuds de données existent, Kea passe en **HA load-balancing** (configuration ajoutée par root ; `ddibuntu-cluster status` montre l'état HA) : les relais DHCP doivent lister les deux adresses réelles des nœuds. BIND devient **primaire/secondaire** : le secondaire est dérivé par root de la configuration répliquée et reçoit les zones (et la RPZ) par transfert signé TSIG sur le réseau dédié. Pour une adresse de service unique, ajoutez une **IP virtuelle** qui suit le leader PostgreSQL (Keepalived ; voir `docs/ARCHITECTURE-CLUSTER.md`). La **page « Cluster »** de la console montre l'état et permet la bascule contrôlée ; BIND est promu automatiquement quand Patroni change de leader et un nœud secondaire de la console est en lecture seule (utilisez l'adresse de service). **Mise à jour en ligne** : secondaires d'abord, puis bascule, puis l'ancien leader (le leader refuse tant que les secondaires ne sont pas à jour).
-
-## Limites connues
-
-- Jamais exécuté sur **VMware réel**, **Docker Desktop réel** ni **PowerShell 5.1**. L'enrôlement automatique des certificats de postes (0.18.0) est vérifié contre un vrai Samba AD, mais pas encore sur un **vrai poste Windows** (`certreq`, tâche planifiée, GPO) : à essayer d'abord sur un poste pilote.
-- Le DDNS reçu par BIND est écrasé au déploiement suivant. Kea 2.4 (Ubuntu 24.04) n'a pas GSS-TSIG : le serveur DNS de l'appliance accepte bien les mises à jour sécurisées des machines du domaine (0.5.6), mais l'envoi des enregistrements DHCP vers les contrôleurs Active Directory en GSS-TSIG (Kea 3.x ou `nsupdate -g`) n'est pas fait. L'authentification Kerberos n'a été essayée qu'avec un KDC MIT, pas avec un vrai Active Directory.
-- Certificat TLS de la console auto-signé ; haute disponibilité en cours de construction (voir ci-dessus) ; pas de règles par client ni par expression régulière dans le filtrage.
-- La découverte réseau lit l'ARP dans `/proc/net/arp` ; le ping dépend des réglages du système.
 
 ## Licence
 

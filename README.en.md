@@ -19,7 +19,7 @@ Do you still keep your addresses in a spreadsheet, run DNS and DHCP on Windows s
 - **Leave your current tools without starting over.** Import Windows Server DHCP/DNS exports, read Active Directory directly, import from NetBox, import an existing NPS, discover the network.
 - **Secure by construction.** Verified supply chain (signatures and checksums), unprivileged console, separate and controlled privileged application, nftables firewall, encrypted secrets, full audit log, export to a SIEM, OpenID Connect SSO and API tokens.
 
-> Status: development version **0.18.0**. See "Known limitations" below before any production use.
+> Status: development version **0.18.0**.
 
 ## The console in pictures
 
@@ -114,13 +114,6 @@ ddibuntu-cluster switchover      # controlled switchover
 ```
 
 Add the witness first, then the second data node. As soon as two data nodes exist, Kea switches to **HA load-balancing** (configuration added by root; `ddibuntu-cluster status` shows the HA state): DHCP relays must list both real node addresses. BIND becomes **primary/secondary**: root derives the secondary from the replicated configuration, and it receives zones (and the RPZ) by TSIG-signed transfer over the dedicated network. For a single service address, add a **virtual IP** that follows the PostgreSQL leader (Keepalived; see `docs/ARCHITECTURE-CLUSTER.md`). The console's **"Cluster" page** shows the state and allows a controlled switchover; BIND is promoted automatically when Patroni changes leader, and a secondary console node is read-only (use the service address). **Online update**: secondaries first, then switchover, then the former leader (the leader refuses to update until the secondaries are up to date).
-
-## Known limitations
-
-- Never run on **real VMware**, **real Docker Desktop** or **PowerShell 5.1**. Automatic workstation certificate enrolment (0.18.0) is verified against a real Samba AD, but not yet on a **real Windows workstation** (`certreq`, scheduled task, GPO): try it on a pilot workstation first.
-- DDNS received by BIND is overwritten at the next deployment. Kea 2.4 (Ubuntu 24.04) has no GSS-TSIG: the appliance's DNS server does accept secure updates from domain machines (0.5.6), but sending DHCP records to Active Directory controllers over GSS-TSIG (Kea 3.x or `nsupdate -g`) is not done. Kerberos authentication has only been tried with an MIT KDC, not with a real Active Directory.
-- Self-signed console TLS certificate; high availability still under construction (see above); no per-client or regular-expression rules in filtering.
-- Network discovery reads ARP from `/proc/net/arp`; ping depends on system settings.
 
 ## License
 
