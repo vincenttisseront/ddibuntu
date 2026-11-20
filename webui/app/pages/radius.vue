@@ -6,7 +6,9 @@
 const { t } = useT(); const api = useApi(); const toast = useToast(); const { ask } = useConfirm(); const fmt = useFmt()
 const { isAdmin } = useRole()
 const tab = useHashTab('service', ['service', 'clients', 'journal', 'directory', 'certs', 'auth', 'mfa', 'rules', 'import'])
-const tabs = computed(() => [{ label: t('radius.tab_service'), value: 'service', icon: 'i-lucide-radio-tower' }, { label: t('radius.tab_clients'), value: 'clients', icon: 'i-lucide-router' }, { label: t('radius.tab_journal'), value: 'journal', icon: 'i-lucide-scroll-text' }, ...(isAdmin.value ? [{ label: t('radius.tab_directory'), value: 'directory', icon: 'i-lucide-network' }, { label: t('radius.tab_certs'), value: 'certs', icon: 'i-lucide-shield-check' }, { label: t('radius.tab_auth'), value: 'auth', icon: 'i-lucide-key-round' }, { label: t('radius.tab_mfa'), value: 'mfa', icon: 'i-lucide-smartphone' }, { label: t('radius.tab_rules'), value: 'rules', icon: 'i-lucide-list-checks' }, { label: t('radius.tab_import'), value: 'import', icon: 'i-lucide-file-input' }] : [])])
+const dirty = (k?: string) => (k ? !!data.value?.deploy?.parts?.includes(k) : !!data.value?.deploy?.pending)
+const dot = (on: boolean) => (on ? { badge: { label: '!', color: 'warning', variant: 'solid', size: 'sm' } } : {})   // pastille : ce que cet onglet règle n'est pas encore déployé
+const tabs = computed(() => [{ label: t('radius.tab_service'), value: 'service', icon: 'i-lucide-radio-tower', ...dot(isAdmin.value && dirty()) }, { label: t('radius.tab_clients'), value: 'clients', icon: 'i-lucide-router', ...dot(dirty('clients')) }, { label: t('radius.tab_journal'), value: 'journal', icon: 'i-lucide-scroll-text' }, ...(isAdmin.value ? [{ label: t('radius.tab_directory'), value: 'directory', icon: 'i-lucide-network' }, { label: t('radius.tab_certs'), value: 'certs', icon: 'i-lucide-shield-check', ...dot(dirty('pki')) }, { label: t('radius.tab_auth'), value: 'auth', icon: 'i-lucide-key-round' }, { label: t('radius.tab_mfa'), value: 'mfa', icon: 'i-lucide-smartphone' }, { label: t('radius.tab_rules'), value: 'rules', icon: 'i-lucide-list-checks', ...dot(dirty('rules')) }, { label: t('radius.tab_import'), value: 'import', icon: 'i-lucide-file-input' }] : [])])
 
 const data = ref<any>(null), busy = ref<'' | 'apply' | 'stop' | 'test'>(''), err = ref(''), probe = ref<any>(null)
 const status = computed(() => data.value?.status ?? null)
@@ -63,11 +65,24 @@ async function regen(row: any) {
 }
 async function copy(v: string) { try { await navigator.clipboard.writeText(v); toast.add({ title: t('common.copied'), color: 'success' }) } catch { /* presse-papiers indisponible */ } }
 await load()
+const rev = useState<number>('radius-rev', () => 0)   // incrémenté par useApi après toute écriture sous /radius : la bannière se met à jour sans recharger la page
+watch([tab, rev], () => { void load() })
+let poll: ReturnType<typeof setInterval> | undefined
+onMounted(() => { poll = setInterval(() => { if (!document.hidden) void load() }, 10000) })
+onBeforeUnmount(() => { if (poll) clearInterval(poll) })
+const pendingText = computed(() => {
+  const d = data.value?.deploy
+  if (!d?.pending) return ''
+  const what = d.parts.map((k: string) => t(`radius.pending_part_${k}`)).join(', ')
+  return d.never ? t('radius.pending_never', { what }) : t('radius.pending_banner', { what })
+})
 </script>
 
 <template>
   <div class="flex flex-col gap-3">
     <UTabs v-model="tab" :items="tabs" :content="false" :aria-label="t('nav.radius')" />
+    <UAlert v-if="pendingText" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('radius.pending_title')" :description="pendingText" role="status" data-test="radius-deploy-pending"
+      :actions="isAdmin ? [{ label: t('radius.deploy'), icon: 'i-lucide-rocket', color: 'warning', loading: busy === 'apply', disabled: waiting && busy !== 'apply', 'data-test': 'radius-deploy-pending-apply', onClick: () => act('apply') }] : undefined" />
 
     <div v-if="tab === 'service'" class="flex flex-col gap-3">
       <p class="text-sm text-muted">{{ t('radius.intro') }}</p>
@@ -110,7 +125,7 @@ await load()
         <p v-if="data?.rules?.pending" class="text-xs text-warning mt-2" role="status" data-test="radius-rules-pending">{{ t('radius.rules_pending') }}</p>
         <p v-if="err" class="text-sm text-error mt-2" role="alert">{{ err }}</p>
         <div v-if="isAdmin" class="flex flex-wrap gap-2 mt-4">
-          <UButton icon="i-lucide-rocket" :label="t('radius.deploy')" :loading="busy === 'apply'" :disabled="waiting && busy !== 'apply'" data-test="radius-apply" @click="act('apply')" />
+          <UButton icon="i-lucide-rocket" :color="data?.deploy?.pending ? 'warning' : 'primary'" :label="t('radius.deploy')" :loading="busy === 'apply'" :disabled="waiting && busy !== 'apply'" data-test="radius-apply" @click="act('apply')" />
           <UButton icon="i-lucide-power" color="neutral" variant="outline" :label="t('radius.stop')" :loading="busy === 'stop'" :disabled="waiting || !status?.active" data-test="radius-stop" @click="act('stop')" />
           <UButton icon="i-lucide-activity" color="neutral" variant="outline" :label="t('radius.test')" :loading="busy === 'test'" :disabled="waiting || !status?.active" data-test="radius-test" @click="runTest" />
         </div>

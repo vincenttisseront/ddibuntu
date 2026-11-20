@@ -13,6 +13,7 @@ import { authzDigest, authzProblems, buildAuthzDeposit } from '../utils/radius-a
 import { loadAuth } from '../utils/radius-auth'
 import { loadMfaInput } from '../utils/radius-mfa-store'
 import { getPushed, loadCompiled, setPushed } from '../utils/radius-rules-store'
+import { deployBrief, markDeployed } from '../utils/radius-pending'
 import { dirPassword, loadDir } from '../utils/radius-dir-store'
 import { readJournal, type JournalKind } from '../utils/radius-journal'
 import { readClusterState } from '../utils/cluster'
@@ -52,8 +53,9 @@ async function clusterBrief() {
   return { node: st.node, role: st.localRole, leader: st.leader, vip: st.vip ? { address: st.vip.address, held: st.vip.held } : null, deployed: !!snap?.deployed, follow: snap?.follow ?? null }
 }
 route('GET', '/radius', 'viewer', async () => {
+  const rules = await rulesBrief()
   const n = await one<{ n: number; on: number }>('select count(*)::int as n, count(*) filter (where enabled)::int as on from radius_clients')
-  return { auth: await loadAuth(), status: await readRadiusStatus(), result: await readRadiusResult(), requestPending: await radiusRequestPending(), pki: pkiBrief(await loadPki()), clients: n?.n ?? 0, enabledClients: n?.on ?? 0, max: MAX_CLIENTS, rules: await rulesBrief(), journal: await journalBrief(), cluster: await clusterBrief() }
+  return { auth: await loadAuth(), status: await readRadiusStatus(), result: await readRadiusResult(), requestPending: await radiusRequestPending(), pki: pkiBrief(await loadPki()), clients: n?.n ?? 0, enabledClients: n?.on ?? 0, max: MAX_CLIENTS, rules, deploy: await deployBrief(rules.pending), journal: await journalBrief(), cluster: await clusterBrief() }
 })
 
 // Journal des authentifications de CE nœud : acceptées, refusées (avec le certificat, la règle et la raison), et les diagnostics du démon
@@ -144,6 +146,7 @@ route('POST', '/radius/apply', 'admin', async (c) => {
   const out = await deposit(c, req, { clients: rows.filter((x) => x.enabled).length, eap: !!dep, checkCrl: dep?.checkCrl ?? null, rules: compiled.length, mfaClients: mfa.clients.length })
   await notePending('apply', out.requestedAt, prev, req)   // devient « le déploiement » quand root l'a accepté : c'est ce que rejouera le nouveau leader
   await setPushed(authzDigest(compiled, dir, password, auth, mfa))
+  await markDeployed()
   // les CRL déployées sont celles-ci : la tâche planifiée n'en renvoie une nouvelle (et ne redémarre le service) que si elles changent
   if (dep) await withPki(async () => { const s = await loadPki(); await savePki({ ...s, crlPushed: crlSetDigest(s) }) })
   return out

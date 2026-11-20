@@ -1,5 +1,16 @@
 # Journal des modifications
 
+## 0.17.1 — « RADIUS : ce qui attend un déploiement est affiché clairement »
+
+Jusqu'ici seule la liste des règles d'accès signalait « modifications non déployées », et par une phrase discrète de l'onglet Service. Un client ajouté, un secret changé ou un certificat remplacé n'était pas signalé : on pouvait croire le service à jour alors qu'il tournait avec l'ancienne configuration.
+
+- **Bandeau sur tous les onglets** (orange, avec un bouton « Déployer ») qui dit **quoi** attend : clients RADIUS, certificats EAP-TLS, règles d'accès / annuaire / mot de passe / second facteur. Un service jamais déployé le dit aussi.
+- **Pastille « ! »** sur les onglets Service, Clients, Certificats et Règles ; le bouton « Déployer » de l'onglet Service passe en orange.
+- **Exact, pas approximatif** : la console compare l'état enregistré à ce que root a reçu la dernière fois (empreintes à clé, aucun secret en clair). Modifier puis rétablir une valeur n'affiche rien ; un simple commentaire ne compte pas ; adresse, activation, secret, MFA d'un client, ou le certificat du serveur, si.
+- **À jour sans recharger** : après toute écriture sous RADIUS et toutes les 10 secondes.
+- **Mise à niveau** : un service déjà déployé avant cette version part de l'état actuel (rien n'est affiché à tort) ; seules les modifications faites ensuite apparaissent.
+- **Tests** : `e2e-iter61` (client ajouté / supprimé / modifié, retour à l'état déployé, commentaire sans effet, secret, déploiement accepté).
+
 ## 0.17.0 — « Second facteur (MFA) pour les accès par mot de passe, par client RADIUS »
 
 Une passerelle VPN qui interroge RADIUS en PAP peut maintenant exiger **mot de passe + code à usage unique** : l'utilisateur saisit son mot de passe suivi directement de son code (6 ou 8 chiffres) dans le champ du mot de passe. Le service sépare le code, applique **d'abord** les règles d'accès (compte actif, groupes, équipement), puis demande à un **fournisseur MFA externe** de vérifier le couple. Le résultat est journalisé ; ni le mot de passe ni le code ne le sont.
