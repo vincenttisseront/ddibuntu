@@ -43,6 +43,18 @@ const cmdSamba = computed(() => [
   `# ${t('enroll.cmd_c_check')}`,
   `klist -ke ddi-enroll.keytab`,
 ].join('\n'))
+const cmdTrust = computed(() => [
+  `# ${t('enroll.deploy_c_trust')}`,
+  `openssl s_client -connect ${cmdHost.value}:443 -servername ${cmdHost.value} </dev/null 2>/dev/null | openssl x509 -outform PEM > ddi-console.pem`,
+].join('\n'))
+const cmdPilot = computed(() => [
+  `# ${t('enroll.deploy_c_manual')}`,
+  'PsExec64.exe -s powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\chemin\\vers\\enroll.ps1 -Now',
+  `# ${t('enroll.deploy_c_check')}`,
+  "Get-ScheduledTask -TaskName 'DDI-Buntu enrolement'",
+  'Get-Content "$env:ProgramFiles\\DDI-Buntu\\enroll.log" -Tail 20',
+  "Get-ChildItem Cert:\\LocalMachine\\My | Where-Object { $_.HasPrivateKey -and $_.DnsNameList.Unicode -contains (($env:COMPUTERNAME + '.' + (Get-CimInstance Win32_ComputerSystem).Domain).ToLower()) } | Format-List Subject, Issuer, NotAfter",
+].join('\n'))
 async function copy(v: string) { try { await navigator.clipboard.writeText(v); toast.add({ title: t('common.copied'), color: 'success', icon: 'i-lucide-check' }) } catch { /* presse-papiers indisponible : le texte reste sélectionnable */ } }
 const kt = computed(() => data.value?.keytab ?? null)
 const issuers = computed<string[]>(() => data.value?.issuers ?? [])
@@ -149,6 +161,19 @@ onMounted(() => load())
       <template #header><span class="font-medium">{{ t('enroll.step_script') }}</span></template>
       <p class="text-sm text-muted mb-2">{{ t('enroll.script_help') }}</p>
       <UButton :href="'/api/enroll/script'" download="enroll.ps1" icon="i-lucide-download" :disabled="!f.host || !f.ca" :label="t('enroll.script_download')" data-test="enroll-script" />
+      <details class="mt-3 rounded-md border border-default" data-test="enroll-deploy">
+        <summary class="cursor-pointer px-3 py-2 text-sm font-medium">{{ t('enroll.deploy_title') }}</summary>
+        <div class="flex flex-col gap-3 px-3 pb-3">
+          <ol class="list-decimal space-y-1.5 pl-5 text-sm text-muted">
+            <li v-for="n in 8" :key="n">{{ t(`enroll.deploy_s${n - 1}`, { domain: cmdDomain }) }}</li>
+          </ol>
+          <div v-for="b in [{ k: 'trust', title: t('enroll.deploy_cmd_trust'), text: cmdTrust }, { k: 'pilot', title: t('enroll.deploy_cmd_pilot'), text: cmdPilot }]" :key="b.k">
+            <div class="mb-1 flex items-center justify-between"><span class="text-sm">{{ b.title }}</span>
+              <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-copy" :label="t('common.copy')" :data-test="`enroll-deploy-copy-${b.k}`" @click="copy(b.text)" /></div>
+            <pre class="overflow-x-auto rounded-md bg-elevated p-3 text-xs" :data-test="`enroll-deploy-${b.k}`">{{ b.text }}</pre>
+          </div>
+        </div>
+      </details>
     </UCard>
 
     <UCard>
