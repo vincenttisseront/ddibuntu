@@ -37,6 +37,7 @@ if ($Install) {
   $princ   = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
   Register-ScheduledTask -TaskName 'DDI-Buntu enrolement' -Action $action -Trigger $trigger -Principal $princ -Force | Out-Null
   Write-Log 'tache planifiee installee'
+  Start-ScheduledTask -TaskName 'DDI-Buntu enrolement'   # premier enrolement tout de suite, sans attendre le prochain demarrage ni 03:30
   return
 }
 

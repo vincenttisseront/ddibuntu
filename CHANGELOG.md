@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.18.2 — « Postes : les instructions pour déployer le script »
+
+Dans l'onglet « Postes » (PKI), l'étape 3 propose maintenant, dans un bloc repliable, la marche à suivre pour déployer `enroll.ps1` par GPO, de l'activation du service au contrôle sur un poste pilote : confiance dans le certificat HTTPS de la console (les postes le vérifient ; auto-signé par défaut) et dans la racine de la PKI du DDI, copie du script dans le dossier de démarrage de la GPO, appel de `powershell.exe … -Install` dans l'onglet « Scripts », liaison à l'unité d'organisation pilote, puis commandes de contrôle (tâche planifiée, journal, certificat obtenu) et essai à la main en SYSTEM avec PsExec. Deux blocs de commandes se copient en un clic.
+
+- **Le script lance maintenant la tâche aussitôt installée** : avant, le premier certificat n'arrivait qu'au démarrage suivant ou à 03:30 ; désormais l'enrôlement part dès l'application de la GPO.
+- **Non vérifié** : un vrai poste Windows (GPO, tâche planifiée, `Invoke-WebRequest -UseDefaultCredentials` depuis SYSTEM, confiance dans le certificat de la console) — à essayer d'abord sur un poste pilote.
+
 ## 0.18.1 — « Postes : les commandes pour créer le compte de service et exporter le keytab »
 
 Dans l'onglet « Postes » (PKI), l'étape 1 propose maintenant, dans un bloc repliable, les commandes à lancer sur le contrôleur de domaine : création du compte de service dédié, chiffrement AES activé **avant** l'export (sans quoi le keytab n'a que du RC4 et la console le refuse), nom de service `HTTP/<console>`, export du keytab, puis contrôle avec `klist -ke`. Deux variantes : Active Directory Windows (PowerShell et `ktpass`) et Samba AD (`samba-tool`). Le nom de la console saisi dans le formulaire et le domaine déduit du groupe sont repris dans les commandes ; chaque bloc se copie en un clic.

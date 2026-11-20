@@ -136,7 +136,7 @@ describe('script PowerShell', () => {
     expect(s).toContain("$Console   = 'ddi.lab.test'"); expect(s).toContain("$IssuerCn  = 'Autorité d''essai'")
     expect(s).not.toContain('__HOST__'); expect(s).not.toContain('__ISSUER__')
     expect(s.split('\r\n').length).toBeGreaterThan(50); expect(s.replace(/\r\n/g, '')).not.toContain('\n')
-    for (const must of ['-UseDefaultCredentials', 'Exportable = FALSE', 'MachineKeySet = TRUE', 'Register-ScheduledTask', "'SYSTEM'", 'certreq.exe -accept -machine', '/api/enroll/v1/machine']) expect(s, must).toContain(must)
+    for (const must of ['-UseDefaultCredentials', 'Exportable = FALSE', 'MachineKeySet = TRUE', 'Register-ScheduledTask', 'Start-ScheduledTask -TaskName', "'SYSTEM'", 'certreq.exe -accept -machine', '/api/enroll/v1/machine']) expect(s, must).toContain(must)
   })
   it('un nom d\'autorité hostile ne sort pas de sa chaîne PowerShell (apostrophes typographiques, « $\' », « $& »)', () => {
     const s = enrollScript('ddi.lab.test', "A\u2019b\u2018c\u201Ad\u201Be'f $' $& $$ $1")
