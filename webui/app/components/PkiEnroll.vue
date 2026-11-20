@@ -49,7 +49,7 @@ const cmdTrust = computed(() => [
 ].join('\n'))
 const cmdPilot = computed(() => [
   `# ${t('enroll.deploy_c_manual')}`,
-  'PsExec64.exe -s powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\Temp\\enroll.ps1 -Now',
+  'PsExec64.exe -s powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\chemin\\vers\\enroll.ps1 -Now',
   `# ${t('enroll.deploy_c_check')}`,
   "Get-ScheduledTask -TaskName 'DDI-Buntu enrolement'",
   'Get-Content "$env:ProgramFiles\\DDI-Buntu\\enroll.log" -Tail 20',

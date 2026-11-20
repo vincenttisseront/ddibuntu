@@ -4090,7 +4090,7 @@ const messages: Record<string, string> = {
   "enroll.deploy_cmd_trust": "On the console (command line): export its HTTPS certificate",
   "enroll.deploy_cmd_pilot": "On a pilot workstation (administrator prompt): manual test and checks",
   "enroll.deploy_c_trust": "The console's HTTPS certificate, to import into the GPO's trusted root authorities",
-  "enroll.deploy_c_manual": "Manual test, as SYSTEM (Sysinternals PsExec) with enroll.ps1 copied to C:\\Temp: the request authenticates with the computer account",
+  "enroll.deploy_c_manual": "Manual test, as SYSTEM (Sysinternals PsExec) with enroll.ps1 copied to a folder on the workstation (adapt the path below): the request authenticates with the computer account",
   "enroll.deploy_c_check": "Checks: scheduled task, log, certificate obtained",
   "enroll.script_download": "Download enroll.ps1",
   "enroll.activity": "Activity",
