@@ -159,9 +159,10 @@ repo_stage() {   # $1 = dossier de destination (vide ou inexistant)
   # /etc/ddibuntu/nftables.nft livré = rendu du pare-feu par défaut (aucun réseau d'administration)
   DDI_LIBDIR="$d/rootfs/usr/local/lib/ddibuntu" DDI_FW_CONF="$d/rootfs/etc/ddibuntu/firewall.conf" DDI_FW_STATE="$d/.fwstate" "$d/rootfs/usr/local/sbin/ddibuntu-fw" render > "$d/rootfs/etc/ddibuntu/nftables.nft"
   # Modes explicites : ne dépendent ni du système de fichiers ni de l'outil d'archive
+  # (tout programme lancé directement, sans interpréteur, doit figurer dans la liste 0755 ci-dessous : console-start, enroll-gss)
   find "$d" -type d -exec chmod 0755 {} +
   find "$d" -type f -exec chmod 0644 {} +
-  chmod 0755 "$d"/rootfs/usr/local/sbin/ddibuntu-* "$d/rootfs/usr/local/bin/ddibuntu-menu" "$d/iso/late.sh" "$d/iso/update.sh" "$d/rootfs/usr/local/lib/ddibuntu/console-start"
+  chmod 0755 "$d"/rootfs/usr/local/sbin/ddibuntu-* "$d/rootfs/usr/local/bin/ddibuntu-menu" "$d/iso/late.sh" "$d/iso/update.sh" "$d/rootfs/usr/local/lib/ddibuntu/console-start" "$d/rootfs/usr/local/lib/ddibuntu/enroll-gss"
   # Aucune fin de ligne Windows dans ce qui part vers Linux
   if grep -rlI "$(printf '\r')" "$d/rootfs" "$d/iso" "$d/ps1" >/dev/null 2>&1; then die "fins de ligne CRLF détectées dans les sources"; fi
 }

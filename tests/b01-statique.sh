@@ -111,6 +111,8 @@ for u in ddibuntu-console.service ddibuntu-db-init.service ddibuntu-reload.servi
   fi
 done
 expect_grep "console : exécutée sous un compte sans privilège" '^User=ddiconsole$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
+expect_grep "construction : enroll-gss (lancé directement par la console) reçoit le droit d'exécution 0755" '^  chmod 0755 .*/usr/local/lib/ddibuntu/enroll-gss' "$ROOT/build-ddibuntu.sh"
+expect_grep "construction : console-start reçoit le droit d'exécution 0755" '^  chmod 0755 .*/usr/local/lib/ddibuntu/console-start' "$ROOT/build-ddibuntu.sh"
 expect_grep "console : écriture limitée au dossier de dépôt" '^ReadWritePaths=/var/lib/ddibuntu/generated$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 expect_grep "console : port 443 par capacité, pas par root" '^AmbientCapabilities=CAP_NET_BIND_SERVICE$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"
 expect_grep "console : élévation de privilèges interdite" '^NoNewPrivileges=yes$' "$P/rootfs/etc/systemd/system/ddibuntu-console.service"

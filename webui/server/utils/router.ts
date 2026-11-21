@@ -56,7 +56,13 @@ export function qstr(c: Ctx, key: string, max = 200): string | undefined {
 
 export async function audit(c: Ctx, action: string, entity?: string, entityId?: string | number, detail?: unknown) {
   // secondaire (lecture seule) : la trace va au journal du service (le primaire garde le journal d'audit réparti)
-  if (await inRecovery().catch(() => false)) { console.warn(`[audit-replica] ${action} ${entity ?? ''} ${entityId ?? ''} user=${c.user?.username ?? '-'} ip=${c.ip ?? '-'}`); return }
+  if (await inRecovery().catch(() => false)) {
+    // refus d'enrôlement : le motif et la cause (codes courts, sans secret) sont la seule trace d'un refus pris sur un secondaire
+    const d = (action === 'enroll.refused' && detail && typeof detail === 'object' ? detail : {}) as Record<string, unknown>
+    const why = ['reason', 'error', 'directory'].filter((k) => typeof d[k] === 'string').map((k) => ` ${k}=${String(d[k]).slice(0, 60)}`).join('')
+    console.warn(`[audit-replica] ${action} ${entity ?? ''} ${entityId ?? ''} user=${c.user?.username ?? '-'} ip=${c.ip ?? '-'}${why}`)
+    return
+  }
   await query('insert into audit_log (user_id, username, action, entity, entity_id, detail, ip) values ($1,$2,$3,$4,$5,$6::jsonb,$7)',
     [c.user?.id ?? null, c.user?.username ?? null, action, entity ?? null, entityId === undefined ? null : String(entityId),
      detail === undefined ? null : JSON.stringify(detail), c.ip])

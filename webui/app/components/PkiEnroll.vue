@@ -209,7 +209,8 @@ onMounted(() => load())
         <UAlert v-if="trust?.error" color="error" variant="subtle" :title="trust.error" />
         <template v-else-if="trust?.configured">
           <UAlert v-if="!trust.reachable" color="warning" variant="subtle" :title="t('enroll.trust_unreachable', { host: trust.host })" data-test="enroll-trust-unreachable" />
-          <UAlert v-else-if="!trust.reasons.length" color="success" variant="subtle" :title="t('enroll.trust_ok', { host: trust.host })" data-test="enroll-trust-ok" />
+          <UAlert v-else-if="!trust.reasons.length && !trust.replica" color="success" variant="subtle" :title="t('enroll.trust_ok', { host: trust.host })" data-test="enroll-trust-ok" />
+          <UAlert v-if="trust.reachable && trust.replica" color="error" variant="subtle" :title="t('enroll.trust_replica', { host: trust.host })" data-test="enroll-trust-replica" />
           <template v-else>
             <UAlert v-if="trust.reasons.includes('name')" color="error" variant="subtle" :title="t('enroll.trust_name', { host: trust.host, names: trust.names.join(', ') || trust.subject })" data-test="enroll-trust-name" />
             <UAlert v-if="trust.reasons.includes('untrusted')" color="error" variant="subtle" :title="t('enroll.trust_untrusted', { host: trust.host })" data-test="enroll-trust-untrusted" />

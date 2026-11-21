@@ -4166,6 +4166,7 @@ const messages: Record<string, string> = {
   "enroll.trust_name": "The certificate presented under {host} does not contain that name (it contains: {names}). Workstations will refuse it.",
   "enroll.trust_untrusted": "No authority in the GPO validates the certificate presented under {host}. Enable the automatic HTTPS certificate (System) or run « Apply » again from the console serving that name.",
   "enroll.trust_expired": "The certificate presented by the console has expired.",
+  "enroll.trust_replica": "The name {host} leads to a secondary cluster node (read-only): it answers “503 replica” and no machine certificate will be issued. Use the cluster’s virtual name, which always follows the leader (with an HTTP/<virtual name> keytab).",
   "enroll.deploy_s0": "First: enable enrolment (step 2) — while off, the console answers as if the route did not exist — and start with a pilot workstation.",
   "enroll.deploy_s1": "Workstations must trust the console's HTTPS certificate (self-signed by default). In the GPO: Computer Configuration › Policies › Windows Settings › Security Settings › Public Key Policies › Trusted Root Certification Authorities › Import. Import the console certificate (command below); if it is already signed by an authority the workstations trust, there is nothing to do.",
   "enroll.deploy_s2": "Import the DDI PKI root into the same store (Authorities tab › download the chain): workstations need it to validate the RADIUS server certificate in EAP-TLS.",
