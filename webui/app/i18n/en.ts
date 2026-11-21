@@ -4218,7 +4218,7 @@ const messages: Record<string, string> = {
   "err.enroll_rate_too_soon": "Too soon: a certificate was just issued for this computer.",
   "err.enroll_rate_daily": "Daily limit reached for this computer.",
   "err.enroll_rate_busy": "The PKI is very busy, try again in a minute.",
-  "err.enroll_group_invalid": "The allowed group does not exist in the directory or is not a group (a container such as CN=Computers does not work).",
+  "err.enroll_group_invalid": "The allowed group does not exist in the directory or is not a group: a container (CN=Computers) or an organizational unit (OU=…) does not work, use the distinguished name of a security group (CN=…).",
   "err.enroll_incomplete": "Incomplete settings: keytab, console name, authority and group are required.",
   "err.enroll_keytab_spn": "The keytab does not contain the requested HTTP/<console name> service.",
   "err.enroll_keytab_enctype": "The keytab only has weak keys (DES or RC4): export it as AES.",

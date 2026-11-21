@@ -1,5 +1,14 @@
 # Journal des modifications
 
+## 0.21.3 — « Passer au nom virtuel sans impasse, et savoir pourquoi un poste est refusé »
+
+Retours d'un essai réel sur un domaine : changer le nom de la console vers le nom virtuel du cluster bloquait l'écran, et un test manuel donnait un « 403 » sans explication.
+
+- **Keytab et nom de la console** : le dépôt d'un keytab était comparé au nom **déjà enregistré**, et l'enregistrement du nouveau nom l'était au keytab **déjà déposé** : impossible de passer d'un nom à l'autre sans contournement. Le dépôt ne contrôle plus que la forme (service HTTP/…, AES, aucun autre principal) ; la concordance avec le nom reste exigée à l'activation et signalée à l'affichage.
+- **Texte d'erreur du groupe autorisé** : il cite maintenant aussi les unités d'organisation (OU=…), pas seulement CN=Computers : il faut le nom distinctif d'un groupe de sécurité.
+- **`enroll.ps1` hors SYSTEM** : lancé depuis une session administrateur, il présentait le compte de l'utilisateur et la console refusait (« seul un compte d'ordinateur… »). Il s'arrête maintenant avec un message clair, et son en-tête donne la commande d'essai en SYSTEM (tâche unique).
+- **Motif du refus sur le poste** : le journal du poste lit le corps de la réponse (`ErrorDetails` de Windows PowerShell 5.1) et nomme le code (`enroll_not_in_group`, `enroll_not_machine`…) au lieu d'un simple « HTTP 403 ».
+
 ## 0.21.2 — « L'enrôlement des postes peut enfin s'exécuter »
 
 - **Correctif** : l'assistant Kerberos de l'enrôlement (`enroll-gss`, lancé directement par la console) était livré sans droit d'exécution : la liste des fichiers en 0755 de la construction l'oubliait. Sur une vraie installation la console répondait donc toujours **503** (`helper_failed`) aux postes, et rien n'apparaissait dans l'activité. Il est maintenant en 0755 dans le paquet ; la mise à jour le corrige (les droits sont conservés à l'extraction). Garde-fou ajouté à la batterie statique (b01).
