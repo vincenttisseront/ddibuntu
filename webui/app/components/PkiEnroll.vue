@@ -92,6 +92,11 @@ const cmdPilot = computed(() => [
   'Get-Content "$env:ProgramFiles\\DDI-Buntu\\enroll.log" -Tail 20',
   "Get-ChildItem Cert:\\LocalMachine\\My | Where-Object { $_.HasPrivateKey -and $_.DnsNameList.Unicode -contains (($env:COMPUTERNAME + '.' + (Get-CimInstance Win32_ComputerSystem).Domain).ToLower()) } | Format-List Subject, Issuer, NotAfter",
 ].join('\n'))
+const trust = ref<any>(null), trustBusy = ref(false)
+async function checkTrust() {
+  trustBusy.value = true
+  try { trust.value = await api.call('GET', '/enroll/trust', undefined, { silent: true }) } catch (e: any) { trust.value = { error: errOf(e) } } finally { trustBusy.value = false }
+}
 async function copy(v: string) { try { await navigator.clipboard.writeText(v); toast.add({ title: t('common.copied'), color: 'success', icon: 'i-lucide-check' }) } catch { /* presse-papiers indisponible : le texte reste sélectionnable */ } }
 const kt = computed(() => data.value?.keytab ?? null)
 const issuers = computed<string[]>(() => data.value?.issuers ?? [])
@@ -197,6 +202,21 @@ onMounted(() => load())
     <UCard>
       <template #header><span class="font-medium">{{ t('enroll.step_script') }}</span></template>
       <p class="text-sm text-muted mb-2">{{ t('enroll.script_help') }}</p>
+      <div class="mb-3 rounded-md border border-default p-3 flex flex-col gap-2" data-test="enroll-trust">
+        <div class="flex flex-wrap items-center gap-2"><span class="text-sm font-medium">{{ t('enroll.trust_title') }}</span>
+          <UButton size="xs" color="neutral" variant="outline" icon="i-lucide-shield-check" :loading="trustBusy" :disabled="!f.host || !f.ca" :label="t('enroll.trust_check')" data-test="enroll-trust-check" @click="checkTrust" /></div>
+        <p class="text-xs text-muted">{{ t('enroll.trust_help') }}</p>
+        <UAlert v-if="trust?.error" color="error" variant="subtle" :title="trust.error" />
+        <template v-else-if="trust?.configured">
+          <UAlert v-if="!trust.reachable" color="warning" variant="subtle" :title="t('enroll.trust_unreachable', { host: trust.host })" data-test="enroll-trust-unreachable" />
+          <UAlert v-else-if="!trust.reasons.length" color="success" variant="subtle" :title="t('enroll.trust_ok', { host: trust.host })" data-test="enroll-trust-ok" />
+          <template v-else>
+            <UAlert v-if="trust.reasons.includes('name')" color="error" variant="subtle" :title="t('enroll.trust_name', { host: trust.host, names: trust.names.join(', ') || trust.subject })" data-test="enroll-trust-name" />
+            <UAlert v-if="trust.reasons.includes('untrusted')" color="error" variant="subtle" :title="t('enroll.trust_untrusted', { host: trust.host })" data-test="enroll-trust-untrusted" />
+            <UAlert v-if="trust.reasons.includes('expired')" color="error" variant="subtle" :title="t('enroll.trust_expired')" data-test="enroll-trust-expired" />
+          </template>
+        </template>
+      </div>
       <UButton :href="'/api/enroll/script'" download="enroll.ps1" icon="i-lucide-download" :disabled="!f.host || !f.ca" :label="t('enroll.script_download')" data-test="enroll-script" />
       <details class="mt-3 rounded-md border border-default" data-test="enroll-deploy">
         <summary class="cursor-pointer px-3 py-2 text-sm font-medium">{{ t('enroll.deploy_title') }}</summary>

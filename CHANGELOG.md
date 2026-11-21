@@ -1,5 +1,19 @@
 # Journal des modifications
 
+## 0.21.0 — « Certificat HTTPS de la console : automatique et commun au cluster »
+
+Chaque nœud avait son propre certificat HTTPS auto-signé (CN = nom court, sans le nom complet), si bien que les postes ne pouvaient pas faire confiance à la console sous le nom qu'ils utilisent, ni après une bascule. La console gère maintenant ce certificat toute seule.
+
+- **Émission par la PKI du DDI** : le leader fait émettre (profil serveur) un certificat dont le SAN couvre le nom virtuel du cluster et les noms saisis dans Système → À propos → « Certificat HTTPS de la console », le nom de la console vue des postes, chaque nœud (nom et hôte) et leurs adresses (adresse virtuelle d'abord) ; 8 noms et 4 adresses au plus, signalé s'il y en a plus.
+- **Automatique** : renouvelé 30 jours avant l'échéance ou dès que les noms voulus ne sont plus tous couverts (nœud ajouté, nom virtuel ajouté) ; après un échec de la PKI, nouvelle tentative au bout de 15 minutes et le certificat en place est conservé ; le motif s'affiche à l'écran.
+- **Commun à tous les nœuds** : certificat et clé (chiffrée, comme le keytab) sont rangés en base, qui se réplique ; chaque nœud, secondaire compris, les dépose dans `/var/lib/ddibuntu/generated/console-tls/` (clé en 0600, vérifiée contre le certificat avant dépôt) puis la console se relance (systemd) pour le servir. Aucun assistant root de plus.
+- **Démarrage prudent** : `console-start` utilise ce dépôt s'il est valide (certificat non expiré à 24 h, clé qui correspond) ; sinon il garde le certificat auto-signé de l'installation et le dit au journal. Un dépôt refusé ne provoque pas de relances en boucle.
+- **GPO** : la chaîne du certificat HTTPS automatique est ajoutée aux autorités que la GPO installe sur les postes (en plus de la racine de la PKI) ; une racine déjà approuvée n'est pas à redistribuer à chaque renouvellement.
+- **Test de confiance** (Postes, étape 3, « Vérifier ») : la console se connecte à son nom tel que les postes le voient et signale un nom absent du certificat, un certificat qu'aucune autorité de la GPO ne valide, un certificat expiré, ou un nom injoignable depuis la console.
+- **Script de poste** (`enroll.ps1`) : la tâche planifiée est autorisée sur batterie et reprise si un lancement a été manqué (par défaut Windows ne la lançait pas sur un portable), 1 heure au plus, une seule instance ; le script journalise dès son début et toute erreur, même avant la création de la demande, est écrite dans `enroll.log` (une panne était auparavant silencieuse).
+- **Vérifié** : décisions et boucle (leader/secondaire, échec, refus de relance), dépôt et `console-start` avec trois cas réels, test de confiance contre un serveur TLS réel, émission de bout en bout contre une PKI simulée (profil serveur, SAN, clé chiffrée en base, fichiers déposés, renouvellement, refus de la PKI), analyse de syntaxe PowerShell 7 du script de poste.
+- **Non vérifié** : un vrai cluster (bascule, relance de la console sur chaque nœud), EJBCA réel pour ce profil, Windows réel (tâche sur batterie, confiance).
+
 ## 0.20.0 — « Postes : cibler un groupe d'ordinateurs, et des erreurs d'unité plus claires »
 
 Dans l'étape 3 de l'onglet « Postes », la GPO peut maintenant viser **soit une unité d'organisation (conseillé), soit un groupe d'ordinateurs**. Le tout reste piloté depuis la console.

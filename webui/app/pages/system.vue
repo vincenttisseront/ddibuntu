@@ -43,6 +43,7 @@ const { data: deps } = await useFetch<any>('/api/system/deployments')
     <RestorePanel v-else-if="tab === 'restore'" />
     <UpdatePanel v-else-if="tab === 'updates'" />
     <div v-else class="grid gap-4 lg:grid-cols-2">
+      <ConsoleTls class="lg:col-span-2" />
       <UCard><template #header><span class="font-medium">DDI-Buntu</span></template>
         <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm"><dt class="text-muted">{{ t('system.version') }}</dt><dd class="font-mono">{{ info?.version }}</dd><dt class="text-muted">{{ t('system.db') }}</dt><dd class="font-mono">{{ info?.db }} · schéma {{ info?.schema }}</dd>
           <dt class="text-muted">{{ t('system.generated_dir') }}</dt><dd class="font-mono text-xs">{{ info?.generatedDir }}</dd>

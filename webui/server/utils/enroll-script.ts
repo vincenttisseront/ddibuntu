@@ -30,32 +30,41 @@ function Write-Log([string]$m) {
 }
 
 if ($Install) {
-  $dest = Join-Path $Dir 'enroll.ps1'
-  Copy-Item -Force $PSCommandPath $dest
-  $action  = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $dest)
-  $trigger = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -Daily -At '03:30'))
-  $princ   = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-  Register-ScheduledTask -TaskName 'DDI-Buntu enrolement' -Action $action -Trigger $trigger -Principal $princ -Force | Out-Null
-  Write-Log 'tache planifiee installee'
-  Start-ScheduledTask -TaskName 'DDI-Buntu enrolement'   # premier enrolement tout de suite, sans attendre le prochain demarrage ni 03:30
+  try {
+    $dest = Join-Path $Dir 'enroll.ps1'
+    Copy-Item -Force $PSCommandPath $dest
+    $action  = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $dest)
+    $trigger = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -Daily -At '03:30'))
+    $princ   = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    # portable : par defaut Windows ne lance pas (et arrete) une tache sur batterie ; une execution manquee est reprise des que possible
+    $set     = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+    Register-ScheduledTask -TaskName 'DDI-Buntu enrolement' -Action $action -Trigger $trigger -Principal $princ -Settings $set -Force | Out-Null
+    Write-Log 'tache planifiee installee'
+    Start-ScheduledTask -TaskName 'DDI-Buntu enrolement'   # premier enrolement tout de suite, sans attendre le prochain demarrage ni 03:30
+  } catch {
+    Write-Log ('ECHEC de l''installation de la tache : ' + $_.Exception.Message)
+    exit 1
+  }
   return
 }
 
-$domain = (Get-CimInstance Win32_ComputerSystem).Domain
-$fqdn = ('{0}.{1}' -f $env:COMPUTERNAME, $domain).ToLower()
-
-# un certificat valable et émis par la PKI du DDI existe déjà : rien à faire
-if (-not $Force) {
-  $have = Get-ChildItem Cert:\LocalMachine\My | Where-Object {
-    $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date).AddDays($RenewDays) -and $_.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $true) -eq $IssuerCn -and ($_.DnsNameList.Unicode -contains $fqdn)
-  }
-  if ($have) { Write-Log ('certificat deja en place (expire le {0:d})' -f ($have | Sort-Object NotAfter -Descending | Select-Object -First 1).NotAfter); return }
-}
-if (-not $Now) { Start-Sleep -Seconds (Get-Random -Minimum 0 -Maximum 300) }   # étale la charge sur la console
-
-$work = Join-Path $env:TEMP ('ddi-enroll-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $work | Out-Null
+Write-Log 'execution demarree'
+$work = $null
 try {
+  $domain = (Get-CimInstance Win32_ComputerSystem).Domain
+  $fqdn = ('{0}.{1}' -f $env:COMPUTERNAME, $domain).ToLower()
+
+  # un certificat valable et émis par la PKI du DDI existe déjà : rien à faire
+  if (-not $Force) {
+    $have = Get-ChildItem Cert:\LocalMachine\My | Where-Object {
+      $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date).AddDays($RenewDays) -and $_.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $true) -eq $IssuerCn -and ($_.DnsNameList.Unicode -contains $fqdn)
+    }
+    if ($have) { Write-Log ('certificat deja en place (expire le {0:d})' -f ($have | Sort-Object NotAfter -Descending | Select-Object -First 1).NotAfter); return }
+  }
+  if (-not $Now) { Start-Sleep -Seconds (Get-Random -Minimum 0 -Maximum 300) }   # étale la charge sur la console
+
+  $work = Join-Path $env:TEMP ('ddi-enroll-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $work | Out-Null
   $inf = Join-Path $work 'req.inf'; $req = Join-Path $work 'req.csr'
   @(
     '[Version]', 'Signature="$Windows NT$"', '[NewRequest]',
@@ -100,7 +109,7 @@ try {
   Write-Log ('ECHEC : ' + $_.Exception.Message)
   exit 1
 } finally {
-  Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+  if ($work) { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }
 }
 `
 
