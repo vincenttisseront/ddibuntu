@@ -1,6 +1,7 @@
 // Enrôlement des postes (0.18.0) : voir utils/enroll.ts. Deux familles de routes :
 //   - POST /enroll/v1/machine : PUBLIQUE (pas de session) ; seule l'authentification Kerberos « Negotiate » du compte machine l'ouvre ;
 //   - /enroll* : réglages, keytab, script, journal : administrateur.
+import { X509Certificate } from 'node:crypto'
 import { setResponseHeader } from 'h3'
 import { z } from 'zod'
 import { audit, fail, route } from '../utils/router'
@@ -18,6 +19,8 @@ import {
 } from '../utils/enroll'
 import { enrollScript } from '../utils/enroll-script'
 import { gpoFiles, gpoScript, trustAnchors } from '../utils/enroll-gpo'
+import { probeChain, trustVerdict } from '../utils/enroll-trust'
+import { loadTls } from './consoletls'
 import { ACCOUNT_RE, createGroup, createOu, GpoError, gpoLdapFactory, pushGpo, pushGpoSerial, smbclientRunner } from '../utils/enroll-gpo-push'
 
 export const registered = true
@@ -169,8 +172,20 @@ async function gpoMaterial() {
   if (!ca) fail(409, 'pki_ca_not_issuing')
   const pems = [process.env.NITRO_SSL_CERT || process.env.DDI_TLS_CERT_PEM || '']
   for (const k of ['chain', 'cert'] as const) pems.push((await readCaFile(ca.name, k))?.toString('utf8') ?? '')
+  // certificat HTTPS automatique de la console (0.21.0) : sa chaîne (jusqu'à la racine) est approuvée aussi, même si elle vient d'une autre autorité que celle des postes
+  const tlsCert = (await loadTls()).cert
+  if (tlsCert) pems.push(tlsCert.chain)
   try { return { enrollPs1: enrollScript(s.host, cnOf(ca.dn) || ca.name), anchors: trustAnchors(...pems) } } catch { return fail(409, 'enroll_incomplete') }
 }
+// Les postes feront-ils confiance à la console ? La console se connecte à son nom, tel que les postes le voient, et compare à ce que la GPO installera.
+route('GET', '/enroll/trust', 'admin', async () => {
+  const s = await loadEnroll()
+  if (!s.host || !s.ca) return { configured: false }
+  let anchors: X509Certificate[] = []
+  try { anchors = Object.values((await gpoMaterial()).anchors).map((b) => new X509Certificate(b)) } catch { /* autorité plus émettrice : aucune ancre connue */ }
+  const v = trustVerdict(s.host, await probeChain(s.host), anchors)
+  return { configured: true, anchors: anchors.length, ...v }
+})
 route('GET', '/enroll/gpo-script', 'admin', async (c) => {
   const m = await gpoMaterial()
   const text = gpoScript(m.enrollPs1, m.anchors)

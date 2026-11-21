@@ -3,7 +3,7 @@
 // e2e-iter51 (il signe vraiment la demande). Sans AD réel (root, samba, python3-gssapi, kinit) les cas Kerberos sont ignorés ; les contrôles de réglages restent exécutés.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import pg from 'pg'
@@ -172,7 +172,7 @@ beforeAll(async () => {
   await ej.query('revoke all on all tables in schema public from public')
   srv = spawn('node', ['.output/server/index.mjs'], { env: { ...process.env, NODE_ENV: 'production', PORT: String(PORT), NITRO_HOST: '127.0.0.1', DDI_TEST_MODE: '1', DDI_COOKIE_SECURE: 'false', DDI_DATABASE_URL: DBURL,
     DDI_EJBCA_DATABASE_URL: EJURL, DDI_SECRET_KEY: 'cle-secrete-de-test-0123456789abcdefghij', DDI_SETUP_TOKEN: SETUP_TOKEN, DDI_PBKDF2_ITERATIONS: '2000', DDI_GENERATED_DIR: GEN,
-    DDI_PKI_STATUS: STATUS, DDI_PKI_RESULT: RESULT, DDI_PKI_CAS: CAS, DDI_PKI_CA_DIR: CADIR, DDI_PKI_CERT_DIR: CERTDIR, DDI_PKI_ISSUE_TIMEOUT_MS: '3500', DDI_ENROLL_GSS: join(TMP, 'gss-wrapper'), DDI_ENROLL_RCACHE: join(TMP, 'rcache') } })
+    DDI_PKI_STATUS: STATUS, DDI_PKI_RESULT: RESULT, DDI_PKI_CAS: CAS, DDI_PKI_CA_DIR: CADIR, DDI_PKI_CERT_DIR: CERTDIR, DDI_PKI_ISSUE_TIMEOUT_MS: '3500', DDI_ENROLL_GSS: join(TMP, 'gss-wrapper'), DDI_ENROLL_RCACHE: join(TMP, 'rcache'), DDI_TLS_GEN_DIR: join(TMP, 'tlsgen'), DDI_CONSOLE_TLS_NO_RESTART: '1', DDI_CONSOLE_TLS_MS: '0' } })
   srv.stdout!.on('data', (d) => { srvLog += d }); srv.stderr!.on('data', (d) => { srvLog += d })
   await until(async () => (await fetch(BASE + '/api/health')).status === 200)
   const su = await anon.post('/api/setup/admin', { token: SETUP_TOKEN, username: 'admin', password: PW })
@@ -550,5 +550,56 @@ describe('arrêt', () => {
     expect((await admin.del('/api/enroll/keytab')).status).toBe(200)
     const g = (await admin.get('/api/enroll')).json; expect(g.keytab).toBeNull(); expect(g.settings.enabled).toBe(false); expect(g.ready).toBe(false)
     code(await enrollJson(await enroll(null)), 404, 'not_found')
+  })
+})
+
+describe('certificat HTTPS de la console, automatique (0.21.0)', () => {
+  const GENDIR = () => join(TMP, 'tlsgen'), view = () => admin.get('/api/system/console-tls')
+  it('réservé à l\'administrateur ; réglages validés', async () => {
+    code(await anon.get('/api/system/console-tls'), 401, 'unauthenticated'); code(await viewer.get('/api/system/console-tls'), 403, 'forbidden'); code(await oper.get('/api/system/console-tls'), 403, 'forbidden')
+    code(await viewer.put('/api/system/console-tls', { auto: false, ca: '', names: [] }), 403, 'forbidden'); code(await viewer.post('/api/system/console-tls/issue', { force: false }), 403, 'forbidden')
+    code(await admin.put('/api/system/console-tls', { auto: true, ca: '', names: ['console.lab.test'] }), 400, 'console_tls_ca_required')
+    code(await admin.put('/api/system/console-tls', { auto: true, ca: 'Lab-Root', names: [] }), 409, 'pki_ca_not_issuing')
+    code(await admin.put('/api/system/console-tls', { auto: false, ca: '', names: ['pas valide!'] }), 400, 'validation'); code(await admin.put('/api/system/console-tls', { auto: false, ca: '', names: [], x: 1 }), 400, 'validation')
+    code(await admin.post('/api/system/console-tls/issue', { force: false }), 409, 'console_tls_disabled')
+    const g = await view(); expect(g.status, g.text).toBe(200); expect(g.json).toMatchObject({ auto: false, cert: null, issuers: ['Lab-Sub'], leader: true })
+  })
+  it('émet par la PKI avec tous les noms, range la clé chiffrée, dépose les fichiers du nœud ; une passe de plus ne refait rien', async (ctx) => {
+    if (!lab) return ctx.skip()
+    expect((await admin.put('/api/enroll/config', cfgBody({ enabled: false }))).status).toBe(200)   // la console des postes (ddi.lab.test) fait partie des noms voulus
+    const put = await admin.put('/api/system/console-tls', { auto: true, ca: 'Lab-Sub', names: ['console.lab.test'] }); expect(put.status, put.text).toBe(200)
+    expect(put.json.want.dns).toEqual(['console.lab.test', 'ddi.lab.test'])
+    const r = await admin.post('/api/system/console-tls/issue', { force: false }); expect(r.status, r.text + srvLog.slice(-800)).toBe(200)
+    expect(r.json.cert).toMatchObject({ dns: ['console.lab.test', 'ddi.lab.test'] }); expect(r.json.last).toMatchObject({ ok: true }); const first = r.json.cert.serial
+    expect(rootLog.filter((x) => x.req.action === 'cert_issue' && x.req.profile === 'server').length).toBeGreaterThan(0)
+    // dépôt : clé 0600 qui correspond au certificat, chaîne jusqu'à la racine
+    const crt = join(GENDIR(), 'console.crt'), key = join(GENDIR(), 'console.key')
+    expect(existsSync(crt) && existsSync(key)).toBe(true); expect(statSync(key).mode & 0o777).toBe(0o600)
+    expect(sh(['x509', '-in', crt, '-noout', '-pubkey']).stdout.trim()).toBe(sh(['pkey', '-in', key, '-pubout']).stdout.trim())
+    expect((read(crt).match(/BEGIN CERTIFICATE/g) ?? []).length).toBeGreaterThanOrEqual(2)
+    // en base : la clé est chiffrée, jamais en clair
+    const saved = (await rows("select value::text as v from settings where key = 'console_tls'"))[0]!.v as string
+    expect(saved).not.toContain('PRIVATE KEY'); expect(saved).toContain('v1:')
+    // certificat à jour : une passe de plus ne demande rien à la PKI
+    const n = rootLog.length; const again = await admin.post('/api/system/console-tls/issue', { force: false }); expect(again.status).toBe(200)
+    expect(rootLog.length).toBe(n); expect(again.json.cert.serial).toBe(first)
+    // renouvellement demandé : un autre certificat
+    const f = await admin.post('/api/system/console-tls/issue', { force: true }); expect(f.status, f.text).toBe(200); expect(f.json.cert.serial).not.toBe(first)
+    expect((await audits('system.console_tls')).length).toBeGreaterThan(0); expect((await audits('system.console_tls_issue')).length).toBeGreaterThan(0)
+    // les noms voulus changent : un nouveau certificat est émis à la passe suivante
+    const names = await admin.put('/api/system/console-tls', { auto: true, ca: 'Lab-Sub', names: ['console.lab.test', 'vip.lab.test'] }); expect(names.status).toBe(200)
+    const third = await admin.post('/api/system/console-tls/issue', { force: false }); expect(third.json.cert.dns).toContain('vip.lab.test')
+  })
+  it('refuse un renouvellement quand la PKI refuse, en gardant le certificat en place', async (ctx) => {
+    if (!lab) return ctx.skip()
+    const before = (await view()).json.cert.serial
+    rootRefuse = 'refus simulé'
+    try { code(await admin.post('/api/system/console-tls/issue', { force: true }), 502, 'console_tls_issue_failed') } finally { rootRefuse = null }
+    const g = await view(); expect(g.json.cert.serial).toBe(before)
+  })
+  it('test de confiance : réglé mais injoignable depuis ici, sans rien inventer', async () => {
+    code(await anon.get('/api/enroll/trust'), 401, 'unauthenticated'); code(await viewer.get('/api/enroll/trust'), 403, 'forbidden')
+    const t = await admin.get('/api/enroll/trust'); expect(t.status, t.text).toBe(200)
+    expect(t.json).toMatchObject({ configured: true, reachable: false, reasons: [] })
   })
 })

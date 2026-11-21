@@ -1,10 +1,21 @@
 #!/bin/bash
 # Démarre la console web en HTTPS : Nitro lit le certificat et la clé dans l'environnement (contenu PEM).
+# Certificat : celui que la console a reçu de la PKI du DDI (automatique, commun au cluster, déposé par la console dans GEN) s'il est valide,
+# sinon le certificat auto-signé de l'installation. Un dépôt incohérent ou proche de l'échéance n'empêche jamais le démarrage.
 set -euo pipefail
 TLS="${DDI_TLS_DIR:-/etc/ddibuntu/tls}"
+GEN="${DDI_TLS_GEN_DIR:-/var/lib/ddibuntu/generated/console-tls}"
 NODE="${DDI_NODE:-/opt/ddibuntu/node/bin/node}"
 APP="${DDI_CONSOLE_APP:-/opt/ddibuntu/console/app/server/index.mjs}"
-if ! { [ -r "$TLS/console.crt" ] && [ -r "$TLS/console.key" ]; }; then echo "console-start : certificat TLS absent ($TLS)" >&2; exit 1; fi
-NITRO_SSL_CERT="$(cat "$TLS/console.crt")"; NITRO_SSL_KEY="$(cat "$TLS/console.key")"
+CRT="$TLS/console.crt"; KEY="$TLS/console.key"
+if [ -r "$GEN/console.crt" ] && [ -r "$GEN/console.key" ] && openssl x509 -in "$GEN/console.crt" -noout -checkend 86400 >/dev/null 2>&1; then
+  a="$(openssl x509 -in "$GEN/console.crt" -noout -pubkey 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)" || a=""
+  b="$(openssl pkey -in "$GEN/console.key" -pubout -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)" || b=""
+  empty="$(printf '' | sha256sum | cut -d' ' -f1)"
+  if [ -n "$a" ] && [ "$a" != "$empty" ] && [ "$a" = "$b" ]; then CRT="$GEN/console.crt"; KEY="$GEN/console.key"
+  else echo "console-start : certificat automatique ignoré (illisible ou clé qui ne correspond pas) ; certificat de l'installation utilisé" >&2; fi
+elif [ -e "$GEN/console.crt" ]; then echo "console-start : certificat automatique ignoré (expiré ou proche de l'échéance) ; certificat de l'installation utilisé" >&2; fi
+if ! { [ -r "$CRT" ] && [ -r "$KEY" ]; }; then echo "console-start : certificat TLS absent ($TLS)" >&2; exit 1; fi
+NITRO_SSL_CERT="$(cat "$CRT")"; NITRO_SSL_KEY="$(cat "$KEY")"
 export NITRO_SSL_CERT NITRO_SSL_KEY
 exec "$NODE" "$APP"
