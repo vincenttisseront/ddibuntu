@@ -2,6 +2,7 @@
 // ou n'est validé par aucune des autorités que la GPO installe sur les postes, Windows refuse la connexion (« relation de confiance pour le canal sécurisé ») et rien n'est jamais
 // enregistré côté console. La console se connecte donc elle-même à ce nom et compare ; l'écran l'affiche avant qu'un poste ne bute dessus.
 import { connect } from 'node:tls'
+import { isIP } from 'node:net'
 import { X509Certificate } from 'node:crypto'
 
 export type TrustReason = 'name' | 'untrusted' | 'expired'
@@ -23,7 +24,7 @@ export function probeChain(host: string, port = 443, timeoutMs = 5000): Promise<
   return new Promise((resolve) => {
     let done = false
     const finish = (v: X509Certificate[] | null) => { if (!done) { done = true; try { s.destroy() } catch { /* déjà fermé */ } resolve(v) } }
-    const s = connect({ host, port, servername: host, rejectUnauthorized: false, timeout: timeoutMs }, () => {
+    const s = connect({ host, port, servername: isIP(host) ? undefined : host, rejectUnauthorized: false, timeout: timeoutMs }, () => {
       try {
         const out: X509Certificate[] = []
         let p: any = s.getPeerCertificate(true)
@@ -56,4 +57,25 @@ export function trustVerdict(host: string, chain: X509Certificate[] | null, anch
   if (!trusted) reasons.push('untrusted')
   if (notAfter <= now) reasons.push('expired')
   return { reachable: true, host, subject: leaf.subject.replace(/\n/g, ', ').slice(0, 200), fingerprint: leaf.fingerprint256.replace(/:/g, '').toLowerCase(), selfSigned: leaf.subject === leaf.issuer, names, notAfter, nameOk, trusted, reasons }
+}
+
+/** Le nom d'enrôlement mène-t-il à un nœud secondaire ? (0.21.2) Seul le leader écrit : un secondaire répond « 503 replica » à toute requête qui écrit, donc l'enrôlement échoue
+ *  en silence sur le poste. Requête sans ticket (jamais de secret) ; la réponse d'un leader est 401 (ou 404 si le service est éteint). null = pas de réponse exploitable. */
+export function probeRole(host: string, port = 443, timeoutMs = 5000): Promise<'replica' | 'leader' | null> {
+  return new Promise((resolve) => {
+    let done = false, raw = ''
+    const finish = (v: 'replica' | 'leader' | null) => { if (!done) { done = true; try { s.destroy() } catch { /* déjà fermé */ } resolve(v) } }
+    // même mode de connexion que probeChain (certificat volontairement non validé : on l'examine ailleurs) ; requête HTTP/1.1 écrite à la main, réponse bornée
+    const s = connect({ host, port, servername: isIP(host) ? undefined : host, rejectUnauthorized: false, timeout: timeoutMs }, () => {
+      s.write(`POST /api/enroll/v1/machine HTTP/1.1\r\nHost: ${host}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`)
+    })
+    const verdict = () => {
+      const status = /^HTTP\/1\.[01] (\d{3})/.exec(raw)?.[1]
+      if (!status) return finish(null)
+      finish(status === '503' && /"code"\s*:\s*"replica"/.test(raw) ? 'replica' : 'leader')
+    }
+    s.on('data', (d) => { if (raw.length < 4000) raw += d.toString('latin1'); if (raw.length >= 4000) verdict() })
+    s.on('end', verdict); s.on('close', verdict)
+    s.on('error', () => finish(null)); s.on('timeout', () => finish(null))
+  })
 }

@@ -4166,6 +4166,7 @@ const messages: Record<string, string> = {
   "enroll.trust_name": "Le certificat présenté sous {host} ne contient pas ce nom (il contient : {names}). Les postes le refuseront.",
   "enroll.trust_untrusted": "Aucune autorité de la GPO ne valide le certificat présenté sous {host}. Activez le certificat HTTPS automatique (Système) ou relancez « Appliquer » depuis la console qui sert ce nom.",
   "enroll.trust_expired": "Le certificat présenté par la console est expiré.",
+  "enroll.trust_replica": "Le nom {host} mène à un nœud secondaire du cluster (lecture seule) : il répond « 503 replica » et aucun certificat de poste ne sera émis. Utilisez le nom virtuel du cluster, qui suit toujours le leader (avec un keytab HTTP/<nom virtuel>).",
   "enroll.deploy_s0": "Avant tout : activez l'enrôlement (étape 2) — éteint, la console répond comme si la route n'existait pas — et commencez par un poste pilote.",
   "enroll.deploy_s1": "Les postes doivent faire confiance au certificat HTTPS de la console (auto-signé par défaut). Dans la GPO : Configuration ordinateur › Stratégies › Paramètres Windows › Paramètres de sécurité › Stratégies de clé publique › Autorités de certification racines de confiance › Importer. Importez le certificat de la console (commande ci-dessous) ; s'il est déjà signé par une autorité approuvée des postes, il n'y a rien à faire.",
   "enroll.deploy_s2": "Importez dans le même magasin la racine de la PKI du DDI (onglet Autorités › télécharger la chaîne) : les postes en ont besoin pour valider le certificat du serveur RADIUS en EAP-TLS.",

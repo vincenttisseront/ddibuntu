@@ -147,7 +147,8 @@ describe('boucle d\'émission et d\'installation', () => {
 import { createServer } from 'node:tls'
 import { X509Certificate } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
-import { probeChain, trustVerdict } from '../server/utils/enroll-trust'
+import { createServer as createHttps } from 'node:https'
+import { probeChain, probeRole, trustVerdict } from '../server/utils/enroll-trust'
 
 describe('les postes font-ils confiance à la console ?', () => {
   const x = (c: string) => new X509Certificate(c)
@@ -174,4 +175,28 @@ describe('les postes font-ils confiance à la console ?', () => {
     } finally { srv.close() }
     expect(await probeChain('127.0.0.1', 1, 1500)).toBeNull()
   })
+})
+
+describe('le nom d\'enrôlement mène-t-il à un nœud secondaire ? (0.21.2)', () => {
+  const serve = async (status: number, body: string) => {
+    const own = mk('srv', 'DNS:localhost')
+    const srv = createHttps({ cert: own.cert, key: own.key }, (_rq, rs) => { rs.statusCode = status; rs.setHeader('content-type', 'application/json'); rs.end(body) })
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))
+    return { srv, port: (srv.address() as AddressInfo).port }
+  }
+  it('503 « replica » : nœud secondaire', async () => {
+    const { srv, port } = await serve(503, '{"error":true,"statusCode":503,"data":{"code":"replica"}}')
+    try { expect(await probeRole('127.0.0.1', port, 3000)).toBe('replica') } finally { srv.close() }
+  })
+  it('401 (leader, sans ticket) ou 404 (service éteint) : pas un secondaire', async () => {
+    for (const [st, body] of [[401, '{"data":{"code":"enroll_negotiate"}}'], [404, '{"data":{"code":"not_found"}}']] as const) {
+      const { srv, port } = await serve(st, body)
+      try { expect(await probeRole('127.0.0.1', port, 3000)).toBe('leader') } finally { srv.close() }
+    }
+  })
+  it('un autre 503 (annuaire, keytab) n\'est pas pris pour un secondaire', async () => {
+    const { srv, port } = await serve(503, '{"data":{"code":"enroll_directory"}}')
+    try { expect(await probeRole('127.0.0.1', port, 3000)).toBe('leader') } finally { srv.close() }
+  })
+  it('injoignable : pas de réponse exploitable', async () => { expect(await probeRole('127.0.0.1', 1, 1500)).toBeNull() })
 })

@@ -19,7 +19,7 @@ import {
 } from '../utils/enroll'
 import { enrollScript } from '../utils/enroll-script'
 import { gpoFiles, gpoScript, trustAnchors } from '../utils/enroll-gpo'
-import { probeChain, trustVerdict } from '../utils/enroll-trust'
+import { probeChain, probeRole, trustVerdict } from '../utils/enroll-trust'
 import { loadTls } from './consoletls'
 import { ACCOUNT_RE, createGroup, createOu, GpoError, gpoLdapFactory, pushGpo, pushGpoSerial, smbclientRunner } from '../utils/enroll-gpo-push'
 
@@ -184,7 +184,8 @@ route('GET', '/enroll/trust', 'admin', async () => {
   let anchors: X509Certificate[] = []
   try { anchors = Object.values((await gpoMaterial()).anchors).map((b) => new X509Certificate(b)) } catch { /* autorité plus émettrice : aucune ancre connue */ }
   const v = trustVerdict(s.host, await probeChain(s.host), anchors)
-  return { configured: true, anchors: anchors.length, ...v }
+  const replica = v.reachable && (await probeRole(s.host)) === 'replica'   // le nom mène à un nœud secondaire : l'enrôlement y échoue (503 replica)
+  return { configured: true, anchors: anchors.length, replica, ...v }
 })
 route('GET', '/enroll/gpo-script', 'admin', async (c) => {
   const m = await gpoMaterial()

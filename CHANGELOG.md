@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.21.2 — « L'enrôlement des postes peut enfin s'exécuter »
+
+- **Correctif** : l'assistant Kerberos de l'enrôlement (`enroll-gss`, lancé directement par la console) était livré sans droit d'exécution : la liste des fichiers en 0755 de la construction l'oubliait. Sur une vraie installation la console répondait donc toujours **503** (`helper_failed`) aux postes, et rien n'apparaissait dans l'activité. Il est maintenant en 0755 dans le paquet ; la mise à jour le corrige (les droits sont conservés à l'extraction). Garde-fou ajouté à la batterie statique (b01).
+- **Nom d'enrôlement sur un nœud secondaire** : seul le leader écrit ; un secondaire répond `503 replica` à toute demande d'enrôlement et rien n'est jamais émis. « Vérifier » (PKI → Postes, étape 3) détecte maintenant que le nom de la console vu des postes mène à un secondaire et dit d'utiliser le **nom virtuel** du cluster (qui suit toujours le leader, avec un keytab `HTTP/<nom virtuel>`).
+- **Diagnostic** : sur un nœud secondaire, un refus d'enrôlement n'allait qu'au journal du service, sans motif. La ligne `[audit-replica]` indique maintenant le code du refus et sa cause (`reason`, `error`, `directory`).
+- Contournement avant mise à jour : `chmod 0755 /usr/local/lib/ddibuntu/enroll-gss` sur chaque nœud.
+
 ## 0.21.1 — « La confirmation passe devant les fenêtres ouvertes »
 
 - **Correctif** : supprimer un alias (ou toute action confirmée depuis une fenêtre déjà ouverte) affichait la boîte de confirmation **derrière** la fenêtre, donc inutilisable. Les fenêtres ont le même niveau d'empilement et c'est l'ordre d'insertion dans la page qui décide ; la confirmation, montée une fois pour toute l'application, pouvait se retrouver dessous. Elle a maintenant un niveau plus élevé (`z-[60]`), garde-fou testé.
