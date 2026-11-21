@@ -1,5 +1,9 @@
 # Journal des modifications
 
+## 0.21.1 — « La confirmation passe devant les fenêtres ouvertes »
+
+- **Correctif** : supprimer un alias (ou toute action confirmée depuis une fenêtre déjà ouverte) affichait la boîte de confirmation **derrière** la fenêtre, donc inutilisable. Les fenêtres ont le même niveau d'empilement et c'est l'ordre d'insertion dans la page qui décide ; la confirmation, montée une fois pour toute l'application, pouvait se retrouver dessous. Elle a maintenant un niveau plus élevé (`z-[60]`), garde-fou testé.
+
 ## 0.21.0 — « Certificat HTTPS de la console : automatique et commun au cluster »
 
 Chaque nœud avait son propre certificat HTTPS auto-signé (CN = nom court, sans le nom complet), si bien que les postes ne pouvaient pas faire confiance à la console sous le nom qu'ils utilisent, ni après une bascule. La console gère maintenant ce certificat toute seule.
