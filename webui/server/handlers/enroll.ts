@@ -14,7 +14,7 @@ import { blob, blobBytes, readCaFile, readPkiCas } from '../utils/pki-ca'
 import { DNS_RE } from '../utils/pki-certs'
 import { issueCert } from './pkicert'
 import {
-  acceptNegotiate, dnsInDomain, dnsMatchesAccount, domainOfDn, enrollSerial, ENROLL_DEFAULTS, ENROLL_KEY, ENROLL_LIMITS, enrollBody, enrollComplete, KEYTAB_KEY, keytabProblem, loadEnroll, loadKeytab,
+  acceptNegotiate, dnsInDomain, dnsMatchesAccount, domainOfDn, enrollSerial, ENROLL_DEFAULTS, ENROLL_KEY, ENROLL_LIMITS, enrollBody, enrollComplete, KEYTAB_KEY, keytabProblem, keytabShapeProblem, loadEnroll, loadKeytab,
   machineFromPrincipal, negotiateToken, parseKeytab, preAuthAuditOk, principalAllowed, principalAuditOk, rateVerdict, sealKeytab,
 } from '../utils/enroll'
 import { enrollScript } from '../utils/enroll-script'
@@ -136,10 +136,8 @@ route('PUT', '/enroll/keytab', 'admin', async (c) => {
   const raw = Buffer.from(b.keytab.replace(/\s+/g, ''), 'base64')
   let info
   try { info = parseKeytab(raw) } catch (e: any) { return fail(400, e?.message === 'keytab_realms' ? 'enroll_keytab_realms' : 'invalid_keytab') }
-  const s = await loadEnroll()
-  if (s.host) { const p = keytabProblem(info, s.host); if (p) fail(400, `enroll_${p}`) }
-  else if (!info.principals.some((p) => /^http\//i.test(p))) fail(400, 'enroll_keytab_spn')
-  else if (info.principals.some((p) => !/^http\//i.test(p))) fail(400, 'enroll_keytab_extra')
+  const bad = keytabShapeProblem(info)   // forme seulement : le nom de la console peut changer après (nom virtuel) ; la concordance est exigée à l'activation et signalée à l'affichage
+  if (bad) fail(400, `enroll_${bad}`)
   await setSetting(KEYTAB_KEY, sealKeytab(raw, info))
   await audit(c, 'enroll.keytab', 'settings', KEYTAB_KEY, { principals: info.principals, bytes: raw.length })
   return { ok: true, principals: info.principals, realm: info.realm }

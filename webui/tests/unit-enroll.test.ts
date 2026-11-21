@@ -2,7 +2,7 @@
 // Le côté Kerberos (ticket réel, annuaire réel, émission) est vérifié par e2e-iter62.test.ts contre un Samba AD.
 import { describe, expect, it } from 'vitest'
 process.env.DDI_SECRET_KEY = 'cle-secrete-de-test-0123456789abcdefghij'
-import { dnsInDomain, dnsMatchesAccount, domainOfDn, principalAllowed, principalAuditOk, ENROLL_DEFAULTS, enrollBody, enrollComplete, enrollSerial, keytabProblem, machineFromPrincipal, negotiateToken, parseKeytab, preAuthAuditOk, sealKeytab } from '../server/utils/enroll'
+import { dnsInDomain, dnsMatchesAccount, domainOfDn, principalAllowed, principalAuditOk, ENROLL_DEFAULTS, enrollBody, enrollComplete, enrollSerial, keytabProblem, keytabShapeProblem, machineFromPrincipal, negotiateToken, parseKeytab, preAuthAuditOk, sealKeytab } from '../server/utils/enroll'
 import { enrollScript } from '../server/utils/enroll-script'
 import { gpoScript, mergeExtensions, scriptsIni, trustAnchors } from '../server/utils/enroll-gpo'
 import { filterGpoAcl, guidBytes, AUTHENTICATED_USERS, ridOf, APPLY_GROUP_POLICY } from '../server/utils/gpo-acl'
@@ -252,5 +252,31 @@ describe('filtrage de sécurité d\'une GPO (descripteur binaire)', () => {
     expect(() => filterGpoAcl(Buffer.alloc(10), GROUP)).toThrow('sd')
     const withOwner = dacl(base()); withOwner.writeUInt32LE(99, 4); expect(() => filterGpoAcl(withOwner, GROUP)).toThrow('sd')
     const cut = dacl(base()).subarray(0, 50); expect(() => filterGpoAcl(cut, GROUP)).toThrow('sd')
+  })
+})
+
+describe('keytab : forme contrôlée sans le nom de la console (0.21.3)', () => {
+  const aes = (host: string) => parseKeytab(kt([{ comps: ['HTTP', host], realm: 'LAB.TEST', enctype: 18 }]))
+  it('un keytab AES HTTP/… est accepté quel que soit le nom enregistré', () => {
+    expect(keytabShapeProblem(aes('virtuel.lab.test'))).toBeNull()
+    expect(keytabProblem(aes('virtuel.lab.test'), 'noeud1.lab.test')).toBe('keytab_spn')   // la concordance reste vérifiée à l'activation
+  })
+  it('sans service HTTP, avec un autre principal ou en RC4 / DES : refusé', () => {
+    expect(keytabShapeProblem(parseKeytab(kt([{ comps: ['host', 'pc.lab.test'], realm: 'LAB.TEST', enctype: 18 }])))).toBe('keytab_spn')
+    expect(keytabShapeProblem(parseKeytab(kt([{ comps: ['HTTP', 'a.lab.test'], realm: 'LAB.TEST', enctype: 18 }, { comps: ['host', 'a.lab.test'], realm: 'LAB.TEST', enctype: 18 }])))).toBe('keytab_extra')
+    expect(keytabShapeProblem(parseKeytab(kt([{ comps: ['HTTP', 'a.lab.test'], realm: 'LAB.TEST', enctype: 23 }])))).toBe('keytab_enctype')
+  })
+})
+
+describe('enroll.ps1 : hors SYSTEM et motif du refus (0.21.3)', () => {
+  const s = enrollScript('ddi.lab.test', 'CA')
+  it('refuse de tourner hors SYSTEM avec un message clair, avant tout appel à la console', () => {
+    expect(s).toContain('[Security.Principal.WindowsIdentity]::GetCurrent().IsSystem')
+    expect(s.indexOf('IsSystem')).toBeLessThan(s.indexOf('Invoke-WebRequest'))
+    expect(s).toContain('Register-ScheduledTask -TaskName DDI-test')
+  })
+  it('lit le corps de la réponse dans ErrorDetails et nomme le motif dans l\'échec', () => {
+    expect(s).toContain('$_.ErrorDetails.Message')
+    expect(s).toContain("throw ('enrolement refuse (HTTP {0} {1})' -f $code, $why)")
   })
 })

@@ -234,7 +234,11 @@ describe('keytab du service', () => {
   it('un keytab qui ne porte que du RC4 / DES est refusé quand le nom de la console est connu', async () => {
     expect((await admin.put('/api/enroll/config', cfgBody({ enabled: false }))).status).toBe(200)
     code(await admin.put('/api/enroll/keytab', { keytab: keytab([{ comps: ['HTTP', 'ddi.lab.test'], realm: 'LAB.TEST', enctype: 23 }]).toString('base64') }), 400, 'enroll_keytab_enctype')
-    code(await admin.put('/api/enroll/keytab', { keytab: keytab([{ comps: ['HTTP', 'autre.lab.test'], realm: 'LAB.TEST', enctype: 18 }]).toString('base64') }), 400, 'enroll_keytab_spn')
+    // 0.21.3 : un keytab d'un autre nom est accepté au dépôt (le nom a pu changer, nom virtuel du cluster) ; l'écart est signalé, et refusé à l'activation
+    const other = await admin.put('/api/enroll/keytab', { keytab: keytab([{ comps: ['HTTP', 'autre.lab.test'], realm: 'LAB.TEST', enctype: 18 }]).toString('base64') }); expect(other.status, other.text).toBe(200)
+    expect((await admin.get('/api/enroll')).json.keytab.problem).toBe('keytab_spn')
+    expect((await admin.put('/api/enroll/keytab', { keytab: keytab([{ comps: ['HTTP', 'ddi.lab.test'], realm: 'LAB.TEST', enctype: 18, kvno: 4 }]).toString('base64') })).status).toBe(200)   // état rétabli pour la suite
+    expect((await admin.get('/api/enroll')).json.keytab.problem).toBeNull()
   })
 })
 

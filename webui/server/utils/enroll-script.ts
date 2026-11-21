@@ -10,7 +10,10 @@ const TEMPLATE = String.raw`<#
  DDI-Buntu : certificat de poste (EAP-TLS) émis par la PKI du DDI.
  Généré par la console du DDI. À exécuter en SYSTEM :
    - tâche planifiée : lancer une fois "powershell.exe -ExecutionPolicy Bypass -File enroll.ps1 -Install" (par exemple en script de démarrage d'une GPO) ;
-   - essai à la main (invite PowerShell lancée en SYSTEM) : "enroll.ps1 -Now".
+   - essai à la main : le script doit tourner en SYSTEM (le poste s'authentifie avec le compte de l'ordinateur ; une session administrateur présenterait le compte de l'utilisateur et serait refusée).
+     Depuis une invite administrateur : tâche unique en SYSTEM, puis lire le journal :
+       $a = New-ScheduledTaskAction -Execute powershell.exe -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\DDI-Buntu\enroll.ps1" -Now -Force'
+       Register-ScheduledTask -TaskName DDI-test -Action $a -User SYSTEM -RunLevel Highest -Force | Out-Null; Start-ScheduledTask -TaskName DDI-test
  La clé privée est créée sur ce poste (non exportable) et n'en sort jamais. Journal : %ProgramFiles%\DDI-Buntu\enroll.log
 #>
 param([switch]$Install, [switch]$Now, [switch]$Force)
@@ -48,6 +51,10 @@ if ($Install) {
   return
 }
 
+if (-not [Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) {
+  Write-Log 'ECHEC : a lancer en SYSTEM (la tache planifiee le fait). Une session utilisateur presenterait votre compte et non celui de l''ordinateur : la console refuserait. Essai : voir l''en-tete du script.'
+  exit 2
+}
 Write-Log 'execution demarree'
 $work = $null
 try {
@@ -87,13 +94,16 @@ try {
       break
     } catch {
       $code = 0; $detail = ''
-      if ($_.Exception.Response) {
-        $code = [int]$_.Exception.Response.StatusCode
-        try { $detail = (New-Object IO.StreamReader($_.Exception.Response.GetResponseStream())).ReadToEnd() } catch { }
-      }
+      if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+      # Windows PowerShell 5.1 range le corps de la reponse dans ErrorDetails (le flux est deja lu) ; PowerShell 7 aussi
+      if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $detail = $_.ErrorDetails.Message }
+      elseif ($_.Exception.Response) { try { $detail = (New-Object IO.StreamReader($_.Exception.Response.GetResponseStream())).ReadToEnd() } catch { } }
+      $detail = ($detail -replace '\s+', ' ').Trim()
+      $why = ''
+      if ($detail -match '"code"\s*:\s*"([A-Za-z0-9_]+)"') { $why = $Matches[1] }
       Write-Log ('refus ou erreur HTTP {0} {1} {2}' -f $code, $_.Exception.Message, $detail)
       # 401 / 403 / 404 : inutile d'insister ; 409, 429, 5xx ou pas de reponse : on reessaie
-      if ($code -in 400, 401, 403, 404, 413, 422) { throw ('enrolement refuse (HTTP {0})' -f $code) }
+      if ($code -in 400, 401, 403, 404, 413, 422) { throw ('enrolement refuse (HTTP {0} {1})' -f $code, $why) }
     }
   }
   if (-not $reply) { throw 'la console n''a pas repondu' }

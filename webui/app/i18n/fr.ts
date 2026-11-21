@@ -4218,7 +4218,7 @@ const messages: Record<string, string> = {
   "err.enroll_rate_too_soon": "Trop tôt : un certificat vient d'être émis pour cet ordinateur.",
   "err.enroll_rate_daily": "Limite journalière atteinte pour cet ordinateur.",
   "err.enroll_rate_busy": "La PKI est très sollicitée, réessayez dans une minute.",
-  "err.enroll_group_invalid": "Le groupe autorisé n'existe pas dans l'annuaire ou n'est pas un groupe (un conteneur comme CN=Computers ne convient pas).",
+  "err.enroll_group_invalid": "Le groupe autorisé n'existe pas dans l'annuaire ou n'est pas un groupe : un conteneur (CN=Computers) ou une unité d'organisation (OU=…) ne convient pas, il faut le nom distinctif d'un groupe de sécurité (CN=…).",
   "err.enroll_incomplete": "Réglages incomplets : keytab, nom de la console, autorité et groupe sont requis.",
   "err.enroll_keytab_spn": "Le keytab ne contient pas le service HTTP/<nom de la console> demandé.",
   "err.enroll_keytab_enctype": "Le keytab ne contient que des clés faibles (DES ou RC4) : exportez-le en AES.",

@@ -92,6 +92,15 @@ export function keytabProblem(info: KeytabInfo, host: string): string | null {
   if (mine.every((e) => ENCTYPE_BAD.has(e.enctype))) return 'keytab_enctype'
   return null
 }
+/** Contrôle d'un keytab déposé, indépendant du nom de la console (0.21.3) : le nom peut changer après le dépôt (passage au nom virtuel du cluster), et l'inverse bloquait les deux
+ *  opérations l'une par l'autre. La concordance avec le nom est vérifiée par keytabProblem, à l'activation et à l'affichage. */
+export function keytabShapeProblem(info: KeytabInfo): string | null {
+  const http = info.entries.filter((e) => /^http\//i.test(e.principal))
+  if (!http.length) return 'keytab_spn'
+  if (info.principals.some((x) => !/^http\//i.test(x))) return 'keytab_extra'
+  if (http.every((e) => ENCTYPE_BAD.has(e.enctype))) return 'keytab_enctype'
+  return null
+}
 export const loadKeytab = () => getSetting<StoredKeytab | null>(KEYTAB_KEY, null)
 export function sealKeytab(raw: Buffer, info: KeytabInfo): StoredKeytab {
   const kvno: Record<string, number> = {}
