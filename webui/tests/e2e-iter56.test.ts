@@ -148,9 +148,11 @@ describe('état et préconditions', () => {
     expect(rootLog).toHaveLength(0)
   })
   it('une demande déjà en attente chez root : refus sans rien écraser', async () => {
-    writeFileSync(REQ, '{"action":"status"}\n'); rootMute = true
-    code(await admin.post(S + '/enable'), 409, 'request_pending')
-    rmSync(REQ, { force: true }); rootMute = false
+    rootMute = true   // AVANT de déposer la demande : le « root » simulé la consommerait sinon (course)
+    try {
+      writeFileSync(REQ, '{"action":"status"}\n')
+      code(await admin.post(S + '/enable'), 409, 'request_pending')
+    } finally { rmSync(REQ, { force: true }); rootMute = false }
   })
 })
 

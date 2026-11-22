@@ -99,7 +99,7 @@ describe('zones depuis Windows', () => {
     expect(p.json).toMatchObject({ new: 4, identical: 0, conflicts: 0 }); expect((await rows('select count(*)::int n from dns_records'))[0].n).toBe(0)
     const r = await admin.post('/api/migration/axfr/commit', { server: '192.0.2.1', zone_id: zid }); expect(r.status, r.text).toBe(200)
     expect(r.json.inserted).toBe(4)
-    expect((await rows('select name, type from dns_records order by name, type')).map((x) => `${x.name}/${x.type}`)).toEqual(['@/NS', '_ldap._tcp/SRV', 'dc1/A', 'www/CNAME'])
+    expect((await rows('select name, type from dns_records order by name collate "C", type')).map((x) => `${x.name}/${x.type}`)).toEqual(['@/NS', '_ldap._tcp/SRV', 'dc1/A', 'www/CNAME'])
     expect((await rows("select protected from dns_records where name = '_ldap._tcp'"))[0].protected).toBe(true)
     expect((await rows('select count(*)::int n from dns_zones where dirty and name = $1', ['corp.test']))[0].n).toBe(1)
     expect((await admin.post('/api/migration/axfr/commit', { server: '192.0.2.1', zone_id: zid })).json.inserted).toBe(0)

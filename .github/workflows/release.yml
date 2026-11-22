@@ -1,50 +1,68 @@
-# Publication : un push sur main qui change src/VERSION (ou un tag vX.Y.Z poussé à la main) construit l'archive de mise à jour en ligne et le fichier unique, signe SHA256SUMS
-# (Ed25519, clé privée dans le secret UPDATE_SIGNING_KEY ; la clé publique épinglée est src/rootfs/etc/ddibuntu/update-pubkey.pem)
-# puis crée la release GitHub que les appliances interrogent. Voir docs/RELEASING.md.
+# Publication, étape 1/2 — VERSION CANDIDATE. Un push sur main qui change src/VERSION :
+#   1. rejoue toute la CI sur le commit exact (ci.yml) ;
+#   2. construit UNE FOIS l'archive de mise à jour et le fichier unique (depuis la console testée par la CI), signe SHA256SUMS (Ed25519,
+#      clé privée dans le secret UPDATE_SIGNING_KEY, clé publique épinglée src/rootfs/etc/ddibuntu/update-pubkey.pem), produit le SBOM
+#      et l'attestation de provenance ;
+#   3. publie le tout en PRÉ-VERSION vX.Y.Z : les appliances (canal stable) ne la voient pas ; l'instance de validation (canal prerelease)
+#      l'installe, la teste et rend son verdict à promote.yml (étape 2/2), qui en fait la release publique sans rien reconstruire.
+# Voir docs/CI-CD.md et docs/RELEASING.md.
 name: release
-# La release crée elle-même le tag vX.Y.Z (sur le commit testé) : il suffit de pousser la nouvelle src/VERSION sur main.
-# Si la release existe déjà, le travail s'arrête sans rien faire (modifier ce fichier ou src/VERSION sans changer de version est sans effet).
 on:
   push:
-    tags: ['v*']
     branches: [main]
-    paths: ['src/VERSION', '.github/workflows/release.yml']
+    paths: ['src/VERSION']
+  workflow_dispatch:      # relance après un échec de construction (aucune release créée) ; depuis main seulement
 concurrency: { group: release, cancel-in-progress: false }
 permissions:
-  contents: read          # le droit d'écriture n'est donné qu'au travail « release » (publication)
+  contents: read          # chaque travail ne reçoit que les droits qu'il utilise
 jobs:
   gate:
+    if: github.ref == 'refs/heads/main'       # jamais depuis une autre branche : la clé de signature ne signe que du code fusionné
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       skip: ${{ steps.g.outputs.skip }}
-      tag: ${{ steps.g.outputs.tag }}
+      version: ${{ steps.g.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       - id: g
-        env: { GH_TOKEN: '${{ github.token }}' }
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           v="$(tr -d '\n' < src/VERSION)"
-          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "src/VERSION invalide : $v"; exit 1; }
-          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v$v" ]; then echo "tag ${GITHUB_REF_NAME} différent de v$v (src/VERSION)"; exit 1; fi
-          echo "tag=v$v" >> "$GITHUB_OUTPUT"
-          if gh release view "v$v" >/dev/null 2>&1; then echo "release v$v déjà publiée : rien à faire"; echo skip=true >> "$GITHUB_OUTPUT"; else echo skip=false >> "$GITHUB_OUTPUT"; fi
-  release:
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::src/VERSION invalide : $v"; exit 1; }
+          [ "$(tr -d '\n' < src/rootfs/usr/local/lib/ddibuntu/VERSION)" = "$v" ] || { echo "::error::les deux fichiers VERSION diffèrent"; exit 1; }
+          grep -qE "^## $v( |$)" CHANGELOG.md || { echo "::error::CHANGELOG.md n'a pas de section ## $v"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          # une version existante (candidate, rejetée ou publiée) n'est jamais reconstruite : on publie X.Y.Z+1
+          if gh release view "v$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "v$v existe déjà : rien à faire"; echo skip=true >> "$GITHUB_OUTPUT"
+          else echo skip=false >> "$GITHUB_OUTPUT"; fi
+
+  ci:
     needs: gate
-    permissions:
-      contents: write
     if: needs.gate.outputs.skip != 'true'
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/ci.yml
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}     # seul secret transmis à la CI
+
+  build:
+    needs: [gate, ci]
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.gate.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm, cache-dependency-path: webui/package-lock.json }
-      - name: Version publiée
-        run: echo "VERSION=$(tr -d '\n' < src/VERSION)" >> "$GITHUB_ENV"
-      - run: sudo apt-get update && sudo apt-get install -y shellcheck bind9-utils kea-dhcp4-server
-      - run: make lint
-      - run: tools/build-console.sh
-      - run: tools/run-console-tests.sh unit
-      - run: bash tests/b09-selfupdate.sh
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 22 }
+      - name: Console testée par la CI (même exécution)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: console-output, path: webui/.output }
       - name: Archive de mise à jour et fichier unique
         run: |
           ./build-ddibuntu.sh --bundle --out dist
@@ -53,19 +71,70 @@ jobs:
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
-          [ -n "$UPDATE_SIGNING_KEY" ] || { echo "secret UPDATE_SIGNING_KEY absent"; exit 1; }
+          [ -n "$UPDATE_SIGNING_KEY" ] || { echo "::error::secret UPDATE_SIGNING_KEY absent"; exit 1; }
           cd dist
           sha256sum "ddibuntu-update-$VERSION.tar.gz" build-ddibuntu.sh > SHA256SUMS
           key="$(mktemp)"; trap 'shred -u "$key"' EXIT
           printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
           openssl pkeyutl -sign -inkey "$key" -rawin -in SHA256SUMS -out SHA256SUMS.sig
           openssl pkeyutl -verify -pubin -inkey ../src/rootfs/etc/ddibuntu/update-pubkey.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
-      - name: Notes de version (section du CHANGELOG)
+      - name: SBOM de la console (CycloneDX, dépendances livrées)
+        working-directory: webui
         run: |
-          awk -v v="$VERSION" '$0 ~ "^## " v "( |$)" {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
-          [ -s notes.md ] || echo "Version $VERSION" > notes.md
-      - name: Création de la release
-        env: { GH_TOKEN: '${{ github.token }}' }
+          npm install --prefix /tmp/cdx --ignore-scripts --no-audit --no-fund @cyclonedx/cyclonedx-npm@7.0.1
+          /tmp/cdx/node_modules/.bin/cyclonedx-npm --package-lock-only --omit dev --output-format JSON --output-file "../dist/sbom-console-$VERSION.cdx.json"
+      - name: Notes de version (section du CHANGELOG + bandeau de validation)
         run: |
-          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "DDI-Buntu $VERSION" --notes-file notes.md \
-            "dist/ddibuntu-update-$VERSION.tar.gz" dist/build-ddibuntu.sh dist/SHA256SUMS dist/SHA256SUMS.sig
+          {
+            echo '<!-- validation:pending -->'
+            echo '> ⏳ **Version candidate** — en validation sur l'"'"'instance de dev. Les appliances du canal stable ne la voient pas encore.'
+            echo '<!-- /validation -->'
+            echo
+            awk -v v="$VERSION" '$0 ~ "^## " v "( |$)" {f=1; next} /^## / {f=0} f' CHANGELOG.md
+          } > dist/notes.md
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            dist/ddibuntu-update-${{ env.VERSION }}.tar.gz
+            dist/build-ddibuntu.sh
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sig
+            dist/sbom-console-${{ env.VERSION }}.cdx.json
+            dist/notes.md
+
+  prerelease:
+    needs: [gate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write         # attestation de provenance (Sigstore) : donnée au seul travail qui n'exécute aucun code du dépôt
+      attestations: write
+    env:
+      VERSION: ${{ needs.gate.outputs.version }}
+      PRODUCT: ${{ vars.PRODUCT_NAME || 'DDI-Buntu' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: release-files, path: dist }
+      - name: Attestation de provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/ddibuntu-update-${{ env.VERSION }}.tar.gz
+            dist/build-ddibuntu.sh
+            dist/sbom-console-${{ env.VERSION }}.cdx.json
+      - name: Publication en pré-version
+        run: |
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "$PRODUCT $VERSION" --notes-file dist/notes.md \
+            "dist/ddibuntu-update-$VERSION.tar.gz" dist/build-ddibuntu.sh dist/SHA256SUMS dist/SHA256SUMS.sig "dist/sbom-console-$VERSION.cdx.json"
+          {
+            echo "### Version candidate $VERSION publiée"
+            echo "En attente du verdict de l'instance de validation (promote.yml)."
+            echo
+            grep "ddibuntu-update-$VERSION.tar.gz" dist/SHA256SUMS | sed 's/^/    /'
+          } >> "$GITHUB_STEP_SUMMARY"

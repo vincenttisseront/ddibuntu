@@ -1,49 +1,223 @@
-# Intégration continue : contrôles qui ne demandent ni root, ni QEMU, ni chroot. Les batteries système (b03..b08) se rejouent sur une machine Linux avec droits root (docs/TESTING.md).
+# Intégration continue — contrôle de non-régression de chaque PR, de chaque push sur main, et (workflow_call) de chaque publication.
+# Ce qui ne demande ni root, ni QEMU, ni chroot. Les batteries système (b03..b08, *-live) se rejouent sur une machine Linux root (docs/TESTING.md)
+# et, pour chaque version candidate, sur l'instance de validation (docs/CI-CD.md).
+# Le contrôle requis par la protection de main est « ci-ok » : il échoue si un seul des travaux échoue ou est annulé.
 name: ci
-on: [push, pull_request]
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      SONAR_TOKEN: { required: false }
+permissions:
+  contents: read
+concurrency:
+  # PR : un nouveau push annule l'analyse précédente ; main et les publications ne sont jamais interrompues
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  NODE_VERSION: 22
+  GITLEAKS_VERSION: 8.28.0
+  GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
+  OSV_VERSION: 2.7.1
+  OSV_SHA256: fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
 jobs:
-  shell:
+  # ---- scripts shell, workflows, traductions, mise à jour en ligne
+  lint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: make lint
+      - name: actionlint (workflows GitHub)
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/al.tgz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  /tmp/al.tgz" | sha256sum -c -
+          tar -xzf /tmp/al.tgz -C /tmp actionlint
+          /tmp/actionlint -color
       - run: bash tests/b02-i18n.sh
       - run: bash tests/b09-selfupdate.sh
-  console:
+      - run: bash tests/b43-selftest.sh
+
+  # ---- playbook AWX de l'instance de validation : ansible-lint (profil production) et rejeu contre un faux GitHub (tests/b44)
+  awx:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm, cache-dependency-path: webui/package-lock.json }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: pipx install ansible-core==2.22.0 && pipx install ansible-lint==26.11.0
+      - run: ansible-lint --profile production deploy/awx/
+      - run: bash tests/b44-awx-validation.sh
+
+  # ---- secrets dans tout l'historique (règles par défaut de gitleaks + .gitleaks.toml)
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }
+      - name: gitleaks
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/gl.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gl.tgz" | sha256sum -c -
+          tar -xzf /tmp/gl.tgz -C /tmp gitleaks
+          /tmp/gitleaks git --redact --no-banner --config .gitleaks.toml --report-format sarif --report-path gitleaks.sarif .
+      - name: Résultats dans l'onglet Security
+        if: always() && hashFiles('gitleaks.sarif') != '' && (github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork)
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with: { sarif_file: gitleaks.sarif, category: gitleaks }
+
+  # ---- dépendances : vulnérabilités connues (exceptions motivées et datées : webui/osv-scanner.toml) ; en PR, aucune dépendance vulnérable ajoutée
+  deps:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: osv-scanner (package-lock.json)
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/osv "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SHA256}  /tmp/osv" | sha256sum -c -
+          chmod +x /tmp/osv
+          /tmp/osv scan source --lockfile webui/package-lock.json --config webui/osv-scanner.toml
+      # Exige le « Dependency graph » du dépôt (Settings → Security → Code security) ; activer ensuite la variable DEPENDENCY_REVIEW=on
+      - name: Revue des dépendances ajoutées par la PR
+        if: github.event_name == 'pull_request' && vars.DEPENDENCY_REVIEW == 'on'
+        uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with: { fail-on-severity: moderate, comment-summary-in-pr: never }
+
+  # ---- console : construction, typage, tests unitaires + couverture (réutilisés par e2e, build et sonar)
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: npm, cache-dependency-path: webui/package-lock.json }
       - run: sudo apt-get update && sudo apt-get install -y bind9-utils kea-dhcp4-server   # les tests de rendu valident avec les outils officiels
       - run: tools/build-console.sh
-      - run: tools/run-console-tests.sh unit
-  repo-mode:
+      - name: Typage du serveur et tests unitaires (couverture)
+        working-directory: webui
+        run: |
+          npx --no-install tsc -p tsconfig.server-check.json
+          npx --no-install vitest run tests/unit-*.test.ts --coverage
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: { name: console-output, path: webui/.output, retention-days: 7, include-hidden-files: true, if-no-files-found: error }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: { name: coverage, path: webui/coverage/lcov.info, retention-days: 7, if-no-files-found: error }
+
+  # ---- console : bout en bout contre la console CONSTRUITE et un vrai PostgreSQL 16 (4 lots en parallèle, une base par lot)
+  e2e:
+    needs: unit
     runs-on: ubuntu-24.04
-    needs: console
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ddi, POSTGRES_PASSWORD: ddi-test-pw, POSTGRES_DB: ddibuntu_test }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ddi" --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22 }
-      - run: tools/build-console.sh
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: npm, cache-dependency-path: webui/package-lock.json }
+      - run: sudo apt-get update && sudo apt-get install -y bind9-utils kea-dhcp4-server
+      # Le profil AppArmor de Kea (Ubuntu) ne lui laisse lire que /etc/kea ; les tests font valider des fichiers temporaires par
+      # « kea-dhcp4 -t ». Sur l'appliance, ce cas est reporté à ddibuntu-reload (render.ts) ; ici on retire le profil pour un vrai verdict.
+      - name: Profil AppArmor de Kea retiré du runner
+        run: |
+          for p in /etc/apparmor.d/usr.sbin.kea-dhcp4*; do
+            if [ -e "$p" ]; then sudo apparmor_parser -R "$p" || echo "profil $p déjà retiré"; fi
+          done
+      - run: npm ci --ignore-scripts      # vitest et le client PostgreSQL suffisent : la console est déjà construite
+        working-directory: webui
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: console-output, path: webui/.output }
+      - name: "Lot ${{ matrix.shard }}/4 (un fichier à la fois, même base)"
+        working-directory: webui
+        env: { SHARD: '${{ matrix.shard }}', SHARDS: 4 }
+        run: |
+          mapfile -t files < <(find tests -maxdepth 1 -name 'e2e*.test.ts' | sort | awk -v n="$SHARDS" -v i="$SHARD" 'NR % n == i % n')
+          echo "${#files[@]} fichier(s) dans ce lot"
+          failed=()
+          for f in "${files[@]}"; do
+            echo "::group::$f"
+            npx --no-install vitest run "$f" || failed+=("$f")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then printf '::error::échec : %s\n' "${failed[@]}"; exit 1; fi
+
+  # ---- appliance : archive de mise à jour et fichier unique construits depuis le dépôt (mode « repo »)
+  build:
+    needs: unit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: console-output, path: webui/.output }
       - run: ./build-ddibuntu.sh --stage /tmp/stage && tools/make-single.sh
       - run: ./build-ddibuntu.sh --bundle --out /tmp/bundle && tar -tzf /tmp/bundle/ddibuntu-update-*.tar.gz
-  # Qualité du code (SonarQube Cloud) : analyse + couverture des tests unitaires. Nécessite le secret SONAR_TOKEN (sans lui, l'étape d'analyse est sautée : forks, premier démarrage).
-  # Penser à désactiver « Automatic Analysis » dans SonarQube Cloud (Administration → Analysis Method), sinon les deux analyses se contredisent.
+
+  # ---- qualité : SonarQube Cloud. Deux modes (docs/QUALITE.md) :
+  #   - secret SONAR_TOKEN posé + « Automatic Analysis » désactivée : analyse ici, avec la couverture, quality gate attendu et BLOQUANT ;
+  #   - sans secret : SonarQube Cloud analyse seul (« Automatic Analysis ») et publie le contrôle « SonarCloud Code Analysis »,
+  #     à exiger dans la protection de main. Ce travail se contente alors de le signaler.
   sonar:
+    needs: unit
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }                  # l'historique complet permet d'attribuer le « nouveau code »
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm, cache-dependency-path: webui/package-lock.json }
-      - run: sudo apt-get update && sudo apt-get install -y bind9-utils kea-dhcp4-server
-      - run: tools/build-console.sh
-      - run: cd webui && npx vitest run tests/unit-*.test.ts --coverage
-      - name: Analyse SonarQube Cloud
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }   # l'historique complet permet d'attribuer le « nouveau code »
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: '${{ env.NODE_VERSION }}' }      # analyseur JavaScript/TypeScript de Sonar
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: coverage, path: webui/coverage }
+      - name: Analyse automatique de SonarQube Cloud
+        if: ${{ env.SONAR_TOKEN == '' }}
+        run: |
+          echo "::notice::SONAR_TOKEN absent : le quality gate est le contrôle « SonarCloud Code Analysis » (analyse automatique)"
+      - name: Analyse SonarQube Cloud et attente du quality gate
         if: ${{ env.SONAR_TOKEN != '' }}
-        uses: SonarSource/sonarqube-scan-action@v5
-        env: { SONAR_TOKEN: '${{ secrets.SONAR_TOKEN }}' }
+        uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4 # v8.5.0
+        with:
+          args: >
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=600
+
+  # ---- contrôle unique exigé par la protection de main
+  ci-ok:
+    if: always()
+    needs: [lint, awx, secrets, deps, unit, e2e, build, sonar]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Tous les travaux ont réussi
+        env: { RESULTS: '${{ join(needs.*.result, '' '') }}' }
+        run: |
+          echo "résultats : $RESULTS"
+          for r in $RESULTS; do [ "$r" = success ] || { echo "::error::au moins un travail n'a pas réussi ($r)"; exit 1; }; done
