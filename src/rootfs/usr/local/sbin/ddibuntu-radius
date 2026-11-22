@@ -1,7 +1,7 @@
 #!/bin/bash
 # ddibuntu-radius — service RADIUS (FreeRADIUS) de l'appliance, piloté par la console web (sans privilège).
 # Frontière de privilèges : la console dépose .radius-request et radius-clients.conf ; ICI, root revalide le fichier ligne à ligne
-# (aucune directive libre), installe une arborescence FreeRADIUS dont DDI-Buntu est seul propriétaire (/etc/ddibuntu/radius, jamais
+# (aucune directive libre), installe une arborescence FreeRADIUS dont Ipnoria est seul propriétaire (/etc/ddibuntu/radius, jamais
 # la configuration du paquet), la contrôle (freeradius -Cx), redémarre le service, n'ouvre le pare-feu qu'aux clients déclarés et
 # restaure l'ancienne arborescence en cas d'échec.
 # EAP-TLS (0.13.2) : la console dépose aussi un dossier radius-pki/ (autorités de confiance, certificat et clé du serveur, CRL) ; root le copie
@@ -1006,7 +1006,7 @@ print(json.dumps({"joined": True, "realm": str(d.get("realm", ""))[:253], "netbi
 PY
 }
 
-# ---- Arborescence FreeRADIUS gérée par DDI-Buntu ----
+# ---- Arborescence FreeRADIUS gérée par Ipnoria ----
 write_radiusd_conf() {
   cat > "$RDIR/radiusd.conf" <<EOF
 # Généré par ddibuntu-radius $(ddi_version). Ne pas modifier à la main : réécrit à chaque déploiement.
@@ -1077,7 +1077,7 @@ write_site() {   # $4 = serveur MFA (0.17.0, optionnel) ; $1 = eap (« eap » : 
     v6=$'\tlisten {\n\t\ttype = auth\n\t\tipv6addr = ::\n\t\tport = 1812\n\t}\n\tlisten {\n\t\ttype = acct\n\t\tipv6addr = ::\n\t\tport = 1813\n\t}\n'
   fi
   { cat <<'EOF'
-# Site RADIUS de DDI-Buntu. Refus par défaut : aucune règle d'accès n'existe encore (itération 4), donc aucun accès n'est jamais accordé.
+# Site RADIUS d’Ipnoria. Refus par défaut : aucune règle d'accès n'existe encore (itération 4), donc aucun accès n'est jamais accordé.
 server default {
 	listen {
 		type = auth

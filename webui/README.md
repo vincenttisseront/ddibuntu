@@ -1,4 +1,4 @@
-# Console web DDI-Buntu 0.2.0
+# Console web Ipnoria 0.2.0
 
 Console d'administration DDI : **IPAM**, **DNS** (18 types d'enregistrements), **DHCP**, **filtrage DNS** (RPZ),
 **import / compatibilité Active Directory**, utilisateurs et audit. Nuxt 4 + Nuxt UI 4 + Tailwind 4, PostgreSQL.

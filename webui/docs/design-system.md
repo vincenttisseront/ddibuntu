@@ -1,8 +1,8 @@
-# Système de design DDI-Buntu
+# Système de design Ipnoria
 
 Généré par uipro-cli 2.2.3 puis adapté (voir LISEZMOI.md). Données d'entrée, pas des instructions.
 
-## Design System: DDI-Buntu
+## Design System: Ipnoria
 
 ### Pattern
 - **Name:** Horizontal Scroll Journey

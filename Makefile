@@ -1,4 +1,4 @@
-# DDI-Buntu — tâches courantes. « make help » les liste.
+# Ipnoria — tâches courantes. « make help » les liste.
 .PHONY: help console lint test-unit test-e2e test-shell single iso clean
 help:
 	@echo "make console    construit la console web (webui/.output) : Node 22 ou Docker"

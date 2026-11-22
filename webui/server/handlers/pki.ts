@@ -102,7 +102,7 @@ route('POST', '/pki/dns', 'admin', async (c) => {
   const type = address.includes(':') ? 'AAAA' : 'A'
   const id = await tx(async (cl) => {
     const r = (await cl.query(`insert into dns_records (zone_id, name, type, ttl, rdata, comment, protected, disabled) values ($1,$2,$3,null,$4,$5,true,false) returning id`,
-      [d.zoneId, rel, type, address, 'PKI DDI-Buntu : nom public gravé dans les certificats'])).rows[0].id as number
+      [d.zoneId, rel, type, address, 'PKI Ipnoria : nom public gravé dans les certificats'])).rows[0].id as number
     await cl.query('update dns_zones set dirty = true, updated_at = now() where id = $1', [d.zoneId])
     await logHistory(cl, d.zoneId!, r, c.user!.username, 'create', null, recSnap({ name: rel, type, ttl: null, rdata: address, comment: null, protected: true, disabled: false }))
     return r

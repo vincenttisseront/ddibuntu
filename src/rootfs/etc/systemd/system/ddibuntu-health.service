@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : photographie de santé de ce nœud (services, disques, certificats, heure)
+Description=Ipnoria : photographie de santé de ce nœud (services, disques, certificats, heure)
 After=network-online.target
 
 [Service]

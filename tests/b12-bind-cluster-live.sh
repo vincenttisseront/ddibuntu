@@ -43,7 +43,7 @@ setup_node() { # setup_node N IP
   printf 'include "%s/named.conf.options";\ninclude "%s/named.conf.local";\nkey "rndc-key" { algorithm hmac-sha256; secret "cm5kY2tleXJuZGNrZXlybmRja2V5cm5kY2tleTEyMzQ="; };\ncontrols { inet 127.0.0.1 port 953%s allow { 127.0.0.1; } keys { "rndc-key"; }; };\n' "$d/bind" "$d/bind" "$n" > "$d/bind/named.conf"
   # ces zones sont celles de la console : mêmes formats que render.ts
   cat > "$d/gen/named.conf.options" <<CONF
-// Généré par DDI-Buntu — ne pas modifier à la main.
+// Généré par Ipnoria — ne pas modifier à la main.
 include "/etc/bind/ddi-ddns.key";
 options {
   directory "/var/cache/bind";
@@ -60,7 +60,7 @@ options {
 };
 CONF
   cat > "$d/gen/named.conf.zones" <<CONF
-// Généré par DDI-Buntu — ne pas modifier à la main.
+// Généré par Ipnoria — ne pas modifier à la main.
 zone "corp.test" { type primary; file "$d/zones/db.corp.test"; notify yes; allow-update { key "ddi-ddns"; }; };
 zone "static.test" { type primary; file "$d/zones/db.static.test"; notify yes; allow-transfer { 127.0.0.2; }; };
 zone "rpz.ddibuntu.local" { type primary; file "$d/zones/db.rpz"; allow-query { none; }; };

@@ -306,7 +306,7 @@ fw_set() {
   if [ -f "$FW_CONF" ]; then bak="$(mktemp)"; cp -p "$FW_CONF" "$bak"; fi
   tmp="$(mktemp)"
   {
-    printf '# Paramètres du pare-feu DDI-Buntu (lus par ddibuntu-fw)\n'
+    printf '# Paramètres du pare-feu Ipnoria (lus par ddibuntu-fw)\n'
     printf 'ADMIN_NETS="%s"\n' "$ADMIN_NETS"
     printf 'OPEN_TCP="%s"\n' "$OPEN_TCP"
     printf 'OPEN_UDP="%s"\n' "$OPEN_UDP"

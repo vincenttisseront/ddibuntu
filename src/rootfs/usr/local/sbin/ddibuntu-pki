@@ -189,7 +189,7 @@ render_quadlet() {   # $1 = référence d'image (étiquette ou @sha256:…)
   cat <<EOF
 # Écrit par ddibuntu-pki — ne pas modifier : cette unité est régénérée à chaque installation.
 [Unit]
-Description=DDI-Buntu : PKI (EJBCA Community)
+Description=Ipnoria : PKI (EJBCA Community)
 After=network-online.target postgresql.service
 Wants=network-online.target
 

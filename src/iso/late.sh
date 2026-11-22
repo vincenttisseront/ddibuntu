@@ -91,4 +91,4 @@ done
 [ -L "$TARGET/etc/systemd/system/multi-user.target.wants/ddibuntu-console.service" ] || fail "console web non activée"
 [ -L "$TARGET/etc/systemd/system/multi-user.target.wants/ddibuntu-reload.path" ] || fail "application de la configuration non activée"
 if [ -f "$SRC/node-linux-x64.tar.gz" ]; then [ -x "$TARGET/opt/ddibuntu/node/bin/node" ] || fail "Node absent après déploiement"; fi
-log "terminé : DDI-Buntu $(cat "$SRC/VERSION")"
+log "terminé : Ipnoria $(cat "$SRC/VERSION")"

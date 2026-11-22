@@ -222,7 +222,7 @@ if mode == "bind-render":
             zo.append('zone "%s" { type secondary; primaries { %s key "%s"; }; file "%s";%s };' % (z, peer, kn, f, " allow-query { none; };" if quiet else ""))
     if cur: die("vue non fermée")
     if all_views:
-        vk = ["// Généré par DDI-Buntu (root) : clés de transfert par vue, dérivées de ddi-xfr.", ]
+        vk = ["// Généré par Ipnoria (root) : clés de transfert par vue, dérivées de ddi-xfr.", ]
         for v in all_views: vk.append('key "%s" { algorithm hmac-sha256; secret "%s"; };' % (vkey(v), vsecret(v)))
         open(out_vkeys, "w", encoding="utf-8").write("\n".join(vk) + "\n")
         # une seule ligne « include » de plus en tête des options (relue telle quelle par la suite)

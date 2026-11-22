@@ -1,8 +1,8 @@
-# DDI-Buntu : winbindd de RADIUS (PEAP-MSCHAPv2). Il ne sert qu'à vérifier les mots de passe des comptes du domaine pour ntlm_auth (FreeRADIUS) :
+# Ipnoria : winbindd de RADIUS (PEAP-MSCHAPv2). Il ne sert qu'à vérifier les mots de passe des comptes du domaine pour ntlm_auth (FreeRADIUS) :
 # configuration PRIVÉE (smb.conf, krb5.conf, secrets.tdb sous /var/lib/ddibuntu/radius-winbind, jamais /etc/samba), compte machine propre au nœud.
 # Démarré et arrêté UNIQUEMENT par « ddibuntu-radius » (jamais activé à l'installation) : sur un secondaire du cluster il reste arrêté, comme FreeRADIUS.
 [Unit]
-Description=DDI-Buntu RADIUS : winbindd (vérification des mots de passe du domaine)
+Description=Ipnoria RADIUS : winbindd (vérification des mots de passe du domaine)
 Documentation=file:///usr/share/doc/ddibuntu/ARCHITECTURE-CLUSTER.md
 After=network-online.target
 Wants=network-online.target

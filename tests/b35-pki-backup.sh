@@ -23,7 +23,7 @@ for k in sys.argv[2].split("."):
 print(str(v).lower() if isinstance(v, bool) else ("" if v is None else v))' "$1" "$2"; }
 
 echo "== Matériel de test : clé de récupération (RSA 3072) et variantes refusables =="
-openssl req -x509 -newkey rsa:3072 -nodes -keyout "$W/rec.key" -out "$W/rec.pem" -days 36500 -subj "/CN=DDI-Buntu PKI recovery test" 2>/dev/null
+openssl req -x509 -newkey rsa:3072 -nodes -keyout "$W/rec.key" -out "$W/rec.pem" -days 36500 -subj "/CN=Ipnoria PKI recovery test" 2>/dev/null
 openssl req -x509 -newkey rsa:3072 -nodes -keyout "$W/other.key" -out "$W/other.pem" -days 36500 -subj "/CN=Autre cle" 2>/dev/null
 openssl pkcs8 -topk8 -v2 aes-256-cbc -in "$W/rec.key" -out "$W/rec.enc.key" -passout pass:phrase-secrete-test 2>/dev/null
 openssl req -x509 -newkey rsa:2048 -nodes -keyout "$W/r2048.key" -out "$W/r2048.pem" -days 36500 -subj "/CN=Trop petite" 2>/dev/null
@@ -60,7 +60,7 @@ refus "lien symbolique" "$W/link.pem"
 refus "fichier absent" "$W/nexiste-pas.pem"
 echo "$(ph recovery-info "$W/rec.pem")" > "$W/info.json"
 expect_eq "recovery-info : empreinte" "$REC_FP" "$(jget "$W/info.json" fingerprint)"
-expect_eq "recovery-info : sujet" "CN=DDI-Buntu PKI recovery test" "$(jget "$W/info.json" subject)"
+expect_eq "recovery-info : sujet" "CN=Ipnoria PKI recovery test" "$(jget "$W/info.json" subject)"
 check_fail "recovery-info : fichier illisible" ph recovery-info "$W/garbage.pem"
 pr() { printf '%s' "$1" | ph parse-request; }
 expect_eq "demande recovery_set acceptée" "action	recovery_set" "$(pr '{"action":"recovery_set"}')"

@@ -67,5 +67,5 @@ jobs:
       - name: Création de la release
         env: { GH_TOKEN: '${{ github.token }}' }
         run: |
-          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "DDI-Buntu $VERSION" --notes-file notes.md \
+          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "Ipnoria $VERSION" --notes-file notes.md \
             "dist/ddibuntu-update-$VERSION.tar.gz" dist/build-ddibuntu.sh dist/SHA256SUMS dist/SHA256SUMS.sig

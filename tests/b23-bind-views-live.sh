@@ -44,7 +44,7 @@ setup_node() { # setup_node N IP
   # (« localhost » couvrirait TOUTES les adresses du serveur, dont celle du faux client externe : le banc liste les adresses)
   # ces zones sont celles de la console : mêmes formats que render.ts
   cat > "$d/gen/named.conf.options" <<CONF
-// Généré par DDI-Buntu — ne pas modifier à la main.
+// Généré par Ipnoria — ne pas modifier à la main.
 include "/etc/bind/ddi-ddns.key";
 options {
   directory "/var/cache/bind";
@@ -61,7 +61,7 @@ options {
 };
 CONF
   cat > "$d/gen/named.conf.zones" <<CONF
-// Généré par DDI-Buntu — ne pas modifier à la main.
+// Généré par Ipnoria — ne pas modifier à la main.
 view "interne" {
   match-clients { $CLI_INT; 127.0.0.1; };
   recursion yes;
@@ -226,7 +226,7 @@ check "AXFR signé de la vue interne depuis le nouveau primaire" bash -c "$(decl
 echo "== Retour à une configuration sans vue =="
 kill "$NPID2"; wait "$NPID2" 2>/dev/null; sleep 1
 d1="$(nodes_dir 1)"
-printf '// Généré par DDI-Buntu — ne pas modifier à la main.\nzone "corp.test" { type primary; file "%s/zones/db.corp.test"; notify yes; };\n' "$d1" > "$d1/gen/named.conf.zones"
+printf '// Généré par Ipnoria — ne pas modifier à la main.\nzone "corp.test" { type primary; file "%s/zones/db.corp.test"; notify yes; };\n' "$d1" > "$d1/gen/named.conf.zones"
 rm -f "$d1/gen/zones/db."*
 printf '$ORIGIN corp.test.\n$TTL 300\n@ IN SOA ns1.corp.test. root.corp.test. ( 300 3600 600 86400 300 )\n@ IN NS ns1.corp.test.\nns1 IN A 127.0.3.1\nwww IN A 10.20.0.10\n' > "$d1/gen/zones/db.corp.test"
 sed -i '/response-policy/d' "$d1/gen/named.conf.options"

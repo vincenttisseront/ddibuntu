@@ -1,14 +1,14 @@
 **English** · [Français](README.md)
 
-# DDI-Buntu
+# Ipnoria
 
 **A complete DDI appliance — DNS, DHCP, IPAM, 802.1X network access and PKI — that installs itself from an ISO and is managed from a web console.**
 
-Do you still keep your addresses in a spreadsheet, run DNS and DHCP on Windows servers, and secure your corporate Wi-Fi with an NPS and a certificate authority (AD CS) nobody dares to touch? DDI-Buntu brings all of it together in **a single Ubuntu appliance**, built on proven components (BIND 9, Kea, FreeRADIUS, EJBCA, PostgreSQL, Patroni) with a console that makes them readable.
+Do you still keep your addresses in a spreadsheet, run DNS and DHCP on Windows servers, and secure your corporate Wi-Fi with an NPS and a certificate authority (AD CS) nobody dares to touch? Ipnoria brings all of it together in **a single Ubuntu appliance**, built on proven components (BIND 9, Kea, FreeRADIUS, EJBCA, PostgreSQL, Patroni) with a console that makes them readable.
 
 ![IPAM: the network tree, with occupancy and VLANs (dark theme)](docs/img/console-ipam-reseaux-sombre.png)
 
-## Why DDI-Buntu
+## Why Ipnoria
 
 - **Installed from a single ISO, nothing downloaded on first boot.** One ISO (BIOS + UEFI) installs everything, and the same ISO upgrades an existing installation while keeping your data.
 - **One source of truth.** Allocating an address in IPAM creates the DNS record (A/AAAA and PTR) and the DHCP reservation in the same transaction; network templates apply the DHCP scope, options and naming rule when a network is created.
@@ -117,4 +117,4 @@ Add the witness first, then the second data node. As soon as two data nodes exis
 
 ## License
 
-DDI-Buntu is free software under the **GNU AGPL v3 or later** (`AGPL-3.0-or-later`): see [LICENSE](LICENSE). Copyright (C) 2026 Vincent Tisseront. The license and the list of open-source components ([OPEN-SOURCE.md](OPEN-SOURCE.md)) also ship on the appliance and can be read in the console (**System › About**). Because the AGPL covers services reached over a network, a modified version offered to users must give them access to its source.
+Ipnoria is free software under the **GNU AGPL v3 or later** (`AGPL-3.0-or-later`): see [LICENSE](LICENSE). Copyright (C) 2026 Vincent Tisseront. The license and the list of open-source components ([OPEN-SOURCE.md](OPEN-SOURCE.md)) also ship on the appliance and can be read in the console (**System › About**). Because the AGPL covers services reached over a network, a modified version offered to users must give them access to its source.

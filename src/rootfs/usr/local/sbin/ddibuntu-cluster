@@ -123,7 +123,7 @@ ca_init() {
   [ ! -f "$CADIR/ca.key" ] || die "une autorité existe déjà sur ce nœud ($CADIR)"
   install -d -m 0700 "$CADIR"
   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$CADIR/ca.key" 2>/dev/null
-  openssl req -x509 -new -key "$CADIR/ca.key" -sha256 -days 3650 -subj "/CN=DDI-Buntu cluster CA ${C[CLUSTER_NAME]}" \
+  openssl req -x509 -new -key "$CADIR/ca.key" -sha256 -days 3650 -subj "/CN=Ipnoria cluster CA ${C[CLUSTER_NAME]}" \
     -addext "basicConstraints=critical,CA:TRUE,pathlen:0" -addext "keyUsage=critical,keyCertSign,cRLSign" -out "$CADIR/ca.crt" 2>/dev/null
   chmod 0600 "$CADIR/ca.key"; chmod 0644 "$CADIR/ca.crt"
   log "autorité interne créée (EC P-256, 10 ans) ; la clé reste sur ce nœud uniquement"

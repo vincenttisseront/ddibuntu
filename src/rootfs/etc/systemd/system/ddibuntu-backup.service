@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : sauvegarde planifiée de la base PostgreSQL (si nécessaire)
+Description=Ipnoria : sauvegarde planifiée de la base PostgreSQL (si nécessaire)
 After=postgresql.service patroni.service
 
 [Service]

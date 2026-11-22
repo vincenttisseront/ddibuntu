@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : demande Kerberos / GSS-TSIG de la console (validée par root)
+Description=Ipnoria : demande Kerberos / GSS-TSIG de la console (validée par root)
 
 [Service]
 Type=oneshot

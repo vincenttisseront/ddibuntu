@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : configuration Kea du cluster (chaque minute)
+Description=Ipnoria : configuration Kea du cluster (chaque minute)
 
 [Timer]
 OnBootSec=45s

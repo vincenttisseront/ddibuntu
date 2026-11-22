@@ -94,7 +94,7 @@ late() { DDI_CDROM="$1" DDI_TARGET="$2" DDI_INTARGET=chroot bash "$1/ddibuntu/la
 late "$CD" "$T" >"$T_TMP/late.log" 2>&1; rc=$?
 expect_eq "late.sh : code retour 0" 0 "$rc"
 [ "$rc" -eq 0 ] || tail -15 "$T_TMP/late.log"
-expect_grep "late.sh : se termine par la version" 'terminé : DDI-Buntu [0-9.]+' "$T_TMP/late.log"
+expect_grep "late.sh : se termine par la version" 'terminé : Ipnoria [0-9.]+' "$T_TMP/late.log"
 expect_eq "nftables installé depuis l'ISO (absent avant)" present "$(chroot "$T" dpkg -s nftables >/dev/null 2>&1 && echo present || echo absent)"
 expect_eq "whiptail installé depuis l'ISO (absent avant)" present "$(chroot "$T" dpkg -s whiptail >/dev/null 2>&1 && echo present || echo absent)"
 expect_eq "nftables correctement configuré (dpkg : état « ii »)" ii "$(chroot "$T" dpkg-query -W -f='${db:Status-Abbrev}' nftables | tr -d ' ')"
@@ -181,7 +181,7 @@ expect_eq "compte d'installation ddisetup supprimé" absent "$(grep -q '^ddisetu
 expect_eq "répertoire personnel de ddisetup supprimé" no "$([ -e "$T/home/ddisetup" ] && echo yes || echo no)"
 expect_grep "réseau d'administration dans le pare-feu du système cible" 'elements = \{ 127\.0\.0\.0/8 \}' "$T/etc/ddibuntu/nftables.nft"
 check "pare-feu du système cible : nft -c après apply" chroot "$T" nft -c -f /etc/nftables.conf
-expect_grep "/etc/issue du système cible : version" "^DDI-Buntu $(tr -d '\n' < "$CD/ddibuntu/VERSION") " "$T/etc/issue"
+expect_grep "/etc/issue du système cible : version" "^Ipnoria $(tr -d '\n' < "$CD/ddibuntu/VERSION") " "$T/etc/issue"
 expect_eq "ligne de commande non interactive : aucun menu (profile.d silencieux sans terminal)" ok "$(chroot "$T" su -s /bin/bash -l jdupont -c 'echo ok' 2>/dev/null | tail -1)"
 printf '%s\n' "$PW" | DDI_ROOT="$T" DDI_LIBDIR="$T/usr/local/lib/ddibuntu" DDI_FW_BIN="$T/usr/local/sbin/ddibuntu-fw" "$T/usr/local/sbin/ddibuntu-apply" --config "$CFG" --password-stdin >"$T_TMP/adm2.log" 2>&1; rc=$?
 expect_eq "apply rejoué sur un système déjà configuré : code retour 0" 0 "$rc"

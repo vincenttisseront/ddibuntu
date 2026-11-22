@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Construit l'ISO DDI-Buntu depuis le depot, en un seul script (Windows 10/11 + Docker Desktop).
+  Construit l'ISO Ipnoria depuis le depot, en un seul script (Windows 10/11 + Docker Desktop).
 .DESCRIPTION
   1. construit la console web (Node 22 dans Docker) -> webui\.output
   2. construit l'ISO (Ubuntu 24.04 dans Docker)     -> <OutDir>\ddibuntu-<version>-amd64.iso
