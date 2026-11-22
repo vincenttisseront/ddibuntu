@@ -78,3 +78,6 @@ FreeRADIUS ne lit **jamais** la configuration du paquet : `ddibuntu-radius` (roo
 
 ## Console web
 Nuxt 4 (Nitro) + PostgreSQL. API : un seul routeur (`server/api/[...slug].ts`) qui centralise authentification, CSRF, rôles, validation (zod), audit et assainissement des erreurs. Migrations numérotées dans `server/utils/db.ts`.
+
+## Assistant IA (0.23.0)
+Désactivé par défaut. `server/utils/ai.ts` (client HTTP vers un serveur de modèles **externe**, API Ollama ou compatible OpenAI ; masquage des secrets ; pseudonymisation réversible ; invites ; débit, deux demandes simultanées, mémoire d'une heure) et `server/handlers/ai.ts` (`/ai/status` pour tout utilisateur connecté, `/ai/settings` et `/ai/test` pour les administrateurs, `/ai/explain` pour les opérateurs, journal d'audit réservé aux administrateurs). Le navigateur n'envoie qu'une référence ; le contexte est relu côté serveur. La réponse n'est qu'affichée, jamais appliquée. Réglage `ai` dans la table `settings` (répliquée), clé chiffrée (`keyEnc`). Aucun service de l'appliance ne dépend du serveur de modèles.
