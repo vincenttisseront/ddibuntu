@@ -118,7 +118,7 @@ route('GET', '/dhcp/leases', 'viewer', async (c) => {
   try {
     const rows = await query<any>(`with l as (
         select ((address >> 24) & 255) || '.' || ((address >> 16) & 255) || '.' || ((address >> 8) & 255) || '.' || (address & 255) as ip,
-          regexp_replace(encode(hwaddr, 'hex'), '(..)(?=.)', '\\1:', 'g') as mac, hostname, expire, subnet_id from lease4 where expire > now())
+          regexp_replace(encode(hwaddr, 'hex'), '(..)(?=.)', '\\1:', 'g') as mac, nullif(regexp_replace(trim(hostname), '\\.$', ''), '') as hostname, expire, subnet_id from lease4 where expire > now())
       select l.ip, l.mac, l.hostname, l.expire, l.subnet_id::int as scope_id, text(sn.cidr) as network,
         (select r.id from dhcp_reservations r where r.scope_id = l.subnet_id and (host(r.ip) = l.ip or (l.mac <> '' and r.mac::text = l.mac)) limit 1) as reservation_id
       from l left join dhcp_scopes d on d.id = l.subnet_id left join subnets sn on sn.id = d.subnet_id order by l.expire desc limit $1`, [limit])

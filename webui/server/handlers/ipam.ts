@@ -208,8 +208,8 @@ route('GET', '/ipam/subnets/:id/addresses', 'viewer', async (c) => {
   const id = intParam(c, 'id'), q = qstr(c, 'q'), st = qstr(c, 'status')
   const gws = JSON.stringify(await gatewayList(id))
   // adresses du réseau + passerelles automatiques (DHCP, réseau) qui n'y figurent pas : lignes en lecture seule, id nul
-  const items = await query(`with ${GW_CTE(5)}, r as (
-      select a.id, a.ip as ipv, host(a.ip) as ip, a.status::text as status, a.hostname, a.mac::text as mac, a.description, a.owner, coalesce(a.tags, '{}') as tags, a.reachable, a.checked_at, (a.is_gateway or a.status = 'gateway') as is_gateway, ${GW_OF('a')} as gw
+  const items = await query(`with lse as (${await leaseRows()}), ${GW_CTE(5)}, r as (
+      select a.id, a.ip as ipv, host(a.ip) as ip, a.status::text as status, coalesce(a.hostname, (select l.hostname from lse l where l.ip = a.ip and l.subnet_id = a.subnet_id limit 1)) as hostname, a.mac::text as mac, a.description, a.owner, coalesce(a.tags, '{}') as tags, a.reachable, a.checked_at, (a.is_gateway or a.status = 'gateway') as is_gateway, ${GW_OF('a')} as gw
         from addresses a where a.subnet_id = $1
       union all
       select null::int, g.ip, host(g.ip), 'gateway', null::text, null::text, null::text, null::text, '{}'::text[], null::boolean, null::timestamptz, false, g.src
@@ -353,10 +353,17 @@ route('DELETE', '/ipam/addresses/:id', 'operator', async (c) => {
 })
 
 // Baux actifs de Kea rattachés à un réseau IPAM (lease4.subnet_id = identifiant de l'étendue DHCP). Vide tant que Kea n'a pas de base de baux PostgreSQL.
+/** Nom de bail nettoyé : espaces, point final et casse retirés ; vide → null. */
+const LEASE_NAME = (col: string) => `nullif(lower(regexp_replace(trim(${col}), '\\.$', '')), '')`
 const leaseRows = async (): Promise<string> => {
   const t = await one<any>("select to_regclass('public.lease4') is not null as ok")
   if (!t?.ok) return "select null::inet as ip, null::bytea as hwaddr, null::text as hostname, null::int as subnet_id where false"
-  return `select ('0.0.0.0'::inet + l.address) as ip, l.hwaddr, nullif(trim(l.hostname), '') as hostname, ds.subnet_id from lease4 l join dhcp_scopes ds on ds.id = l.subnet_id where l.expire > now() and l.hwaddr is not null`
+  // nom du bail sans point final ni majuscules (l'option 81 du client le renvoie en FQDN absolu « poste.domaine. ») ; à défaut de nom fourni
+  // par le client, un enregistrement A des zones gérées portant cette adresse (sinon la ligne reste sans nom)
+  return `select l2.ip, l2.hwaddr, coalesce(l2.name, (select case when r.name = '@' then lower(z.name) else lower(r.name || '.' || z.name) end
+        from dns_records r join dns_zones z on z.id = r.zone_id where r.type = 'A' and not r.disabled and r.rdata = host(l2.ip) order by r.id limit 1)) as hostname, l2.subnet_id
+      from (select ('0.0.0.0'::inet + l.address) as ip, l.hwaddr, ${LEASE_NAME('l.hostname')} as name, ds.subnet_id
+        from lease4 l join dhcp_scopes ds on ds.id = l.subnet_id where l.expire > now() and l.hwaddr is not null) l2`
 }
 
 // ---- Pools d'adresses (plages nommées dans un réseau) ----
@@ -421,7 +428,7 @@ route('GET', '/ipam/addresses', 'viewer', async (c) => {
   const args = [sp, sid, fam, q ? `%${q.replace(/[%_\\]/g, '\\$&')}%` : null, st ?? null, labelFilter(c), JSON.stringify(await gatewayList(sid))]
   // adresses de l'IPAM + baux DHCP actifs qui n'y figurent pas (lignes « bail », en lecture seule : id nul)
   const withAll = `with lse as (${await leaseRows()}), ${GW_CTE(7)}, r as (
-    select a.id, a.subnet_id, a.ip, a.status::text as status, a.hostname, a.mac::text as mac, a.description, a.owner, coalesce(a.tags, '{}') as tags, a.reachable, a.checked_at, (a.is_gateway or a.status = 'gateway') as is_gateway, ${GW_OF('a')} as gw from addresses a
+    select a.id, a.subnet_id, a.ip, a.status::text as status, coalesce(a.hostname, (select l.hostname from lse l where l.ip = a.ip and l.subnet_id = a.subnet_id limit 1)) as hostname, a.mac::text as mac, a.description, a.owner, coalesce(a.tags, '{}') as tags, a.reachable, a.checked_at, (a.is_gateway or a.status = 'gateway') as is_gateway, ${GW_OF('a')} as gw from addresses a
     union all
     select null::int, l.subnet_id, l.ip, 'lease', l.hostname, regexp_replace(encode(l.hwaddr, 'hex'), '(..)(?=.)', '\\1:', 'g'), null::text, null::text, '{}'::text[], null::boolean, null::timestamptz, false, null::text
       from lse l where l.subnet_id is not null and not exists (select 1 from addresses a where a.ip = l.ip and a.subnet_id = l.subnet_id)
