@@ -1,5 +1,5 @@
 [Unit]
-Description=Watch for a PKI service request from the DDI-Buntu console
+Description=Watch for a PKI service request from the Ipnoria console
 
 [Path]
 PathChanged=/var/lib/ddibuntu/generated/.pki-request

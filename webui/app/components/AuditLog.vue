@@ -64,6 +64,8 @@ const fields = computed(() => Object.entries(detail.value).filter(([k]) => !['tr
             <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1"><template v-for="[k, v] in fields" :key="k"><dt class="font-mono text-xs text-muted">{{ k }}</dt><dd class="break-all">{{ fmtVal(v) }}</dd></template></dl></div>
           <p v-else-if="!triedLines.length && !reasonOf(sel)" class="text-muted">{{ t('audit.no_detail') }}</p>
 
+          <AiExplain use="audit" :payload="{ id: sel.id }" />
+
           <div><UButton size="xs" variant="ghost" color="neutral" :icon="raw ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" :label="t('audit.raw')" @click="raw = !raw" />
             <pre v-if="raw" class="mt-1 text-xs whitespace-pre-wrap break-all font-mono bg-elevated rounded p-2 max-h-80 overflow-auto">{{ JSON.stringify(sel.detail, null, 2) ?? 'null' }}</pre></div>
         </div>

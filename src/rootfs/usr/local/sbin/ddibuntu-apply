@@ -178,16 +178,16 @@ fi
 VER="$(ddi_version)"
 {
   ddi_logo_issue
-  printf '%s\n' "DDI-Buntu ${VER}  -  \\n  -  \\l"
+  printf '%s\n' "Ipnoria ${VER}  -  \\n  -  \\l"
   printf '%s : \\4  \\6\n' "$M_ISSUE_NET"
   printf '%s\n\n' "$M_ISSUE_HELP"
 } > "$R/etc/issue"
-{ ddi_logo plain; printf 'DDI-Buntu %s - %s\n' "$VER" "$M_ISSUE_SSH"; } > "$R/etc/issue.net"
+{ ddi_logo plain; printf 'Ipnoria %s - %s\n' "$VER" "$M_ISSUE_SSH"; } > "$R/etc/issue.net"
 
 # ---- Persistance de la configuration (sans secret) et marqueur ----
 mkdir -p "$DDI_CONFDIR" "$DDI_STATEDIR"
 {
-  printf '# Configuration DDI-Buntu (sans secret). Modifiable via ddibuntu-setup.\n'
+  printf '# Configuration Ipnoria (sans secret). Modifiable via ddibuntu-setup.\n'
   printf "LANGUAGE='%s'\nKEYBOARD='%s'\nTIMEZONE='%s'\nHOSTNAME='%s'\n" "$CFG_LANGUAGE" "$CFG_KEYBOARD" "$CFG_TIMEZONE" "$CFG_HOSTNAME"
   printf "NET_MODE='%s'\nNET_IFACE='%s'\nNET_ADDR='%s'\nNET_GW='%s'\nNET_DNS='%s'\nNET_DOMAIN='%s'\n" "$CFG_NET_MODE" "$IFACE" "$CFG_NET_ADDR" "$CFG_NET_GW" "$CFG_NET_DNS" "$CFG_NET_DOMAIN"
   printf "ADMIN_NETS='%s'\nADMIN_USER='%s'\n" "$NETS_NORM" "$CFG_ADMIN_USER"

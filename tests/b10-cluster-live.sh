@@ -241,7 +241,7 @@ check "clé de transfert identique sur n1 et n2 (propagée par le lot d'enrôlem
 expect_eq "clé de transfert : droits 0640" "640" "$(stat -c %a "$(R 2)/etc/bind/ddi-xfr.key")"
 BOPT="$B/named-options.conf"; BZON="$B/named-zones.conf"
 cat > "$BOPT" <<CONF
-// Généré par DDI-Buntu — ne pas modifier à la main.
+// Généré par Ipnoria — ne pas modifier à la main.
 options {
   directory "/var/cache/bind";
   listen-on { 127.0.1.1; };
@@ -256,7 +256,7 @@ options {
 };
 CONF
 cat > "$BZON" <<CONF
-// Généré par DDI-Buntu — ne pas modifier à la main.
+// Généré par Ipnoria — ne pas modifier à la main.
 zone "lab.test" { type primary; file "$B/zones/db.lab.test"; notify yes; };
 CONF
 printf '%s' "$(cat "$BOPT")" > "$BOPT.n" && mv "$BOPT.n" "$BOPT"; printf '%s' "$(cat "$BZON")" > "$BZON.n" && mv "$BZON.n" "$BZON"   # contenu sans retour final : octet pour octet ce que la base renvoie

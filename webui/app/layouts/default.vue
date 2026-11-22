@@ -74,9 +74,9 @@ async function logout() {
     <UDashboardSidebar collapsible resizable :min-size="14" :default-size="16">
       <template #header="{ collapsed }">
         <div class="flex items-center gap-2 px-1">
-          <UIcon name="i-lucide-network" class="size-6 text-primary shrink-0" />
+          <BrandMark class="size-6 shrink-0" />
           <div v-if="!collapsed" class="flex flex-col leading-tight min-w-0">
-            <span class="font-semibold tracking-tight font-mono">DDI-Buntu</span>
+            <span class="font-semibold tracking-tight font-mono">Ipnoria</span>
             <span v-if="about?.version" class="text-xs text-muted font-mono truncate" :title="about?.hostname">v{{ about.version }}<template v-if="about?.hostname"> · {{ about.hostname }}</template></span>
           </div>
         </div>

@@ -48,7 +48,7 @@ Elle se déclenche par un push sur `main` qui change `src/VERSION`, ou à la mai
 3. **Construction unique** à partir de la console construite et testée par cette CI. On produit l'archive `ddibuntu-update-X.Y.Z.tar.gz` (avec ses paquets embarqués), le fichier unique `build-ddibuntu.sh`, puis `SHA256SUMS` **signé Ed25519** (secret `UPDATE_SIGNING_KEY`) et contrôlé avec la clé publique du dépôt. S'y ajoutent le **SBOM** CycloneDX des dépendances livrées de la console et l'**attestation de provenance** GitHub (Sigstore). On la vérifie avec `gh attestation verify ddibuntu-update-X.Y.Z.tar.gz --repo <propriétaire>/<dépôt>`.
 4. **Publication en pré-version** `vX.Y.Z`, avec le bandeau « ⏳ Version candidate ». Les appliances du canal `stable` ne lisent que `releases/latest` et ne voient pas les pré-versions. Celles du canal `prerelease` ne prennent jamais une candidate rejetée.
 
-Le titre des releases vient de la variable de dépôt `PRODUCT_NAME`, avec « DDI-Buntu » par défaut. Changer le nom du produit ne demande donc aucune modification des workflows.
+Le titre des releases vient de la variable de dépôt `PRODUCT_NAME`, avec « Ipnoria » par défaut. Changer le nom du produit ne demande donc aucune modification des workflows.
 
 ## 3. Validation sur l'instance de dev — AWX
 

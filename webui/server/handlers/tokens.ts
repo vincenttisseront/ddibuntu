@@ -48,7 +48,7 @@ route('GET', '/openapi.json', 'viewer', async () => {
   }
   return {
     openapi: '3.0.3',
-    info: { title: 'DDI-Buntu API', version: installedVersion() || '0', description: 'API de la console DDI-Buntu. Authentification : jeton d\'API (« Authorization: Bearer ddi_… », rôle viewer ou operator) ou session de la console. Les écritures ne sont acceptées que par le nœud principal du cluster.' },
+    info: { title: 'Ipnoria API', version: installedVersion() || '0', description: 'API de la console Ipnoria. Authentification : jeton d\'API (« Authorization: Bearer ddi_… », rôle viewer ou operator) ou session de la console. Les écritures ne sont acceptées que par le nœud principal du cluster.' },
     servers: [{ url: '/api' }],
     components: { securitySchemes: { bearer: { type: 'http', scheme: 'bearer', description: 'Jeton d\'API créé dans Système → API' } } },
     security: [{ bearer: [] }],

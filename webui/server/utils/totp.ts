@@ -44,7 +44,7 @@ export function verifyTotp(secret: string, code: string, lastStep: number | null
   return hit
 }
 
-export const otpauthUri = (secret: string, account: string, issuer = 'DDI-Buntu'): string =>
+export const otpauthUri = (secret: string, account: string, issuer = 'Ipnoria'): string =>
   `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(account)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=${TOTP_STEP}`
 
 // ---- Codes de secours : à usage unique, stockés hachés ----

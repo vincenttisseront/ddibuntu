@@ -53,7 +53,7 @@ expect_grep "ad.conf : contrôleurs" '^KDCS=dc1.corp.test dc2.corp.test:88$' "$R
 expect_grep "krb5.conf : domaine par défaut" 'default_realm = CORP.TEST' "$KRB"
 expect_grep "krb5.conf : KDC explicites, pas de recherche DNS" 'dns_lookup_kdc = false' "$KRB"
 expect_grep "krb5.conf : KDC listés" 'kdc = dc2.corp.test:88' "$KRB"
-expect_grep "krb5.conf : en-tête de gestion" 'Géré par DDI-Buntu' "$KRB"
+expect_grep "krb5.conf : en-tête de gestion" 'Géré par Ipnoria' "$KRB"
 expect_grep "krb5.conf d'origine conservé une fois" 'ATHENA.MIT.EDU' "$KRB.ddibuntu-orig"
 check "reconfiguration (sans KDC : recherche DNS)" ad configure --realm CORP.TEST
 expect_grep "…dns_lookup_kdc activé" 'dns_lookup_kdc = true' "$KRB"
@@ -149,7 +149,7 @@ for z in lan.test ext.test; do printf '$ORIGIN %s.\n$TTL 300\n@ IN SOA ns.%s. ro
 printf '{"Dhcp4":{"interfaces-config":{"interfaces":["lo"]},"control-socket":{"socket-type":"unix","socket-name":"/run/kea/kea4-ctrl-socket"},"lease-database":{"type":"memfile","persist":false},"subnet4":[]}}' > "$G/kea-dhcp4.conf"
 mkopts() { # mkopts [ligne supplémentaire dans options]
   cat > "$G/named.conf.options" <<CONF
-// Généré par DDI-Buntu — ne pas modifier à la main.
+// Généré par Ipnoria — ne pas modifier à la main.
 include "/etc/bind/ddi-ddns.key";
 options {
   directory "/var/cache/bind";
@@ -165,7 +165,7 @@ CONF
 }
 mkzones() { # mkzones "propriétés de lan.test"
   cat > "$G/named.conf.zones" <<CONF
-// Généré par DDI-Buntu — ne pas modifier à la main.
+// Généré par Ipnoria — ne pas modifier à la main.
 zone "lan.test" { type primary; file "$ZN/db.lan.test"; notify yes; $1 };
 zone "ext.test" { type primary; file "$ZN/db.ext.test"; notify yes; allow-update { key "ddi-ddns"; }; };
 CONF

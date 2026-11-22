@@ -40,19 +40,19 @@ expect_grep "configuration persistée : réseaux normalisés" "^ADMIN_NETS='10.2
 expect_grep "marqueur de configuration créé avec la version" "^$(tr -d '\n' < "$LIB/VERSION") " "$R/var/lib/ddibuntu/configured"
 
 echo "== Bannières (piège : code agetty \\n et version à jour) =="
-expect_grep "/etc/issue : \\n littéral (nom de machine agetty)" 'DDI-Buntu [0-9.]+  -  \\n  -  \\l$' "$R/etc/issue"
+expect_grep "/etc/issue : \\n littéral (nom de machine agetty)" 'Ipnoria [0-9.]+  -  \\n  -  \\l$' "$R/etc/issue"
 expect_grep "/etc/issue : \\4 et \\6 littéraux (adresses agetty)" ' : \\4  \\6$' "$R/etc/issue"
 expect_grep "/etc/issue : texte français" '^Adresses réseau' "$R/etc/issue"
 # issue.net est lu tel quel par sshd : aucun code agetty (\n, \l, \4...) ; les antislashs du logo ASCII sont du dessin (jamais suivis d'une lettre ou d'un chiffre)
 expect_nogrep "/etc/issue.net : aucun code agetty" '\\[A-Za-z0-9]' "$R/etc/issue.net"
 expect_grep "/etc/issue.net : logo présent, tel quel (sans antislash doublé)" '^\|  _ \\ \|  _ \\ \|_ _\|' "$R/etc/issue.net"
-expect_grep "/etc/issue.net : version courante" "^DDI-Buntu $(tr -d '\n' < "$LIB/VERSION") - " "$R/etc/issue.net"
+expect_grep "/etc/issue.net : version courante" "^Ipnoria $(tr -d '\n' < "$LIB/VERSION") - " "$R/etc/issue.net"
 # mise à jour simulée : nouvelle version -> bannière à jour partout, sans rester sur l'ancienne
 NEWLIB="$T_TMP/newlib"; cp -r "$LIB" "$NEWLIB"; printf '9.9.9\n' > "$NEWLIB/VERSION"
 DDI_LIBDIR="$NEWLIB" DDI_ROOT="$R" "$APPLY" >"$T_TMP/apply.out" 2>&1
-expect_grep "après mise à jour : /etc/issue affiche 9.9.9" '^DDI-Buntu 9\.9\.9 ' "$R/etc/issue"
-expect_grep "après mise à jour : /etc/issue.net affiche 9.9.9" '^DDI-Buntu 9\.9\.9 ' "$R/etc/issue.net"
-expect_nogrep "après mise à jour : plus aucune trace de l'ancienne version" "DDI-Buntu $(tr -d '\n' < "$LIB/VERSION") " "$R/etc/issue"
+expect_grep "après mise à jour : /etc/issue affiche 9.9.9" '^Ipnoria 9\.9\.9 ' "$R/etc/issue"
+expect_grep "après mise à jour : /etc/issue.net affiche 9.9.9" '^Ipnoria 9\.9\.9 ' "$R/etc/issue.net"
+expect_nogrep "après mise à jour : plus aucune trace de l'ancienne version" "Ipnoria $(tr -d '\n' < "$LIB/VERSION") " "$R/etc/issue"
 
 echo "== Idempotence et fusion avec la configuration existante =="
 R2="$(newroot)"; apply "$R2" "$C"; files_hash "$R2" > "$T_TMP/h1"

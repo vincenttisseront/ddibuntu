@@ -5,7 +5,7 @@
 
 ## Sur l'appliance
 1. **Installation** (Subiquity, `src/iso/user-data.tmpl` + `late.sh`) : paquets installés hors ligne, fichiers déployés, console installée.
-   **Mise à jour** (même ISO, entrée « Update » du menu GRUB, graine `ddibuntu/update/user-data`) : `early-commands` lance `src/iso/update.sh` AVANT toute étape de stockage. Il active LVM, repère l'unique installation DDI-Buntu, la monte, sauvegarde les fichiers qu'il remplace (`/var/lib/ddibuntu/update-backup/`), installe les seuls paquets plus récents (`--force-confold`), remplace la console et Node, redéploie les fichiers de l'appliance (en conservant `firewall.conf` et `nftables.nft`), puis **arrête la machine**. Il ne rend jamais la main à Subiquity (qui effacerait le disque) : un échec laisse un message et attend. La base est migrée par la console au prochain démarrage (`server/plugins/migrate.ts`).
+   **Mise à jour** (même ISO, entrée « Update » du menu GRUB, graine `ddibuntu/update/user-data`) : `early-commands` lance `src/iso/update.sh` AVANT toute étape de stockage. Il active LVM, repère l'unique installation Ipnoria, la monte, sauvegarde les fichiers qu'il remplace (`/var/lib/ddibuntu/update-backup/`), installe les seuls paquets plus récents (`--force-confold`), remplace la console et Node, redéploie les fichiers de l'appliance (en conservant `firewall.conf` et `nftables.nft`), puis **arrête la machine**. Il ne rend jamais la main à Subiquity (qui effacerait le disque) : un échec laisse un message et attend. La base est migrée par la console au prochain démarrage (`server/plugins/migrate.ts`).
 2. **Premier démarrage** : `ddibuntu-setup` (langue, **clavier appliqué puis testé**, réseau, réseaux d'administration, compte) → `ddibuntu-apply` (idempotent) → `ddibuntu-db-init` (PostgreSQL, certificat TLS, jeton de première configuration).
 3. **Console web** : processus Node **sans privilège** (`ddiconsole`, port 443 par capacité), écrit seulement dans `/var/lib/ddibuntu/generated`.
 
@@ -78,3 +78,6 @@ FreeRADIUS ne lit **jamais** la configuration du paquet : `ddibuntu-radius` (roo
 
 ## Console web
 Nuxt 4 (Nitro) + PostgreSQL. API : un seul routeur (`server/api/[...slug].ts`) qui centralise authentification, CSRF, rôles, validation (zod), audit et assainissement des erreurs. Migrations numérotées dans `server/utils/db.ts`.
+
+## Assistant IA (0.23.0)
+Désactivé par défaut. `server/utils/ai.ts` (client HTTP vers un serveur de modèles **externe**, API Ollama ou compatible OpenAI ; masquage des secrets ; pseudonymisation réversible ; invites ; débit, deux demandes simultanées, mémoire d'une heure) et `server/handlers/ai.ts` (`/ai/status` pour tout utilisateur connecté, `/ai/settings` et `/ai/test` pour les administrateurs, `/ai/explain` pour les opérateurs, journal d'audit réservé aux administrateurs). Le navigateur n'envoie qu'une référence ; le contexte est relu côté serveur. La réponse n'est qu'affichée, jamais appliquée. Réglage `ai` dans la table `settings` (répliquée), clé chiffrée (`keyEnc`). Aucun service de l'appliance ne dépend du serveur de modèles.

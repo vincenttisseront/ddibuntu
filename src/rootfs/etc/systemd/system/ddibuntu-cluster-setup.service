@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : création ou rattachement à un cluster demandé par la console (validé par root)
+Description=Ipnoria : création ou rattachement à un cluster demandé par la console (validé par root)
 ConditionPathExists=!/etc/ddibuntu-cluster/cluster.conf
 
 [Service]

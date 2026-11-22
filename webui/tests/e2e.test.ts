@@ -559,7 +559,7 @@ describe('pages rendues côté serveur : accès, traductions, accessibilité', (
       for (const key of Object.keys(frKeys)) expect(html.includes(`>${key}<`), `clé brute visible : ${key}`).toBe(false)
       expect(html).toContain('aria-label'); expect(html).not.toContain('v-html')
     }
-    expect(a.text).toContain('DDI-Buntu')
+    expect(a.text).toContain('Ipnoria')
   })
   it('un lecteur ne voit pas l’entrée Système et est renvoyé hors de la page', async () => {
     const c = new Client('fr'); await c.login('lect', PW)

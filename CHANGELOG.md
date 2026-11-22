@@ -1,6 +1,28 @@
 # Journal des modifications
 
-## 0.23.0 — « La chaîne de publication sans régression »
+## 0.23.0 — « Ipnoria, un assistant IA en lecture seule et une chaîne de publication sans régression »
+
+### DDI-Buntu devient Ipnoria (étape 1 : le nom visible)
+
+- **Nouveau nom : Ipnoria.** La console (titre, barre latérale, page de connexion, À propos, notifications et e-mails d'alerte), le menu de la console texte, l'ISO (entrées GRUB « Install Ipnoria … » / « Update an existing Ipnoria installation … »), le script de construction (`--version`), les unités systemd (descriptions), les en-têtes des fichiers générés et toute la documentation portent désormais le nom Ipnoria. Nouveau logo : le « i » du nom, dont le point est une adresse allouée ; nouvelle icône d'onglet.
+- **Rien ne change sur une appliance installée** : chemins (`/etc/ddibuntu`, `/usr/local/lib/ddibuntu`, `/var/lib/ddibuntu`), unités et commandes (`ddibuntu-*`), base PostgreSQL, espace de noms etcd/Patroni, archives de mise à jour (`ddibuntu-update-*.tar.gz`) et dépôt GitHub restent identiques : la mise à jour se fait comme d'habitude, sans migration.
+- **Identifiants volontairement conservés pour l'instant**, parce qu'ils vivent hors de l'appliance : nom des GPO (« DDI-Buntu enrolement »), dossier `C:\Program Files\DDI-Buntu` et tâche planifiée des postes, champs fabricant/produit des journaux CEF/LEEF envoyés au SIEM, en-tête `X-DDIbuntu-Signature` des webhooks, `User-Agent` des notifications. Leur changement demande une migration (postes, AD, règles SIEM) : étapes 2 et 3 de `docs/RENOMMAGE-IPNORIA.md`.
+- **Tests** : batteries et tests de la console mis à jour pour le nouveau nom (menu GRUB, `--version`, messages).
+
+### Assistant IA, utile et en lecture seule
+
+- **Assistant IA (Système › Assistant IA)**, **désactivé par défaut** : la console se branche sur un **serveur de modèles externe** (API Ollama native, ou API compatible OpenAI `/v1` : vLLM, LocalAI, llama.cpp…). Le modèle tourne sur une **autre machine** : la boucle locale et les adresses réservées sont refusées, et une panne ou une lenteur du serveur de modèles n'affecte ni le DNS, ni le DHCP, ni le RADIUS. Réglages : API, adresse, clé facultative (**chiffrée** comme les autres secrets, jamais rendue), vérification TLS et autorité de certification, **HTTP seulement sur acceptation explicite**, modèle choisi dans la liste lue sur le serveur (« Tester et lister les modèles »), délai maximal, demandes par utilisateur et par heure, usages autorisés un par un.
+- **Trois usages, choisis pour être utiles** :
+  - **Expliquer un événement du journal d'audit** (panneau de détail ; administrateurs) : connexion refusée, enrôlement de poste refusé, échec d'annuaire… en trois parties : ce qui s'est passé, cause probable, à vérifier.
+  - **Expliquer une authentification RADIUS** (Accès réseau › Journal, sous une ligne dépliée ; opérateurs) : cause probable et vérifications côté poste, équipement ou annuaire.
+  - **Synthèse des refus RADIUS de la période** (Accès réseau › Journal) : au plus quatre problèmes par ordre d'urgence, à partir de **chiffres agrégés** (motifs, équipements, identités en échec répété, équipements inconnus).
+- **Lecture seule, toujours** : la réponse est affichée en texte brut (jamais interprétée en HTML), marquée « Généré par l'IA, à vérifier », et n'est jamais appliquée ni écrite en base.
+- **Ce qui part vers le modèle** : le navigateur n'envoie qu'une référence (numéro d'événement, ligne du journal, période) ; la console **relit elle-même** l'événement en base ou dans le journal du nœud (une ligne inventée est refusée). Mots de passe, clés, jetons, keytabs, JWT, certificats PEM et longues chaînes encodées sont **retirés** avant l'envoi. Option **pseudonymisation** : adresses IP, adresses MAC et comptes deviennent des jetons (`[IP1]`, `[MAC1]`, `[COMPTE1]`…), rétablis dans la réponse affichée. Les consignes système sont séparées des données, et les données sont signalées au modèle comme n'étant jamais des instructions.
+- **Garde-fous** : deux demandes simultanées au plus, débit par utilisateur, réponses gardées une heure (une même question ne repart pas ; « Redemander au modèle » force un nouvel appel), mémoire vidée au changement de réglages, redirections jamais suivies (la clé ne change pas de destinataire), réponse bornée et nettoyée (raisonnement interne `<think>` retiré). Chaque demande est notée au **journal d'audit** (`ai.explain` : usage, modèle, durée, résultat), **sans la question ni la réponse**.
+- **Cluster** : les réglages sont dans la base répliquée ; chaque nœud joint le serveur de modèles lui-même (il doit être joignable depuis tous les nœuds) ; un secondaire peut expliquer (lecture seule).
+- **Tests** : `unit-ai` (16 : adresse, secrets retirés, pseudonymisation réversible, invites, nettoyage, débit, demandes simultanées, mémoire, faux serveur pour les deux API et erreurs classées), `e2e-iter63` (11, serveur construit et faux serveur de modèles : droits, validation, clé chiffrée jamais rendue, test de connexion, contexte relu sans secret, ligne RADIUS et synthèse pseudonymisées puis rétablies, usage désactivé, débit, autre API, délai dépassé sans effet sur la console, audit sans contenu).
+
+### Chaîne de publication sans régression
 
 - **Publication en deux temps** (docs/CI-CD.md). Une nouvelle version n'est plus publiée directement. Elle sort d'abord en **version candidate** (pré-version GitHub, invisible du canal `stable`), construite et signée une seule fois après une CI complète. Elle est ensuite **installée et testée sur une appliance de dev** par AWX (`deploy/awx/`). Elle ne devient la release publique qu'**après un verdict favorable**, et c'est exactement le même fichier, contrôlé par son empreinte. En cas d'échec, la version est marquée rejetée et une issue est ouverte avec le rapport.
 - **`ddibuntu-selftest`** : tests de fumée d'un nœud après installation ou mise à jour (version réellement servie par la console, état de la mise à jour, services attendus, PostgreSQL, disques, certificat, `named-checkconf`, `kea-dhcp4 -t`, réponse DNS réelle). Sortie texte ou JSON, attente bornée du redémarrage. Utilisable à la main : `sudo ddibuntu-selftest`.
@@ -15,6 +37,7 @@
 - **Chaîne d'approvisionnement** : actions épinglées par empreinte, outils vérifiés par SHA-256, droits minimaux par travail, **SBOM CycloneDX** et **attestation de provenance** joints à chaque release, Dependabot hebdomadaire.
 - **Publication réservée à `main`**, verdict manuel réservé aux administrateurs, rapport public sans détail d'infrastructure, numéro de version jamais reconstruit.
 - **Tests** : `b43-selftest` (52 contrôles), `b44-awx-validation` (26).
+
 ## 0.22.2 — « Le canal des versions candidates »
 
 - **Canal de mises à jour `prerelease`** (`CHANNEL=prerelease` dans `/etc/ddibuntu/update.conf`) : l'appliance reçoit aussi les **versions candidates** publiées en pré-version. Réservé à l'instance de validation de la chaîne de publication (et, plus tard, aux bêta-testeurs). Les contrôles sont identiques (signature Ed25519, empreinte, retour arrière si la console ne redémarre pas) ; les brouillons et les versions candidates **rejetées** par la validation ne sont jamais pris. Sans réglage, rien ne change : les appliances restent sur le canal `stable` et ignorent les pré-versions. L'état de la mise à jour indique le canal.

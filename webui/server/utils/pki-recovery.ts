@@ -33,7 +33,7 @@ export interface RecoveryKey { keyPem: string; certPem: string; fingerprint: str
 export async function newRecoveryKey(passphrase?: string, now = new Date()): Promise<RecoveryKey> {
   const { privateKey } = await genKeyPair('rsa', { modulusLength: RECOVERY_BITS })
   const plain = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string
-  const cn = `DDI-Buntu PKI recovery ${safeHost()} ${now.toISOString().slice(0, 10)}`
+  const cn = `Ipnoria PKI recovery ${safeHost()} ${now.toISOString().slice(0, 10)}`
   return withTmp(async (_d, put) => {
     const k = await put('k.pem', plain)
     const c = await openssl(['req', '-new', '-x509', '-key', k, '-sha256', '-days', String(RECOVERY_DAYS), '-subj', `/CN=${cn}`,

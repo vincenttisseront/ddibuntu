@@ -99,7 +99,7 @@ describe('conditions et motifs', () => {
 })
 
 describe('clients : noms et adresses', () => {
-  it('nom DDI-Buntu : minuscules, tirets, une lettre au début, 41 caractères, jamais le nom réservé', () => {
+  it('nom Ipnoria : minuscules, tirets, une lettre au début, 41 caractères, jamais le nom réservé', () => {
     expect(normClientName('AP Étage 1')).toBe('ap-etage-1')
     expect(normClientName('  __Wi_Fi__ ')).toBe('wi-fi')
     expect(normClientName('10.0.0.1')).toBe('nas-10-0-0-1')
@@ -221,7 +221,7 @@ describe('plan d\'import : règles', () => {
     expect(a.status).toBe('skipped'); expect(a.notes[0]).toMatchObject({ code: 'group_directory', params: { why: 'missing' } })
     expect(q.rules.find((x) => x.name === 'Tous les utilisateurs')!.status).toBe('adapted')   // groupe principal : pas besoin de l'annuaire
   })
-  it('client cité par une règle : nom DDI-Buntu, ou règle non reprise s\'il n\'est pas repris', () => {
+  it('client cité par une règle : nom Ipnoria, ou règle non reprise s\'il n\'est pas repris', () => {
     const q = plan(ctx({}, { exclude: new Set(['c:wlc-1']) }))
     const a = q.rules.find((x) => x.name === 'Admins réseau')!
     expect(a.status).toBe('skipped'); expect(codes(a)).toEqual(['clients_not_imported'])

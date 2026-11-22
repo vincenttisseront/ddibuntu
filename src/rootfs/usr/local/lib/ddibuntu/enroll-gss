@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-# DDI-Buntu 0.18.0 : acceptation d'un jeton SPNEGO / Kerberos pour l'enrôlement des postes.
+# Ipnoria 0.18.0 : acceptation d'un jeton SPNEGO / Kerberos pour l'enrôlement des postes.
 # Lancé par la console (compte ddiconsole, jamais root) avec KRB5_KTNAME = keytab du service (copie 0600 en mémoire, effacée après l'appel) et
 # KRB5RCACHEDIR = dossier du cache anti-rejeu. Lit le jeton (base64) sur l'entrée standard, écrit UNE ligne JSON sur la sortie standard :
 #   {"ok": true, "principal": "POSTE$@REALM", "token": "<base64 ou vide>"}  ou  {"ok": false, "error": "<code>"}

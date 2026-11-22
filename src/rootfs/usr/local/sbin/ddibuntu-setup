@@ -57,7 +57,7 @@ export DDI_FW_CONFIRM="$FW_CONFIRM"
 ddi_cfg_reset
 if [ -f "$DDI_CONFFILE" ]; then ddi_cfg_read "$DDI_CONFFILE"; fi
 ddi_load_lang "${CFG_LANGUAGE:-fr}"
-DDI_BACKTITLE="DDI-Buntu $(ddi_version) - DNS / DHCP / IPAM"
+DDI_BACKTITLE="Ipnoria $(ddi_version) - DNS / DHCP / IPAM"
 
 # ---- Primitives d'interface : la valeur saisie sort sur stdout, code 1 = annulation ----
 wt_input() { whiptail --title "$M_TITLE" --backtitle "$DDI_BACKTITLE" --inputbox "$1" 12 74 "${2-}" 3>&1 1>&2 2>&3; }
@@ -206,7 +206,7 @@ apply_choices() {
 splash() {   # écran d'accueil avec le logo, une seule fois
   [ "$SPLASH_DONE" -eq 0 ] || return 0
   SPLASH_DONE=1
-  wt_msg "$(ddi_logo plain)"$'\n\n'"DDI-Buntu $(ddi_version)  -  Bienvenue / Welcome"
+  wt_msg "$(ddi_logo plain)"$'\n\n'"Ipnoria $(ddi_version)  -  Bienvenue / Welcome"
 }
 
 # Après un changement qui peut couper l'accès (réseau, pare-feu, restauration) : retour arrière automatique sauf confirmation.

@@ -64,6 +64,7 @@ const reasonLabel = (w: string) => t(`radius.journal.why_${w}`)
       {{ t('radius.journal.summary', { ok: data.counts.accept, ko: data.counts.reject, diag: data.counts.diag }) }}
       <template v-if="data.reasons.length"> — <UBadge v-for="r in data.reasons.slice(0, 4)" :key="r.why" size="sm" color="neutral" variant="subtle" class="me-1" :label="`${reasonLabel(r.why)} · ${r.n}`" /></template>
     </p>
+    <AiExplain v-if="data?.available" use="radius_summary" :payload="{ minutes: minutes || 10080 }" :label="t('ai.radius_summary')" />
     <p v-if="err" class="text-sm text-error" role="alert">{{ err }}</p>
 
     <div class="overflow-x-auto">
@@ -100,6 +101,7 @@ const reasonLabel = (w: string) => t(`radius.journal.why_${w}`)
                   <div v-if="e.called"><dt class="inline text-muted">{{ t('radius.journal.d_called') }} : </dt><dd class="inline font-mono break-all">{{ e.called }}</dd></div>
                   <div v-if="e.nasId"><dt class="inline text-muted">NAS-Identifier : </dt><dd class="inline font-mono break-all">{{ e.nasId }}</dd></div>
                 </dl>
+                <AiExplain class="mt-2" use="radius" :payload="{ at: e.at, kind: e.kind, mac: e.mac, user: e.user }" />
               </td>
             </tr>
           </template>

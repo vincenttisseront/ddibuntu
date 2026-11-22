@@ -40,7 +40,7 @@ X1="$T_TMP/x1"; mkdir -p "$X1"
 xorriso -osirrox on -indev "$ISO1" -extract /ddibuntu "$X1/ddibuntu" -extract /boot/grub/grub.cfg "$X1/grub.cfg" -extract /casper/vmlinuz "$X1/vmlinuz" -extract /.disk/info "$X1/info" >/dev/null 2>&1
 echo "== Menu GRUB =="
 n_first="$(grep -n '^menuentry' "$X1/grub.cfg" | head -1 | cut -d: -f2-)"
-expect_grep "première entrée du menu = installation DDI-Buntu" '^menuentry "Install DDI-Buntu [0-9.]+ \(automatic - ERASES the target disk\)"' <(printf '%s\n' "$n_first")
+expect_grep "première entrée du menu = installation Ipnoria" '^menuentry "Install Ipnoria [0-9.]+ \(automatic - ERASES the target disk\)"' <(printf '%s\n' "$n_first")
 expect_grep "entrées d'origine conservées (Try or Install)" '^menuentry "Try or Install Ubuntu Server"' "$X1/grub.cfg"
 expect_grep "entrées d'origine conservées (HWE)" '^menuentry "Ubuntu Server with the HWE kernel"' "$X1/grub.cfg"
 if grep -qF 'ds=nocloud\;s=/cdrom/ddibuntu/' "$X1/grub.cfg"; then ok "paramètre autoinstall : l'antislash de « nocloud\\; » a survécu"; else ko "paramètre autoinstall : antislash perdu" "$(grep -n 'autoinstall' "$X1/grub.cfg")"; fi
@@ -49,9 +49,9 @@ t_orig="$(grep -n '^set timeout=30' "$X1/grub.cfg" | cut -d: -f1)"; t_new="$(gre
 m_first="$(grep -n '^menuentry' "$X1/grub.cfg" | head -1 | cut -d: -f1)"
 if [ -n "$t_orig" ] && [ -n "$t_new" ] && [ "$t_new" -gt "$t_orig" ] && [ "$t_new" -lt "$m_first" ]; then ok "délai 7 s placé après le délai d'origine et avant le menu (il l'emporte)"; else ko "ordre des délais" "origine=$t_orig nouveau=$t_new menu=$m_first"; fi
 expect_grep "entrée par défaut = 0" '^set default=0$' "$X1/grub.cfg"
-expect_grep "menu : entrée de mise à jour (Update) présente" '^menuentry "Update an existing DDI-Buntu installation to [0-9.]+ \(keeps data, never erases the disk\)"' "$X1/grub.cfg"
+expect_grep "menu : entrée de mise à jour (Update) présente" '^menuentry "Update an existing Ipnoria installation to [0-9.]+ \(keeps data, never erases the disk\)"' "$X1/grub.cfg"
 if grep -qF 'autoinstall ds=nocloud\;s=/cdrom/ddibuntu/update/ ---' "$X1/grub.cfg"; then ok "entrée Update : graine /cdrom/ddibuntu/update/ (antislash conservé)"; else ko "entrée Update : graine absente" "$(grep -n 'update/' "$X1/grub.cfg")"; fi
-upd_line="$(grep -n 'Update an existing' "$X1/grub.cfg" | head -1 | cut -d: -f1)"; ins_line="$(grep -n 'Install DDI-Buntu' "$X1/grub.cfg" | head -1 | cut -d: -f1)"
+upd_line="$(grep -n 'Update an existing' "$X1/grub.cfg" | head -1 | cut -d: -f1)"; ins_line="$(grep -n 'Install Ipnoria' "$X1/grub.cfg" | head -1 | cut -d: -f1)"
 if [ -n "$upd_line" ] && [ -n "$ins_line" ] && [ "$upd_line" -gt "$ins_line" ]; then ok "l'entrée Update vient APRÈS l'installation (jamais l'entrée par défaut)"; else ko "ordre des entrées Install/Update" "install=$ins_line update=$upd_line"; fi
 
 echo "== Contenu /ddibuntu de l'ISO =="
@@ -131,7 +131,7 @@ bash "$DIST" --no-docker --timeout abc --iso "$FAKE" --allow-unverified --out "$
 expect_eq "--timeout non numérique : refusé" 1 "$rc"
 bash "$DIST" --option-inconnue >"$T_TMP/f7.log" 2>&1; rc=$?
 expect_eq "option inconnue : refusée" 1 "$rc"
-expect_eq "--version : affiche la version" "DDI-Buntu $(tr -d '\n' < "$ROOT/src/VERSION")" "$(bash "$DIST" --version)"
+expect_eq "--version : affiche la version" "Ipnoria $(tr -d '\n' < "$ROOT/src/VERSION")" "$(bash "$DIST" --version)"
 bash "$DIST" --no-docker --iso /nexiste/pas.iso --allow-unverified --out "$OUTX" >"$T_TMP/f8.log" 2>&1; rc=$?
 expect_eq "ISO introuvable : refusé" 1 "$rc"
 
@@ -210,7 +210,7 @@ printf '%s  %s\n' "$FAKE_SHA" "$FAKE_NAME" > "$MIRROR/SHA256SUMS"
 gpgq --yes --local-user "$GOOD_FPR" --detach-sign -o "$MIRROR/SHA256SUMS.gpg" "$MIRROR/SHA256SUMS"
 echo "== Mode dépôt : le dépôt et le fichier unique produisent exactement la même chose =="
 REPOSH="$ROOT/build-ddibuntu.sh"
-expect_eq "mode dépôt : --version lit src/VERSION" "DDI-Buntu $(tr -d '\n' < "$ROOT/src/VERSION")" "$(bash "$REPOSH" --version)"
+expect_eq "mode dépôt : --version lit src/VERSION" "Ipnoria $(tr -d '\n' < "$ROOT/src/VERSION")" "$(bash "$REPOSH" --version)"
 check_fail "le fichier unique n'est jamais pris pour un dépôt (même posé à la racine du dépôt)" bash -c "cp '$DIST' '$ROOT/.x-single.sh'; trap \"rm -f '$ROOT/.x-single.sh'\" EXIT; bash '$ROOT/.x-single.sh' --stage '$T_TMP/zz'"
 check_fail "console non construite : refus avec la marche à suivre" env DDI_CONSOLE_OUTPUT=/nonexistent bash "$REPOSH" --stage "$T_TMP/nocons"
 expect_grep "console non construite : le message cite tools/build-console.sh" 'tools/build-console.sh' <(DDI_CONSOLE_OUTPUT=/nonexistent bash "$REPOSH" --stage "$T_TMP/nocons2" 2>&1)
@@ -405,7 +405,7 @@ echo "== patch_grub : variantes de grub.cfg =="
 pg() { ( TIMEOUT=11; DDI_VERSION=1.2.3; patch_grub "$1" "$2" ); }
 printf 'set timeout=30\n  menuentry "Indente" {\n  linux /x\n}\n' > "$T_TMP/g1"
 check "patch_grub : première entrée indentée" pg "$T_TMP/g1" "$T_TMP/g1.out"
-expect_grep "patch_grub : insertion avant l'entrée indentée" '^menuentry "Install DDI-Buntu 1.2.3' "$T_TMP/g1.out"
+expect_grep "patch_grub : insertion avant l'entrée indentée" '^menuentry "Install Ipnoria 1.2.3' "$T_TMP/g1.out"
 expect_grep "patch_grub : entrée d'origine conservée" 'menuentry "Indente"' "$T_TMP/g1.out"
 printf 'set timeout=30\n' > "$T_TMP/g2"
 check_fail "patch_grub : sans entrée -> échec" pg "$T_TMP/g2" "$T_TMP/g2.out"

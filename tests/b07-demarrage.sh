@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Batterie 07 — démarrage réel de l'ISO produite sous QEMU, en BIOS (SeaBIOS) puis en UEFI (OVMF).
 # Preuve : le menu GRUB (lu sur la console série ET capturé à l'écran) propose en première position
-# « Install DDI-Buntu … (automatic - ERASES the target disk) », sélectionnée par défaut, avec le
+# « Install Ipnoria … (automatic - ERASES the target disk) », sélectionnée par défaut, avec le
 # compte à rebours demandé ; à l'expiration, GRUB lance bien l'entrée (erreur de noyau attendue :
 # le noyau de la substitution est factice).
 # Limite : ISO de SUBSTITUTION, pas celle de Canonical : l'installateur Subiquity n'est pas démarré.
@@ -53,16 +53,16 @@ plain() { sed 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/\r//g' "$1" | tr -d '\000'; }
 check_menu() {   # check_menu MODE : démarre l'ISO au menu figé, contrôle série + capture
   local mode="$1"
   boot "$mode" "$ISO_WAIT" "wait-$mode"
-  if wait_for "$T_TMP/wait-$mode.serial" "Install DDI-Buntu" 240; then ok "[$mode] le menu GRUB s'affiche sur la console série"; else
+  if wait_for "$T_TMP/wait-$mode.serial" "Install Ipnoria" 240; then ok "[$mode] le menu GRUB s'affiche sur la console série"; else
     ko "[$mode] le menu GRUB s'affiche sur la console série" "$(plain "$T_TMP/wait-$mode.serial" | tail -c 300 | tr '\n' ' ') / $(head -c 200 "$T_TMP/wait-$mode.qemu.log")"; stop; return
   fi
   sleep 3
   plain "$T_TMP/wait-$mode.serial" > "$T_TMP/wait-$mode.txt"
-  expect_grep "[$mode] entrée « Install DDI-Buntu $VER (automatic - ERASES the target disk) »" "Install DDI-Buntu $VER \(automatic - ERASES the target disk\)" "$T_TMP/wait-$mode.txt"
-  expect_grep "[$mode] l'entrée DDI-Buntu est la sélectionnée (marqueur *)" '\*Install DDI-Buntu' "$T_TMP/wait-$mode.txt"
+  expect_grep "[$mode] entrée « Install Ipnoria $VER (automatic - ERASES the target disk) »" "Install Ipnoria $VER \(automatic - ERASES the target disk\)" "$T_TMP/wait-$mode.txt"
+  expect_grep "[$mode] l'entrée Ipnoria est la sélectionnée (marqueur *)" '\*Install Ipnoria' "$T_TMP/wait-$mode.txt"
   # la console série concatène les entrées sur une ligne : on compare des positions en octets
-  a="$(grep -aob 'Install DDI-Buntu' "$T_TMP/wait-$mode.txt" | head -1 | cut -d: -f1)"; b="$(grep -aob 'Try or Install Ubuntu Server' "$T_TMP/wait-$mode.txt" | head -1 | cut -d: -f1)"
-  if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; then ok "[$mode] l'entrée DDI-Buntu précède les entrées d'origine"; else ko "[$mode] ordre des entrées" "a=$a b=$b"; fi
+  a="$(grep -aob 'Install Ipnoria' "$T_TMP/wait-$mode.txt" | head -1 | cut -d: -f1)"; b="$(grep -aob 'Try or Install Ubuntu Server' "$T_TMP/wait-$mode.txt" | head -1 | cut -d: -f1)"
+  if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; then ok "[$mode] l'entrée Ipnoria précède les entrées d'origine"; else ko "[$mode] ordre des entrées" "a=$a b=$b"; fi
   expect_grep "[$mode] entrées d'origine conservées (HWE)" 'Ubuntu Server with the HWE kernel' "$T_TMP/wait-$mode.txt"
   expect_nogrep "[$mode] --timeout -1 : aucun compte à rebours (menu figé)" 'executed automatically' "$T_TMP/wait-$mode.txt"
   out="$(python3 "$ROOT/tests/qemu-shot.py" "$T_TMP/wait-$mode.sock" "$SHOTS/demarrage-$mode.png" 2>&1)"

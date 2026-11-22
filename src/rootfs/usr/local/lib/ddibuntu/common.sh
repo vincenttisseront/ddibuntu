@@ -1,5 +1,5 @@
 #!/bin/bash
-# DDI-Buntu — fonctions communes (fichier sourcé, ne s'exécute pas seul).
+# Ipnoria — fonctions communes (fichier sourcé, ne s'exécute pas seul).
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # variables lues par les scripts qui sourcent ce fichier
 

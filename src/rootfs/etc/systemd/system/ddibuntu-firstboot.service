@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu first-boot setup wizard
+Description=Ipnoria first-boot setup wizard
 ConditionPathExists=!/var/lib/ddibuntu/configured
 After=systemd-user-sessions.service plymouth-quit-wait.service
 Before=getty@tty1.service getty.target

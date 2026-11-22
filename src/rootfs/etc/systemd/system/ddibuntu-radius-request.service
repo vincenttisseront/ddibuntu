@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : demande RADIUS de la console (validée par root)
+Description=Ipnoria : demande RADIUS de la console (validée par root)
 
 [Service]
 Type=oneshot
