@@ -388,7 +388,7 @@ rel = lambda v, **k: dict({'tag_name': 'v' + v, 'html_url': 'https://github.com/
                            'body': 'Version candidate %s' % v, 'draft': False, 'prerelease': False,
                            'assets': [{'name': n, 'url': base + n} for n in ['ddibuntu-update-%s.tar.gz' % v, 'SHA256SUMS', 'SHA256SUMS.sig']]}, **k)
 json.dump(rel('49.0.0'), open(d + '/latest', 'w'))                       # stable : ce que voient les appliances de production
-json.dump([rel('51.0.0', draft=True), rel('50.0.0', prerelease=True), rel('49.0.0'), {'tag_name': 'v99.0.0-rc.1'}], open(d + '/index.html', 'w'))
+json.dump([rel('51.0.0', draft=True), rel('50.5.0', prerelease=True, body='<!-- validation:failed -->\\n> Rejetée'), rel('50.0.0', prerelease=True), rel('49.0.0'), {'tag_name': 'v99.0.0-rc.1'}], open(d + '/index.html', 'w'))
 PY
 mk "$R/etc/ddibuntu/update.conf" 'REPO="acme/ddibuntu"'
 expect_eq "canal stable : check code 0" 0 "$(bash "$SU" check >"$W/out.log" 2>&1; echo $?)"
@@ -398,7 +398,7 @@ expect_eq "canal stable : apply de la pré-version refusé" 1 "$(req '{"action":
 mk "$R/etc/ddibuntu/update.conf" 'REPO="acme/ddibuntu"
 CHANNEL=prerelease'
 expect_eq "canal prerelease : check code 0" 0 "$(bash "$SU" check >"$W/out.log" 2>&1; echo $?)"
-expect_eq "…la version candidate est vue (brouillon 51.0.0 et tag non numérique écartés)" 50.0.0 "$(jget "$ST" latest)"
+expect_eq "…la version candidate est vue (brouillon 51.0.0, candidate rejetée 50.5.0 et tag non numérique écartés)" 50.0.0 "$(jget "$ST" latest)"
 expect_eq "…et proposée" true "$(jget "$ST" available)"
 expect_eq "…canal annoncé : prerelease" prerelease "$(jget "$ST" channel)"
 expect_eq "canal prerelease : apply 50.0.0 code 0" 0 "$(req '{"action":"apply","version":"50.0.0"}')"

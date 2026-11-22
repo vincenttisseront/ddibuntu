@@ -142,7 +142,8 @@ if pre_ok:
     best = None
     for r in d:
         mm = re.fullmatch(r'v?(\d+)\.(\d+)\.(\d+)', str(r.get('tag_name', '')))
-        if isinstance(r, dict) and mm and not r.get('draft'):
+        # jamais un brouillon ; jamais une version candidate REJETÉE par la validation (notes marquées par la chaîne de publication)
+        if isinstance(r, dict) and mm and not r.get('draft') and '<!-- validation:failed -->' not in str(r.get('body') or ''):
             k = tuple(int(x) for x in mm.groups())
             if best is None or k > best[0]:
                 best = (k, r)
