@@ -37,7 +37,7 @@ Lancée sur chaque PR, chaque push sur `main` et, en `workflow_call`, par chaque
 
 **Exceptions.**
 - `webui/osv-scanner.toml` liste les vulnérabilités connues acceptées. Chacune a une raison et une **date de fin** : au-delà, la CI échoue de nouveau. La ligne de base du 2026-11-22 attend la mise à niveau de zod 4, vitest 4 et nuxt.
-- `.gitleaks.toml` n'exempte que la règle heuristique `generic-api-key`, et seulement dans les tests et les traductions. Une vraie clé privée ou un vrai jeton reste bloquant partout.
+- `.gitleaks.toml` n'exempte que la règle heuristique `generic-api-key`, et seulement dans les tests et les traductions, ainsi que le jeton d'exemple public de jwt.io dans les tests (masquage des JWT). Une vraie clé privée ou un vrai jeton reste bloquant partout.
 
 ## 2. Version candidate — `.github/workflows/release.yml`
 
