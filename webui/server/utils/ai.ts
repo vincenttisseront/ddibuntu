@@ -122,7 +122,7 @@ export function aiRequest(method: 'GET' | 'POST', u: URL, body: unknown, o: Http
 export interface Chat { role: 'system' | 'user'; content: string }
 
 export async function listModels(api: AiApi, base: URL, o: HttpOpts): Promise<{ version: string | null; models: string[] }> {
-  const clean = (a: unknown[]) => [...new Set(a.filter((m): m is string => typeof m === 'string' && m.length > 0 && m.length <= 200))].sort().slice(0, 200)
+  const clean = (a: unknown[]) => [...new Set(a.filter((m): m is string => typeof m === 'string' && m.length > 0 && m.length <= 200))].sort((a, b) => a.localeCompare(b)).slice(0, 200)
   if (api === 'ollama') {
     const v = await aiRequest('GET', new URL('api/version', base), undefined, o).catch((e) => { if (e instanceof AiError && e.code === 'ai_not_found') return null; throw e })
     const j = await aiRequest('GET', new URL('api/tags', base), undefined, o)

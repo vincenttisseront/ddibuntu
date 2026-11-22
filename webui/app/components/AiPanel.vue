@@ -8,7 +8,7 @@ const apiItems = computed(() => [{ label: t('ai.api_ollama'), value: 'ollama' },
 const modelItems = computed<string[]>(() => [...new Set([...(test.value?.models ?? []), ...(f.model ? [f.model] : [])])])
 const isHttp = computed(() => /^http:\/\//i.test(f.url.trim()))
 const valid = computed(() => !f.enabled || (f.url.trim() !== '' && f.model.trim() !== '' && (!isHttp.value || f.allowHttp)))
-const placeholder = computed(() => (f.api === 'ollama' ? 'http://ia.example.lan:11434' : 'https://ia.example.lan/v1'))
+const placeholder = computed(() => (f.api === 'ollama' ? 'https://ia.example.lan:11434' : 'https://ia.example.lan/v1'))
 
 async function load() {
   const r: any = await api.call('GET', '/ai/settings')
