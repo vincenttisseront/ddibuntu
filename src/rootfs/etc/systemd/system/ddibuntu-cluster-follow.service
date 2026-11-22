@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : configuration Kea du cluster (HA load-balancing)
+Description=Ipnoria : configuration Kea du cluster (HA load-balancing)
 ConditionPathExists=/etc/ddibuntu-cluster/cluster.conf
 After=patroni.service
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Watch for a configuration deployed by the DDI-Buntu console
+Description=Watch for a configuration deployed by the Ipnoria console
 
 [Path]
 PathChanged=/var/lib/ddibuntu/generated/.deployed

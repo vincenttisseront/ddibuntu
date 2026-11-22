@@ -1,5 +1,5 @@
 #!/bin/bash
-# DDI-Buntu — logo en texte (fichier sourcé). Largeur : 50 colonnes, 5 lignes, lisible sur une console 80x25.
+# Ipnoria — logo en texte (fichier sourcé). Largeur : 50 colonnes, 5 lignes, lisible sur une console 80x25.
 # shellcheck shell=bash
 DDI_LOGO_SPLIT=21     # colonne où « Buntu » commence (couleur différente)
 DDI_LOGO_TAGLINE="DNS  -  DHCP  -  IPAM"

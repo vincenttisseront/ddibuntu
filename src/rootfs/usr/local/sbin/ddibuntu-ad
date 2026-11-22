@@ -89,10 +89,10 @@ print(json.dumps({"at": int(time.time()), "configured": bool(os.environ["REALM"]
 write_krb5() {   # /etc/krb5.conf appartient à l'appliance ; l'original est conservé une fois
   local realm="$1" kdcs="$2" t k
   install -d -m 0755 "$(dirname "$KRB5CONF")"
-  if [ -f "$KRB5CONF" ] && [ ! -e "$KRB5CONF.ddibuntu-orig" ] && ! grep -q '^# Géré par DDI-Buntu' "$KRB5CONF"; then cp -p "$KRB5CONF" "$KRB5CONF.ddibuntu-orig"; fi
+  if [ -f "$KRB5CONF" ] && [ ! -e "$KRB5CONF.ddibuntu-orig" ] && ! grep -q '^# Géré par Ipnoria' "$KRB5CONF"; then cp -p "$KRB5CONF" "$KRB5CONF.ddibuntu-orig"; fi
   t="$(mktemp "$(dirname "$KRB5CONF")/.krb5.XXXXXX")"
   {
-    printf '# Géré par DDI-Buntu (ddibuntu-ad) — ne pas modifier à la main.\n[libdefaults]\n  default_realm = %s\n' "$realm"
+    printf '# Géré par Ipnoria (ddibuntu-ad) — ne pas modifier à la main.\n[libdefaults]\n  default_realm = %s\n' "$realm"
     printf '  dns_lookup_realm = false\n  dns_lookup_kdc = %s\n  rdns = false\n  dns_canonicalize_hostname = false\n  udp_preference_limit = 1\n  forwardable = true\n' "$([ -n "$kdcs" ] && echo false || echo true)"
     if [ -n "$kdcs" ]; then
       printf '[realms]\n  %s = {\n' "$realm"
@@ -176,7 +176,7 @@ cmd_install_keytab() {
 cmd_remove() {
   rm -f "$KEYTAB" "$CONF"
   if [ -f "$KRB5CONF.ddibuntu-orig" ]; then mv -f "$KRB5CONF.ddibuntu-orig" "$KRB5CONF"
-  elif [ -f "$KRB5CONF" ] && grep -q '^# Géré par DDI-Buntu' "$KRB5CONF"; then rm -f "$KRB5CONF"; fi
+  elif [ -f "$KRB5CONF" ] && grep -q '^# Géré par Ipnoria' "$KRB5CONF"; then rm -f "$KRB5CONF"; fi
   log "configuration Kerberos et keytab retirés"
   cmd_status >/dev/null
 }

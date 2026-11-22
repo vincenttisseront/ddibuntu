@@ -19,7 +19,7 @@ trap '[ "$DDNS_CREATED" = 1 ] && rm -f /etc/bind/ddi-ddns.key; rm -rf "$T_TMP"' 
 
 # Sorties « telles que la console les produit » (mêmes formats que webui/server/utils/render.ts ; contrôlé aussi par unit-render.test.ts)
 cat > "$GEN/named.conf.options" <<'CONF'
-// Généré par DDI-Buntu — ne pas modifier à la main.
+// Généré par Ipnoria — ne pas modifier à la main.
 include "/etc/bind/ddi-ddns.key";
 options {
   directory "/var/cache/bind";
@@ -35,7 +35,7 @@ options {
 };
 CONF
 cat > "$GEN/named.conf.zones" <<CONF
-// Généré par DDI-Buntu — ne pas modifier à la main.
+// Généré par Ipnoria — ne pas modifier à la main.
 zone "corp.test" { type primary; file "$ZN/db.corp.test"; notify yes; allow-update { key "ddi-ddns"; }; };
 zone "ext.test" { type primary; file "$ZN/db.ext.test"; notify yes; allow-transfer { 10.77.0.0/16; }; };
 zone "rpz.ddibuntu.local" { type primary; file "$ZN/db.rpz"; allow-query { none; }; };

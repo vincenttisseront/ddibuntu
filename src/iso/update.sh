@@ -1,5 +1,5 @@
 #!/bin/bash
-# update.sh — mode « mise à jour » : met à niveau une installation DDI-Buntu EXISTANTE depuis l'ISO, sans rien effacer.
+# update.sh — mode « mise à jour » : met à niveau une installation Ipnoria EXISTANTE depuis l'ISO, sans rien effacer.
 # Lancé par Subiquity (early-commands, entrée « Update » du menu GRUB) AVANT toute étape de stockage.
 #
 # Garanties :
@@ -74,9 +74,9 @@ find_root() {
   done
   rmdir "$probe" 2>/dev/null || true
   case "$n" in
-    0) fail "aucune installation DDI-Buntu trouvée sur les disques (mode mise à jour : rien n'a été modifié)"; return ;;
+    0) fail "aucune installation Ipnoria trouvée sur les disques (mode mise à jour : rien n'a été modifié)"; return ;;
     1) ROOT_DEV="${found# }" ;;
-    *) fail "plusieurs installations DDI-Buntu trouvées :$found — redémarrer et ajouter « ddi-root=/dev/... » au noyau (touche e dans le menu GRUB)"; return ;;
+    *) fail "plusieurs installations Ipnoria trouvées :$found — redémarrer et ajouter « ddi-root=/dev/... » au noyau (touche e dans le menu GRUB)"; return ;;
   esac
   say "installation trouvée : $ROOT_DEV"
   mkdir -p "$TARGET"
@@ -219,7 +219,7 @@ verify_result() {
 
 run() {
   : > "$LOG"
-  say "MODE MISE À JOUR DDI-Buntu — aucun disque ne sera effacé"
+  say "MODE MISE À JOUR Ipnoria — aucun disque ne sera effacé"
   check_media || return 1
   if [ "${DDI_SKIP_MOUNT:-0}" = 1 ]; then [ -d "$TARGET" ] || { fail "cible $TARGET introuvable"; return 1; }; else find_root || return 1; fi
   check_versions || return 1

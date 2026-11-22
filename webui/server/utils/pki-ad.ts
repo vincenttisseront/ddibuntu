@@ -195,7 +195,7 @@ export interface FallbackItem { name: string; container: Container; der: Buffer 
  *  est contrôlée avant « certutil -dspublish ». Les noms ne contiennent que [A-Za-z0-9._-] : sûrs entre apostrophes. */
 export function fallbackScript(items: FallbackItem[]): string {
   const rows = items.map((i) => `    @{ Name = '${i.name}'; Store = '${i.container === 'roots' ? 'RootCA' : 'SubCA'}'; Sha256 = '${sha256Hex(i.der)}'; Cert = '${i.der.toString('base64')}' }`).join(',\n')
-  return `# DDI-Buntu — publication manuelle des autorités de la PKI dans l'Active Directory.
+  return `# Ipnoria — publication manuelle des autorités de la PKI dans l'Active Directory.
 # À exécuter par un administrateur du domaine (membre de « Administrateurs de l'entreprise ») sur une machine jointe au domaine.
 # Les certificats ci-dessous sont PUBLICS ; l'empreinte de chacun est contrôlée avant la publication.
 $ErrorActionPreference = 'Stop'

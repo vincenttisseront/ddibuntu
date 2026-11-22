@@ -541,7 +541,7 @@ expect_eq "EJBCA : « DN unique » retiré sur l'autorité du DDI et sur l'autor
 echo "== Sinistre : secrets et volume perdus, restauration depuis le lot chiffré (0.14.5) =="
 RW="$D/rw"; mkdir -p "$RW"
 RECPW='phrase de récupération de test 0.14.5'
-openssl req -x509 -newkey rsa:3072 -nodes -keyout "$RW/rec.plain.key" -out "$RW/rec.pem" -days 3650 -subj "/CN=DDI-Buntu recovery live" \
+openssl req -x509 -newkey rsa:3072 -nodes -keyout "$RW/rec.plain.key" -out "$RW/rec.pem" -days 3650 -subj "/CN=Ipnoria recovery live" \
   -addext "basicConstraints=critical,CA:FALSE" -addext "keyUsage=critical,keyEncipherment,dataEncipherment" 2>/dev/null
 openssl pkcs8 -topk8 -v2 aes-256-cbc -v2prf hmacWithSHA256 -iter 100000 -in "$RW/rec.plain.key" -out "$RW/rec.key" -passout "pass:$RECPW" 2>/dev/null
 rm -f "$RW/rec.plain.key"

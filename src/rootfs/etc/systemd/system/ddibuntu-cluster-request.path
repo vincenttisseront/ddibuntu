@@ -1,5 +1,5 @@
 [Unit]
-Description=Watch for a controlled switchover requested from the DDI-Buntu console
+Description=Watch for a controlled switchover requested from the Ipnoria console
 ConditionPathExists=/etc/ddibuntu-cluster/cluster.conf
 
 [Path]

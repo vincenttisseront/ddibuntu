@@ -39,7 +39,7 @@ const onKey = (e: KeyboardEvent) => { caps.value = e.getModifierState?.('CapsLoc
     <aside class="relative hidden lg:flex flex-col justify-between overflow-hidden p-12 text-white bg-gradient-to-br from-brand-900 via-brand-800 to-brand-600" aria-hidden="true">
       <svg class="absolute inset-0 size-full opacity-[0.14]" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="g" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0H0V48" fill="none" stroke="currentColor" stroke-width="1" /></pattern></defs><rect width="100%" height="100%" fill="url(#g)" /></svg>
       <svg class="absolute -right-24 -bottom-24 size-[30rem] opacity-20" viewBox="0 0 200 200" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="100" cy="100" r="30" /><circle cx="100" cy="100" r="60" /><circle cx="100" cy="100" r="90" /><path d="M100 10V190M10 100H190M36 36l128 128M164 36L36 164" /><circle cx="100" cy="100" r="6" fill="currentColor" /><circle cx="160" cy="100" r="5" fill="currentColor" /><circle cx="52" cy="58" r="5" fill="currentColor" /><circle cx="70" cy="160" r="5" fill="currentColor" /></svg>
-      <div class="relative flex items-center gap-3"><UIcon name="i-lucide-network" class="size-8" /><span class="font-mono text-2xl font-semibold tracking-tight">DDI-Buntu</span></div>
+      <div class="relative flex items-center gap-3"><BrandMark class="size-8" /><span class="font-mono text-2xl font-semibold tracking-tight">Ipnoria</span></div>
       <div class="relative max-w-md">
         <h2 class="text-4xl font-semibold leading-tight">{{ t('login.tagline') }}</h2>
         <ul class="mt-8 flex flex-col gap-4 text-brand-50/90">
@@ -59,7 +59,7 @@ const onKey = (e: KeyboardEvent) => { caps.value = e.getModifierState?.('CapsLoc
         <UButton color="neutral" variant="ghost" size="sm" :label="lang === 'fr' ? 'EN' : 'FR'" :aria-label="t('nav.language')" @click="setLang(lang === 'fr' ? 'en' : 'fr')" />
       </div>
       <div class="w-full max-w-sm">
-        <div class="lg:hidden flex items-center gap-2 mb-8"><UIcon name="i-lucide-network" class="size-7 text-primary" /><span class="font-mono text-xl font-semibold">DDI-Buntu</span></div>
+        <div class="lg:hidden flex items-center gap-2 mb-8"><BrandMark class="size-7" /><span class="font-mono text-xl font-semibold">Ipnoria</span></div>
 
         <!-- Étape 1 : identifiants -->
         <form v-if="!challenge" class="flex flex-col gap-5" @submit.prevent="submit">

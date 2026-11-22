@@ -65,7 +65,7 @@ expect_grep "…le keytab porte le principal DNS/…" 'DNS/ns1.corp.test@CORP.TE
 
 echo "== ddibuntu-reload : named configuré avec le keytab =="
 cat > "$GEN/named.conf.options" <<CONF
-// Généré par DDI-Buntu — ne pas modifier à la main.
+// Généré par Ipnoria — ne pas modifier à la main.
 include "/etc/bind/ddi-ddns.key";
 options {
   directory "/var/cache/bind";
@@ -80,7 +80,7 @@ options {
 };
 CONF
 cat > "$GEN/named.conf.zones" <<CONF
-// Généré par DDI-Buntu — ne pas modifier à la main.
+// Généré par Ipnoria — ne pas modifier à la main.
 zone "corp.test" { type primary; file "$ZN/db.corp.test"; notify yes; update-policy { grant ddi-ddns zonesub ANY; grant CORP.TEST ms-self . A AAAA; grant CORP.TEST krb5-self . A AAAA; }; };
 zone "ms.test" { type primary; file "$ZN/db.ms.test"; notify yes; update-policy { grant CORP.TEST ms-self . A AAAA; }; };
 zone "key.test" { type primary; file "$ZN/db.key.test"; notify yes; allow-update { key "ddi-ddns"; }; };

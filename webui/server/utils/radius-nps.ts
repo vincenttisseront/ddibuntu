@@ -1,5 +1,5 @@
 // Import d'un NPS Windows (0.13.10, itération 5) : lecture de l'export `netsh nps export … exportPSK=YES` (ou `Export-NpsConfiguration`), puis PLAN d'import
-// (clients RADIUS → clients DDI-Buntu, stratégies réseau → règles d'accès) avec, pour chaque élément, un statut :
+// (clients RADIUS → clients Ipnoria, stratégies réseau → règles d'accès) avec, pour chaque élément, un statut :
 //   imported : repris tel quel · adapted : repris avec une adaptation ou à contrôler · skipped : non pris en charge (avec la raison).
 // Ce fichier est PUR (aucune base, aucun annuaire, aucun réseau) : le plan se calcule sur ce qu'on lui donne (clients et règles existants, groupes déjà
 // résolus). Il n'écrit rien : l'écriture est faite par la route de validation (handlers/radiusnps.ts), après aperçu.
@@ -213,7 +213,7 @@ export function globMatch(glob: string, value: string): boolean {
 }
 
 // ---- Noms et adresses de clients ----
-/** Nom d'affichage NPS → nom de client DDI-Buntu (minuscules, chiffres, tirets ; une lettre au début ; 41 caractères au plus ; jamais le nom réservé). */
+/** Nom d'affichage NPS → nom de client Ipnoria (minuscules, chiffres, tirets ; une lettre au début ; 41 caractères au plus ; jamais le nom réservé). */
 export function normClientName(raw: string): string {
   let s = raw.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
   if (!s) s = 'nas'
@@ -234,7 +234,7 @@ const dottedMask = (m: string): number | null => {
   return /^1*0*$/.test(bits) ? bits.indexOf('0') === -1 ? 32 : bits.indexOf('0') : null
 }
 export type AddressProblem = 'address_dns' | 'address_invalid' | 'address_range'
-/** Adresse NPS (IP, IP/préfixe, IP/masque, nom DNS) → réseau accepté par DDI-Buntu, ou la raison du refus. Aucune résolution DNS : un nom n'est pas repris. */
+/** Adresse NPS (IP, IP/préfixe, IP/masque, nom DNS) → réseau accepté par Ipnoria, ou la raison du refus. Aucune résolution DNS : un nom n'est pas repris. */
 export function npsAddress(raw: string): { ok: true; address: string } | { ok: false; problem: AddressProblem } {
   let v = raw.trim()
   if (!v) return { ok: false, problem: 'address_invalid' }
@@ -289,7 +289,7 @@ export function planClients(exp: NpsExport, ctx: PlanCtx): ClientPlan[] {
     const a = npsAddress(c.address)
     if (!a.ok) { notes.push({ code: a.problem }); out.push(base); continue }
     base.address = a.address
-    // l'adresse est unique dans DDI-Buntu : déjà utilisée par le même client (import déjà fait), par un autre client, ou par un autre client du même fichier
+    // l'adresse est unique dans Ipnoria : déjà utilisée par le même client (import déjà fait), par un autre client, ou par un autre client du même fichier
     const owner = existingAddr.get(a.address)
     if (owner !== undefined) { notes.push(owner === base.name ? { code: 'exists', params: { name: owner } } : { code: 'address_taken', params: { name: owner } }); out.push(base); continue }
     const twin = fileAddr.get(a.address)
@@ -313,7 +313,7 @@ const ruleName = (n: string) => n.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(
 
 export function planRules(exp: NpsExport, clients: ClientPlan[], ctx: PlanCtx): { rules: RulePlan[]; connection: number } {
   const finalOf = new Map<string, string | null>(clients.map((c) => [c.original.toLowerCase(), c.selected && c.status !== 'skipped' ? c.name : null]))
-  // un client déjà présent dans DDI-Buntu sous le même nom (« exists ») reste désignable par les règles
+  // un client déjà présent dans Ipnoria sous le même nom (« exists ») reste désignable par les règles
   for (const c of clients) if (c.status === 'skipped' && c.notes.some((n) => n.code === 'exists')) finalOf.set(c.original.toLowerCase(), c.name)
   const allNames = exp.clients.map((c) => c.name)
   const doneRules = new Set(ctx.existingRules.filter((r) => (r.comment ?? '').startsWith(RULE_COMMENT_PREFIX)).map((r) => r.name))
@@ -333,7 +333,7 @@ export function planRules(exp: NpsExport, clients: ClientPlan[], ctx: PlanCtx): 
     r.action = p.grant === true ? 'accept' : 'reject'
     if (!p.profileFound) adapt({ code: 'profile_missing' })
 
-    // 2. méthodes d'authentification : DDI-Buntu n'accepte que EAP-TLS
+    // 2. méthodes d'authentification : Ipnoria n'accepte que EAP-TLS
     const others = p.eapTypes.filter((t) => t !== EAP_TLS)
     if (p.eapTypes.includes(EAP_TLS)) { if (others.length || p.authTypes.length) adapt({ code: 'auth_extra_dropped', params: { methods: [...others.map((t) => `EAP ${t}`), ...p.authTypes.map((t) => `#${t}`)].join(', ') } }) }
     else if (others.length) adapt({ code: 'auth_converted', params: { methods: others.map((t) => (t === 25 ? 'PEAP' : t === 26 ? 'EAP-MSCHAPv2' : `EAP ${t}`)).join(', ') } })

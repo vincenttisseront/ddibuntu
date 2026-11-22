@@ -1,5 +1,5 @@
 [Unit]
-Description=Apply the DDI-Buntu DNS and DHCP configuration (privileged)
+Description=Apply the Ipnoria DNS and DHCP configuration (privileged)
 After=named.service postgresql.service
 
 [Service]

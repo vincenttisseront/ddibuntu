@@ -1,5 +1,5 @@
 [Unit]
-Description=Watch for a cluster creation or join requested from the DDI-Buntu console (node not yet clustered)
+Description=Watch for a cluster creation or join requested from the Ipnoria console (node not yet clustered)
 ConditionPathExists=!/etc/ddibuntu-cluster/cluster.conf
 
 [Path]

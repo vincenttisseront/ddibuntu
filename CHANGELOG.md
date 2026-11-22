@@ -1,6 +1,15 @@
 # Journal des modifications
 
-## 0.23.0 — « L'assistant IA, utile et en lecture seule »
+## 0.23.0 — « Ipnoria, et un assistant IA en lecture seule »
+
+### DDI-Buntu devient Ipnoria (étape 1 : le nom visible)
+
+- **Nouveau nom : Ipnoria.** La console (titre, barre latérale, page de connexion, À propos, notifications et e-mails d'alerte), le menu de la console texte, l'ISO (entrées GRUB « Install Ipnoria … » / « Update an existing Ipnoria installation … »), le script de construction (`--version`), les unités systemd (descriptions), les en-têtes des fichiers générés et toute la documentation portent désormais le nom Ipnoria. Nouveau logo : le « i » du nom, dont le point est une adresse allouée ; nouvelle icône d'onglet.
+- **Rien ne change sur une appliance installée** : chemins (`/etc/ddibuntu`, `/usr/local/lib/ddibuntu`, `/var/lib/ddibuntu`), unités et commandes (`ddibuntu-*`), base PostgreSQL, espace de noms etcd/Patroni, archives de mise à jour (`ddibuntu-update-*.tar.gz`) et dépôt GitHub restent identiques : la mise à jour se fait comme d'habitude, sans migration.
+- **Identifiants volontairement conservés pour l'instant**, parce qu'ils vivent hors de l'appliance : nom des GPO (« DDI-Buntu enrolement »), dossier `C:\Program Files\DDI-Buntu` et tâche planifiée des postes, champs fabricant/produit des journaux CEF/LEEF envoyés au SIEM, en-tête `X-DDIbuntu-Signature` des webhooks, `User-Agent` des notifications. Leur changement demande une migration (postes, AD, règles SIEM) : étapes 2 et 3 de `docs/RENOMMAGE-IPNORIA.md`.
+- **Tests** : batteries et tests de la console mis à jour pour le nouveau nom (menu GRUB, `--version`, messages).
+
+### Assistant IA, utile et en lecture seule
 
 - **Assistant IA (Système › Assistant IA)**, **désactivé par défaut** : la console se branche sur un **serveur de modèles externe** (API Ollama native, ou API compatible OpenAI `/v1` : vLLM, LocalAI, llama.cpp…). Le modèle tourne sur une **autre machine** : la boucle locale et les adresses réservées sont refusées, et une panne ou une lenteur du serveur de modèles n'affecte ni le DNS, ni le DHCP, ni le RADIUS. Réglages : API, adresse, clé facultative (**chiffrée** comme les autres secrets, jamais rendue), vérification TLS et autorité de certification, **HTTP seulement sur acceptation explicite**, modèle choisi dans la liste lue sur le serveur (« Tester et lister les modèles »), délai maximal, demandes par utilisateur et par heure, usages autorisés un par un.
 - **Trois usages, choisis pour être utiles** :
@@ -12,6 +21,7 @@
 - **Garde-fous** : deux demandes simultanées au plus, débit par utilisateur, réponses gardées une heure (une même question ne repart pas ; « Redemander au modèle » force un nouvel appel), mémoire vidée au changement de réglages, redirections jamais suivies (la clé ne change pas de destinataire), réponse bornée et nettoyée (raisonnement interne `<think>` retiré). Chaque demande est notée au **journal d'audit** (`ai.explain` : usage, modèle, durée, résultat), **sans la question ni la réponse**.
 - **Cluster** : les réglages sont dans la base répliquée ; chaque nœud joint le serveur de modèles lui-même (il doit être joignable depuis tous les nœuds) ; un secondaire peut expliquer (lecture seule).
 - **Tests** : `unit-ai` (16 : adresse, secrets retirés, pseudonymisation réversible, invites, nettoyage, débit, demandes simultanées, mémoire, faux serveur pour les deux API et erreurs classées), `e2e-iter63` (11, serveur construit et faux serveur de modèles : droits, validation, clé chiffrée jamais rendue, test de connexion, contexte relu sans secret, ligne RADIUS et synthèse pseudonymisées puis rétablies, usage désactivé, débit, autre API, délai dépassé sans effet sur la console, audit sans contenu).
+
 
 ## 0.22.2 — « Le canal des versions candidates »
 

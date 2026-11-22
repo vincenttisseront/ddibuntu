@@ -39,7 +39,7 @@ export interface ZoneRow extends ZoneInfo {
 
 export function renderNamedOptions(s: DnsSettings, anyDdns: boolean): string {
   const l = [
-    '// Généré par DDI-Buntu — ne pas modifier à la main.',
+    '// Généré par Ipnoria — ne pas modifier à la main.',
     anyDdns ? `include "${s.ddnsKeyFile}";` : '',
     'options {',
     '  directory "/var/cache/bind";',
@@ -103,7 +103,7 @@ function zoneStatement(z: ZoneRow, s: DnsSettings): string | null {
  * ligne à ligne pour dériver le secondaire), les zones restent une par ligne, à la marge, et le bloc se ferme par « }; ».
  */
 export function renderNamedZones(zones: ZoneRow[], s: DnsSettings, views: ViewInfo[] = []): string {
-  const out: string[] = ['// Généré par DDI-Buntu — ne pas modifier à la main.']
+  const out: string[] = ['// Généré par Ipnoria — ne pas modifier à la main.']
   const rpzFor = (view?: string) => (s.rpzEnabled ? `zone "${s.rpzZone}" { type primary; file "${ZONES_DIR}/${rpzBase(view)}"; allow-query { none; }; };` : '')
   if (!views.length) {
     for (const z of zones) { const l = zoneStatement(z, s); if (l) out.push(l) }

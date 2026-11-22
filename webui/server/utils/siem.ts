@@ -124,7 +124,7 @@ export async function deliver(t: SiemTarget, events: SiemEvent[]): Promise<void>
 }
 
 export function testEvent(): SiemEvent {
-  return { source: 'test', id: null, at: new Date(), severity: 6, event: 'test', message: 'Événement de test DDI-Buntu : la destination fonctionne.', fields: { outcome: 'success' } }
+  return { source: 'test', id: null, at: new Date(), severity: 6, event: 'test', message: 'Événement de test Ipnoria : la destination fonctionne.', fields: { outcome: 'success' } }
 }
 
 /** Un passage : pour chaque destination active et chaque flux choisi, au plus BATCH événements. */

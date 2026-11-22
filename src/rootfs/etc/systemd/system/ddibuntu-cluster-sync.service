@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : synchronisation des pairs du cluster (registre etcd, pare-feu)
+Description=Ipnoria : synchronisation des pairs du cluster (registre etcd, pare-feu)
 ConditionPathExists=/etc/ddibuntu-cluster/cluster.conf
 After=etcd.service
 Wants=etcd.service
