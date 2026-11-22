@@ -1,5 +1,12 @@
 # Journal des modifications
 
+## 0.22.1 — « Le nom des machines sur les baux DHCP »
+
+- **Point final retiré** : un client qui envoie son nom en FQDN absolu (option 81, ex. `poste.domaine.`) apparaissait avec un point final dans l'IPAM, et la découverte ne pouvait plus l'importer comme nom valide. Le nom est maintenant nettoyé (point final, espaces, majuscules) dans les listes d'adresses ; la page DHCP › Baux retire aussi le point final.
+- **Bail sans nom fourni par le client** (téléphones, objets connectés, adresses MAC aléatoires : Kea n'a rien à enregistrer) : la liste reprend le nom d'un enregistrement **A** des zones DNS gérées portant cette adresse. Sans enregistrement, la ligne reste sans nom — le DHCP ne peut pas l'inventer.
+- **Adresse de l'IPAM sans nom** mais portant un bail qui en a un : la liste (adresses globales et d'un réseau) affiche le nom du bail. Aucune donnée n'est écrite, un nom saisi n'est jamais remplacé.
+- **Tests** : `e2e-iter45` (+1).
+
 ## 0.22.0 — « Les passerelles dans la liste des adresses, la licence AGPL-3.0, la documentation du cluster »
 
 - **Passerelles dans la liste des adresses** (IPAM › Adresses, et liste d'un réseau) : une nouvelle colonne **Passerelle** montre l'origine de chaque passerelle. Les **routeurs de l'étendue DHCP** du réseau (option `routers`) et la **passerelle déclarée sur le réseau** apparaissent **automatiquement** (« Auto · DHCP », « Auto · réseau »), même si l'adresse n'a pas de ligne dans l'IPAM : une ligne en lecture seule avec le statut « passerelle » est alors affichée, et le bouton « + » la déclare en un clic. Pour toute autre adresse, un **drapeau « Passerelle du réseau »** (interrupteur du formulaire, ou statut « passerelle ») la marque « Manuelle ». Un nouveau filtre **« Passerelles (toutes) »** les isole. Seules les adresses **du réseau** sont retenues (une valeur hors réseau dans les options DHCP est ignorée) ; l'origine automatique l'emporte sur le drapeau pour la même adresse ; retirer un routeur de l'étendue le fait disparaître de la liste.

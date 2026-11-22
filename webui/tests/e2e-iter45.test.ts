@@ -95,6 +95,24 @@ describe('0.13.7 — baux : réserver depuis un bail', () => {
     const r2 = await admin.post('/api/dhcp/leases/reserve', { ip: '10.99.0.102' })
     expect(r2.json).toMatchObject({ ip: '10.99.0.102', hostname: null })
   })
+  it('0.22.1 — nom du bail dans l\'IPAM : point final retiré, repli sur un enregistrement A, nom d\'une adresse vide complété', async () => {
+    const z = (await admin.post('/api/dns/zones', { name: 'baux.test', type: 'primary', soa_mname: 'ns1.baux.test.', soa_rname: 'hostmaster.baux.test.' })).json
+    await admin.post('/api/dns/records', { zone_id: z.id, name: 'imprimante', type: 'A', rdata: '10.99.0.111' })
+    await lease(ipn(10, 99, 0, 110), 'aabbcc000110', 'WinPort03.Baux.Test.', scope)   // FQDN absolu envoyé par le client (option 81)
+    await lease(ipn(10, 99, 0, 111), 'aabbcc000111', null, scope)                      // client sans nom, mais un A existe dans la zone
+    await lease(ipn(10, 99, 0, 112), 'aabbcc000112', null, scope)                      // client sans nom, rien dans le DNS
+    await lease(ipn(10, 99, 0, 113), 'aabbcc000113', 'poste113', scope)                // adresse IPAM existante, sans nom
+    await db.query("insert into addresses (subnet_id, ip, status) values ($1, '10.99.0.113', 'used')", [sid])
+    const by = Object.fromEntries((await viewer.get(`/api/ipam/addresses?subnet_id=${sid}&limit=200`)).json.items.map((a: any) => [a.ip, a]))
+    expect(by['10.99.0.110']).toMatchObject({ status: 'lease', hostname: 'winport03.baux.test' })
+    expect(by['10.99.0.111']).toMatchObject({ status: 'lease', hostname: 'imprimante.baux.test' })
+    expect(by['10.99.0.112']).toMatchObject({ status: 'lease', hostname: null })
+    expect(by['10.99.0.113']).toMatchObject({ status: 'used', hostname: 'poste113' })
+    const sub = Object.fromEntries((await viewer.get(`/api/ipam/subnets/${sid}/addresses`)).json.items.map((a: any) => [a.ip, a]))
+    expect(sub['10.99.0.113'].hostname).toBe('poste113')
+    // la page « Baux » du DHCP n'affiche plus le point final
+    expect((await viewer.get('/api/dhcp/leases')).json.items.find((l: any) => l.ip === '10.99.0.110').hostname).toBe('WinPort03.Baux.Test')
+  })
   it('refus : sans MAC, sans étendue, bail inconnu, droits', async () => {
     code(await admin.post('/api/dhcp/leases/reserve', { ip: '10.99.0.103' }), 400, 'lease_without_mac')
     code(await admin.post('/api/dhcp/leases/reserve', { ip: '10.99.0.104' }), 409, 'no_scope')
