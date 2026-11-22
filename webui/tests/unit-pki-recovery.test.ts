@@ -74,7 +74,7 @@ describe('newRecoveryKey (openssl réel)', () => {
     expect(k.encrypted).toBe(true); expect(k.keyPem).toContain('BEGIN ENCRYPTED PRIVATE KEY'); expect(k.keyPem).not.toContain('BEGIN PRIVATE KEY'); expect(k.certPem).toContain('BEGIN CERTIFICATE')
     const c = new X509Certificate(k.certPem)
     expect(k.fingerprint).toBe(c.fingerprint256.replace(/:/g, '').toLowerCase()); expect(k.fingerprint).toMatch(/^[0-9a-f]{64}$/)
-    expect((c.publicKey.asymmetricKeyDetails as any).modulusLength).toBe(4096); expect(c.subject).toContain('DDI-Buntu PKI recovery'); expect(c.ca).toBe(false)
+    expect((c.publicKey.asymmetricKeyDetails as any).modulusLength).toBe(4096); expect(c.subject).toContain('Ipnoria PKI recovery'); expect(c.ca).toBe(false)
     expect((new Date(c.validTo).getTime() - new Date(c.validFrom).getTime()) / 86400000).toBeGreaterThan(36000)
     // la clé privée, rouverte avec la phrase, correspond au certificat ; une mauvaise phrase échoue
     const priv = createPrivateKey({ key: k.keyPem, passphrase: pass })

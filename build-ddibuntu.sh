@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-ddibuntu.sh — construit l'ISO d'installation automatique DDI-Buntu @@VERSION@@.
+# build-ddibuntu.sh — construit l'ISO d'installation automatique Ipnoria @@VERSION@@.
 #
 # Deux modes, un seul code :
 #   - DÉPÔT   : lancé depuis une copie du dépôt Git (dossiers src/ et webui/ à côté du script), il lit les fichiers de
@@ -417,7 +417,7 @@ build_native() {
   trap 'rm -f "$OUT_DIR"/.ddibuntu-*.partial; if [[ "$KEEP_WORK" = 0 ]]; then rm -rf "$WORK"; fi' EXIT
   local cache="$OUT_DIR/.ddibuntu-cache" payload="$WORK/payload" iso="$WORK/iso/ddibuntu" hash tmpl content f
 
-  say "DDI-Buntu $DDI_VERSION — dossier de travail : $WORK"
+  say "Ipnoria $DDI_VERSION — dossier de travail : $WORK"
   payload_extract "$payload"
 
   # --- ISO Ubuntu de départ : vérifiée avant toute utilisation ---
@@ -474,7 +474,7 @@ build_native() {
   # shellcheck disable=SC2086  # liste de noms de fichiers sans espaces
   ( cd "$iso" && sha256sum $sumfiles > payloads.sha256 )
   {
-    printf 'DDI-Buntu %s\nconstruit le %s\nISO de base : %s\nSHA-256 base : %s\n' "$DDI_VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ISO_NAME" "$ISO_HASH"
+    printf 'Ipnoria %s\nconstruit le %s\nISO de base : %s\nSHA-256 base : %s\n' "$DDI_VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ISO_NAME" "$ISO_HASH"
     if [[ "$SKIP_NODE" = 0 ]]; then printf 'Node.js : %s (SHA-256 %s, signature vérifiée)\n' "$NODE_NAME" "$NODE_HASH"; fi
     if [[ -d "$iso/debs" ]]; then
       printf 'paquets embarqués :\n'
@@ -563,7 +563,7 @@ make_bundle() {
   say "Archive de mise à jour : $out"
 }
 
-# Insère l'entrée DDI-Buntu avant la première entrée du menu et force default/timeout.
+# Insère l'entrée Ipnoria avant la première entrée du menu et force default/timeout.
 # $1 = grub.cfg d'origine, $2 = destination. Échoue si aucune entrée « menuentry » n'est trouvée.
 patch_grub() {
   local entry
@@ -571,12 +571,12 @@ patch_grub() {
 set default=0
 set timeout=${TIMEOUT}
 set timeout_style=menu
-menuentry "Install DDI-Buntu ${DDI_VERSION} (automatic - ERASES the target disk)" {
+menuentry "Install Ipnoria ${DDI_VERSION} (automatic - ERASES the target disk)" {
 	set gfxpayload=keep
 	linux	/casper/vmlinuz autoinstall ds=nocloud\\;s=/cdrom/ddibuntu/ ---
 	initrd	/casper/initrd
 }
-menuentry "Update an existing DDI-Buntu installation to ${DDI_VERSION} (keeps data, never erases the disk)" {
+menuentry "Update an existing Ipnoria installation to ${DDI_VERSION} (keeps data, never erases the disk)" {
 	set gfxpayload=keep
 	linux	/casper/vmlinuz autoinstall ds=nocloud\\;s=/cdrom/ddibuntu/update/ ---
 	initrd	/casper/initrd
@@ -635,7 +635,7 @@ main() {
       --bundle) BUNDLE=1 ;;
       --update-debs) UPDATE_DEBS_DIR="${2:?--update-debs attend un dossier}"; shift ;;
       --keep-work) KEEP_WORK=1 ;;
-      --version) printf 'DDI-Buntu %s\n' "$DDI_VERSION"; exit 0 ;;
+      --version) printf 'Ipnoria %s\n' "$DDI_VERSION"; exit 0 ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; die "option inconnue : $1" ;;
     esac

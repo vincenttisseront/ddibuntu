@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : bascule contrôlée demandée par la console (validée par root)
+Description=Ipnoria : bascule contrôlée demandée par la console (validée par root)
 ConditionPathExists=/etc/ddibuntu-cluster/cluster.conf
 After=patroni.service
 

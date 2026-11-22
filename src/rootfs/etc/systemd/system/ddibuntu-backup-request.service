@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : sauvegarde / restauration demandée par la console (validée par root)
+Description=Ipnoria : sauvegarde / restauration demandée par la console (validée par root)
 After=postgresql.service patroni.service
 
 [Service]

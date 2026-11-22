@@ -1,6 +1,6 @@
 # Feuille de route
 
-Référence : forces fonctionnelles d'une plate-forme DDI du marché (EfficientIP SOLIDserver) à émuler, rapprochées de l'état réel de DDI-Buntu.
+Référence : forces fonctionnelles d'une plate-forme DDI du marché (EfficientIP SOLIDserver) à émuler, rapprochées de l'état réel d'Ipnoria.
 Légende : ✅ fait · 🟡 partiel · ⬜ à faire.
 
 ## 1. Modèle unifié et cohérence

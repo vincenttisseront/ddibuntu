@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : synchronisation des pairs du cluster (chaque minute)
+Description=Ipnoria : synchronisation des pairs du cluster (chaque minute)
 
 [Timer]
 OnBootSec=30s

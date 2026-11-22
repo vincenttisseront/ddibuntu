@@ -254,6 +254,6 @@ expect_eq "ADMIN_NETS conservé par les écritures successives" "10.0.0.0/24" "$
 echo "== Unités et fichiers livrés =="
 expect_grep "unité : déclenchée par la demande de la console" '^PathChanged=/var/lib/ddibuntu/generated/\.radius-request$' "$RFS/etc/systemd/system/ddibuntu-radius-request.path"
 expect_grep "unité : exécute ddibuntu-radius request" '^ExecStart=/usr/local/sbin/ddibuntu-radius request$' "$RFS/etc/systemd/system/ddibuntu-radius-request.service"
-expect_grep "freeradius : lit uniquement l'arborescence DDI-Buntu" '^ExecStart=/usr/sbin/freeradius -f -d /etc/ddibuntu/radius$' "$RFS/etc/systemd/system/freeradius.service.d/ddibuntu.conf"
+expect_grep "freeradius : lit uniquement l'arborescence Ipnoria" '^ExecStart=/usr/sbin/freeradius -f -d /etc/ddibuntu/radius$' "$RFS/etc/systemd/system/freeradius.service.d/ddibuntu.conf"
 expect_grep "freeradius : contrôle avant démarrage sur cette arborescence" '^ExecStartPre=/usr/sbin/freeradius -d /etc/ddibuntu/radius -Cx -lstdout$' "$RFS/etc/systemd/system/freeradius.service.d/ddibuntu.conf"
 finish

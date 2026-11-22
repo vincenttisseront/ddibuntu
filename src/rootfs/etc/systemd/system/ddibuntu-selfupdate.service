@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu online update: process the request filed by the console (privileged)
+Description=Ipnoria online update: process the request filed by the console (privileged)
 After=network-online.target postgresql.service
 Wants=network-online.target
 

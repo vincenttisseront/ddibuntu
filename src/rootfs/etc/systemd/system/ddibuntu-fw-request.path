@@ -1,5 +1,5 @@
 [Unit]
-Description=Watch for a firewall (admin networks) request from the DDI-Buntu console
+Description=Watch for a firewall (admin networks) request from the Ipnoria console
 
 [Path]
 PathChanged=/var/lib/ddibuntu/generated/.fw-request

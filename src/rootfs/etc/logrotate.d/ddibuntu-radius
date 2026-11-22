@@ -1,4 +1,4 @@
-# DDI-Buntu : journal des authentifications RADIUS (radius-auth.log) et journal technique de FreeRADIUS (radius.log).
+# Ipnoria : journal des authentifications RADIUS (radius-auth.log) et journal technique de FreeRADIUS (radius.log).
 # Les deux fichiers sont écrits par FreeRADIUS (compte freerad) et lus par la console (groupe ddiconsole) : « copytruncate » garde le
 # fichier, son propriétaire et son groupe, et ne demande aucun rechargement du service. La console relit la fin du fichier à chaque
 # changement (taille, date, inode) : une troncature est donc prise en compte. Quelques lignes écrites entre la copie et la

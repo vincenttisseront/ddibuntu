@@ -31,7 +31,7 @@ Autres postes : Windows 11 `.\build-ddibuntu.ps1` (PowerShell + Docker Desktop) 
 
 ## Mettre à jour une installation existante
 
-Démarrer la machine DDI-Buntu sur l'ISO **de la nouvelle version** et choisir dans le menu **« Update an existing DDI-Buntu installation… »** (ce n'est pas l'entrée par défaut : le délai du menu lance l'installation, qui **efface le disque**, donc appuyer sur une touche à temps ou régler `--timeout -1` à la construction pour attendre un choix).
+Démarrer la machine Ipnoria sur l'ISO **de la nouvelle version** et choisir dans le menu **« Update an existing Ipnoria installation… »** (ce n'est pas l'entrée par défaut : le délai du menu lance l'installation, qui **efface le disque**, donc appuyer sur une touche à temps ou régler `--timeout -1` à la construction pour attendre un choix).
 
 - Conservé : base PostgreSQL et console (comptes, IPAM, DNS, DHCP), certificat TLS, secrets, réseau, comptes système, pare-feu (`firewall.conf` et règles rendues), configuration BIND/Kea.
 - Remplacé : console web, Node.js, fichiers de l'appliance (`/usr/local/...`, unités systemd, durcissement SSH/sysctl), et les paquets embarqués **uniquement s'ils sont plus récents** que ceux installés.
@@ -76,7 +76,7 @@ Nouvelle VM : système « Ubuntu Linux (64 bits) », **2 vCPU, 4 Go, disque 40 G
 carte réseau VMXNET 3 sur le bon réseau, lecteur CD/DVD sur l'ISO (téléversée dans un datastore).
 `open-vm-tools` est installé (arrêt propre depuis l'hyperviseur, adresse IP visible dans vSphere).
 
-1. Démarrer sur l'ISO : l'entrée « Install DDI-Buntu » se lance seule après le délai du menu.
+1. Démarrer sur l'ISO : l'entrée « Install Ipnoria » se lance seule après le délai du menu.
 2. Au premier démarrage, l'assistant demande langue, clavier, fuseau, nom, réseau, **réseaux autorisés à administrer l'appliance**, compte administrateur.
 3. Se connecter sur la console ; menu **« Console web : adresse et jeton »** : URL `https://<adresse>/` et jeton de première configuration.
 4. Ouvrir l'URL (certificat auto-signé, à remplacer à terme), page **/setup** : saisir le jeton, créer l'administrateur de la console.

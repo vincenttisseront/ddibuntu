@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu: daily check for a new version
+Description=Ipnoria: daily check for a new version
 
 [Timer]
 OnBootSec=15min

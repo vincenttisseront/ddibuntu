@@ -13,7 +13,7 @@ const LABEL: Record<'fr' | 'en', Record<Kind, string>> = { fr: { firing: '', res
 
 export function render(cfg: AlertConfig, ev: NotifyEvent, kind: Kind, cluster: string) {
   const lang = cfg.lang
-  const text = ev.rule === 'test' ? (lang === 'en' ? 'Test notification from DDI-Buntu: the channel works.' : 'Notification de test de DDI-Buntu : le canal fonctionne.') : describe(ev.rule, ev.node, ev.subject, ev.params, lang)
+  const text = ev.rule === 'test' ? (lang === 'en' ? 'Test notification from Ipnoria: the channel works.' : 'Notification de test d’Ipnoria : le canal fonctionne.') : describe(ev.rule, ev.node, ev.subject, ev.params, lang)
   const head = kind === 'firing' ? SEVERITY_LABEL[lang][ev.severity] ?? ev.severity.toUpperCase() : `${LABEL[lang][kind]}${kind === 'test' ? '' : ' · ' + (SEVERITY_LABEL[lang][ev.severity] ?? ev.severity)}`
   const where = cluster || hostname().split('.')[0]!
   return { title: `[${head}] ${where}`, text, line: `[${head}] ${where} — ${text}` }

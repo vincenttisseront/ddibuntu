@@ -64,7 +64,7 @@ function startRoot() {
       rmSync(f, { force: true })   // consommé quoi qu'il arrive
       if (rootRefuse) { publishResult(req.action, false, rootRefuse); return }
       if (!cert || fp.length !== 64) { publishResult(req.action, false, 'dépôt absent ou illisible'); return }
-      setStatus({ recovery: { fingerprint: fp, bits: 4096, notAfter: NOW() + 3_000_000_000, subject: 'CN=DDI-Buntu PKI recovery test', registeredAt: NOW() } })
+      setStatus({ recovery: { fingerprint: fp, bits: 4096, notAfter: NOW() + 3_000_000_000, subject: 'CN=Ipnoria PKI recovery test', registeredAt: NOW() } })
       publishResult(req.action, true, `Clé de récupération enregistrée (empreinte ${fp.slice(0, 16)}…) : gardez la clé PRIVÉE hors de cette machine.`)
     } catch (e) { publishResult('recovery_set', false, `erreur du root simulé : ${(e as Error).message}`) } finally { rootBusy = false }
   }, 40)

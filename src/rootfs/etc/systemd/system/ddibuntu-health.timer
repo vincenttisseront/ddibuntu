@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : santé du nœud (chaque minute)
+Description=Ipnoria : santé du nœud (chaque minute)
 
 [Timer]
 OnBootSec=1min

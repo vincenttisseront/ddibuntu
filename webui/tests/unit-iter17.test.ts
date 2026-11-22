@@ -33,7 +33,7 @@ describe('TOTP (RFC 6238 / RFC 4226)', () => {
   })
   it('URI otpauth et codes de secours', () => {
     const u = otpauthUri('ABCDEFGH', 'jean.dupont@exemple.fr')
-    expect(u).toBe('otpauth://totp/DDI-Buntu:jean.dupont%40exemple.fr?secret=ABCDEFGH&issuer=DDI-Buntu&algorithm=SHA1&digits=6&period=30')
+    expect(u).toBe('otpauth://totp/Ipnoria:jean.dupont%40exemple.fr?secret=ABCDEFGH&issuer=Ipnoria&algorithm=SHA1&digits=6&period=30')
     const codes = newRecoveryCodes(); expect(codes).toHaveLength(10); expect(new Set(codes).size).toBe(10)
     for (const c of codes) { expect(c).toMatch(/^[a-z2-9]{5}-[a-z2-9]{5}$/); expect(isRecoveryFormat(c)).toBe(true) }
     expect(recoveryHash(' ABCDE-FGHJK ')).toBe(recoveryHash('abcde-fghjk')); expect(normalizeRecovery(' AbCde-fGhjk ')).toBe('abcde-fghjk')

@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034,SC1112  # SC1112 : apostrophes typographiques voulues ; variables M_* lues par les scripts de l'appliance
-# DDI-Buntu — catalogue français (langue source). Une clé = une ligne ; mêmes clés dans en.sh.
+# Ipnoria — catalogue français (langue source). Une clé = une ligne ; mêmes clés dans en.sh.
 # Les messages avec %s sont formatés par ddi_fmt ; « \n » y est un saut de ligne.
-M_TITLE='Assistant de configuration DDI-Buntu'
+M_TITLE='Assistant de configuration Ipnoria'
 M_KBD_PROMPT='Disposition du clavier'
 M_HOST_PROMPT='Nom de la machine (sans domaine). Exemple : ddi01'
 M_HOST_INVALID='Nom de machine invalide : « %s ». Utilisez des minuscules, des chiffres et des tirets (63 caractères au plus).'
@@ -38,7 +38,7 @@ M_FINISHED='Configuration terminée. Adresses de l’appliance :'
 M_ISSUE_NET='Adresses réseau'
 M_ISSUE_HELP='Connectez-vous avec le compte administrateur créé par l’assistant.'
 M_ISSUE_SSH='Accès réservé aux administrateurs autorisés.'
-M_MENU_PROMPT='DDI-Buntu %s — %s'
+M_MENU_PROMPT='Ipnoria %s — %s'
 M_MENU_QUIT='Quitter'
 M_MENU_STATUS='État de l’appliance'
 M_MENU_NETWORK='Nom de machine et réseau'

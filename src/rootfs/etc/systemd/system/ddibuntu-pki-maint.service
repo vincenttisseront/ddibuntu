@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu : maintenance de la PKI (état publié, renouvellement des CRL)
+Description=Ipnoria : maintenance de la PKI (état publié, renouvellement des CRL)
 
 [Service]
 Type=oneshot

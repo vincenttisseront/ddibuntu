@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu console database, TLS and secrets initialization
+Description=Ipnoria console database, TLS and secrets initialization
 ConditionPathExists=/var/lib/ddibuntu/configured
 ConditionPathExists=!/var/lib/ddibuntu/console-initialized
 After=ddibuntu-firstboot.service postgresql.service

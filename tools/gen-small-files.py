@@ -72,7 +72,7 @@ while :; do
 done
 ''', 0o755)
 
-w("etc/profile.d/ddibuntu-menu.sh", '''# DDI-Buntu : menu console à la connexion interactive d'un administrateur (groupe ddiadmin).
+w("etc/profile.d/ddibuntu-menu.sh", '''# Ipnoria : menu console à la connexion interactive d'un administrateur (groupe ddiadmin).
 if [ -z "${DDI_MENU_DONE:-}" ] && [ -x /usr/local/bin/ddibuntu-menu ] && [ -t 0 ] && [ -t 1 ]; then
   case " $(id -nG 2>/dev/null) " in
     *" ddiadmin "*) DDI_MENU_DONE=1; export DDI_MENU_DONE; /usr/local/bin/ddibuntu-menu ;;
@@ -80,7 +80,7 @@ if [ -z "${DDI_MENU_DONE:-}" ] && [ -x /usr/local/bin/ddibuntu-menu ] && [ -t 0 
 fi
 ''')
 
-w("etc/ssh/sshd_config.d/10-ddibuntu.conf", '''# DDI-Buntu — durcissement SSH. Chargé avant 50-cloud-init.conf : la première valeur l'emporte.
+w("etc/ssh/sshd_config.d/10-ddibuntu.conf", '''# Ipnoria — durcissement SSH. Chargé avant 50-cloud-init.conf : la première valeur l'emporte.
 PermitRootLogin no
 PermitEmptyPasswords no
 PasswordAuthentication yes
@@ -99,7 +99,7 @@ LogLevel VERBOSE
 Banner /etc/issue.net
 ''')
 
-w("etc/sysctl.d/90-ddibuntu.conf", '''# DDI-Buntu — durcissement du noyau et de la pile réseau (l'appliance n'est pas un routeur).
+w("etc/sysctl.d/90-ddibuntu.conf", '''# Ipnoria — durcissement du noyau et de la pile réseau (l'appliance n'est pas un routeur).
 net.ipv4.ip_forward = 0
 net.ipv6.conf.all.forwarding = 0
 net.ipv4.conf.all.rp_filter = 1
@@ -130,17 +130,17 @@ fs.suid_dumpable = 0
 ''')
 
 w("etc/nftables.conf", '''#!/usr/sbin/nft -f
-# DDI-Buntu : le pare-feu vit dans une table dédiée (inet ddibuntu), générée par ddibuntu-fw.
+# Ipnoria : le pare-feu vit dans une table dédiée (inet ddibuntu), générée par ddibuntu-fw.
 # Pas de « flush ruleset » : les tables des autres composants ne sont jamais effacées.
 include "/etc/ddibuntu/nftables.nft"
 ''')
 
-w("etc/cloud/cloud.cfg.d/99-ddibuntu.cfg", '''# DDI-Buntu : le réseau est géré par ddibuntu-apply, pas par cloud-init.
+w("etc/cloud/cloud.cfg.d/99-ddibuntu.cfg", '''# Ipnoria : le réseau est géré par ddibuntu-apply, pas par cloud-init.
 network: {config: disabled}
 ''')
 
 w("etc/systemd/system/ddibuntu-firstboot.service", '''[Unit]
-Description=DDI-Buntu first-boot setup wizard
+Description=Ipnoria first-boot setup wizard
 ConditionPathExists=!/var/lib/ddibuntu/configured
 After=systemd-user-sessions.service plymouth-quit-wait.service
 Before=getty@tty1.service getty.target

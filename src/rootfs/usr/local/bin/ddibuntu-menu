@@ -14,7 +14,7 @@ ddi_cfg_reset
 if [ -f "$DDI_CONFFILE" ]; then ddi_cfg_read "$DDI_CONFFILE"; fi
 ddi_load_lang "${CFG_LANGUAGE:-fr}"
 
-DDI_BACKTITLE="DDI-Buntu $(ddi_version) - DNS / DHCP / IPAM"
+DDI_BACKTITLE="Ipnoria $(ddi_version) - DNS / DHCP / IPAM"
 wt_yesno() { whiptail --title "$M_TITLE" --backtitle "$DDI_BACKTITLE" --yesno "$1" 12 74; }
 
 show_status() {

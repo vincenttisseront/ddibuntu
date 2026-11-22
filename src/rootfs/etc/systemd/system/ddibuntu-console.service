@@ -1,5 +1,5 @@
 [Unit]
-Description=DDI-Buntu web console (HTTPS)
+Description=Ipnoria web console (HTTPS)
 After=postgresql.service ddibuntu-db-init.service network-online.target
 Wants=postgresql.service ddibuntu-db-init.service
 ConditionPathExists=/etc/ddibuntu/console.env
