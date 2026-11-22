@@ -20,9 +20,11 @@ async function resetMfa(row: any) {
   try { await api.call('POST', `/users/${row.id}/mfa/reset`, {}); toast.add({ title: t('mfa.reset_done'), color: 'success', icon: 'i-lucide-check' }); await refreshNuxtData() } catch { /* message déjà affiché par api.call */ }
 }
 const userBody = (b: any, editing: boolean) => { const o = { ...b }; if (!editing) delete o.disabled; o.space_ids = String(o.space_ids ?? '').split(/[\s,;]+/).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 0); if (!o.space_ids.length) o.space_ids = null; return o }
-const auditCols = computed(() => [{ key: 'at', label: t('common.date'), kind: 'date' }, { key: 'username', label: t('system.user') }, { key: 'action', label: t('system.action'), kind: 'mono' }, { key: 'entity', label: t('system.entity') }, { key: 'entity_id', label: 'ID', kind: 'mono' }, { key: 'ip', label: 'IP', kind: 'mono' }])
 const { data: info } = await useFetch<any>('/api/system/info')
 const { data: deps } = await useFetch<any>('/api/system/deployments')
+// Licence : le texte complet n'est chargé qu'à l'ouverture de la fenêtre
+const { data: lic } = await useFetch<any>('/api/about/license')
+const licOpen = ref(false), licTab = ref<'license' | 'third'>('license')
 </script>
 
 <template>
@@ -32,7 +34,7 @@ const { data: deps } = await useFetch<any>('/api/system/deployments')
           <ResourceTable ref="usersTable" endpoint="/users" :columns="userCols" :fields="userFields" can-write create-url="/users" :update-url="(r: any) => `/users/${r.id}`" :delete-url="(r: any) => `/users/${r.id}`" :delete-name="(r: any) => r.username" :create-label="t('system.add_user')" :transform="userBody">
             <template #actions="{ row }"><UButton v-if="row.totp_enabled" size="xs" color="neutral" variant="ghost" icon="i-lucide-shield-off" :aria-label="t('mfa.reset')" :title="t('mfa.reset')" @click="resetMfa(row)" /></template>
           </ResourceTable></div>
-    <ResourceTable v-else-if="tab === 'audit'" endpoint="/audit" :columns="auditCols" searchable />
+    <AuditLog v-else-if="tab === 'audit'" />
     <AlertsPanel v-else-if="tab === 'alerts'" />
     <BackupPanel v-else-if="tab === 'backup'" />
     <ApiTokens v-else-if="tab === 'api'" />
@@ -48,6 +50,16 @@ const { data: deps } = await useFetch<any>('/api/system/deployments')
         <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm"><dt class="text-muted">{{ t('system.version') }}</dt><dd class="font-mono">{{ info?.version }}</dd><dt class="text-muted">{{ t('system.db') }}</dt><dd class="font-mono">{{ info?.db }} · schéma {{ info?.schema }}</dd>
           <dt class="text-muted">{{ t('system.generated_dir') }}</dt><dd class="font-mono text-xs">{{ info?.generatedDir }}</dd>
           <template v-for="b in info?.binaries ?? []" :key="b.name"><dt class="text-muted font-mono text-xs">{{ b.name }}</dt><dd><UBadge :color="b.ok ? 'success' : 'error'" variant="subtle" :label="b.ok ? t('system.available') : t('system.missing')" /></dd></template></dl></UCard>
+      <UCard data-test="about-license"><template #header><span class="font-medium">{{ t('system.license') }}</span></template>
+        <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm"><dt class="text-muted">{{ t('system.license_name') }}</dt><dd><UBadge variant="subtle" color="neutral" :label="lic?.info?.spdx" /></dd>
+          <dt class="text-muted">{{ t('system.license_holder') }}</dt><dd>{{ lic?.info?.copyright }}</dd>
+          <dt class="text-muted">{{ t('system.license_source') }}</dt><dd><a :href="lic?.info?.source" target="_blank" rel="noopener noreferrer" class="text-primary underline break-all">{{ lic?.info?.source }}</a></dd></dl>
+        <p class="text-xs text-muted mt-2">{{ t('system.license_note') }}</p>
+        <div class="flex gap-2 mt-3"><UButton size="sm" variant="soft" icon="i-lucide-scale" :label="t('system.license_read')" data-test="about-license-open" @click="licTab = 'license'; licOpen = true" /><UButton size="sm" variant="ghost" icon="i-lucide-package" :label="t('system.license_third')" @click="licTab = 'third'; licOpen = true" /></div>
+        <UModal v-model:open="licOpen" :title="licTab === 'license' ? lic?.info?.name : t('system.license_third')" :ui="{ content: 'max-w-3xl' }">
+          <template #body><pre v-if="(licTab === 'license' ? lic?.text : lic?.thirdParty)" class="text-xs whitespace-pre-wrap max-h-[60vh] overflow-auto font-mono" data-test="about-license-text">{{ licTab === 'license' ? lic?.text : lic?.thirdParty }}</pre>
+            <p v-else class="text-sm text-muted">{{ t('system.license_missing') }} <a :href="lic?.info?.url" target="_blank" rel="noopener noreferrer" class="text-primary underline">{{ lic?.info?.url }}</a></p></template>
+        </UModal></UCard>
       <UCard><template #header><span class="font-medium">{{ t('system.deployments') }}</span></template>
         <ul class="text-sm flex flex-col gap-1 max-h-72 overflow-auto"><li v-for="d in deps?.items ?? []" :key="d.id" class="flex gap-2 items-center"><UIcon :name="d.ok ? 'i-lucide-circle-check' : 'i-lucide-circle-x'" :class="d.ok ? 'text-success' : 'text-error'" /><span class="num text-xs">{{ fmt.dateTime(d.at) }}</span><span class="text-muted text-xs">{{ d.username }}</span></li></ul>
         <p v-if="!(deps?.items ?? []).length" class="text-sm text-muted">{{ t('common.empty') }}</p></UCard>

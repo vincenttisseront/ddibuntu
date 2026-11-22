@@ -17,4 +17,4 @@ Liste **indicative** à vérifier avant publication (`npm ls`, `apt-cache show`)
 | pg, zod, ldapts, fast-xml-parser | serveur de la console | MIT |
 | Fira Sans / Fira Code | polices embarquées (hors ligne) | SIL OFL 1.1 |
 
-Le dépôt lui-même n'a **pas encore de licence** (voir README).
+Le dépôt lui-même est sous licence **AGPL-3.0-or-later** (fichier `LICENSE`). Les composants MIT, MPL-2.0, PostgreSQL License et SIL OFL ci-dessus sont utilisables sous cette licence. Les programmes GPL ou LGPL (nftables, newt, open-vm-tools) sont des paquets Ubuntu distincts, lancés comme programmes séparés et non liés au code de DDI-Buntu.

@@ -41,8 +41,10 @@ route('POST', '/auth/login', 'public', async (c) => {
   if (replica ? replicaLoginBlocked(b.username, c.ip) || await loginBlocked(b.username, c.ip) : await loginBlocked(b.username, c.ip)) fail(429, 'too_many_attempts')
   const u = await one<any>('select * from users where lower(username) = lower($1)', [b.username])
   let userId: number | null = null
+  // Piste de l'échec pour le journal d'audit (codes courts, jamais de mot de passe) : méthodes essayées et résultat de chacune. La réponse au client reste « bad_credentials ».
+  const tried: Array<{ via: 'local' | 'ad' | 'ldap'; result: string }> = []
   if (u && !u.disabled && u.source === 'local') {
-    if (await verifyPassword(b.password, u.password_hash)) userId = u.id
+    if (await verifyPassword(b.password, u.password_hash)) userId = u.id; else tried.push({ via: 'local', result: 'bad_password' })
   } else if (!u && replica) {
     await dummyVerify(b.password)
   } else if (!u) {
@@ -51,21 +53,21 @@ route('POST', '/auth/login', 'public', async (c) => {
     const ld = { ...LDAP_DEFAULTS, ...(await getSetting<LdapSettings>('ldap', LDAP_DEFAULTS)) }
     if (ad.enabled) {
       const res = await authenticateAd(b.username, b.password, ad, ad.bindPasswordEnc ? decryptSecret(ad.bindPasswordEnc) : '', defaultLdapFactory(ad))
-      if (res.ok) userId = await upsertDirectoryUser(res, 'ad')
+      if (res.ok) userId = await upsertDirectoryUser(res, 'ad'); else tried.push({ via: 'ad', result: res.reason })
     }
     if (userId === null && ld.enabled) {
       const res = await authenticateLdap(b.username, b.password, ld, ld.bindPasswordEnc ? decryptSecret(ld.bindPasswordEnc) : '', defaultLdapFactory(ld as any))
-      if (res.ok) userId = await upsertDirectoryUser(res, 'ldap')
+      if (res.ok) userId = await upsertDirectoryUser(res, 'ldap'); else tried.push({ via: 'ldap', result: res.reason })
     }
     if (!ad.enabled && !ld.enabled) await dummyVerify(b.password)
   } else if (u.source === 'ad' && !u.disabled) {
     const ad = await getSetting<AdSettings>('ad', AD_DEFAULTS)
     const res = await authenticateAd(b.username, b.password, ad, ad.bindPasswordEnc ? decryptSecret(ad.bindPasswordEnc) : '', defaultLdapFactory(ad))
-    if (res.ok) { if (!replica) await query('update users set role = $2, display_name = $3, space_ids = $4 where id = $1', [u.id, res.role, res.displayName, res.spaceIds]); userId = u.id }
+    if (res.ok) { if (!replica) await query('update users set role = $2, display_name = $3, space_ids = $4 where id = $1', [u.id, res.role, res.displayName, res.spaceIds]); userId = u.id } else tried.push({ via: 'ad', result: res.reason })
   } else if (u.source === 'ldap' && !u.disabled) {
     const ld = { ...LDAP_DEFAULTS, ...(await getSetting<LdapSettings>('ldap', LDAP_DEFAULTS)) }
     const res = await authenticateLdap(b.username, b.password, ld, ld.bindPasswordEnc ? decryptSecret(ld.bindPasswordEnc) : '', defaultLdapFactory(ld as any))
-    if (res.ok) { if (!replica) await query('update users set role = $2, display_name = $3, space_ids = $4 where id = $1', [u.id, res.role, res.displayName, res.spaceIds]); userId = u.id }
+    if (res.ok) { if (!replica) await query('update users set role = $2, display_name = $3, space_ids = $4 where id = $1', [u.id, res.role, res.displayName, res.spaceIds]); userId = u.id } else tried.push({ via: 'ldap', result: res.reason })
   } else await dummyVerify(b.password)
   // MFA : mot de passe correct mais second facteur à fournir. On n'enregistre PAS de succès (le compteur d'échecs reste : le code se devine aussi).
   if (userId !== null && u?.source === 'local' && u.totp_enabled) {
@@ -73,7 +75,12 @@ route('POST', '/auth/login', 'public', async (c) => {
     return { mfa: true, challenge: signMfaChallenge(u) }
   }
   if (replica) replicaRecordAttempt(b.username, c.ip, userId !== null); else await recordAttempt(b.username, c.ip, userId !== null)
-  if (userId === null) { await audit(c, 'login_failed', 'user', undefined, { username: b.username.slice(0, 64) }); fail(401, 'bad_credentials') }
+  if (userId === null) {
+    // Motif retenu : compte désactivé, sinon le résultat de la dernière méthode essayée (la plus pertinente : l'annuaire qui connaît le compte), sinon compte inconnu / aucun annuaire
+    const reason = u?.disabled ? 'account_disabled' : tried.length ? (tried.find((t) => t.result !== 'not_found' && t.result !== 'disabled') ?? tried[tried.length - 1]!).result : u ? 'bad_credentials' : replica ? 'unknown_user_replica' : 'unknown_user'
+    await audit(c, 'login_failed', 'user', undefined, { username: b.username.slice(0, 64), reason, source: u?.source ?? null, tried, ua: (getRequestHeader(c.event, 'user-agent') ?? '').slice(0, 160) || null })
+    fail(401, 'bad_credentials')
+  }
   return await finishLogin(c, userId, replica)
 })
 
@@ -95,7 +102,7 @@ export async function finishLogin(c: any, userId: number, replica: boolean) {
   else { await query('update users set last_login = now() where id = $1', [userId]); s = await createSession(userId, c.ip, getRequestHeader(c.event, 'user-agent') ?? null) }
   setSessionCookie(c.event, s.token, s.maxAge)
   c.user = { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name, csrf: s.csrf, sessionId: 0, spaceIds: me.space_ids ?? null }
-  await audit(c, 'login', 'user', userId)
+  await audit(c, 'login', 'user', userId, { source: me.source, ua: (getRequestHeader(c.event, 'user-agent') ?? '').slice(0, 160) || null })
   return { user: { id: me.id, username: me.username, role: me.role, source: me.source, displayName: me.display_name, spaceIds: me.space_ids ?? null }, csrf: s.csrf, mfaEnrol: await mfaEnrolPending(me) }
 }
 
@@ -224,8 +231,8 @@ route('DELETE', '/users/:id', 'admin', async (c) => {
 route('GET', '/audit', 'admin', async (c) => {
   const limit = Math.min(500, Number(c.query.limit ?? 100) || 100), offset = Number(c.query.offset ?? 0) || 0
   const q = typeof c.query.q === 'string' ? `%${c.query.q.slice(0, 80)}%` : '%'
-  const items = await query(`select id, at, username, action, entity, entity_id, detail, host(ip) as ip from audit_log
-    where (action ilike $1 or coalesce(username,'') ilike $1 or coalesce(entity,'') ilike $1) order by id desc limit $2 offset $3`, [q, limit, offset])
+  const items = await query(`select id, at, coalesce(username, detail->>'username') as username, action, entity, entity_id, detail, host(ip) as ip from audit_log
+    where (action ilike $1 or coalesce(username, detail->>'username', '') ilike $1 or coalesce(entity,'') ilike $1 or coalesce(detail->>'reason', '') ilike $1 or host(ip) like $1) order by id desc limit $2 offset $3`, [q, limit, offset])
   return { items }
 })
 

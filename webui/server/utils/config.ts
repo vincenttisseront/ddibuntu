@@ -25,6 +25,9 @@ export function cfg() {
     // écrit par ddibuntu-selfupdate (root) : version installée / disponible, état de l'installation
     updateStatusFile: e.DDI_UPDATE_STATUS ?? '/var/lib/ddibuntu/update-status.json',
     versionFile: e.DDI_VERSION_FILE ?? '/usr/local/lib/ddibuntu/VERSION',
+    // licence du logiciel (AGPL-3.0) et liste des composants libres, livrées à côté de VERSION (onglet « À propos »)
+    licenseFile: e.DDI_LICENSE_FILE ?? '/usr/local/lib/ddibuntu/LICENSE',
+    openSourceFile: e.DDI_OPENSOURCE_FILE ?? '/usr/local/lib/ddibuntu/OPEN-SOURCE.md',
     clusterStatusFile: e.DDI_CLUSTER_STATUS ?? '/run/ddibuntu/cluster-status.json',
     // pare-feu (ddibuntu-fw, root) : configuration lue directement (0644), résultat de la dernière demande et délai de confirmation publiés dans /run
     fwConfFile: e.DDI_FW_CONF ?? '/etc/ddibuntu/firewall.conf',

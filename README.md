@@ -96,7 +96,7 @@ Principes de travail : une fonction n'est « faite » que si un test réel l'a p
 
 ## Cluster (en construction — itération 5 sur 6)
 
-Deux nœuds de données + un arbitre, sur un réseau dédié ; architecture et décisions : [docs/ARCHITECTURE-CLUSTER.md](docs/ARCHITECTURE-CLUSTER.md).
+Deux nœuds de données + un arbitre, sur un réseau dédié (tous les nœuds de données portent les données ; l'arbitre n'est qu'un membre etcd sans données, facultatif, mais **sans lui un cluster à deux nœuds ne tolère aucune panne** : la perte d'un nœud fait perdre le quorum) ; architecture et décisions : [docs/ARCHITECTURE-CLUSTER.md](docs/ARCHITECTURE-CLUSTER.md).
 
 ```
 # nœud 1 (celui qui porte déjà la base)
@@ -115,4 +115,4 @@ Ajoutez d'abord l'arbitre, puis le second nœud de données. Dès que deux nœud
 
 ## Licence
 
-**À définir** : aucun fichier `LICENSE` n'est fourni tant que le choix n'est pas fait ; sans licence, tous droits sont réservés. Composants tiers : [OPEN-SOURCE.md](OPEN-SOURCE.md).
+DDI-Buntu est un logiciel libre sous licence **GNU AGPL v3 ou ultérieure** (`AGPL-3.0-or-later`) : voir [LICENSE](LICENSE). Copyright (C) 2026 Vincent Tisseront. La licence et la liste des composants libres ([OPEN-SOURCE.md](OPEN-SOURCE.md)) sont aussi livrées sur l'appliance et consultables dans la console (**Système › À propos**). Comme l'AGPL s'applique aux services accessibles par le réseau, une version modifiée proposée à des utilisateurs doit leur donner accès à ses sources.
