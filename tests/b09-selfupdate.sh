@@ -376,4 +376,48 @@ chmod 755 "$R/usr/local/sbin/ddibuntu-selfupdate"; export DDI_TEST=1
 pkg_step
 expect_eq "essai automatisé (DDI_TEST) : jamais de systemd-run" no "$([[ -e "$FD/sdrun-calls" ]] && echo yes || echo no)"
 
+
+echo "== 12. Canal « prerelease » (instance de validation) : versions candidates acceptées, brouillons jamais ; canal stable inchangé =="
+unset DDI_CLUSTER_CONF DDI_CLUSTER_CMD DDI_UPDATE_WEB; export DDI_UPDATE_API="http://127.0.0.1:$PORT"
+mkrelease 50.0.0 "$W/priv.pem"
+python3 - "$SRV/repos/acme/ddibuntu/releases" "$PORT" <<'PY'
+import json, sys
+d, port = sys.argv[1], sys.argv[2]
+base = 'http://127.0.0.1:%s/dl/' % port
+rel = lambda v, **k: dict({'tag_name': 'v' + v, 'html_url': 'https://github.com/acme/ddibuntu/releases/tag/v' + v, 'published_at': '2026-11-20T10:00:00Z',
+                           'body': 'Version candidate %s' % v, 'draft': False, 'prerelease': False,
+                           'assets': [{'name': n, 'url': base + n} for n in ['ddibuntu-update-%s.tar.gz' % v, 'SHA256SUMS', 'SHA256SUMS.sig']]}, **k)
+json.dump(rel('49.0.0'), open(d + '/latest', 'w'))                       # stable : ce que voient les appliances de production
+json.dump([rel('51.0.0', draft=True), rel('50.5.0', prerelease=True, body='<!-- validation:failed -->\\n> Rejetée'), rel('50.0.0', prerelease=True), rel('49.0.0'), {'tag_name': 'v99.0.0-rc.1'}], open(d + '/index.html', 'w'))
+PY
+mk "$R/etc/ddibuntu/update.conf" 'REPO="acme/ddibuntu"'
+expect_eq "canal stable : check code 0" 0 "$(bash "$SU" check >"$W/out.log" 2>&1; echo $?)"
+expect_eq "…la pré-version 50.0.0 est ignorée (latest = 49.0.0)" 49.0.0 "$(jget "$ST" latest)"
+expect_eq "…canal annoncé dans l'état : stable" stable "$(jget "$ST" channel)"
+expect_eq "canal stable : apply de la pré-version refusé" 1 "$(req '{"action":"apply","version":"50.0.0"}')"
+mk "$R/etc/ddibuntu/update.conf" 'REPO="acme/ddibuntu"
+CHANNEL=prerelease'
+expect_eq "canal prerelease : check code 0" 0 "$(bash "$SU" check >"$W/out.log" 2>&1; echo $?)"
+expect_eq "…la version candidate est vue (brouillon 51.0.0, candidate rejetée 50.5.0 et tag non numérique écartés)" 50.0.0 "$(jget "$ST" latest)"
+expect_eq "…et proposée" true "$(jget "$ST" available)"
+expect_eq "…canal annoncé : prerelease" prerelease "$(jget "$ST" channel)"
+expect_eq "canal prerelease : apply 50.0.0 code 0" 0 "$(req '{"action":"apply","version":"50.0.0"}')"
+expect_eq "…version candidate installée (signature et empreinte vérifiées)" 50.0.0 "$(tr -d '\n' < "$R/var/lib/ddibuntu/installed-version")"
+expect_eq "…console remplacée" "NEW CONSOLE 50.0.0" "$(cat "$R/opt/ddibuntu/console/app/server/index.mjs")"
+expect_eq "…empreinte de l'archive installée enregistrée (celle de SHA256SUMS signé)" "$(cat "$SRV/dl/SHA256SUMS")" "$(cat "$R/var/lib/ddibuntu/installed-bundle.sha256")"
+mkrelease 52.0.0 "$W/evil.pem"
+python3 - "$SRV/repos/acme/ddibuntu/releases" "$PORT" <<'PY'
+import json, sys
+d, port = sys.argv[1], sys.argv[2]; base = 'http://127.0.0.1:%s/dl/' % port
+json.dump([{'tag_name': 'v52.0.0', 'draft': False, 'prerelease': True, 'html_url': '', 'published_at': '', 'body': '',
+            'assets': [{'name': n, 'url': base + n} for n in ['ddibuntu-update-52.0.0.tar.gz', 'SHA256SUMS', 'SHA256SUMS.sig']]}], open(d + '/index.html', 'w'))
+PY
+expect_eq "canal prerelease : version candidate mal signée refusée" 1 "$(req '{"action":"apply","version":"52.0.0"}')"
+expect_grep "…message SIGNATURE INVALIDE" "SIGNATURE INVALIDE" "$W/out.log"
+expect_eq "…version inchangée" 50.0.0 "$(tr -d '\n' < "$R/var/lib/ddibuntu/installed-version")"
+mk "$R/etc/ddibuntu/update.conf" 'REPO="acme/ddibuntu"
+CHANNEL=nightly'
+expect_eq "canal inconnu : refus" 1 "$(bash "$SU" check >"$W/out.log" 2>&1; echo $?)"
+expect_grep "…motif lisible" "canal de mises à jour invalide" "$W/out.log"
+
 finish

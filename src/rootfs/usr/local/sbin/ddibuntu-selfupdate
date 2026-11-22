@@ -38,7 +38,7 @@ TOKFILE="$DDI_CONFDIR/update-token"
 API="${DDI_UPDATE_API:-https://api.github.com}"
 WEB="${DDI_UPDATE_WEB:-https://github.com}"
 APP="$DDI_ROOT/opt/ddibuntu"
-REPO=""; AUTO_CHECK=1
+REPO=""; AUTO_CHECK=1; CHANNEL=stable
 MAX_BUNDLE=$((400 * 1024 * 1024))
 # Paquets que la mise à jour sait poser SANS accès au dépôt apt : ils voyagent dans l'archive (debs/). Même liste que DDI_UPDATE_PACKAGES de build-ddibuntu.sh (tests/b09 le vérifie).
 PKGLIST="$DDI_LIBDIR/update-packages"
@@ -86,10 +86,13 @@ load_conf() {
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in ''|'#'*) continue ;; esac
       k="${line%%=*}"; v="${line#*=}"; v="${v#\"}"; v="${v%\"}"
-      case "$k" in REPO) REPO="$v" ;; AUTO_CHECK) AUTO_CHECK="$v" ;; *) ;; esac
+      case "$k" in REPO) REPO="$v" ;; AUTO_CHECK) AUTO_CHECK="$v" ;; CHANNEL) CHANNEL="$v" ;; *) ;; esac
     done < "$CONF"
   fi
   [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die "dépôt de mises à jour invalide ou absent dans $CONF"
+  # Canal « prerelease » : réservé à l'instance de validation (et aux bêta-testeurs) ; elle reçoit aussi les versions candidates
+  # publiées en pré-version par la chaîne de publication. Les mêmes contrôles s'appliquent (signature Ed25519, empreinte).
+  case "$CHANNEL" in stable|prerelease) ;; *) die "canal de mises à jour invalide dans $CONF : $CHANNEL (stable ou prerelease)" ;; esac
 }
 
 # curl vers GitHub ; le jeton éventuel (dépôt privé) passe par l'entrée standard, jamais dans la ligne de commande
@@ -122,19 +125,34 @@ fetch_release_web() {
 fetch_release() {
   REL_JSON="$(mktemp)"
   local code out
-  code="$(gh_curl -H 'Accept: application/vnd.github+json' "$API/repos/$REPO/releases/latest" -o "$REL_JSON" -w '%{http_code}' 2>/dev/null)" || true
+  local url="$API/repos/$REPO/releases/latest"
+  [ "$CHANNEL" != prerelease ] || url="$API/repos/$REPO/releases?per_page=30"
+  code="$(gh_curl -H 'Accept: application/vnd.github+json' "$url" -o "$REL_JSON" -w '%{http_code}' 2>/dev/null)" || true
   case "$code" in
     200) ;;
     404) rm -f "$REL_JSON"; return 4 ;;      # aucune release publiée (ou dépôt privé sans jeton : GitHub répond aussi 404)
-    401|403|429) rm -f "$REL_JSON"; fetch_release_web && return 0; return 5 ;;   # jeton refusé ou limite de débit de l'API GitHub (60 requêtes/h/IP sans jeton : plusieurs nœuds derrière la même adresse la saturent) : repli sur le site web
+    401|403|429) rm -f "$REL_JSON"; [ "$CHANNEL" != prerelease ] && fetch_release_web && return 0; return 5 ;;   # jeton refusé ou limite de débit de l'API GitHub (60 requêtes/h/IP sans jeton : plusieurs nœuds derrière la même adresse la saturent) : repli sur le site web
     *) rm -f "$REL_JSON"; return 1 ;;        # réseau, DNS, proxy, TLS : pas de réponse HTTP
   esac
   out="$(python3 - "$REL_JSON" <<'PY'
 import json, re, sys
 d = json.load(open(sys.argv[1]))
+pre_ok = isinstance(d, list)   # canal « prerelease » : liste des releases, la plus haute version non brouillon (pré-version comprise)
+if pre_ok:
+    best = None
+    for r in d:
+        mm = re.fullmatch(r'v?(\d+)\.(\d+)\.(\d+)', str(r.get('tag_name', '')))
+        # jamais un brouillon ; jamais une version candidate REJETÉE par la validation (notes marquées par la chaîne de publication)
+        if isinstance(r, dict) and mm and not r.get('draft') and '<!-- validation:failed -->' not in str(r.get('body') or ''):
+            k = tuple(int(x) for x in mm.groups())
+            if best is None or k > best[0]:
+                best = (k, r)
+    if best is None:
+        sys.exit(3)
+    d = best[1]
 tag = str(d.get('tag_name', ''))
 m = re.fullmatch(r'v?(\d+\.\d+\.\d+)', tag)
-if not m or d.get('draft') or d.get('prerelease'):
+if not m or d.get('draft') or (d.get('prerelease') and not pre_ok):
     sys.exit(3)
 ver = m.group(1)
 want = {'ddibuntu-update-%s.tar.gz' % ver: 'bundle', 'SHA256SUMS': 'sums', 'SHA256SUMS.sig': 'sig'}
@@ -179,14 +197,14 @@ cmd_check() {
       avail=0; err="La release $LATEST n'a pas tous ses fichiers signés (archive, SHA256SUMS, SHA256SUMS.sig) : installation impossible"
     fi
   fi
-  st state=idle "current=$cur" "latest=$LATEST" "available=$avail" "notes=$NOTES" "url=$PAGE" "published_at=$PUBLISHED" "checked_at=$(date +%s)" "message=" "error=$err"
+  st state=idle "current=$cur" "latest=$LATEST" "available=$avail" "channel=$CHANNEL" "notes=$NOTES" "url=$PAGE" "published_at=$PUBLISHED" "checked_at=$(date +%s)" "message=" "error=$err"
   log "version installée $cur, dernière release $LATEST (disponible : $avail)"
   return 0
 }
 
 # Télécharge l'archive de la release lue par fetch_release, puis vérifie la signature Ed25519 de SHA256SUMS et l'empreinte de l'archive.
 # $1 = dossier de travail (recréé) ; $2 = 1 pour publier l'avancement dans l'état de la mise à jour. Échec : retour 1 et motif dans FV_ERR.
-FV_ERR=""
+FV_ERR=""; FV_HASH=""
 fetch_verified() {
   local w="$1" report="${2:-0}" want_hash got_hash
   FV_ERR=""
@@ -202,6 +220,7 @@ fetch_verified() {
   [[ "$want_hash" =~ ^[0-9a-f]{64}$ ]] || { FV_ERR="$BUNDLE_NAME absent de SHA256SUMS signé"; return 1; }
   got_hash="$(sha256sum "$w/$BUNDLE_NAME" | cut -d' ' -f1)"
   [ "$want_hash" = "$got_hash" ] || { FV_ERR="somme SHA-256 de $BUNDLE_NAME incorrecte : mise à jour refusée"; return 1; }
+  FV_HASH="$got_hash"
   return 0
 }
 
@@ -465,6 +484,9 @@ cmd_apply() {
   [ "$TEST" = 1 ] || timeout 10 "$DDI_ROOT/usr/local/sbin/ddibuntu-cluster" _putver "$LATEST" >/dev/null 2>&1 || true
   rm -rf "$OLD_CONSOLE"
   printf '%s -> %s le %s (en ligne)\n' "$cur" "$LATEST" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$DDI_STATEDIR/update-history"
+  # empreinte de l'archive installée (vérifiée par la signature) : la chaîne de publication ne promeut une version candidate que si l'instance
+  # de validation a installé exactement ce fichier
+  printf '%s  %s\n' "$FV_HASH" "$BUNDLE_NAME" > "$DDI_STATEDIR/installed-bundle.sha256"; chmod 0644 "$DDI_STATEDIR/installed-bundle.sha256"
   find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | tail -n +4 | while IFS= read -r f; do rm -rf "$f"; done
   rm -rf "$WORKDIR"
   st state=done "current=$LATEST" "latest=$LATEST" available=0 "message=Mise à jour vers $LATEST terminée${pkgwarn:+ (avertissement : paquets non installés — $pkgwarn)}" error= "checked_at=$(date +%s)"
