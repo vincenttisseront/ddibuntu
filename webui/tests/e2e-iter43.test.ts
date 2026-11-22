@@ -1,4 +1,4 @@
-// Bout en bout (serveur CONSTRUIT, PostgreSQL réel) : 0.13.5 — labels IPAM (espaces, réseaux, adresses, VLAN) : pose, filtre, catalogue, renommage, suppression, masse
+// Bout en bout (serveur CONSTRUIT, PostgreSQL réel) : 0.13.5 — labels IPAM (espaces, réseaux, adresses, VLAN) : pose, filtre, catalogue, renommage, suppression, masse ; 0.22.0 — passerelles dans la liste des adresses, journal d'audit des échecs de connexion
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-process.env.DDI_SECRET_KEY = 'cle-secrete-de-test-0123456789abcdefghij'; process.env.DDI_TEST_MODE = '1'; process.env.DDI_PBKDF2_ITERATIONS = '2000'
+process.env.DDI_SECRET_KEY = 'cle-secrete-de-test-0123456789abcdefghij'; process.env.DDI_TEST_MODE = '1'; process.env.DDI_PBKDF2_ITERATIONS = '2000'; process.env.DDI_ALLOW_UNVERIFIED_AUTH = '1'
 
 const PORT = 3444, BASE = `http://127.0.0.1:${PORT}`
 const DBURL = 'postgresql://ddi:ddi-test-pw@127.0.0.1:5432/ddibuntu_test'
@@ -117,5 +117,104 @@ describe('0.13.5 — labels IPAM', () => {
     expect(items.find((i) => i.id === a1).tags).toEqual(['prod'])
     expect(((await viewer.get('/api/ipam/labels')).json.items as any[]).some((x) => x.name === 'audit')).toBe(false)
     expect((await admin.delete(`/api/ipam/labels/999999`)).status).toBe(404)
+  })
+})
+
+const rowsOf = async (netId: number, q = '') => (await viewer.get(`/api/ipam/addresses?subnet_id=${netId}&limit=500${q}`)).json.items as any[]
+const find = (items: any[], ip: string) => items.filter((i) => i.ip === ip)
+
+describe('0.22.0 — passerelles dans la liste des adresses', () => {
+  let net = 0, scope = 0
+  it('un routeur d\'une étendue DHCP apparaît seul, en lecture seule ; une IP hors du réseau est ignorée', async () => {
+    const n = await admin.post('/api/ipam/subnets', { cidr: '10.88.1.0/24', name: 'Postes' }); expect(n.status, n.text).toBe(200); net = n.json.id
+    const sc = await admin.post('/api/dhcp/scopes', { subnet_id: net, options: { routers: ['10.88.1.1', '10.99.9.9'] } }); expect(sc.status, sc.text).toBe(200); scope = sc.json.id
+    const items = await rowsOf(net)
+    expect(find(items, '10.88.1.1')).toEqual([expect.objectContaining({ id: null, status: 'gateway', gw: 'dhcp', is_gateway: false, hostname: null })])
+    expect(find(items, '10.99.9.9')).toEqual([])
+    const per = (await viewer.get(`/api/ipam/subnets/${net}/addresses`)).json.items
+    expect(find(per, '10.88.1.1')).toEqual([expect.objectContaining({ id: null, status: 'gateway', gw: 'dhcp' })])
+    expect(find(per, '10.99.9.9')).toEqual([])
+  })
+  it('déclarée dans l\'IPAM, la ligne reste unique et garde l\'origine automatique, sans poser le drapeau', async () => {
+    const a = await admin.post(`/api/ipam/subnets/${net}/addresses`, { ip: '10.88.1.1', hostname: 'fw-lan' }); expect(a.status, a.text).toBe(200)
+    const items = await rowsOf(net), r = find(items, '10.88.1.1')
+    expect(r).toHaveLength(1); expect(r[0]).toMatchObject({ id: a.json.id, status: 'used', hostname: 'fw-lan', gw: 'dhcp', is_gateway: false })
+    expect(find((await viewer.get(`/api/ipam/subnets/${net}/addresses`)).json.items, '10.88.1.1')).toHaveLength(1)
+  })
+  it('le drapeau manuel : posé à la création, retiré, posé par le statut passerelle, retiré par un autre statut', async () => {
+    const a = await admin.post(`/api/ipam/subnets/${net}/addresses`, { ip: '10.88.1.2', hostname: 'rtr-b', is_gateway: true }); expect(a.status, a.text).toBe(200)
+    const state = async () => find(await rowsOf(net), '10.88.1.2')[0]
+    expect(await state()).toMatchObject({ gw: 'flag', is_gateway: true, status: 'used' })
+    expect((await admin.put(`/api/ipam/addresses/${a.json.id}`, { is_gateway: false })).status).toBe(200)
+    expect(await state()).toMatchObject({ gw: null, is_gateway: false })
+    expect((await admin.put(`/api/ipam/addresses/${a.json.id}`, { status: 'gateway' })).status).toBe(200)
+    expect(await state()).toMatchObject({ gw: 'flag', is_gateway: true, status: 'gateway' })
+    expect((await admin.put(`/api/ipam/addresses/${a.json.id}`, { is_gateway: false })).status).toBe(200)   // le statut passerelle l'emporte
+    expect(await state()).toMatchObject({ gw: 'flag', is_gateway: true })
+    expect((await admin.put(`/api/ipam/addresses/${a.json.id}`, { status: 'infra' })).status).toBe(200)
+    expect(await state()).toMatchObject({ gw: null, is_gateway: false, status: 'infra' })
+    code(await admin.put(`/api/ipam/addresses/${a.json.id}`, { is_gateway: 'oui' }), 400, 'validation')
+  })
+  it('la passerelle déclarée sur le réseau est automatique ; sans ligne dans l\'IPAM elle s\'affiche aussi', async () => {
+    const n2 = await admin.post('/api/ipam/subnets', { cidr: '10.88.2.0/24', name: 'Serveurs', gateway: '10.88.2.254' }); expect(n2.status, n2.text).toBe(200)
+    expect(find(await rowsOf(n2.json.id), '10.88.2.254')).toEqual([expect.objectContaining({ id: expect.any(Number), status: 'gateway', gw: 'subnet', is_gateway: true })])
+    const n3 = await admin.post('/api/ipam/subnets', { cidr: '10.88.3.0/24', name: 'Vide' }); expect(n3.status).toBe(200)
+    expect(await rowsOf(n3.json.id)).toEqual([])
+    expect((await admin.put(`/api/ipam/subnets/${n3.json.id}`, { gateway: '10.88.3.1' })).status).toBe(200)
+    expect(find(await rowsOf(n3.json.id), '10.88.3.1')).toEqual([expect.objectContaining({ id: null, status: 'gateway', gw: 'subnet' })])
+  })
+  it('le filtre « gw » ne garde que les passerelles (toutes origines) ; le filtre de statut ordinaire est inchangé', async () => {
+    expect((await rowsOf(net, '&status=gw')).map((i) => i.ip).sort()).toEqual(['10.88.1.1'])
+    const used = await rowsOf(net, '&status=used'); expect(used.map((i) => i.ip)).toEqual(['10.88.1.1'])   // 10.88.1.1 a le statut « used » : le filtre porte sur le statut
+    expect((await viewer.get(`/api/ipam/subnets/${net}/addresses?status=gw`)).json.items.map((i: any) => i.ip)).toEqual(['10.88.1.1'])
+  })
+  it('« prochaine adresse libre » ne propose jamais un routeur DHCP', async () => {
+    const n4 = await admin.post('/api/ipam/subnets', { cidr: '10.88.4.0/29', name: 'Petit' }); expect(n4.status).toBe(200)
+    expect((await admin.post('/api/dhcp/scopes', { subnet_id: n4.json.id, options: { routers: ['10.88.4.1'] } })).status).toBe(200)
+    const nx = await admin.post(`/api/ipam/subnets/${n4.json.id}/next`, { hostname: 'h1' }); expect(nx.status, nx.text).toBe(200)
+    expect(nx.json.ip).toBe('10.88.4.2')
+  })
+  it('un routeur retiré de l\'étendue disparaît de la liste', async () => {
+    const n5 = await admin.post('/api/ipam/subnets', { cidr: '10.88.5.0/24', name: 'Temp' }); const sc = await admin.post('/api/dhcp/scopes', { subnet_id: n5.json.id, options: { routers: ['10.88.5.1'] } })
+    expect(find(await rowsOf(n5.json.id), '10.88.5.1')).toHaveLength(1)
+    expect((await admin.put(`/api/dhcp/scopes/${sc.json.id}`, { subnet_id: n5.json.id, options: {} })).status).toBe(200)
+    expect(find(await rowsOf(n5.json.id), '10.88.5.1')).toHaveLength(0)
+  })
+})
+
+const cfgBody = (o: any = {}) => ({ enabled: true, urls: ['ldaps://127.0.0.1:1'], baseDn: 'ou=people,dc=x', bindDn: 'cn=svc,dc=x', bindPassword: 'mdp-de-liaison-secret', userFilter: '(&(objectClass=inetOrgPerson)(uid={u}))', userAttr: 'uid', displayAttr: 'cn',
+  groupMode: 'memberOf', groupBaseDn: '', groupFilter: '(member={dn})', groupMap: [{ groupDn: 'cn=admins,ou=groups,dc=x', role: 'admin' }], tlsRejectUnauthorized: true, ...o })
+const lastFailed = async (name: string) => ((await admin.get('/api/audit?limit=50&q=login_failed')).json.items as any[]).find((i) => i.detail?.username === name)
+
+describe('0.22.0 — journal d\'audit : échecs de connexion détaillés', () => {
+  it('mot de passe incorrect d\'un compte local : motif, méthode essayée, utilisateur dans la ligne', async () => {
+    const r = await new Client().login('admin', 'mauvais-mot-de-passe-1'); expect(r.status).toBe(401)
+    const l = await lastFailed('admin'); expect(l).toBeTruthy()
+    expect(l.username).toBe('admin'); expect(l.action).toBe('login_failed'); expect(l.ip).toBeTruthy()
+    expect(l.detail).toMatchObject({ username: 'admin', reason: 'bad_password', source: 'local', tried: [{ via: 'local', result: 'bad_password' }] })
+    expect(JSON.stringify(l.detail)).not.toContain('mauvais-mot-de-passe')   // jamais de mot de passe dans le journal
+  })
+  it('compte inconnu sans annuaire : motif « unknown_user » ; la réponse au client reste « bad_credentials »', async () => {
+    const r = await new Client().login('fantome', 'x-y-z-0123456'); code(r, 401, 'bad_credentials')
+    expect((await lastFailed('fantome')).detail).toMatchObject({ reason: 'unknown_user', source: null, tried: [] })
+  })
+  it('compte désactivé', async () => {
+    const u = await admin.post('/api/users', { username: 'coupe', role: 'viewer', password: PW }); expect(u.status, u.text).toBe(200)
+    expect((await admin.put(`/api/users/${u.json.id}`, { disabled: true })).status).toBe(200)
+    expect((await new Client().login('coupe', PW)).status).toBe(401)
+    expect((await lastFailed('coupe')).detail).toMatchObject({ reason: 'account_disabled', source: 'local' })
+  })
+  it('annuaire LDAP injoignable : le motif nomme l\'annuaire (et non une liaison refusée)', async () => {
+    expect((await admin.put('/api/ldap/settings', cfgBody())).status).toBe(200)
+    expect((await new Client().login('jdupont', 'mdp-ldap-0123456')).status).toBe(401)
+    const l = await lastFailed('jdupont'); expect(l.detail.reason).toBe('unreachable'); expect(l.detail.tried).toEqual([{ via: 'ldap', result: 'unreachable' }])
+    expect((await admin.put('/api/ldap/settings', cfgBody({ enabled: false }))).status).toBe(200)
+  })
+  it('recherche par motif et par IP ; une connexion réussie note son origine', async () => {
+    const byReason = (await admin.get('/api/audit?q=account_disabled')).json.items as any[]
+    expect(byReason.length).toBeGreaterThan(0); expect(byReason.every((i) => i.detail?.reason === 'account_disabled')).toBe(true)
+    expect(((await admin.get('/api/audit?q=127.0.0.1')).json.items as any[]).length).toBeGreaterThan(0)
+    const ok = ((await admin.get('/api/audit?q=login')).json.items as any[]).find((i) => i.action === 'login' && i.username === 'admin')
+    expect(ok.detail).toMatchObject({ source: 'local' })
   })
 })
