@@ -156,6 +156,9 @@ repo_stage() {   # $1 = dossier de destination (vide ou inexistant)
   # Console web construite (nuxt build) : embarquée telle quelle, sous le nom « app »
   tar --sort=name --mtime='@1700000000' --owner=0 --group=0 --numeric-owner --transform 's,^\./,app/,;s,^\.output,app,' -czf "$d/console/console.tar.gz" -C "$out" .
   cp "$src/VERSION" "$d/rootfs/usr/local/lib/ddibuntu/VERSION"
+  # Licence (AGPL-3.0) et composants libres : livrées sur l'appliance, lues par l'onglet « À propos » de la console
+  [[ -f "$SELF_DIR/LICENSE" && -f "$SELF_DIR/OPEN-SOURCE.md" ]] || die "LICENSE ou OPEN-SOURCE.md absent à la racine du dépôt"
+  cp "$SELF_DIR/LICENSE" "$SELF_DIR/OPEN-SOURCE.md" "$d/rootfs/usr/local/lib/ddibuntu/"
   # /etc/ddibuntu/nftables.nft livré = rendu du pare-feu par défaut (aucun réseau d'administration)
   DDI_LIBDIR="$d/rootfs/usr/local/lib/ddibuntu" DDI_FW_CONF="$d/rootfs/etc/ddibuntu/firewall.conf" DDI_FW_STATE="$d/.fwstate" "$d/rootfs/usr/local/sbin/ddibuntu-fw" render > "$d/rootfs/etc/ddibuntu/nftables.nft"
   # Modes explicites : ne dépendent ni du système de fichiers ni de l'outil d'archive

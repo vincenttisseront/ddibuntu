@@ -165,6 +165,14 @@ const RANK: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 }
 const NESTED = '1.2.840.113556.1.4.1941'
 const dnNorm = normDn
 
+/** Erreur de réseau ou de TLS (serveur injoignable, port fermé, nom inconnu, certificat refusé) : à distinguer d'une liaison refusée par l'annuaire (mauvais DN ou mot de passe), pour que le journal d'audit désigne la bonne cause. */
+export function isNetworkError(e: unknown): boolean {
+  const x = e as { code?: unknown; message?: unknown } | null
+  const code = typeof x?.code === 'string' ? x.code : ''
+  if (/^(ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|EPIPE|ERR_TLS|ERR_SSL|CERT_|DEPTH_ZERO|UNABLE_TO_|SELF_SIGNED|HOSTNAME_MISMATCH|ERR_X509)/.test(code)) return true
+  return /certificate|self[- ]signed|hostname\/ip does not match|socket hang up|connect (ECONNREFUSED|ETIMEDOUT)|timed out|ENOTFOUND/i.test(String(x?.message ?? ''))
+}
+
 export function defaultLdapFactory(s: AdSettings): (url: string) => LdapLike {
   return (url) => new Client({ url, timeout: 8000, connectTimeout: 5000, tlsOptions: { rejectUnauthorized: s.tlsRejectUnauthorized, ...(s.caPem ? { ca: s.caPem } : {}) } }) as unknown as LdapLike
 }
@@ -186,7 +194,7 @@ export async function authenticateAd(username: string, password: string, s: AdSe
   for (const url of s.urls) {
     const svc = factory(url)
     try {
-      try { await svc.bind(s.bindDn, bindPassword) } catch { lastErr = 'service_bind'; continue }
+      try { await svc.bind(s.bindDn, bindPassword) } catch (e) { lastErr = isNetworkError(e) ? 'unreachable' : 'service_bind'; continue }
       const found = await svc.search(s.baseDn, { scope: 'sub', filter: `(&(objectClass=user)(!(objectClass=computer))(${s.userAttr}=${escapeFilter(username)}))`, attributes: ['dn', 'displayName', 'memberOf', s.userAttr], sizeLimit: 2 })
       if (found.searchEntries.length !== 1) return { ok: false, reason: 'not_found' }
       const e = found.searchEntries[0]!

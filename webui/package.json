@@ -2,6 +2,7 @@
   "name": "ddibuntu-console",
   "version": "0.2.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "description": "Console web d'administration DDI-Buntu (IPAM, DNS, DHCP, filtrage DNS, import Active Directory)",
   "scripts": {

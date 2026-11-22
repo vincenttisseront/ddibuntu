@@ -49,6 +49,11 @@ expect_eq "mode 0644 : common.sh" 644 "$(stat -c %a "$P/rootfs/usr/local/lib/ddi
 check "aucune fin de ligne CRLF dans le contenu embarqué" bash -c "! grep -rlI \$'\\r' '$P'"
 expect_eq "VERSION : script = contenu embarqué" "$(grep -m1 '^DDI_VERSION=' "$DIST" | cut -d'"' -f2)" "$(tr -d '\n' < "$P/VERSION")"
 expect_eq "VERSION : fichier de l'appliance = source" "$(tr -d '\n' < "$ROOT/src/VERSION")" "$(tr -d '\n' < "$P/rootfs/usr/local/lib/ddibuntu/VERSION")"
+expect_grep "LICENSE : texte de l'AGPL-3.0 à la racine" '^GNU AFFERO GENERAL PUBLIC LICENSE$' "$ROOT/LICENSE"
+expect_grep "LICENSE : article 13 (interaction par le réseau) présent" 'Remote Network Interaction' "$ROOT/LICENSE"
+expect_eq "LICENSE : livrée sur l'appliance, identique à la racine" "$(sha256sum < "$ROOT/LICENSE")" "$(sha256sum < "$P/rootfs/usr/local/lib/ddibuntu/LICENSE" 2>/dev/null)"
+expect_eq "OPEN-SOURCE.md : livré sur l'appliance, identique à la racine" "$(sha256sum < "$ROOT/OPEN-SOURCE.md")" "$(sha256sum < "$P/rootfs/usr/local/lib/ddibuntu/OPEN-SOURCE.md" 2>/dev/null)"
+expect_eq "mode 0644 : LICENSE livrée" 644 "$(stat -c %a "$P/rootfs/usr/local/lib/ddibuntu/LICENSE" 2>/dev/null)"
 
 check "script assemblé : le code de remplacement du modèle user-data garde son marqueur @@VERSION@@" grep -qF 'content//@@VERSION@@/' "$DIST"
 check "script assemblé : le marqueur @@PASSHASH@@ est préservé dans le code" grep -qF 'tmpl//@@PASSHASH@@/' "$DIST"

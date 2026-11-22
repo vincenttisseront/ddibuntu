@@ -557,6 +557,11 @@ create table siem_targets (
 );
 `
 
+const SCHEMA_28 = String.raw`
+-- Passerelles dans la liste des adresses (0.22.0) : drapeau posé à la main sur une adresse ; les routeurs des étendues DHCP et la passerelle du réseau s'affichent sans rien saisir
+alter table addresses add column is_gateway boolean not null default false;
+update addresses set is_gateway = true where status = 'gateway';
+`
 const SCHEMA_24 = String.raw`
 -- Labels IPAM (comme les tags de NetBox) : stockés en tableau de texte sur chaque objet, catalogue facultatif pour la couleur et la description
 alter table addresses add column tags text[] default '{}';
@@ -595,7 +600,7 @@ create table pki_ad_publication (
 const SCHEMA_27 = String.raw`
 alter table radius_clients add column mfa boolean not null default false;
 `
-export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }, { version: 19, sql: SCHEMA_19 }, { version: 20, sql: SCHEMA_20 }, { version: 21, sql: SCHEMA_21 }, { version: 22, sql: SCHEMA_22 }, { version: 23, sql: SCHEMA_23 }, { version: 24, sql: SCHEMA_24 }, { version: 25, sql: SCHEMA_25 }, { version: 26, sql: SCHEMA_26 }, { version: 27, sql: SCHEMA_27 }]
+export const MIGRATIONS: Array<{ version: number; sql: string }> = [{ version: 1, sql: SCHEMA_1 }, { version: 2, sql: SCHEMA_2 }, { version: 3, sql: SCHEMA_3 }, { version: 4, sql: SCHEMA_4 }, { version: 5, sql: SCHEMA_5 }, { version: 6, sql: SCHEMA_6 }, { version: 7, sql: SCHEMA_7 }, { version: 8, sql: SCHEMA_8 }, { version: 9, sql: SCHEMA_9 }, { version: 10, sql: SCHEMA_10 }, { version: 11, sql: SCHEMA_11 }, { version: 12, sql: SCHEMA_12 }, { version: 13, sql: SCHEMA_13 }, { version: 14, sql: SCHEMA_14 }, { version: 15, sql: SCHEMA_15 }, { version: 16, sql: SCHEMA_16 }, { version: 17, sql: SCHEMA_17 }, { version: 18, sql: SCHEMA_18 }, { version: 19, sql: SCHEMA_19 }, { version: 20, sql: SCHEMA_20 }, { version: 21, sql: SCHEMA_21 }, { version: 22, sql: SCHEMA_22 }, { version: 23, sql: SCHEMA_23 }, { version: 24, sql: SCHEMA_24 }, { version: 25, sql: SCHEMA_25 }, { version: 26, sql: SCHEMA_26 }, { version: 27, sql: SCHEMA_27 }, { version: 28, sql: SCHEMA_28 }]
 
 // Vrai quand le schéma est à jour : la santé n'est annoncée qu'à partir de là (le démarrage du serveur n'attend pas les migrations).
 let schemaReady = false

@@ -1,61 +1,159 @@
-# Architecture du mode cluster (décisions validées)
+# Architecture du mode cluster
 
-Statut : **validée** (itération 0). Aucune ligne de code de cluster n'existe encore ; ce document fixe ce que les itérations 2 à 5 réalisent.
+Statut : **réalisée** (0.22.0). Ce document décrit ce que le code fait aujourd'hui ; chaque affirmation renvoie à `ddibuntu-cluster` (script root, `src/rootfs/usr/local/sbin/`), à `ddibuntu-reload` (BIND et Kea) ou à la console (`webui/server/utils/cluster.ts`). Les points que le code ne démontre pas, ou qu'aucun essai en conditions réelles n'a confirmés, sont rassemblés dans « Limites et points non éprouvés ». Le détail de chaque itération (choix de conception, tests) est conservé en annexe.
 
-## Décisions
-| # | Décision | Choix validé |
+## En bref
+- Un cluster est un ensemble de **nœuds de données** (rôle `data`) auxquels s'ajoute, si on le souhaite, **un arbitre** (rôle `witness`).
+- **Tous les nœuds de données portent les données** : etcd, Patroni, PostgreSQL (une copie répliquée de la base), la console, BIND, Kea, FreeRADIUS et la PKI (EJBCA) sont installés sur chacun. Un seul nœud de données est **leader** à un instant donné.
+- **Le leader PostgreSQL (Patroni) décide de tout** : c'est lui qui sert les écritures de la console, qui est BIND primaire, qui porte l'adresse virtuelle, qui exécute RADIUS et la PKI. Les autres nœuds de données suivent.
+- **Le quorum est celui d'etcd** (majorité des membres). Il n'y a pas de « nœud de quorum » obligatoire : l'arbitre est un membre etcd de plus, sans données, qui sert à garder une majorité quand un nœud de données tombe. Un cluster sans arbitre fonctionne, mais **sans tolérance de panne** quand il n'a que deux nœuds de données (voir le tableau plus bas).
+- Le DNS et le DHCP **ne dépendent pas du leader** : chaque nœud de données répond aux clients (BIND primaire/secondaire, Kea en haute disponibilité).
+
+## Décisions validées
+| # | Décision | Choix |
 |---|---|---|
-| 1 | Bascule | **Automatique**, avec un **3e nœud arbitre** (quorum) |
+| 1 | Bascule | **Automatique** (Patroni), fondée sur le quorum etcd ; un arbitre facultatif sert à tolérer la perte d'un nœud de données |
 | 2 | Ordre des travaux | Cluster **avant** l'interopérabilité AD |
-| 3 | Laboratoire | Pas de machines de test pour l'instant : seuls la validation des configurations et les tests en conteneurs/espaces de noms sont garantis ; le comportement en panne réelle reste à éprouver |
-| 4 | Réseau | Un **réseau dédié** à la réplication PostgreSQL et à la synchronisation HA de Kea (séparé du réseau de service) |
+| 3 | Réseau | Un **réseau dédié** à la réplication, au quorum, à la haute disponibilité de Kea et à VRRP (séparé du réseau de service) |
+| 4 | Essais | Chaque fonction est testée avec de vrais démons (etcd, Patroni, PostgreSQL, Kea) sur boucle locale ; les coupures réseau réelles entre machines ne sont pas démontrées |
 
-## Topologie
+## Rôles de nœud
+| | Nœud `data` | Nœud `witness` (arbitre) |
+|---|---|---|
+| etcd (membre votant) | oui | oui |
+| Patroni et PostgreSQL | oui | non |
+| BIND, Kea, FreeRADIUS, EJBCA | oui (selon le rôle Patroni) | non |
+| Console | oui (écriture sur le leader, lecture ailleurs) | sans base de données : aucune utilité ; l'état de ce service n'a pas été vérifié |
+| Keepalived et adresse virtuelle | oui, si une adresse virtuelle est définie | non |
+| Minuteries `follow` et demandes d'administration | oui | non (synchronisation seulement) |
+| Clé TSIG, secrets de la console, clé de l'autorité | reçoit | ne reçoit **rien** : il ne peut pas déchiffrer ce qu'etcd contient |
+| Sauvegardes, paquets embarqués (podman, FreeRADIUS) | oui | non |
+
+- Le rôle se choisit à la création du lot d'enrôlement (`ddibuntu-cluster bundle --role data|witness`) ; la console crée un nœud de données seulement pour le **premier** nœud (`init`) et propose les deux rôles pour les suivants.
+- Le code ne limite pas le nombre de nœuds, mais la console en affiche **16 au plus**. **Kea HA et le BIND secondaire exigent exactement deux nœuds de données** (`ddibuntu-reload` : `len(data) != 2`) ; Keepalived n'a qu'**un** pair VRRP (le dernier nœud de données qui n'est pas soi).
+
+## Quorum et tailles de cluster
+- **Membres etcd** : tous les nœuds, arbitre compris. TLS mutuel obligatoire (ports 2379 client, 2380 pairs). Un nouveau nœud entre comme **« learner »** (sans voix), puis est promu : le quorum n'est pas dégradé pendant l'enrôlement.
+- **Règle** : votants = membres non « learner » connus d'etcd ; majorité requise = ⌊votants / 2⌋ + 1 ; tolérance = membres sains − majorité (`quorum_json`, publié dans l'état du cluster).
+
+| Composition | Votants | Majorité | Pannes tolérées | Ce qui se passe quand un nœud tombe |
+|---|---|---|---|---|
+| 1 nœud de données | 1 | 1 | 0 | pas de réplique : le service s'arrête avec le nœud |
+| **2 nœuds de données, sans arbitre** | 2 | 2 | **0** | le quorum etcd est perdu : le nœud restant n'est plus utilisable en écriture (un leader sans quorum se rétrograde, sa VIP disparaît). DNS et DHCP continuent de répondre. Reprise par `ddibuntu-cluster recover`. L'alerte « marge de quorum nulle » le signale. |
+| **2 nœuds de données + 1 arbitre** | 3 | 2 | 1 | configuration de référence : bascule automatique sans intervention (validée avec de vrais etcd et Patroni) |
+| 3 nœuds de données ou plus | 3 et + | 2 et + | 1 et + | etcd et Patroni le permettent, mais Kea HA et le BIND secondaire ne sont pas pris en charge au-delà de deux nœuds de données (voir ci-dessus) : non éprouvé |
+
+- **Nœud isolé** : sans quorum, le leader perd son verrou dans etcd (comportement de Patroni : `ttl` 30 s, `loop_wait` 10 s, `retry_timeout` 10 s) ; PostgreSQL redevient lecteur, la console refuse toute écriture par un `503 replica` avant tout effet de bord, les tâches de fond qui écrivent s'arrêtent, `vip-check` retire l'adresse virtuelle.
+- **Opérations qui exigent le quorum** (refusées sinon, `409 quorum_required`) : test de bascule, retrait d'un nœud, adresse virtuelle, réseau dédié, mise à jour progressive, nœud préféré, lot d'enrôlement. `change-ip` exige en plus une **marge** (un nœud de plus que la majorité). À l'inverse, `recover` n'est autorisé que **sans** quorum et si aucun autre nœud ne répond.
+
+## Topologie de référence (2 nœuds de données + arbitre)
 ```
         clients DNS · relais DHCP · administrateurs
                         │  réseau de service
-        VIP de service (Keepalived, suit le nœud ACTIF)
+        VIP de service (Keepalived, suit le LEADER PostgreSQL)
            │                                │
- ┌─────────┴──────────┐          ┌──────────┴─────────┐        ┌───────────────┐
- │ Nœud 1 — ACTIF     │          │ Nœud 2 — SECONDAIRE│        │ Nœud 3 ARBITRE│
- │ Console Nuxt (rw)  │          │ Console (lecture)  │        │ pas de données│
- │ PostgreSQL primaire├─ WAL ───►│ PostgreSQL standby │        │ DCS (quorum)  │
- │ BIND primaire      ├─ AXFR ──►│ BIND secondaire    │        │ Keepalived    │
- │ Kea ◄── HA load-balancing ──► │ Kea                │        │  (témoin)     │
- └─────────┬──────────┘          └──────────┬─────────┘        └───────┬───────┘
-           └──────── réseau dédié : réplication, HA Kea, quorum ───────┘
+ ┌─────────┴──────────┐          ┌──────────┴─────────┐        ┌────────────────┐
+ │ Nœud 1 — LEADER    │          │ Nœud 2 — SECONDAIRE│        │ Nœud 3 ARBITRE │
+ │ Console (écriture) │          │ Console (lecture)  │        │ (facultatif)   │
+ │ PostgreSQL primaire├─ WAL ───►│ PostgreSQL réplique│        │ etcd seulement │
+ │ BIND primaire      ├─ AXFR ──►│ BIND secondaire    │        │ pas de données │
+ │ FreeRADIUS, EJBCA  │          │ (arrêtés)          │        │ ni de secrets  │
+ │ Kea ◄── HA load-balancing ──► │ Kea                │        │                │
+ │ etcd · Patroni     │          │ etcd · Patroni     │        │                │
+ └─────────┬──────────┘          └──────────┬─────────┘        └───────┬────────┘
+           └─────── réseau dédié : réplication, HA Kea, etcd, VRRP ────┘
 ```
+Sans arbitre, le nœud 3 disparaît : le cluster reste à deux nœuds de données et deux votants etcd (tolérance nulle).
 
 ## Principes
-- **Source de vérité** : PostgreSQL. Le nœud ACTIF est le primaire de la base ; tout rôle (console en écriture, BIND primaire, VIP) suit ce primaire. Un seul « actif » : pas de rôles partagés entre nœuds.
-- **Quorum et anti split-brain** : la promotion automatique exige l'accord de 2 nœuds sur 3. Un nœud isolé du quorum se met lui-même en lecture seule (isolation par le nœud lui-même : arrêt des services en écriture, VIP retirée). Candidat retenu pour le magasin de quorum : etcd sur les trois nœuds, avec orchestration de la bascule PostgreSQL par un composant dédié (à trancher à l'itération 2 après prototype).
-- **Baux DHCP** : pas dans la base répliquée. Chaque Kea garde ses baux localement ; le hook HA (`libdhcp_ha`, mode load-balancing, avec `libdhcp_lease_cmds`) les synchronise sur le réseau dédié, par un **écouteur HTTP dédié** de Kea (port 8000) en **TLS mutuel** avec les certificats du cluster — pas d'agent de contrôle, donc pas de service de plus à exposer. Les deux serveurs sont en `load-balancing` : chacun répond à sa moitié des clients (hachage), et si l'un tombe (`partner-down`) l'autre sert tout le monde ; au retour du partenaire, les baux accordés entre-temps sont rattrapés avant de reprendre.
-- **DHCP et VIP** : le DHCP ne passe pas par la VIP. Les relais DHCP déclarent les deux adresses réelles des nœuds. La VIP sert la console, l'API et le point d'entrée DDNS.
-- **DNS** : le nœud actif est BIND primaire (zones, DDNS, RPZ). L'autre est secondaire (AXFR/IXFR signé TSIG sur le réseau dédié, NOTIFY). Les deux répondent aux requêtes des clients. À la bascule, le secondaire est promu primaire ; le numéro de série ne baisse jamais.
-- **Configuration identique** : les deux Kea doivent avoir les mêmes sous-réseaux et pools (exigence du hook HA). Chaque nœud rend sa configuration depuis la base répliquée ; la **génération de configuration** (itération 1) permet de vérifier que les deux nœuds ont appliqué la même.
-- **Secrets et PKI** : une autorité interne émet les certificats des nœuds (PostgreSQL en `verify-full`, Kea HA, API inter-nœuds). Enrôlement d'un nœud par jeton à usage unique.
-- **Pare-feu** : nftables n'ouvre 5432, le port de contrôle Kea, le transfert DNS, le quorum et VRRP qu'aux pairs, sur le réseau dédié.
-- **Mises à jour** : progressives (secondaire, puis bascule contrôlée, puis ancien actif) ; les nœuds doivent être à la même version.
+- **Source de vérité** : PostgreSQL. Le leader est le seul à écrire ; chaque rôle (console en écriture, BIND primaire, VIP, RADIUS, PKI) suit ce leader. `ddibuntu-cluster follow` (minuterie d'une minute) lit le rôle Patroni local et aligne le reste ; Keepalived déplace la VIP sans attendre.
+- **Baux DHCP** : pas dans la base répliquée. Chaque Kea garde ses baux dans un fichier local ; le hook HA (`libdhcp_ha`, mode `load-balancing`, avec `libdhcp_lease_cmds`) les synchronise sur le réseau dédié (port 8000, TLS mutuel). Les rôles HA (`primary` / `secondary`) viennent de l'ordre alphabétique des noms de nœuds, **indépendamment** du leader PostgreSQL. Les relais DHCP doivent lister **les deux adresses réelles** des nœuds : le DHCP ne passe pas par la VIP.
+- **DNS** : le leader est BIND primaire (zones, DDNS, RPZ). L'autre nœud est secondaire (AXFR/IXFR signé TSIG sur le réseau dédié, NOTIFY) ; les deux répondent aux clients. À la bascule, le secondaire est promu.
+- **Configuration identique** : la console enregistre dans la table répliquée `rendered_configs` la configuration Kea et BIND avec son empreinte SHA-256 ; le nœud suiveur la relit, vérifie l'empreinte et la déploie. La console ne déclare jamais de hook Kea : `ddibuntu-reload` (root) refuse tout `hooks-libraries` venant de la console et ajoute lui-même le bloc HA.
+- **Console** : sur un secondaire, lecture seule (`503 replica` pour toute écriture) ; la connexion y est possible par un jeton signé (4 h au plus, sans révocation individuelle) ; un compte d'annuaire doit s'être connecté une première fois sur le leader.
+- **Adresse virtuelle** : Keepalived (VRRP unicast sur le réseau dédié). Le script `vip-check` interroge l'API Patroni `/primary` en TLS mutuel : seul le leader garde l'adresse ; sans leader, personne ne la porte.
+
+## Création, jonction, retrait
+- **`init`** (premier nœud) : crée l'autorité interne (EC P-256, 3650 jours, la clé ne quitte jamais ce nœud), le certificat du nœud, la clé TSIG `ddi-xfr`, la configuration, puis active etcd et (nœud de données) Patroni. Le réseau dédié est celui de l'interface qui porte l'adresse du nœud, ou le `--net` fourni.
+- **`bundle`** (sur le nœud qui porte l'autorité) : ajoute le nouveau membre à etcd en « learner » et produit un **lot chiffré** (GPG symétrique, phrase de passe affichée une seule fois) contenant la configuration, le certificat et la clé du nouveau nœud, la CA et, pour un nœud de données, la clé TSIG et les secrets de la console. Il n'y a **pas de jeton à usage unique** : c'est un fichier chiffré ; les lots non retirés sont détruits au bout d'une heure.
+- **`join`** (nouveau nœud) : déchiffre, vérifie le manifeste SHA-256 et **revalide** tout comme une entrée non fiable ; sur un nœud de données, **efface la base locale** (`--wipe-local-db` obligatoire, implicite depuis la console) et la recrée par réplication depuis le leader.
+- **Retrait** : pas de `leave`. `remove-node` s'exécute depuis un **autre** nœud : refusé pour soi-même, pour le leader en place, ou si les nœuds restants perdraient le quorum. `recover` reconstruit etcd à un membre après la perte du quorum. `take-ca` reprend l'autorité sur un nœud de données quand son porteur est injoignable (clé publiée chiffrée dans etcd).
+- **Synchronisation** (`sync`, minuterie d'une minute) : relit le registre des nœuds dans etcd, ajoute ou retire les pairs, recalcule Patroni, Keepalived et le pare-feu, applique les réglages communs.
+
+## Base de données (Patroni)
+- Réplication **asynchrone** (`synchronous_mode: false`) : une bascule peut perdre les transactions les plus récentes, dans la limite du retard (`maximum_lag_on_failover` : 1 Mio). `pg_rewind` et les slots de réplication sont actifs ; chaque nœud de données peut devenir leader (`nofailover: false`).
+- Réplication et `pg_rewind` en `sslmode: verify-full` avec authentification **par certificat** (pas de mot de passe de réplication) ; TLS 1.2 au moins. L'API REST de Patroni exige un certificat client.
+- **Bascule contrôlée** : `ddibuntu-cluster switchover` (`patronictl switchover`) ; depuis la console, un administrateur choisit un candidat (secondaire de données en bonne santé, ni leader ni arbitre) ; root revalide.
+- **Nœud préféré** : simple consigne publiée dans etcd ; la console signale l'écart avec le leader et propose la bascule contrôlée, jamais de retour automatique.
+- **Test de bascule** (`drill`) : vraie bascule mesurée (fenêtre sans primaire, promotion, rétrogradation, réintégration), retour au primaire d'origine facultatif, rapport conservé dans etcd (20 derniers). Exige au moins deux nœuds de données.
+
+## Ce qui suit le leader
+| Service | Leader | Secondaire de données |
+|---|---|---|
+| Console | écriture | lecture seule (`503 replica`) |
+| BIND | primaire (zones, DDNS, RPZ) | secondaire, zones transférées en AXFR/IXFR (clé TSIG) |
+| Kea | HA load-balancing | HA load-balancing (les deux servent les clients) |
+| Adresse virtuelle | portée | retirée |
+| FreeRADIUS | actif (la console du nouveau leader rejoue le dernier déploiement, 1 à 2 minutes) | arrêté et désactivé |
+| PKI (EJBCA) | actif (état synchronisé par etcd ; reprise 2 à 3 minutes, pas d'actif-actif) | en veille, image déjà tirée |
+| Keytab Kerberos / domaine | applique | reçoit par etcd, chiffré (clé dérivée de `ddi-xfr`) |
+
+## Ports et pare-feu
+Le pare-feu (`nftables`) n'ouvre aux **seuls pairs** du cluster que : TCP 2379 et 2380 (etcd), 5432 (PostgreSQL), 8000 (Kea HA), 8008 (API Patroni) et le protocole IP 112 (VRRP). Le DNS (53) et le DHCP (67) sont ouverts à tous par défaut ; RADIUS et la PKI le sont selon leurs réseaux autorisés. Ces règles sont les mêmes sur un arbitre.
+
+## Certificats et secrets
+- Certificats de nœud : 825 jours, renouvelés automatiquement à 60 jours de l'échéance ; la clé privée ne quitte jamais le nœud (il crée une demande, **seul le nœud porteur de l'autorité signe**). Le certificat de l'autorité **n'est pas renouvelé automatiquement** (affiché, alerte d'échéance).
+- Secrets partagés (keytab, état de la PKI, clé de l'autorité, sauvegardes) : chiffrés avant d'être publiés dans etcd, avec une clé dérivée de `ddi-xfr` que seuls les nœuds de données possèdent.
+
+## Opérations
+- **Mise à jour progressive** : un ordre commun dans etcd (quorum et tous les nœuds sains exigés) ; chaque nœud s'applique à son tour : **arbitre, puis secondaires, puis le leader en dernier, sur place** (il n'y a pas de bascule automatique avant la mise à jour du leader). Un échec suspend la file. Un nœud qui n'a pas la version attendue reste « en attente » ; un secondaire dont le schéma est en retard répond `503 schema_pending` jusqu'aux migrations du leader.
+- **Sauvegardes** : prises sur le leader seulement ; archivage WAL sur chaque nœud de données ; réglages communs dans etcd ; restauration à un instant donné depuis le leader (Patroni en pause, base remplacée **sans changer de leader**, puis reconstruction des secondaires).
+- **Réglages communs** : adresse virtuelle, VRID, réseau dédié (`set-vip`, `clear-vip`, `set-net`) publiés une fois dans etcd avec une révision croissante ; chaque nœud les applique à sa synchronisation. `change-ip` déplace l'adresse d'un nœud avec l'accord des autres (pare-feu ouvert à la nouvelle adresse avant le changement), refusé sur le leader.
+- **Frontière de privilèges** : la console écrit des demandes (≤ 1 Kio, jeu de clés exact) dans un dossier dédié ; root les revalide, exige la confirmation par retapage du nom (cluster ou nœud), exécute et publie un résultat à message fixe. Une demande à la fois.
+
+## Supervision
+- `ddibuntu-health` (une fois par minute) photographie services, PostgreSQL, disques, certificats, heure, charge ; chaque nœud, arbitre compris, publie sa santé dans etcd (une clé par nœud).
+- Le moteur d'alertes ne tourne que sur la console **accessible en écriture** (le leader). Règles de cluster : état périmé, quorum perdu, marge de quorum nulle, membre hors service (avertissement pour l'arbitre), absence de leader, etcd malsain, retard ou défaut de réplique, changement de leader, adresse virtuelle non portée, nœud revenu, resynchronisation, retour au nœud préféré possible.
+- Prometheus : métriques `ddibuntu_cluster_*` et `ddibuntu_node_*` ; chaque console expose sa propre vue (à interroger sur la VIP pour suivre le leader). Il n'y a pas de métrique pour Kea HA, la mise à jour ni le test de bascule.
+- **Page « Cluster »** (console) : état du nœud (rôle PostgreSQL, rôle BIND, quorum, VIP), Kea HA, mise à jour, opérations et reprise, test de bascule, réglages (VIP, réseau, certificats, adresse d'un nœud, nœud préféré), tableau des nœuds. Lecture pour tout utilisateur, actions pour les administrateurs, depuis un nœud de données seulement.
+
+## Limites et points non éprouvés
+- **Deux nœuds de données sans arbitre : aucune tolérance de panne** (la perte d'un nœud fait perdre le quorum etcd). Pour tolérer une panne il faut un arbitre ou un troisième membre etcd.
+- **Plus de deux nœuds de données** : Kea HA et le BIND secondaire ne sont pas pris en charge (`ddibuntu-reload` exige exactement deux nœuds de données, et `follow` échoue sur le chemin secondaire) ; Keepalived n'a qu'un pair. Non éprouvé.
+- **L'arbitre** : le code lui donne seulement etcd et la synchronisation ; ni Patroni, ni base de données, ni Keepalived, ni PKI, ni RADIUS. La minuterie `follow` n'est activée que sur les nœuds de données : la publication de la version d'un arbitre pour la mise à jour progressive passe par `ddibuntu-selfupdate`. Le comportement d'un arbitre réel n'a pas été vérifié.
+- **Pas d'actif-actif** : une seule PKI (interruption de 2 à 3 minutes à chaque bascule) et un seul FreeRADIUS (1 à 2 minutes). Les journaux d'authentification RADIUS sont propres à chaque nœud.
+- **Réplication asynchrone** : perte possible des dernières transactions à la bascule, dans la limite du retard autorisé.
+- Le certificat de l'autorité n'est pas renouvelé automatiquement ; un jeton de session de secondaire ne se révoque pas individuellement avant 4 h.
+- **Non démontré en conditions réelles** : coupure réseau entre machines, VRRP sur un vrai commutateur, bascule réelle de la PKI et de RADIUS, comportement d'un arbitre, minuteries de production de Kea HA, charge.
 
 ## Écarts assumés par rapport au cahier des charges
 1. **Atomicité** : aucune transaction ne couvre PostgreSQL et deux démons. Garantie réelle : écriture atomique en base (IPAM + DNS + réservation DHCP dans une transaction) ; application convergente avec **génération de configuration**, validation avant déploiement, retour arrière, détection d'écart entre nœuds.
 2. **GSS-TSIG** : le hook GSS-TSIG de Kea n'existe pas dans Kea 2.4 (Ubuntu 24.04), vérifié (`libdhcp_*` du paquet : ni `gss_tsig`). Repli retenu à l'itération 6 : BIND authentifie lui-même les clients du domaine (`update-policy` `ms-self` / `krb5-self`). L'envoi des enregistrements de l'appliance vers les contrôleurs AD par `nsupdate -g` reste à écrire.
 3. **Test de panne** : sans laboratoire, la bascule réelle n'est pas démontrée ; chaque itération livre ses procédures de test pour le premier labo.
 
-## Itérations
+## Annexe — détail par itération
 | # | Contenu |
 |---|---|
 | 1 | Smart DDI : génération de configuration, réservation DHCP pilotée par l'IPAM, gabarits de réseau |
 | 2 | Fondations : PKI interne, enrôlement, réplication PostgreSQL, quorum, état du cluster |
-| 3 | Kea HA load-balancing (**fait**, 0.5.3 — voir ci-dessous) |
-| 4 | BIND primaire/secondaire, distribution du RPZ, Keepalived (**fait**, 0.5.4 — voir ci-dessous) |
-| 5 | La console, BIND et Kea suivent le leader ; bascule depuis la console ; mise à jour progressive (**fait**, 0.5.5 — voir ci-dessous) |
-| 6 | Active Directory : Kerberos, GSS-TSIG, redirecteurs conditionnels (**fait**, 0.5.6 — voir ci-dessous) |
-| 7 | Le keytab et le domaine Kerberos suivent le cluster (**fait**, 0.6.1 — voir « Itération 7 ») |
-| 10 | Sauvegarde et restauration à un instant donné de la base dans le cluster (**fait**, 0.9.0 — voir « Itération 10 ») |
-| 11 | Alertes et supervision : santé de chaque nœud partagée par etcd, moteur d'alertes sur le leader, Prometheus (**fait**, 0.9.1 — voir « Itération 11 ») |
-| 12 | Réglages communs (adresse virtuelle, réseau dédié), renouvellement des certificats, changement d'adresse d'un nœud (**fait**, 0.9.2 — voir « Itération 12 ») |
-| 13 | Test de bascule guidé : pré-contrôles, vraie bascule mesurée avec retour au primaire d'origine, rapport conservé dans le cluster (**fait**, 0.9.3 — voir « Itération 13 ») |
+| 3 | Kea HA load-balancing (0.5.3) |
+| 4 | BIND primaire/secondaire, distribution du RPZ, Keepalived (0.5.4) |
+| 5 | La console, BIND et Kea suivent le leader ; bascule depuis la console ; mise à jour progressive (0.5.5) |
+| 6 | Active Directory : Kerberos, GSS-TSIG, redirecteurs conditionnels (0.5.6) |
+| 7 | Le keytab et le domaine Kerberos suivent le cluster (0.6.1) |
+| 8 | Perte de nœuds et reprise : quorum en direct, retrait, reconstruction, reprise de l'autorité |
+| 9 | Assistants de la console : créer et rejoindre un cluster, lot d'enrôlement |
+| 10 | Sauvegarde et restauration à un instant donné dans le cluster (0.9.0) |
+| 11 | Alertes et supervision : santé de chaque nœud, moteur d'alertes, Prometheus (0.9.1) |
+| 12 | Réglages communs (adresse virtuelle, réseau dédié), certificats, changement d'adresse d'un nœud (0.9.2) |
+| 13 | Test de bascule guidé et mesuré (0.9.3) |
+| 14 | Vues DNS |
+| 15 | Navigation entre nœuds, nœud préféré, connexion sur un secondaire |
+| 16 | Mise à jour du cluster nœud par nœud |
+| 17 | La PKI (EJBCA) suit le leader |
+| 18 | RADIUS suit le leader (actif / passif) |
+
+Les sections qui suivent gardent le raisonnement et les essais de chaque itération. Là où elles divergent du début de ce document, **le début fait foi**.
 
 ## Itération 3 — Kea HA : comment c'est réalisé
 - **La console ne déclare jamais de hook.** Le bloc `hooks-libraries` donne l'exécution de code à Kea (root) : `ddibuntu-reload` (root) refuse tout `hooks-libraries` venant de la console et **ajoute lui-même** le bloc HA à partir de `/etc/ddibuntu-cluster/cluster.conf` (fichier root). Il le fait seulement sur un nœud de **données** quand **deux** nœuds de données existent ; un arbitre ou un nœud seul reste en Kea simple. Les bibliothèques sont cherchées dans les dossiers de Kea (jamais un chemin venu d'ailleurs), les certificats doivent exister, et la configuration **finale** est relue par `kea-dhcp4 -t` avant tout rechargement ; échec → retour arrière.
@@ -64,7 +162,7 @@ Statut : **validée** (itération 0). Aucune ligne de code de cluster n'existe e
 - **Même configuration sur les deux nœuds** : à chaque déploiement, la console enregistre la configuration Kea (sans mot de passe) dans la table répliquée `rendered_configs` avec sa génération et son empreinte SHA-256. Sur le **secondaire**, `ddibuntu-cluster follow` (minuterie d'une minute) lit cette ligne dans sa copie locale de la base, vérifie l'empreinte, dépose le fichier et appelle `ddibuntu-reload --kea-only` (mêmes contrôles qu'en local ; une base compromise ne peut donc pas faire charger un hook). Sur le **primaire**, `follow` réapplique quand la liste des nœuds de données change (arrivée du second nœud) : le HA s'active sans nouveau déploiement.
 - **Pare-feu** : le port 8000 n'est ouvert qu'aux pairs du cluster (`CLUSTER_PEERS`). Les relais DHCP doivent lister **les deux adresses réelles** des nœuds de données.
 - **Délais de production** : `heartbeat-delay` 10 s, `max-response-delay` 60 s, `max-ack-delay` 5 s, `max-unacked-clients` 5. Le serveur restant ne prend les clients du partenaire qu'après avoir constaté des clients sans réponse (champ `secs` > `max-ack-delay`) : sans trafic client, l'état reste `communication-recovery`.
-- **À vérifier au premier laboratoire** : coupure réseau réelle entre deux machines, minuteries de production, relais réels, charge. Limite connue : tant que la console ne suit pas le primaire (itération 5), un déploiement lancé depuis le secondaire échoue à l'écriture en base.
+- **À vérifier au premier laboratoire** : coupure réseau réelle entre deux machines, minuteries de production, relais réels, charge.
 
 ## Itération 4 — BIND et adresse virtuelle : comment c'est réalisé
 - **La console ne connaît pas le cluster.** Elle écrit une configuration BIND ordinaire (`allow-transfer { none; }` global). `ddibuntu-reload` (root) lit `named.conf.options` et `named.conf.zones` de façon **stricte** (formats exacts produits par `render.ts`) et refuse toute ligne inattendue : une base compromise ne peut pas ouvrir un transfert ni charger une clé.
@@ -73,7 +171,7 @@ Statut : **validée** (itération 0). Aucune ligne de code de cluster n'existe e
 - **RPZ** : zone ordinaire transférée ; le secondaire applique donc les mêmes listes que le primaire sans mécanisme particulier.
 - **Clé TSIG** : créée par le nœud autorité (`init`, ou premier `follow` d'un cluster plus ancien), embarquée dans le lot d'enrôlement, validée sur sa forme exacte avant installation (`root:bind 0640`).
 - **IP virtuelle** : Keepalived (VRRP unicast sur le réseau dédié). Le script `vip-check` interroge l'API Patroni `/primary` en TLS mutuel : seul le leader PostgreSQL garde l'adresse. Sans leader, personne ne la porte (mieux vaut ne pas répondre que répondre depuis une base en lecture seule). Aucun Keepalived sur l'arbitre ; protocole 112 ouvert aux seuls pairs.
-- **Différé à l'itération 5** : promotion du BIND secondaire (changement de rôle quand le leader change), console et Kea qui suivent le primaire, page « Cluster ». Tant que le leader ne change pas, le comportement est complet ; après une bascule, le DNS reste servi par les deux nœuds mais les modifications de zones doivent attendre l'itération 5.
+- **Réalisé à l'itération 5** (voir plus bas) : promotion du BIND secondaire, console et Kea qui suivent le primaire, page « Cluster ».
 - **À vérifier au premier laboratoire** : coupure réseau réelle, comportement de VRRP sur un vrai commutateur, charge des transferts, zones dynamiques (`rndc reload` ne les relit pas).
 
 ## Itération 5 — suivre le leader : comment c'est réalisé
@@ -82,7 +180,7 @@ Statut : **validée** (itération 0). Aucune ligne de code de cluster n'existe e
 - **Retour d'un ancien primaire** : `--replica` après un rôle `primary` supprime ses fichiers de zone et journaux : un transfert complet depuis le nouveau primaire remplace tout (une copie « plus récente » ne serait jamais écrasée, BIND la jugeant à jour).
 - **Console** : `pg_is_in_recovery()` décide. Secondaire = lecture seule : les requêtes qui écrivent sont refusées par un 503 `replica` **avant** tout effet de bord (déploiement de fichiers compris), les sessions (répliquées) restent lisibles, aucune migration n'est tentée (elles viennent du leader), les tâches de fond qui écrivent sont suspendues. Promu, le nœud reprend l'écriture en quelques secondes.
 - **Demande de bascule** : la console dépose un fichier d'une ligne (nom de nœud) dans le seul dossier qui lui est ouvert en écriture ; root le relit comme un simple nom, le vérifie contre `cluster.conf` et l'état réel de Patroni (candidat = secondaire de données en bonne santé, pas le leader), exécute `patronictl switchover` et publie un résultat à message fixe.
-- **Mise à jour progressive** : chaque nœud publie sa version dans etcd. Le leader n'accepte la mise à jour en ligne que lorsque les secondaires sains sont déjà à la version visée : on met à jour les secondaires, on bascule, puis on met à jour l'ancien leader. Un secondaire sur le nouveau logiciel mais l'ancien schéma annonce `waiting_leader` (l'installation n'est pas annulée), répond `schema_pending` et attend les migrations du leader. **Paquets (0.14.11)** : chaque nœud de données pose podman et FreeRADIUS (livrés dans l'archive) pendant son propre tour de la mise à jour, sans accès à Internet ; l'arbitre n'en reçoit aucun. Pour le passage depuis une version qui ne posait aucun paquet, `ddibuntu-cluster follow` (`pkg_step`) lance en arrière-plan `ddibuntu-selfupdate packages --auto` si un paquet de `update-packages` manque (un essai toutes les 6 h au plus).
+- **Mise à jour progressive** : chaque nœud publie sa version dans etcd. Le leader n'accepte la mise à jour en ligne que lorsque les secondaires sains sont déjà à la version visée : on met à jour les arbitres, puis les secondaires, puis le leader en dernier, sur place (la file de l'itération 16 ne bascule pas automatiquement). Un secondaire sur le nouveau logiciel mais l'ancien schéma annonce `waiting_leader` (l'installation n'est pas annulée), répond `schema_pending` et attend les migrations du leader. **Paquets (0.14.11)** : chaque nœud de données pose podman et FreeRADIUS (livrés dans l'archive) pendant son propre tour de la mise à jour, sans accès à Internet ; l'arbitre n'en reçoit aucun. Pour le passage depuis une version qui ne posait aucun paquet, `ddibuntu-cluster follow` (`pkg_step`) lance en arrière-plan `ddibuntu-selfupdate packages --auto` si un paquet de `update-packages` manque (un essai toutes les 6 h au plus).
 - **Isolation** (déjà éprouvée à l'itération 2 pour la base) : un leader sans quorum devient inutilisable en écriture ; sa VIP disparaît (vip-check) ; DNS et DHCP continuent de répondre (Kea HA, BIND secondaire).
 - **À vérifier au premier laboratoire** : coupure réseau réelle, durée de la fenêtre de rétrogradation (≤ 1 min), bascule sous charge DHCP, grandes zones.
 
@@ -168,7 +266,7 @@ Statut : **validée** (itération 0). Aucune ligne de code de cluster n'existe e
 
 ## Itération 16 — mise à jour du cluster nœud par nœud : comment c'est réalisé
 - **Ordre** : clé etcd `/ddibuntu-cluster/update` = `{"target","at","by"}` (jeu de clés strict, version `x.y.z`). Écrit par `update-start` (nœud de données, quorum, tous les membres etcd sains, versions de tous les nœuds connues, aucune plus récente que la cible) ; supprimé par `update-cancel` ou quand tous les nœuds sont à la cible.
-- **Exécution** : `update_step`, appelée par `follow` sur **chaque** nœud (arbitre compris). Séquence = arbitres, secondaires, primaire (Patroni) en dernier. Un nœud agit seulement si tous ceux qui le précèdent publient la version cible (`/ddibuntu-cluster/versions/<nœud>`) ; il dépose alors `.update-request` pour `ddibuntu-selfupdate`, qui garde ses propres contrôles (signature, sauvegarde, retour arrière, garde du primaire en dernier).
+- **Exécution** : `update_step`, appelée par `follow` sur chaque nœud de données (sur un arbitre, la minuterie `follow` n'est pas activée : voir « Limites et points non éprouvés »). Séquence = arbitres, secondaires, primaire (Patroni) en dernier. Un nœud agit seulement si tous ceux qui le précèdent publient la version cible (`/ddibuntu-cluster/versions/<nœud>`) ; il dépose alors `.update-request` pour `ddibuntu-selfupdate`, qui garde ses propres contrôles (signature, sauvegarde, retour arrière, garde du primaire en dernier).
 - **Avancement** : chaque nœud publie `/ddibuntu-cluster/update-state/<nœud>` (waiting, requested, updating, done, failed) ; l'état publié (`update`) porte ordre, versions et avancement.
 - **Sûreté** : un échec (état `failed` de selfupdate pour la cible, postérieur à l'ordre) suspend la file ; pas de nouvelle tentative automatique. Un nœud absent ou malsain empêche de démarrer ; s'il tombe en cours de route, la file attend (priorité à l'homogénéité).
 

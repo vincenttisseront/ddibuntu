@@ -10,6 +10,7 @@ import { reconcileDeployments, readReloadStatus } from '../utils/reload-status'
 import { hostInfo } from '../utils/hostinfo'
 import { ROLE_RANK } from '../utils/auth'
 import { readClusterState } from '../utils/cluster'
+import { readLicence } from '../utils/licence'
 import { readLocalHealth } from '../utils/health'
 import { readBackupStatus } from '../utils/backup'
 import { mergedHealth } from '../utils/alert-rules'
@@ -47,6 +48,9 @@ route('GET', '/about', 'viewer', async (c) => {
   const upd = isAdmin ? await readUpdateStatus() : null
   return { version: installedVersion(), hostname: (await hostInfo()).hostname, update: upd ? { available: upd.available, latest: upd.latest } : null }
 })
+
+// Licence (AGPL-3.0), titulaire, dépôt des sources et composants libres : lisibles par tout utilisateur connecté
+route('GET', '/about/license', 'viewer', async () => readLicence())
 
 route('GET', '/system/info', 'operator', async () => {
   const bins = [['named-checkzone', cfg().namedCheckzone], ['named-checkconf', cfg().namedCheckconf], ['kea-dhcp4', cfg().keaDhcp4]]

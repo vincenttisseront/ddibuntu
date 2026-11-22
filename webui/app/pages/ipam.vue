@@ -126,19 +126,22 @@ function pickCell(c: { ip: string; state: string; item: unknown }) {
 }
 watch([spaceId, fam, addrSubnet, addrQ, addrStatus, addrLabel], () => { addrOffset.value = 0 })
 const addrCols = computed<DCol[]>(() => [
-  { key: 'ip', label: 'IP', kind: 'mono' }, { key: 'status', label: t('common.status'), kind: 'badge', trans: 'ipam.status' }, { key: 'hostname', label: t('ipam.hostname') }, { key: 'mac', label: 'MAC', kind: 'mono' },
+  { key: 'ip', label: 'IP', kind: 'mono' }, { key: 'status', label: t('common.status'), kind: 'badge', trans: 'ipam.status' }, { key: 'gw', label: t('ipam.gw.col'), kind: 'badge', trans: 'ipam.gw' }, { key: 'hostname', label: t('ipam.hostname') }, { key: 'mac', label: 'MAC', kind: 'mono' },
   { key: 'reachable', label: t('ipam.reach.col'), fmt: (v: boolean | null, r: any) => (v === null || v === undefined ? t('ipam.reach.unknown') : `${v ? t('ipam.reach.up') : t('ipam.reach.down')} · ${new Date(r.checked_at).toLocaleDateString()}`) },
   { key: 'aliases', label: t('addrdns.col'), fmt: (v: string[] | null) => (v?.length ? (v.length > 2 ? `${v.slice(0, 2).join(', ')} +${v.length - 2}` : v.join(', ')) : '') },
   { key: 'description', label: t('common.description') }, { key: 'tags', label: t('label.title'), kind: 'labels' }, { key: 'owner', label: t('ipam.owner') }, { key: 'cidr', label: t('ipam.network'), kind: 'mono' }, { key: 'space', label: t('ipam.space'), hidden: !!spaceId.value },
 ])
 const addrPrefill = ref('')
 // Un bail DHCP actif n'est pas encore une adresse de l'IPAM : on ouvre le formulaire d'ajout pré-rempli (IP, MAC, nom) pour la déclarer
-function addFromLease(row: any) { addrPrefill.value = row.ip; addrSubnet.value = row.subnet_id; leasePrefill.value = { mac: row.mac, hostname: row.hostname }; openForm('addr') }
+// Une passerelle automatique (routeur DHCP, passerelle du réseau) non déclarée se déclare de la même façon, avec le statut et le drapeau passerelle déjà posés
+const gwPrefill = ref(false)
+function addFromLease(row: any) { addrPrefill.value = row.ip; addrSubnet.value = row.subnet_id; leasePrefill.value = { mac: row.mac, hostname: row.hostname }; gwPrefill.value = !!row.gw; openForm('addr') }
 const leasePrefill = ref<{ mac: string | null; hostname: string | null }>({ mac: null, hostname: null })
-watch(() => form.open, (o) => { if (!o) { addrPrefill.value = ''; leasePrefill.value = { mac: null, hostname: null } } })
+watch(() => form.open, (o) => { if (!o) { addrPrefill.value = ''; gwPrefill.value = false; leasePrefill.value = { mac: null, hostname: null } } })
 const addrFields = computed(() => [
   { key: 'subnet_id', label: t('ipam.network'), type: 'select', options: leafOptions.value, required: true, createOnly: true, default: addrSubnet.value || leafOptions.value[0]?.value },
-  { key: 'ip', label: 'IP', type: 'text', required: true, createOnly: true, mono: true, default: addrPrefill.value }, { key: 'status', label: t('common.status'), type: 'select', options: statusOptions.value, default: 'used' },
+  { key: 'ip', label: 'IP', type: 'text', required: true, createOnly: true, mono: true, default: addrPrefill.value }, { key: 'status', label: t('common.status'), type: 'select', options: statusOptions.value, default: gwPrefill.value ? 'gateway' : 'used' },
+  { key: 'is_gateway', label: t('ipam.gw.flag_field'), type: 'switch', default: gwPrefill.value, hint: t('ipam.gw.flag_hint') },
   { key: 'hostname', label: t('ipam.hostname'), type: 'text', placeholder: 'srv-app-01', default: leasePrefill.value.hostname ?? '' }, { key: 'mac', label: 'MAC', type: 'text', placeholder: 'aa:bb:cc:dd:ee:ff', default: leasePrefill.value.mac ?? '' },
   { key: 'description', label: t('common.description'), type: 'text' }, { key: 'owner', label: t('ipam.owner'), type: 'text' }, { key: 'tags', label: t('label.title'), type: 'labels' },
   { key: 'dns_zone_id', label: t('ipam.dns_sync'), type: 'select', options: zoneOptions.value, default: 0, createOnly: true, hint: t('ipam.dns_sync_hint') },
@@ -313,7 +316,7 @@ function openSubnet(id: number) { addrSubnet.value = id; addrOffset.value = 0; t
       <template #toolbar>
         <UInput v-model="addrQ" icon="i-lucide-search" size="sm" class="w-56" :placeholder="t('ipam.search_ph')" :aria-label="t('common.search')" />
         <USelect v-model="addrSubnet" size="sm" class="w-64" :items="[{ label: t('ipam.all_networks'), value: 0 }, ...leafOptions]" :aria-label="t('ipam.network')" />
-        <USelect :model-value="addrStatus || 'all'" size="sm" class="w-40" :items="[{ label: t('ipam.all_status'), value: 'all' }, ...statusOptions, { label: t('ipam.status.lease'), value: 'lease' }]" :aria-label="t('common.status')" @update:model-value="addrStatus = $event === 'all' ? '' : $event" />
+        <USelect :model-value="addrStatus || 'all'" size="sm" class="w-40" :items="[{ label: t('ipam.all_status'), value: 'all' }, ...statusOptions, { label: t('ipam.status.lease'), value: 'lease' }, { label: t('ipam.gw.filter'), value: 'gw' }]" :aria-label="t('common.status')" @update:model-value="addrStatus = $event === 'all' ? '' : $event" />
         <USelect :model-value="addrLabel || 'all'" size="sm" class="w-44" icon="i-lucide-bookmark" :items="labelOptions" :aria-label="t('label.title')" @update:model-value="addrLabel = $event === 'all' ? '' : $event" />
         <UButton v-if="canWrite" icon="i-lucide-plus" size="sm" :label="t('common.add')" :disabled="!leafOptions.length" @click="openForm('addr')" />
         <UButton v-if="canWrite && addrSelected.length" size="xs" color="neutral" variant="outline" icon="i-lucide-bookmark-plus" :label="t('label.bulk_btn', { n: addrSelected.length })" @click="openBulk('address')" />

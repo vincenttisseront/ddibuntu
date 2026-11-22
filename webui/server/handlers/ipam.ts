@@ -126,7 +126,7 @@ route('POST', '/ipam/subnets', 'operator', async (c) => {
     const r = (await cl.query('insert into subnets (cidr, name, description, vlan_id, site, gateway, tags, space_id, kind, template_id) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id',
       [cidr, b.name, b.description ?? null, b.vlan_id ?? null, b.site ?? null, b.gateway ? normIp(b.gateway) : null, b.tags ?? [], spaceId, kind, b.template_id ?? null])).rows[0].id as number
     await ensureLabels(b.tags, cl)
-    if (b.gateway) await cl.query("insert into addresses (subnet_id, ip, status, hostname, description) values ($1,$2,'gateway','gateway','Passerelle') on conflict do nothing", [r, normIp(b.gateway)])
+    if (b.gateway) await cl.query("insert into addresses (subnet_id, ip, status, hostname, description, is_gateway) values ($1,$2,'gateway','gateway','Passerelle',true) on conflict do nothing", [r, normIp(b.gateway)])
     // gabarit : l'étendue DHCP naît avec le réseau, dans la même transaction (IPv4, réseau, espace par défaut : Kea ne distingue pas les espaces)
     let dhcp: 'scope_created' | 'scope_skipped' | null = null
     if (tpl?.create_scope) {
@@ -177,16 +177,51 @@ function labelFilter(c: any): string[] {
   const v = qstr(c, 'label', 400)
   return v ? [...new Set(v.split(',').map(normLabel).filter(Boolean))].slice(0, 20) : []
 }
+// ---- Passerelles des réseaux (0.22.0) ----
+/** Passerelles connues, sans rien saisir : routeurs de l'étendue DHCP du réseau (« dhcp ») et passerelle déclarée sur le réseau (« subnet »). Les valeurs libres
+ *  (JSON des options, champ du réseau) sont contrôlées ici, en TypeScript : jamais de conversion SQL sur une donnée non vérifiée, et seule une IP du réseau est retenue. */
+export async function gatewayList(subnetId = 0, run?: (sql: string, params: unknown[]) => Promise<any[]>): Promise<Array<{ subnet_id: number; ip: string; src: 'dhcp' | 'subnet' }>> {
+  // « run » : à fournir dans une transaction, pour réutiliser sa connexion (une seconde connexion prise pendant qu'une première est tenue épuiserait le pool sous charge)
+  const rows = await (run ?? ((sql, params) => query<any>(sql, params)))(`select s.id as subnet_id, text(s.cidr) as cidr, host(s.gateway) as gateway, ds.options->'routers' as routers from subnets s left join dhcp_scopes ds on ds.subnet_id = s.id
+    where s.kind = 'network' and ($1::int = 0 or s.id = $1) and (s.gateway is not null or jsonb_typeof(ds.options->'routers') = 'array')`, [subnetId])
+  const out: Array<{ subnet_id: number; ip: string; src: 'dhcp' | 'subnet' }> = []
+  for (const r of rows) {
+    const cidr = parseCidr(r.cidr); if (!cidr) continue
+    const seen = new Set<string>()
+    const add = (raw: unknown, src: 'dhcp' | 'subnet') => {
+      if (typeof raw !== 'string') return
+      const ip = parseIp(raw); if (!ip || !cidrContainsIp(cidr, ip)) return
+      const n = normIp(raw); if (!n || seen.has(n)) return
+      seen.add(n); out.push({ subnet_id: r.subnet_id, ip: n, src })
+    }
+    if (Array.isArray(r.routers)) for (const x of r.routers.slice(0, 8)) add(x, 'dhcp')   // le DHCP d'abord : si les deux désignent la même IP, la source automatique la plus parlante l'emporte
+    add(r.gateway, 'subnet')
+  }
+  return out
+}
+/** Table « gw » (réseau, IP, source) à partir de la liste ci-dessus, passée en paramètre JSON numéro p. */
+const GW_CTE = (p: number) => `gw as (select g.subnet_id, g.ip, g.src from jsonb_to_recordset($${p}::jsonb) as g(subnet_id int, ip inet, src text))`
+/** Origine de la passerelle d'une adresse de l'IPAM : « dhcp » ou « subnet » (automatique), « flag » (drapeau ou statut passerelle), sinon rien. */
+const GW_OF = (a: string) => `coalesce((select g.src from gw g where g.subnet_id = ${a}.subnet_id and g.ip = ${a}.ip limit 1), case when ${a}.is_gateway or ${a}.status = 'gateway' then 'flag' end)`
+
 route('GET', '/ipam/subnets/:id/addresses', 'viewer', async (c) => {
   const id = intParam(c, 'id'), q = qstr(c, 'q'), st = qstr(c, 'status')
-  const items = await query(`select id, host(ip) as ip, status, hostname, mac::text as mac, description, owner, coalesce(tags, '{}') as tags, reachable, checked_at from addresses
-    where subnet_id = $1 and ($2::text is null or hostname ilike $2 or host(ip) like $2 or mac::text ilike $2 or description ilike $2 or exists (select 1 from unnest(tags) x where x ilike $2))
-      and ($3::text is null or status = $3) and (cardinality($4::text[]) = 0 or coalesce(tags, '{}') @> $4::text[]) order by ip`, [id, q ? `%${q}%` : null, st ?? null, labelFilter(c)])
+  const gws = JSON.stringify(await gatewayList(id))
+  // adresses du réseau + passerelles automatiques (DHCP, réseau) qui n'y figurent pas : lignes en lecture seule, id nul
+  const items = await query(`with ${GW_CTE(5)}, r as (
+      select a.id, a.ip as ipv, host(a.ip) as ip, a.status::text as status, a.hostname, a.mac::text as mac, a.description, a.owner, coalesce(a.tags, '{}') as tags, a.reachable, a.checked_at, (a.is_gateway or a.status = 'gateway') as is_gateway, ${GW_OF('a')} as gw
+        from addresses a where a.subnet_id = $1
+      union all
+      select null::int, g.ip, host(g.ip), 'gateway', null::text, null::text, null::text, null::text, '{}'::text[], null::boolean, null::timestamptz, false, g.src
+        from gw g where g.subnet_id = $1 and not exists (select 1 from addresses a where a.subnet_id = g.subnet_id and a.ip = g.ip))
+    select id, ip, status, hostname, mac, description, owner, tags, reachable, checked_at, is_gateway, gw from r
+    where ($2::text is null or hostname ilike $2 or ip like $2 or mac ilike $2 or description ilike $2 or exists (select 1 from unnest(tags) x where x ilike $2))
+      and ($3::text is null or (case when $3 = 'gw' then gw is not null else status = $3 end)) and (cardinality($4::text[]) = 0 or tags @> $4::text[]) order by ipv`, [id, q ? `%${q}%` : null, st ?? null, labelFilter(c), gws])
   const al = await aliasNames((items as any[]).map((i) => i.ip))
   return { items: (items as any[]).map((i) => ({ ...i, aliases: al.get(normIp(i.ip) ?? '') ?? [] })) }
 })
 
-const addrBody = z.object({ ip: ipS, status: status.default('used'), hostname: host.nullable().optional(), mac: mac.nullable().optional(), description: z.string().max(500).nullable().optional(), owner: z.string().max(100).nullable().optional(), dns_zone_id: z.number().int().nullable().optional(), tags: labelsS.optional() })
+const addrBody = z.object({ ip: ipS, status: status.default('used'), hostname: host.nullable().optional(), mac: mac.nullable().optional(), description: z.string().max(500).nullable().optional(), owner: z.string().max(100).nullable().optional(), dns_zone_id: z.number().int().nullable().optional(), tags: labelsS.optional(), is_gateway: z.boolean().optional() })
 
 async function classlessZone(cl: PoolClient, ip: string, viewId: number | null): Promise<{ id: number; name: string; parent: string } | null> {
   const [a, b, c, d] = ip.split('.').map(Number) as [number, number, number, number]
@@ -236,8 +271,8 @@ route('POST', '/ipam/subnets/:id/addresses', 'operator', async (c) => {
   if ((await one<any>('select kind from subnets where id = $1', [sid]))?.kind === 'container') fail(400, 'container_no_addresses')
   const out = await tx(async (cl) => {
     await checkHostnameRule(cl, sid, b.hostname)
-    const r = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, mac, description, owner, tags) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id',
-      [sid, ip, b.status, b.hostname ?? null, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null, b.tags ?? []])).rows[0].id as number
+    const r = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, mac, description, owner, tags, is_gateway) values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id',
+      [sid, ip, b.status, b.hostname ?? null, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null, b.tags ?? [], b.status === 'gateway' || !!b.is_gateway])).rows[0].id as number
     await ensureLabels(b.tags, cl)
     const zone = b.hostname ? await resolveDnsZone(cl, sid, b.dns_zone_id) : null
     if (zone && b.hostname) await syncDns(cl, ip, b.hostname, zone)
@@ -261,6 +296,7 @@ route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
     if (cidr.v !== 4) fail(400, 'ipv4_only')
     await checkHostnameRule(cl, sid, b.hostname)
     const taken = new Set<bigint>((await cl.query('select host(ip) as ip from addresses where subnet_id = $1', [sid])).rows.map((r) => parseIp(r.ip)!.n))
+    for (const g of await gatewayList(sid, async (sql, params) => (await cl.query(sql, params)).rows)) taken.add(parseIp(g.ip)!.n)   // une passerelle connue (routeur DHCP, passerelle du réseau) n'est jamais proposée comme libre
     const pools = (await cl.query('select host(p.start_ip) s, host(p.end_ip) e from dhcp_pools p join dhcp_scopes d on d.id = p.scope_id where d.subnet_id = $1', [sid])).rows
     const excl = pools.map((p) => [parseIp(p.s)!.n, parseIp(p.e)!.n] as [bigint, bigint])
     let ip: string | null
@@ -280,7 +316,7 @@ route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
       if (n!.pattern && !hostnameMatches(n!.pattern, g)) fail(400, 'hostname_rule', 'hostname_rule', { pattern: n!.pattern })
       hostname = g
     }
-    const id = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, description, tags) values ($1,$2,$3,$4,$5,$6) returning id', [sid, ip, b.status, hostname, b.description ?? null, b.tags ?? []])).rows[0].id
+    const id = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, description, tags, is_gateway) values ($1,$2,$3,$4,$5,$6,$7) returning id', [sid, ip, b.status, hostname, b.description ?? null, b.tags ?? [], b.status === 'gateway'])).rows[0].id
     await ensureLabels(b.tags, cl)
     const zone = hostname ? await resolveDnsZone(cl, sid, b.dns_zone_id) : null
     if (zone && hostname) await syncDns(cl, ip!, hostname, zone)
@@ -298,9 +334,10 @@ route('PUT', '/ipam/addresses/:id', 'operator', async (c) => {
     const cur = (await cl.query('select subnet_id from addresses where id = $1 for update', [id])).rows[0]
     if (!cur) fail(404, 'not_found')
     if (b.hostname) await checkHostnameRule(cl, cur.subnet_id, b.hostname)
-    await cl.query(`update addresses set status = coalesce($2, status), hostname = case when $3::boolean then $4 else hostname end, mac = case when $5::boolean then $6::macaddr else mac end,
+    // drapeau passerelle : le statut « passerelle » le pose, un autre statut l'enlève, sinon il garde la valeur demandée (ou l'ancienne)
+    await cl.query(`update addresses set status = coalesce($2, status), is_gateway = case when coalesce($2::text, status) = 'gateway' then true when $10::boolean is not null then $10 when $2::text is not null and status = 'gateway' then false else is_gateway end, hostname = case when $3::boolean then $4 else hostname end, mac = case when $5::boolean then $6::macaddr else mac end,
       description = coalesce($7, description), owner = coalesce($8, owner), tags = coalesce($9, tags), updated_at = now() where id = $1`,
-      [id, b.status ?? null, b.hostname !== undefined, b.hostname ?? null, b.mac !== undefined, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null, b.tags ?? null])
+      [id, b.status ?? null, b.hostname !== undefined, b.hostname ?? null, b.mac !== undefined, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null, b.tags ?? null, b.is_gateway ?? null])
     await ensureLabels(b.tags, cl)
     return syncReservation(cl, id)
   })
@@ -381,18 +418,21 @@ route('DELETE', '/ipam/pools/:id', 'operator', async (c) => {
 route('GET', '/ipam/addresses', 'viewer', async (c) => {
   const sp = qint(c, 'space_id', 0), sid = qint(c, 'subnet_id', 0), fam = qint(c, 'family', 0), q = qstr(c, 'q', 100), st = qstr(c, 'status')
   const limit = qint(c, 'limit', 100, 1, 500), offset = qint(c, 'offset', 0, 0, 10_000_000)
-  const args = [sp, sid, fam, q ? `%${q.replace(/[%_\\]/g, '\\$&')}%` : null, st ?? null, labelFilter(c)]
+  const args = [sp, sid, fam, q ? `%${q.replace(/[%_\\]/g, '\\$&')}%` : null, st ?? null, labelFilter(c), JSON.stringify(await gatewayList(sid))]
   // adresses de l'IPAM + baux DHCP actifs qui n'y figurent pas (lignes « bail », en lecture seule : id nul)
-  const withAll = `with lse as (${await leaseRows()}), r as (
-    select a.id, a.subnet_id, a.ip, a.status::text as status, a.hostname, a.mac::text as mac, a.description, a.owner, coalesce(a.tags, '{}') as tags, a.reachable, a.checked_at from addresses a
+  const withAll = `with lse as (${await leaseRows()}), ${GW_CTE(7)}, r as (
+    select a.id, a.subnet_id, a.ip, a.status::text as status, a.hostname, a.mac::text as mac, a.description, a.owner, coalesce(a.tags, '{}') as tags, a.reachable, a.checked_at, (a.is_gateway or a.status = 'gateway') as is_gateway, ${GW_OF('a')} as gw from addresses a
     union all
-    select null::int, l.subnet_id, l.ip, 'lease', l.hostname, regexp_replace(encode(l.hwaddr, 'hex'), '(..)(?=.)', '\\1:', 'g'), null::text, null::text, '{}'::text[], null::boolean, null::timestamptz
-      from lse l where l.subnet_id is not null and not exists (select 1 from addresses a where a.ip = l.ip and a.subnet_id = l.subnet_id))`
+    select null::int, l.subnet_id, l.ip, 'lease', l.hostname, regexp_replace(encode(l.hwaddr, 'hex'), '(..)(?=.)', '\\1:', 'g'), null::text, null::text, '{}'::text[], null::boolean, null::timestamptz, false, null::text
+      from lse l where l.subnet_id is not null and not exists (select 1 from addresses a where a.ip = l.ip and a.subnet_id = l.subnet_id)
+    union all
+    select null::int, g.subnet_id, g.ip, 'gateway', null::text, null::text, null::text, null::text, '{}'::text[], null::boolean, null::timestamptz, false, g.src
+      from gw g where not exists (select 1 from addresses a where a.ip = g.ip and a.subnet_id = g.subnet_id))`
   const where = `where ($1::int = 0 or s.space_id = $1) and ($2::int = 0 or r.subnet_id = $2) and ($3::int = 0 or family(r.ip) = $3)
-    and ($4::text is null or r.hostname ilike $4 or host(r.ip) like $4 or r.mac ilike $4 or r.description ilike $4 or r.owner ilike $4 or exists (select 1 from unnest(r.tags) x where x ilike $4)) and ($5::text is null or r.status = $5)
+    and ($4::text is null or r.hostname ilike $4 or host(r.ip) like $4 or r.mac ilike $4 or r.description ilike $4 or r.owner ilike $4 or exists (select 1 from unnest(r.tags) x where x ilike $4)) and ($5::text is null or (case when $5 = 'gw' then r.gw is not null else r.status = $5 end))
     and (cardinality($6::text[]) = 0 or r.tags @> $6::text[])`
   const total = (await one<any>(`${withAll} select count(*)::int as n from r join subnets s on s.id = r.subnet_id ${where}`, args)).n
-  const items = await query(`${withAll} select r.id, r.subnet_id, host(r.ip) as ip, r.status, r.hostname, r.mac, r.description, r.owner, r.tags, r.reachable, r.checked_at, text(s.cidr) as cidr, s.name as network, sp.name as space
+  const items = await query(`${withAll} select r.id, r.subnet_id, host(r.ip) as ip, r.status, r.hostname, r.mac, r.description, r.owner, r.tags, r.reachable, r.checked_at, r.is_gateway, r.gw, text(s.cidr) as cidr, s.name as network, sp.name as space
     from r join subnets s on s.id = r.subnet_id join ipam_spaces sp on sp.id = s.space_id ${where} order by s.space_id, r.ip limit ${limit} offset ${offset}`, args)
   const al = await aliasNames((items as any[]).map((i) => i.ip))
   return { items: (items as any[]).map((i) => ({ ...i, aliases: al.get(normIp(i.ip) ?? '') ?? [] })), total }

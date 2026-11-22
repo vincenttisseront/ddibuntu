@@ -97,7 +97,7 @@ Working principles: a feature is only "done" when a real test has proven it; a f
 
 ## Cluster (under construction — iteration 5 of 6)
 
-Two data nodes + a witness, on a dedicated network; architecture and decisions: [docs/ARCHITECTURE-CLUSTER.md](docs/ARCHITECTURE-CLUSTER.md).
+Two data nodes + a witness, on a dedicated network (every data node holds the data; the witness is just an etcd member without data, optional, but **without it a two-node cluster tolerates no failure**: losing one node loses the quorum); architecture and decisions: [docs/ARCHITECTURE-CLUSTER.md](docs/ARCHITECTURE-CLUSTER.md).
 
 ```
 # node 1 (the one that already holds the database)
@@ -117,4 +117,4 @@ Add the witness first, then the second data node. As soon as two data nodes exis
 
 ## License
 
-**To be defined**: no `LICENSE` file is provided until the choice is made; without a license, all rights are reserved. Third-party components: [OPEN-SOURCE.md](OPEN-SOURCE.md).
+DDI-Buntu is free software under the **GNU AGPL v3 or later** (`AGPL-3.0-or-later`): see [LICENSE](LICENSE). Copyright (C) 2026 Vincent Tisseront. The license and the list of open-source components ([OPEN-SOURCE.md](OPEN-SOURCE.md)) also ship on the appliance and can be read in the console (**System › About**). Because the AGPL covers services reached over a network, a modified version offered to users must give them access to its source.

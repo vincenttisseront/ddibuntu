@@ -1,7 +1,7 @@
 // Authentification par annuaire LDAP générique (OpenLDAP, FreeIPA, 389-ds, Samba…), en complément d'Active Directory (ad.ts).
 // Principe : liaison de service → recherche de l'utilisateur (filtre à gabarit) → groupes (attribut memberOf OU recherche de groupes) →
 // liaison avec le mot de passe de l'utilisateur sur une connexion distincte. Le mot de passe de liaison n'est jamais renvoyé ni journalisé.
-import { delegatedSpaces, escapeFilter } from './ad'
+import { delegatedSpaces, escapeFilter, isNetworkError } from './ad'
 import type { LdapLike } from './ad'
 import type { Role } from './auth'
 import { normDn } from './text'
@@ -41,7 +41,7 @@ export async function authenticateLdap(username: string, password: string, s: Ld
   for (const url of s.urls) {
     const svc = factory(url)
     try {
-      try { await svc.bind(s.bindDn, bindPassword) } catch { lastErr = 'service_bind'; continue }
+      try { await svc.bind(s.bindDn, bindPassword) } catch (e) { lastErr = isNetworkError(e) ? 'unreachable' : 'service_bind'; continue }
       const attrs = ['dn', s.userAttr, s.displayAttr, ...(s.groupMode === 'memberOf' ? ['memberOf'] : [])]
       const found = await svc.search(s.baseDn, { scope: 'sub', filter: fill(s.userFilter, { u: username }), attributes: attrs, sizeLimit: 2 })
       if (found.searchEntries.length !== 1) return { ok: false, reason: 'not_found' }
