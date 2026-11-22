@@ -1,0 +1,7 @@
+---
+# Inventaire de l'instance de validation : UNE appliance, autonome (hors cluster), dédiée aux versions candidates.
+# Elle doit joindre api.github.com et github.com en 443 ; AWX doit la joindre en SSH (compte avec sudo, identifiant « Machine »).
+appliance_dev:
+  hosts:
+    appliance-dev.exemple.test:
+      ansible_user: ansible

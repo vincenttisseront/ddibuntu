@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# ddibuntu-selftest — tests de fumée de CE nœud après une installation ou une mise à jour. Lecture seule, aucun secret collecté.
+#   ddibuntu-selftest [--expect-version X.Y.Z] [--wait SECONDES] [--json]
+#     --expect-version  la version attendue (fichiers VERSION, état de la mise à jour, version servie par la console)
+#     --wait            attend jusqu'à SECONDES que la console réponde avant de lancer les contrôles (redémarrage après mise à jour)
+#     --json            résultat en JSON sur la sortie standard : {"ok":bool,"version":…,"checks":[{"name","result","detail"}]}
+# Contrôles : version installée, état de la mise à jour, santé et version de la console, services attendus (ddibuntu-health),
+# PostgreSQL, espace disque, certificat de la console, configurations BIND et Kea, réponse DNS d'une zone primaire.
+# Utilisé par l'instance de validation de la chaîne de publication (deploy/awx, docs/CI-CD.md) ; utilisable à la main.
+# Code de retour : 0 = tout est bon ; 1 = au moins un contrôle en échec ; 2 = usage.
+set -u
+ROOT="${DDI_ROOT:-}"
+LIBDIR="${DDI_LIBDIR:-$ROOT/usr/local/lib/ddibuntu}"
+CONFDIR="$ROOT/etc/ddibuntu"
+STATEDIR="$ROOT/var/lib/ddibuntu"
+HEALTH_CMD="${DDI_HEALTH_CMD:-$ROOT/usr/local/sbin/ddibuntu-health}"
+NAMED_CHECKCONF="${DDI_NAMED_CHECKCONF:-named-checkconf}"
+NAMED_CONF="${DDI_NAMED_CONF:-$ROOT/etc/bind/named.conf}"
+KEA="${DDI_KEA_DHCP4:-kea-dhcp4}"
+KEA_CONF="${DDI_KEA_CONF:-$ROOT/etc/kea/kea-dhcp4.conf}"
+DIG="${DDI_DIG:-dig}"
+URL="${DDI_SELFTEST_URL:-}"
+
+expect="" wait=0 json=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --expect-version) expect="${2:-}"; shift 2 || exit 2 ;;
+    --wait) wait="${2:-}"; shift 2 || exit 2 ;;
+    --json) json=1; shift ;;
+    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "ddibuntu-selftest: option inconnue : $1" >&2; exit 2 ;;
+  esac
+done
+[ -z "$expect" ] || [[ "$expect" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "ddibuntu-selftest: version attendue invalide : $expect" >&2; exit 2; }
+[[ "$wait" =~ ^[0-9]{1,4}$ ]] || { echo "ddibuntu-selftest: --wait attend un nombre de secondes" >&2; exit 2; }
+[ -n "${DDI_TEST:-}" ] || [ "$(id -u)" -eq 0 ] || { echo "ddibuntu-selftest: à lancer en root" >&2; exit 2; }
+
+if [ -z "$URL" ]; then
+  port="$(sed -n 's/^NITRO_PORT=\([0-9]*\)$/\1/p' "$CONFDIR/console.env" 2>/dev/null | head -1)"
+  URL="https://127.0.0.1:${port:-443}"
+fi
+
+R=""   # résultats : « nom<TAB>ok|ko|skip<TAB>détail »
+res() { R+="$1"$'\t'"$2"$'\t'"$(printf '%s' "$3" | tr '\t\n' '  ' | cut -c1-300)"$'\n'; }
+get() { curl -ksS --max-time 8 "$URL$1" 2>/dev/null; }
+jfield() { python3 -c 'import json,sys
+try: v=json.loads(sys.stdin.read()).get(sys.argv[1])
+except Exception: v=None
+print("" if v is None else v)' "$1" 2>/dev/null; }
+
+# ---- attente de la console (après une mise à jour, la console et les services redémarrent)
+end=$(( $(date +%s) + wait ))
+while :; do
+  hs="$(get /api/health | jfield status)"
+  case "$hs" in ok|waiting_leader) break ;; esac
+  [ "$(date +%s)" -lt "$end" ] || break
+  sleep 3
+done
+
+# ---- version
+cur="$(tr -d '\n' < "$LIBDIR/VERSION" 2>/dev/null)"
+inst="$(tr -d '\n' < "$STATEDIR/installed-version" 2>/dev/null)"
+if [ -z "$cur" ]; then res version ko "fichier VERSION illisible"
+elif [ -n "$expect" ] && [ "$cur" != "$expect" ]; then res version ko "installée $cur, attendue $expect"
+elif [ -n "$inst" ] && [ "$inst" != "$cur" ]; then res version ko "VERSION $cur mais installed-version $inst"
+else res version ok "$cur"; fi
+
+# ---- état de la dernière mise à jour en ligne
+if [ -f "$STATEDIR/update-status.json" ]; then
+  ust="$(jfield state < "$STATEDIR/update-status.json")"; ucur="$(jfield current < "$STATEDIR/update-status.json")"
+  if [ "$ust" = failed ]; then res update-state ko "dernière mise à jour en échec : $(jfield error < "$STATEDIR/update-status.json")"
+  elif [ "$ust" != "done" ] && [ "$ust" != "idle" ]; then res update-state ko "mise à jour en cours ou interrompue (état : ${ust:-inconnu})"
+  elif [ -n "$expect" ] && [ -n "$ucur" ] && [ "$ucur" != "$expect" ]; then res update-state ko "état « current » = $ucur, attendu $expect"
+  else res update-state ok "${ust:-idle}"; fi
+else res update-state skip "aucune mise à jour en ligne effectuée"; fi
+
+# ---- console : santé, puis version réellement servie (prouve que le processus en marche est le nouveau)
+case "$hs" in
+  ok) res console-health ok "$URL/api/health" ;;
+  waiting_leader)   # normal pour un secondaire de cluster seulement ; un nœud autonome qui « attend un leader » est en panne
+    if [ -f "${DDI_CLUSTER_CONF:-$ROOT/etc/ddibuntu-cluster/cluster.conf}" ]; then res console-health ok "nœud secondaire : attend les migrations du leader"
+    else res console-health ko "la console attend un leader alors que ce nœud n'est pas dans un cluster"; fi ;;
+  *) w=""; [ "$wait" -eq 0 ] || w=" après $wait s"; res console-health ko "pas de réponse saine de $URL/api/health$w" ;;
+esac
+cv="$(get /api/auth/providers | jfield version)"
+want="${expect:-$cur}"
+if [ -z "$cv" ]; then res console-version ko "version non annoncée par la console"
+elif [ "$cv" != "$want" ]; then res console-version ko "la console sert $cv, attendu $want"
+else res console-version ok "$cv"; fi
+
+# ---- services, base, disques, certificats (photographie de ddibuntu-health)
+hj="$("$HEALTH_CMD" show 2>/dev/null)" || hj=""
+expected_named=0 expected_kea=0
+hl=""
+[ -z "$hj" ] || hl="$(printf '%s' "$hj" | python3 -c '
+import json, sys, time
+d = json.load(sys.stdin)
+for s in d.get("services", []):
+    if s.get("expected"):
+        print("service:%s\t%s\t%s" % (s["name"], "ok" if s.get("state") == "active" else "ko", s.get("state")))
+pg = d.get("postgres")
+if pg is not None:
+    print("postgres\t%s\t%s" % ("ok" if pg else "ko", "accepte les connexions" if pg else "ne répond pas"))
+for k in d.get("disks", []):
+    pct = 100.0 * k["availBytes"] / k["sizeBytes"] if k.get("sizeBytes") else 0
+    print("disk:%s\t%s\t%.0f %% libre" % (k["mount"], "ok" if pct >= 5 else "ko", pct))
+for c in d.get("certs", []):
+    left = (c["notAfter"] - time.time()) / 86400
+    print("cert:%s\t%s\t%s" % (c["name"], "ok" if left > 0 else "ko", "expire dans %d j" % left if left > 0 else "EXPIRÉ"))
+' 2>/dev/null)" || hl=""
+# photographie absente, illisible ou sans aucun service : échec (jamais « rien à contrôler, donc bon »)
+if ! printf '%s' "$hl" | grep -q '^service:'; then res health ko "photographie de ddibuntu-health absente, illisible ou sans service"
+else
+  while IFS=$'\t' read -r n r d; do
+    [ -n "$n" ] || continue
+    res "$n" "$r" "$d"
+    [ "$n" = service:dns ] && expected_named=1
+    [ "$n" = service:dhcp ] && expected_kea=1
+  done <<< "$hl"
+fi
+
+# ---- configurations effectivement en place (outils officiels), puis réponse DNS réelle
+if [ "$expected_named" = 1 ]; then
+  if out="$("$NAMED_CHECKCONF" "$NAMED_CONF" 2>&1)"; then res bind-config ok "$NAMED_CONF"; else res bind-config ko "$out"; fi
+  zone="$("$NAMED_CHECKCONF" -l "$NAMED_CONF" 2>/dev/null | awk '$4 == "primary" || $4 == "master" {print $1; exit}')"
+  # DNS actif : une réponse réelle est exigée (l'instance de validation porte au moins une zone primaire)
+  if [ -z "$zone" ]; then res dns-answer ko "aucune zone primaire : réponse DNS invérifiable"
+  elif ! command -v "$DIG" >/dev/null 2>&1; then res dns-answer ko "dig absent : réponse DNS invérifiable"
+  else
+    soa="$("$DIG" +short +time=2 +tries=2 @127.0.0.1 "$zone" SOA 2>/dev/null | head -1)"
+    if [ -n "$soa" ]; then res dns-answer ok "$zone SOA"; else res dns-answer ko "pas de SOA pour $zone sur 127.0.0.1"; fi
+  fi
+else res bind-config skip "DNS non actif sur ce nœud"; fi
+if [ "$expected_kea" = 1 ]; then
+  if out="$("$KEA" -t "$KEA_CONF" 2>&1)"; then res kea-config ok "$KEA_CONF"; else res kea-config ko "$(printf '%s' "$out" | tail -3)"; fi
+else res kea-config skip "DHCP non actif sur ce nœud"; fi
+
+# ---- restitution
+if [ "$json" = 1 ]; then
+  RES="$R" VER="$cur" python3 -c '
+import json, os
+checks = [dict(zip(("name", "result", "detail"), l.split("\t", 2))) for l in os.environ["RES"].splitlines() if l]
+print(json.dumps({"ok": all(c["result"] != "ko" for c in checks), "version": os.environ["VER"], "checks": checks}, ensure_ascii=False))'
+else
+  printf '%s' "$R" | while IFS=$'\t' read -r n r d; do printf '  %-4s %-22s %s\n' "$r" "$n" "$d"; done
+fi
+if printf '%s' "$R" | cut -f2 | grep -qx ko; then exit 1; fi
+exit 0

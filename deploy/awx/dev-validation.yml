@@ -1,0 +1,176 @@
+---
+# Validation d'une version candidate sur l'instance de dev — étape intermédiaire de la chaîne de publication (docs/CI-CD.md).
+#
+# AWX lance ce playbook selon un planning (toutes les 15 min par exemple). À chaque passage :
+#   1. il cherche sur GitHub la pré-version la plus récente qui attend un verdict (bandeau « validation:pending ») ; s'il n'y en a pas, il s'arrête ;
+#   2. il installe cette version sur l'appliance de dev avec son propre mécanisme de mise à jour (canal « prerelease » : signature Ed25519 et
+#      empreinte vérifiées, retour arrière automatique si la console ne redémarre pas) — on teste donc aussi la mise à jour elle-même ;
+#   3. il lance les tests de fumée embarqués (ddibuntu-selftest) ;
+#   4. il envoie le verdict à GitHub (repository_dispatch « dev-validation ») : promote.yml publie la release, ou la marque rejetée.
+# Aucune connexion entrante vers le réseau de l'instance de dev : AWX ne fait que des requêtes sortantes vers api.github.com.
+#
+# Identifiants (AWX) : une machine (SSH + become) pour l'appliance de dev ; le type d'identifiants credential-type-github.yml
+# (variables d'environnement GITHUB_TOKEN et GITHUB_REPOSITORY). Voir deploy/awx/README.md.
+- name: Validation de la version candidate sur l'instance de dev
+  hosts: appliance_dev
+  gather_facts: false
+  become: true
+  vars:
+    github_api: https://api.github.com
+    github_repository: "{{ lookup('ansible.builtin.env', 'GITHUB_REPOSITORY') }}"
+    github_token: "{{ lookup('ansible.builtin.env', 'GITHUB_TOKEN') }}"
+    github_headers:
+      Accept: application/vnd.github+json
+      Authorization: "Bearer {{ github_token }}"
+      X-GitHub-Api-Version: "2022-11-28"
+    update_timeout: 2400        # secondes accordées à la mise à jour en ligne (téléchargement, sauvegarde, migrations)
+    selftest_wait: 300          # secondes accordées à la console pour redémarrer avant les tests de fumée
+    awx_public_url: ""          # adresse https de l'interface AWX : un lien vers le travail accompagne le verdict (facultatif)
+    # chemins sur l'appliance (modifiés seulement par le test tests/b44-awx-validation.sh)
+    appliance_update_conf: /etc/ddibuntu/update.conf
+    appliance_version_file: /usr/local/lib/ddibuntu/VERSION
+    appliance_bundle_hash: /var/lib/ddibuntu/installed-bundle.sha256
+    appliance_selfupdate: /usr/local/sbin/ddibuntu-selfupdate
+    appliance_selftest: /usr/local/sbin/ddibuntu-selftest
+  tasks:
+    - name: Paramètres
+      ansible.builtin.assert:
+        that:
+          - github_repository is match('^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
+          - github_token | length > 0
+          - ansible_play_hosts_all | length == 1
+        fail_msg: >-
+          GITHUB_REPOSITORY et GITHUB_TOKEN doivent venir des identifiants AWX, et l'inventaire ne doit contenir qu'UNE appliance
+          de dev (groupe appliance_dev).
+        quiet: true
+
+    - name: Releases du dépôt (pré-versions comprises)
+      ansible.builtin.uri:
+        url: "{{ github_api }}/repos/{{ github_repository }}/releases?per_page=30"
+        headers: "{{ github_headers }}"
+        return_content: true
+      register: releases
+      delegate_to: localhost
+      become: false
+      no_log: true              # l'en-tête porte le jeton
+
+    - name: Version candidate en attente de verdict
+      ansible.builtin.set_fact:
+        candidate: >-
+          {{ releases.json | selectattr('prerelease') | rejectattr('draft') | selectattr('body', 'string')
+             | selectattr('body', 'search', '<!-- validation:pending -->') | first | default({}) }}
+
+    - name: Rien à valider
+      when: candidate == {}
+      block:
+        - name: Aucune version candidate en attente
+          ansible.builtin.debug:
+            msg: "Aucune version candidate n'attend de verdict."
+        - name: Fin
+          ansible.builtin.meta: end_play
+
+    - name: Numéro de la version candidate
+      ansible.builtin.set_fact:
+        candidate_version: "{{ candidate.tag_name | regex_replace('^v', '') }}"
+        verdict: failure
+        report: ""
+        bundle_sha256: ""
+
+    - name: Contrôle du numéro
+      ansible.builtin.assert:
+        that: candidate_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+        quiet: true
+
+    - name: Installation et tests de fumée
+      block:
+        - name: Canal « prerelease » (l'instance de dev reçoit les versions candidates)
+          ansible.builtin.lineinfile:
+            path: "{{ appliance_update_conf }}"
+            regexp: '^#?CHANNEL='
+            line: CHANNEL=prerelease
+            mode: "0644"
+
+        - name: Version installée
+          ansible.builtin.slurp:
+            src: "{{ appliance_version_file }}"
+          register: installed
+
+        - name: Mise à jour en ligne vers la version candidate
+          ansible.builtin.command:
+            argv: ["{{ appliance_selfupdate }}", apply, "{{ candidate_version }}"]
+          when: (installed.content | b64decode | trim) != candidate_version
+          async: "{{ update_timeout }}"
+          poll: 15
+          changed_when: true
+
+        - name: Tests de fumée (ddibuntu-selftest)
+          ansible.builtin.command:
+            argv: ["{{ appliance_selftest }}", --expect-version, "{{ candidate_version }}", --wait, "{{ selftest_wait }}", --json]
+          register: selftest
+          changed_when: false
+          failed_when: false
+
+        - name: Empreinte de l'archive installée (preuve pour la promotion)
+          ansible.builtin.slurp:
+            src: "{{ appliance_bundle_hash }}"
+          register: installed_bundle
+
+        - name: Résultat des tests de fumée
+          ansible.builtin.set_fact:
+            bundle_sha256: "{{ (installed_bundle.content | b64decode).split() | first }}"
+            selftest_json: "{{ selftest.stdout | from_json }}"
+
+        # Le rapport part dans les notes de version et les issues d'un dépôt PUBLIC : noms et résultats des contrôles seulement,
+        # jamais leurs détails (noms de zones, chemins, adresses) ni le nom de l'hôte. Le détail complet reste dans la sortie du travail AWX.
+        - name: Verdict
+          ansible.builtin.set_fact:
+            verdict: "{{ 'success' if (selftest.rc == 0 and selftest_json.ok) else 'failure' }}"
+            report: >-
+              {{ 'ddibuntu-selftest (version ' ~ selftest_json.version ~ ')' ~ '\n'
+                 ~ (selftest_json.checks | map(attribute='result') | zip(selftest_json.checks | map(attribute='name'))
+                    | map('join', '  ') | join('\n')) }}
+
+        - name: Détail des tests de fumée (sortie du travail AWX uniquement)
+          ansible.builtin.debug:
+            msg: "{{ selftest_json.checks | map(attribute='result') | zip(selftest_json.checks | map(attribute='name'),
+                     selftest_json.checks | map(attribute='detail')) | map('join', '  ') | list }}"
+
+      rescue:
+        - name: Échec de l'installation ou des tests
+          ansible.builtin.set_fact:
+            verdict: failure
+            # motif court : dernière ligne d'erreur de l'outil (messages de ddibuntu-selfupdate : génériques), sans sortie brute
+            report: >-
+              {{ 'Échec de l\'étape « ' ~ (ansible_failed_task.name | default('?')) ~ ' »' ~ '\n'
+                 ~ (((ansible_failed_result.stderr | default('')) | trim).split('\n') | last
+                    | default(ansible_failed_result.msg | default(''), true))[:300] }}
+
+    - name: Verdict envoyé à GitHub (promote.yml)
+      ansible.builtin.uri:
+        url: "{{ github_api }}/repos/{{ github_repository }}/dispatches"
+        method: POST
+        headers: "{{ github_headers }}"
+        body_format: json
+        body:
+          event_type: dev-validation
+          client_payload:
+            version: "{{ candidate_version }}"
+            result: "{{ verdict }}"
+            bundle_sha256: "{{ bundle_sha256 }}"
+            report: "{{ report[:20000] }}"
+            job_url: >-
+              {{ (awx_public_url | regex_replace('/+$', '')) ~ '/#/jobs/playbook/' ~ awx_job_id ~ '/output'
+                 if (awx_public_url is match('^https://') and awx_job_id is defined) else '' }}
+        status_code: 204
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Bilan
+      ansible.builtin.debug:
+        msg: "{{ ['Version candidate ' ~ candidate_version ~ ' : ' ~ verdict] + report.split('\n') }}"
+
+    - name: Le travail AWX échoue si la version candidate est rejetée
+      ansible.builtin.fail:
+        msg: "Version candidate {{ candidate_version }} rejetée (le détail est dans l'issue ouverte sur GitHub)."
+      when: verdict != 'success'

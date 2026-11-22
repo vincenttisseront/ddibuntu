@@ -6,7 +6,7 @@ des tests unitaires de la console ; la configuration est dans `sonar-project.pro
 ## Mise en route (une fois)
 1. SonarQube Cloud → *My Account → Security* : créer un jeton, puis GitHub → *Settings → Secrets and variables → Actions* : secret **`SONAR_TOKEN`**.
 2. SonarQube Cloud → projet → *Administration → Analysis Method* : **désactiver « Automatic Analysis »** (l'analyse automatique et l'analyse CI se contredisent).
-3. Après un premier passage vert : activer l'attente de la porte qualité (`sonar.qualitygate.wait=true` dans `sonar-project.properties`) pour qu'une régression bloque la CI.
+3. La porte qualité est **bloquante** depuis la 0.23.0 : le job `sonar` passe `-Dsonar.qualitygate.wait=true` et échoue si la porte échoue (le contrôle requis `ci-ok` aussi). Vue d'ensemble de la CI : [CI-CD.md](CI-CD.md).
 Sans le secret, le job s'exécute (tests + couverture) mais saute l'analyse : forks et premier démarrage ne cassent rien.
 
 ## État initial (13/11/2026, analyse automatique, 656 problèmes ouverts)

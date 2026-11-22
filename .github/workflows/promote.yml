@@ -1,0 +1,147 @@
+# Publication, étape 2/2 — PROMOTION. L'instance de validation (playbook AWX deploy/awx/dev-validation.yml) installe la version candidate,
+# lance ses tests de fumée (ddibuntu-selftest) puis envoie un événement « dev-validation » (repository_dispatch) :
+#   { version, result: success|failure, bundle_sha256, report, job_url }
+# Succès : la pré-version devient la release publique (« latest ») SANS reconstruction, à condition que l'empreinte de l'archive installée
+# sur l'instance de dev soit celle du SHA256SUMS signé de la release. Échec : la version candidate est marquée rejetée et une issue est ouverte.
+# Chaque jour, une veille signale les versions candidates restées plus de 24 h sans verdict (instance de dev arrêtée, AWX en panne…).
+# workflow_dispatch : même contrôle, saisi à la main (procédure de secours) : depuis main, par un administrateur du dépôt, tracé dans les notes.
+name: promote
+on:
+  repository_dispatch:
+    types: [dev-validation]
+  workflow_dispatch:
+    inputs:
+      version: { description: "Version candidate (X.Y.Z)", required: true, type: string }
+      result: { description: "Verdict", required: true, type: choice, options: [success, failure] }
+      bundle_sha256: { description: "Empreinte de /var/lib/ddibuntu/installed-bundle.sha256 sur l'instance de dev (succès)", required: false, type: string }
+      report: { description: "Rapport (résumé des tests)", required: false, type: string }
+  schedule:
+    - cron: '41 6 * * *'
+concurrency: { group: "promote-${{ github.event.client_payload.version || inputs.version || 'veille' }}", cancel-in-progress: false }
+permissions:
+  contents: read
+jobs:
+  verdict:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+    env:
+      # le contenu de l'événement ne passe QUE par des variables d'environnement (jamais interpolé dans un script)
+      V: ${{ github.event.client_payload.version || inputs.version }}
+      RESULT: ${{ github.event.client_payload.result || inputs.result }}
+      BUNDLE_SHA256: ${{ github.event.client_payload.bundle_sha256 || inputs.bundle_sha256 }}
+      REPORT: ${{ github.event.client_payload.report || inputs.report }}
+      JOB_URL: ${{ github.event.client_payload.job_url }}
+      SOURCE: ${{ github.event_name }}
+      ACTOR: ${{ github.actor }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false, sparse-checkout: src/rootfs/etc/ddibuntu/update-pubkey.pem, sparse-checkout-cone-mode: false }
+      - name: Verdict manuel — depuis main et par un administrateur seulement
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::verdict manuel refusé hors de main"; exit 1; }
+          perm="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$ACTOR/permission" --jq .permission)"
+          [ "$perm" = admin ] || { echo "::error::verdict manuel réservé aux administrateurs du dépôt ($ACTOR : $perm)"; exit 1; }
+      - name: Contrôle du verdict reçu
+        run: |
+          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version invalide"; exit 1; }
+          [[ "$RESULT" =~ ^(success|failure)$ ]] || { echo "::error::résultat invalide (success ou failure)"; exit 1; }
+          if [ "$RESULT" = success ]; then [[ "$BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::empreinte de l'archive installée absente ou invalide"; exit 1; }; fi
+          [[ -z "$BUNDLE_SHA256" || "$BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::empreinte invalide"; exit 1; }
+          [[ -z "$JOB_URL" || "$JOB_URL" =~ ^https://[A-Za-z0-9.:/_?=\&%-]{1,300}$ ]] || { echo "::error::adresse du travail AWX invalide"; exit 1; }
+          gh release view "v$V" --repo "$GITHUB_REPOSITORY" --json isPrerelease,isDraft,body,url > rel.json
+          python3 - <<'PY'
+          import json, sys
+          r = json.load(open('rel.json'))
+          if r['isDraft'] or not r['isPrerelease']:
+              print('::notice::v%s n\'est pas une version candidate (déjà publiée ou brouillon) : rien à faire' % __import__('os').environ['V']); open('skip', 'w').close()
+          elif '<!-- validation:pending -->' not in (r['body'] or ''):
+              print('::notice::verdict déjà rendu pour cette version candidate : rien à faire'); open('skip', 'w').close()
+          PY
+      - name: Signature de SHA256SUMS et empreinte de l'archive installée
+        if: hashFiles('skip') == ''
+        run: |
+          gh release download "v$V" --repo "$GITHUB_REPOSITORY" -p SHA256SUMS -p SHA256SUMS.sig -D chk
+          openssl pkeyutl -verify -pubin -inkey src/rootfs/etc/ddibuntu/update-pubkey.pem -rawin -in chk/SHA256SUMS -sigfile chk/SHA256SUMS.sig
+          want="$(awk -v n="ddibuntu-update-$V.tar.gz" '$2 == n {print $1; exit}' chk/SHA256SUMS)"
+          [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::archive absente de SHA256SUMS"; exit 1; }
+          if [ "$RESULT" = success ] && [ "$BUNDLE_SHA256" != "$want" ]; then
+            echo "::error::l'instance de dev a installé une autre archive ($BUNDLE_SHA256) que celle de la release ($want) : promotion refusée"; exit 1
+          fi
+          # un rejet qui porte l'empreinte d'une AUTRE archive ne concerne pas cette release : ignoré, la release reste en attente
+          if [ "$RESULT" = failure ] && [ -n "$BUNDLE_SHA256" ] && [ "$BUNDLE_SHA256" != "$want" ]; then
+            echo "::error::rejet portant l'empreinte d'une autre archive ($BUNDLE_SHA256) : ignoré"; exit 1
+          fi
+          echo "WANT=$want" >> "$GITHUB_ENV"
+      - name: Ne jamais remplacer une version publiée plus récente
+        if: hashFiles('skip') == '' && env.RESULT == 'success'
+        run: |
+          latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"; latest="${latest#v}"
+          if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$V" "$latest" | sort -V | tail -1)" != "$V" ]; then
+            echo "::error::v$V est plus ancienne que la release publiée v$latest : promotion refusée"; exit 1
+          fi
+      - name: Notes de version avec le verdict
+        if: hashFiles('skip') == ''
+        run: |
+          python3 - <<'PY'
+          import json, os, re, time
+          e = os.environ
+          body = json.load(open('rel.json'))['body'] or ''
+          when = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())
+          how = 'saisi à la main par %s' % e['ACTOR'] if e['SOURCE'] == 'workflow_dispatch' else "rendu par l'instance de validation"
+          link = (' — [rapport](%s)' % e['JOB_URL']) if e.get('JOB_URL') else ''
+          if e['RESULT'] == 'success':
+              block = '<!-- validation:passed -->\n> ✅ Validée sur l\'instance de dev le %s (verdict %s%s). Archive : `%s`\n<!-- /validation -->' % (when, how, link, e['WANT'])
+          else:
+              block = '<!-- validation:failed -->\n> ❌ **Rejetée** par la validation sur l\'instance de dev le %s (verdict %s%s). Ne pas installer.\n<!-- /validation -->' % (when, how, link)
+          body = re.sub(r'<!-- validation:pending -->.*?<!-- /validation -->', lambda m: block, body, count=1, flags=re.S)
+          open('notes.md', 'w').write(body)
+          PY
+      - name: Promotion en release publique
+        if: hashFiles('skip') == '' && env.RESULT == 'success'
+        run: |
+          gh release edit "v$V" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest --notes-file notes.md
+          echo "### v$V publiée : les appliances du canal stable la verront à leur prochaine recherche" >> "$GITHUB_STEP_SUMMARY"
+      - name: Version candidate rejetée
+        if: hashFiles('skip') == '' && env.RESULT == 'failure'
+        run: |
+          gh release edit "v$V" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          {
+            echo "La version candidate **v$V** a été rejetée par l'instance de validation : elle reste en pré-version, les appliances du canal stable ne la verront pas."
+            echo
+            [ -z "$JOB_URL" ] || echo "Travail AWX : $JOB_URL"
+            echo
+            echo '```'
+            printf '%s\n' "${REPORT:-(aucun rapport)}" | head -c 30000
+            echo '```'
+            echo
+            echo "Corriger, puis publier une nouvelle version (X.Y.Z+1) : un numéro de version n'est jamais reconstruit."
+          } > issue.md
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "Version candidate v$V rejetée par la validation dev" --body-file issue.md
+          echo "::error::v$V rejetée par l'instance de validation"; exit 1
+
+  # Veille : versions candidates sans verdict depuis plus de 24 h
+  stale:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env: { GH_TOKEN: '${{ github.token }}' }
+    steps:
+      - run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" --jq '.[] | select(.prerelease and (.draft | not) and ((.body // "") | contains("<!-- validation:pending -->"))) | select((now - (.published_at | fromdateiso8601)) > 86400) | .tag_name' > stale.txt
+          while IFS= read -r t; do
+            [[ "$t" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+            title="Version candidate $t sans verdict de l'instance de validation"
+            if [ -z "$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[].number')" ]; then
+              printf 'Publiée en pré-version depuis plus de 24 h sans verdict.\n\nVérifier l'"'"'instance de dev et le planning AWX (docs/CI-CD.md, « Dépannage »).\n' > body.md
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file body.md
+            fi
+          done < stale.txt

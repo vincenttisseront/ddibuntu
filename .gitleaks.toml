@@ -1,0 +1,20 @@
+# Détection de secrets (gitleaks, CI : job « secrets » de .github/workflows/ci.yml). Règles par défaut de gitleaks, plus deux exceptions étroites.
+# L'exception ne vise QUE la règle heuristique « generic-api-key » : une clé privée, un jeton GitHub, AWS, Slack… reste bloquant partout, tests compris.
+title = "gitleaks — appliance"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "Jeux d'essai (secrets factices : DDI_SECRET_KEY de test, jetons et mots de passe inventés) et traductions (« Key compromise »…)"
+paths = ['''^webui/tests/''', '''^tests/''', '''^webui/app/i18n/[a-z]+\.ts$''']
+
+[[rules]]
+id = "jwt"
+[[rules.allowlists]]
+description = "Jeton d'exemple public de jwt.io (HS256, sub 1234567890), utilisé pour tester le masquage des JWT ; tout autre JWT reste bloquant, tests compris"
+condition = "AND"
+paths = ['''^webui/tests/''']
+regexes = ['''^eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U$''']

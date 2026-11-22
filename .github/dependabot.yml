@@ -1,0 +1,16 @@
+# Mises à jour proposées par PR (chacune passe toute la CI) : actions épinglées par empreinte, dépendances npm de la console.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    groups:
+      actions: { patterns: ['*'] }
+    commit-message: { prefix: 'ci' }
+  - package-ecosystem: npm
+    directory: /webui
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    groups:
+      correctifs: { update-types: [patch, minor] }
+    commit-message: { prefix: 'deps' }

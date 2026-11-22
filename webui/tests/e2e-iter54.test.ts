@@ -123,9 +123,11 @@ describe('état avant toute clé', () => {
 
 describe('création de la clé', () => {
   it('une demande déjà en cours : 409, aucun dépôt', async () => {
-    writeFileSync(REQ, '{"action":"status"}\n')
-    code(await admin.post(URL, {}), 409, 'request_pending'); expect(inDir()).toEqual([]); expect(read(REQ)).toBe('{"action":"status"}\n')
-    clear()
+    rootMute = true   // sinon le « root » simulé (scrutation toutes les 40 ms) peut consommer la demande avant la console : course
+    try {
+      writeFileSync(REQ, '{"action":"status"}\n')
+      code(await admin.post(URL, {}), 409, 'request_pending'); expect(inDir()).toEqual([]); expect(read(REQ)).toBe('{"action":"status"}\n')
+    } finally { rootMute = false; clear() }
   })
   it('création sans phrase : la clé privée correspond au certificat que root a reçu, dépôt 0640 sans secret, demande minimale', async () => {
     clear()

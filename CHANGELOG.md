@@ -1,6 +1,6 @@
 # Journal des modifications
 
-## 0.23.0 — « Ipnoria, et un assistant IA en lecture seule »
+## 0.23.0 — « Ipnoria, un assistant IA en lecture seule et une chaîne de publication sans régression »
 
 ### DDI-Buntu devient Ipnoria (étape 1 : le nom visible)
 
@@ -22,6 +22,21 @@
 - **Cluster** : les réglages sont dans la base répliquée ; chaque nœud joint le serveur de modèles lui-même (il doit être joignable depuis tous les nœuds) ; un secondaire peut expliquer (lecture seule).
 - **Tests** : `unit-ai` (16 : adresse, secrets retirés, pseudonymisation réversible, invites, nettoyage, débit, demandes simultanées, mémoire, faux serveur pour les deux API et erreurs classées), `e2e-iter63` (11, serveur construit et faux serveur de modèles : droits, validation, clé chiffrée jamais rendue, test de connexion, contexte relu sans secret, ligne RADIUS et synthèse pseudonymisées puis rétablies, usage désactivé, débit, autre API, délai dépassé sans effet sur la console, audit sans contenu).
 
+### Chaîne de publication sans régression
+
+- **Publication en deux temps** (docs/CI-CD.md). Une nouvelle version n'est plus publiée directement. Elle sort d'abord en **version candidate** (pré-version GitHub, invisible du canal `stable`), construite et signée une seule fois après une CI complète. Elle est ensuite **installée et testée sur une appliance de dev** par AWX (`deploy/awx/`). Elle ne devient la release publique qu'**après un verdict favorable**, et c'est exactement le même fichier, contrôlé par son empreinte. En cas d'échec, la version est marquée rejetée et une issue est ouverte avec le rapport.
+- **`ddibuntu-selftest`** : tests de fumée d'un nœud après installation ou mise à jour (version réellement servie par la console, état de la mise à jour, services attendus, PostgreSQL, disques, certificat, `named-checkconf`, `kea-dhcp4 -t`, réponse DNS réelle). Sortie texte ou JSON, attente bornée du redémarrage. Utilisable à la main : `sudo ddibuntu-selftest`.
+- **CI renforcée** (contrôle unique `ci-ok`, à exiger sur `main`) :
+  - les **~840 tests de bout en bout** tournent désormais en CI, contre un vrai PostgreSQL 16, en 4 lots ;
+  - **gitleaks** parcourt tout l'historique ;
+  - **osv-scanner** vérifie les dépendances, avec des exceptions motivées et datées, et **dependency-review** les PR ;
+  - **CodeQL** analyse la console et les workflows ;
+  - **actionlint** contrôle les workflows, **ansible-lint** et un rejeu du playbook AWX contrôlent la validation ;
+  - le **quality gate SonarQube Cloud est bloquant** (analyse en CI avec `SONAR_TOKEN`, ou analyse automatique dont le contrôle est exigé sur `main`) ;
+  - trois défauts de tests révélés par la CI sont corrigés : un tri qui dépendait de la locale de PostgreSQL (la CI tourne dans celle de l'appliance, `en_US.UTF-8`), et deux courses entre la console et le « root » simulé.
+- **Chaîne d'approvisionnement** : actions épinglées par empreinte, outils vérifiés par SHA-256, droits minimaux par travail, **SBOM CycloneDX** et **attestation de provenance** joints à chaque release, Dependabot hebdomadaire.
+- **Publication réservée à `main`**, verdict manuel réservé aux administrateurs, rapport public sans détail d'infrastructure, numéro de version jamais reconstruit.
+- **Tests** : `b43-selftest` (52 contrôles), `b44-awx-validation` (26).
 
 ## 0.22.2 — « Le canal des versions candidates »
 
