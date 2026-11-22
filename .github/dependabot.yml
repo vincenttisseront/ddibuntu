@@ -13,4 +13,13 @@ updates:
     open-pull-requests-limit: 5
     groups:
       correctifs: { update-types: [patch, minor] }
+    ignore:
+      # Les types de Node suivent la version embarquée dans l'appliance (Node 22) : un @types/node plus récent laisserait passer
+      # des API absentes à l'exécution. À relever en même temps que NODE_VERSION (ci.yml) et build-ddibuntu.sh.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+      # TypeScript 7 (compilateur natif) : refuse encore la configuration générée par Nuxt (baseUrl, TS5102) ; à reprendre quand Nuxt
+      # et vue-tsc le prendront en charge.
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
     commit-message: { prefix: 'deps' }
