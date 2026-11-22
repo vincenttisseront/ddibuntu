@@ -7,6 +7,12 @@
 - **Identifiants volontairement conservés pour l'instant**, parce qu'ils vivent hors de l'appliance : nom des GPO (« DDI-Buntu enrolement »), dossier `C:\Program Files\DDI-Buntu` et tâche planifiée des postes, champs fabricant/produit des journaux CEF/LEEF envoyés au SIEM, en-tête `X-DDIbuntu-Signature` des webhooks, `User-Agent` des notifications. Leur changement demande une migration (postes, AD, règles SIEM) : étapes 2 et 3 de `docs/RENOMMAGE-IPNORIA.md`.
 - **Tests** : batteries et tests de la console mis à jour pour le nouveau nom (menu GRUB, `--version`, messages).
 
+## 0.22.2 — « Le canal des versions candidates »
+
+- **Canal de mises à jour `prerelease`** (`CHANNEL=prerelease` dans `/etc/ddibuntu/update.conf`) : l'appliance reçoit aussi les **versions candidates** publiées en pré-version. Réservé à l'instance de validation de la chaîne de publication (et, plus tard, aux bêta-testeurs). Les contrôles sont identiques (signature Ed25519, empreinte, retour arrière si la console ne redémarre pas) ; les brouillons et les versions candidates **rejetées** par la validation ne sont jamais pris. Sans réglage, rien ne change : les appliances restent sur le canal `stable` et ignorent les pré-versions. L'état de la mise à jour indique le canal.
+- **Empreinte de l'archive installée** : après une mise à jour réussie, `/var/lib/ddibuntu/installed-bundle.sha256` contient l'empreinte SHA-256 (vérifiée par la signature) de l'archive posée. La chaîne de publication s'en sert pour ne promouvoir une version candidate que si l'instance de validation a installé exactement ce fichier.
+- **Tests** : `b09-selfupdate` (+17 : canal stable inchangé, version candidate vue puis installée, candidate rejetée écartée, empreinte enregistrée, signature invalide refusée, canal inconnu refusé).
+
 ## 0.22.1 — « Le nom des machines sur les baux DHCP »
 
 - **Point final retiré** : un client qui envoie son nom en FQDN absolu (option 81, ex. `poste.domaine.`) apparaissait avec un point final dans l'IPAM, et la découverte ne pouvait plus l'importer comme nom valide. Le nom est maintenant nettoyé (point final, espaces, majuscules) dans les listes d'adresses ; la page DHCP › Baux retire aussi le point final.
