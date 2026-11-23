@@ -23,13 +23,13 @@ async function run(refresh = false) {
     <div v-if="res" class="rounded-md border border-default bg-elevated/40 p-3 text-sm" data-test="ai-explain-result" @click.stop>
       <div class="flex flex-wrap items-center gap-2 mb-2">
         <UBadge size="sm" color="warning" variant="subtle" icon="i-lucide-sparkles" :label="t('ai.generated')" />
-        <span class="text-xs text-dimmed font-mono">{{ res.model }}</span>
+        <span class="text-xs text-dimmed font-mono truncate max-w-56" :title="res.model">{{ res.model }}</span>
         <span v-if="res.cached" class="text-xs text-dimmed">· {{ t('ai.cached') }}</span>
         <span v-else-if="res.ms" class="text-xs text-dimmed num">· {{ (res.ms / 1000).toFixed(1) }} s</span>
         <span v-if="res.pseudonymized" class="text-xs text-dimmed">· {{ t('ai.pseudo_on') }}</span>
         <UButton class="ms-auto" size="xs" color="neutral" variant="ghost" icon="i-lucide-refresh-cw" :aria-label="t('ai.regenerate')" :title="t('ai.regenerate')" :disabled="busy" @click.stop="run(true)" />
       </div>
-      <p class="whitespace-pre-wrap break-words">{{ res.text }}</p>
+      <AiText :text="res.text" />
     </div>
   </div>
 </template>

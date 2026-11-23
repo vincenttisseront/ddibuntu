@@ -4,12 +4,16 @@
 import { z } from 'zod'
 import { audit, fail, route } from '../utils/router'
 import type { Ctx } from '../utils/router'
-import { getSetting, one, setSetting } from '../utils/db'
+import { getSetting, one, query, setSetting } from '../utils/db'
 import { decryptSecret, encryptSecret } from '../utils/auth'
 import { readJournal } from '../utils/radius-journal'
+import { AD_DEFAULTS } from '../utils/ad'
+import type { AdSettings } from '../utils/ad'
+import { OIDC_DEFAULTS } from '../utils/oidc'
+import type { OidcSettings } from '../utils/oidc'
 import type { JournalEvent } from '../utils/radius-journal'
 import {
-  AI_DEFAULTS, AI_USES, AiError, Pseudonymizer, buildMessages, cacheGet, cacheKey, cachePut, chat, listModels, parseAiUrl, pseudoDeep, redact, resetAiState, takeQuota, withSlot,
+  AI_DEFAULTS, AI_USES, AiError, PROMPT_VERSION, Pseudonymizer, REASON_MEANING, auditMeaning, buildMessages, cacheGet, cacheKey, cachePut, chat, listModels, parseAiUrl, pseudoDeep, redact, resetAiState, takeQuota, withSlot,
 } from '../utils/ai'
 import type { AiLang, AiSettings, AiUse, HttpOpts } from '../utils/ai'
 
@@ -68,7 +72,30 @@ route('POST', '/ai/test', 'admin', async (c) => {
 async function auditContext(id: string) {
   const r = await one<any>(`select id, at, coalesce(username, detail->>'username') as username, action, entity, entity_id, detail, host(ip) as ip from audit_log where id = $1`, [id])
   if (!r) fail(404, 'not_found')
-  return { action: r.action, at: new Date(r.at).toISOString(), user: r.username ?? null, entity: r.entity ?? null, entity_id: r.entity_id ?? null, ip: r.ip ?? null, detail: r.detail ?? null }
+  const d = r.detail && typeof r.detail === 'object' ? r.detail : {}
+  const reason = typeof d.reason === 'string' ? d.reason : undefined
+  const ev: Record<string, unknown> = {
+    action: r.action, meaning: auditMeaning(r.action), at: new Date(r.at).toISOString(), user: r.username ?? null, entity: r.entity ?? null, entity_id: r.entity_id ?? null, ip: r.ip ?? null,
+    detail: r.detail ?? null, reason_meaning: reason ? REASON_MEANING[reason] : undefined,
+    tried: Array.isArray(d.tried) ? d.tried.map((t: any) => ({ ...t, meaning: REASON_MEANING[t?.result] })) : undefined,
+  }
+  // événements proches du même compte ou de la même adresse : c'est souvent l'enchaînement qui explique (formats d'identifiant, rafale, blocage).
+  // Les demandes à l'assistant elles-mêmes sont exclues : sinon chaque explication changerait le contexte de la suivante (et la mémoire ne servirait jamais).
+  const near = await query<any>(`select at, action, coalesce(username, detail->>'username') as username, host(ip) as ip, detail->>'reason' as reason from audit_log
+    where id <> $1 and action not like 'ai.%' and at between $2::timestamptz - interval '30 minutes' and $2::timestamptz + interval '30 minutes'
+      and ((ip is not null and host(ip) = $3) or ($4::text is not null and lower(coalesce(username, detail->>'username')) = lower($4)))
+    order by abs(extract(epoch from at - $2::timestamptz)) limit 12`, [r.id, r.at, r.ip, r.username ?? null])
+  if (near.length) ev.related_events = near.sort((a, b) => +new Date(a.at) - +new Date(b.at)).map((x) => ({ at: new Date(x.at).toISOString(), action: x.action, user: x.username ?? undefined, ip: x.ip ?? undefined, reason: x.reason ?? undefined }))
+  if (/^login|^mfa_|^sso/.test(r.action)) {
+    const ad = await getSetting<AdSettings>('ad', AD_DEFAULTS), ld = await getSetting<any>('ldap', {}), oidc = await getSetting<OidcSettings>('oidc', OIDC_DEFAULTS)
+    ev.auth_config = {
+      local_accounts: true,
+      active_directory: ad.enabled ? { enabled: true, login_attribute: ad.userAttr, expected_username: ad.userAttr === 'userPrincipalName' ? 'user@domain (UPN)' : 'short name (sAMAccountName), without domain', domain_backslash_form_accepted: false, mapped_groups: ad.groupMap.length } : { enabled: false },
+      ldap: { enabled: !!ld?.enabled }, sso_oidc: { enabled: !!oidc.enabled },
+      lockout: '5 failures per account or 30 per address within 15 minutes block sign-in for 15 minutes',
+    }
+  }
+  return ev
 }
 
 const evData = (e: JournalEvent) => ({
@@ -135,7 +162,7 @@ route('POST', '/ai/explain', 'operator', async (c) => {
   if (!s.uses[b.use]) fail(409, 'ai_use_disabled')
   const { data, ref } = await contextFor(c, b)
   const clean = redact(data)
-  const key = cacheKey([b.use, b.lang, s.api, s.url, s.model, s.pseudonymize, clean])
+  const key = cacheKey([PROMPT_VERSION, b.use, b.lang, s.api, s.url, s.model, s.pseudonymize, clean])
   if (!b.refresh) { const hit = cacheGet(key); if (hit) return { text: hit, model: s.model, cached: true, pseudonymized: s.pseudonymize, ms: 0 } }
   if (!takeQuota(c.user!.username, s.perHour)) fail(429, 'ai_quota')
   const p = new Pseudonymizer()
@@ -144,7 +171,7 @@ route('POST', '/ai/explain', 'operator', async (c) => {
   let text: string
   try {
     const base = parseAiUrl(s.url, s.allowHttp)
-    const answer = await withSlot(() => chat(s.api, base, s.model, buildMessages(b.use, b.lang as AiLang, sent), opts(s, keyOf(s))))
+    const answer = await withSlot(() => chat(s.api, base, s.model, buildMessages(b.use, b.lang as AiLang, sent, s.pseudonymize), opts(s, keyOf(s))))
     text = s.pseudonymize ? p.restore(answer) : answer
   } catch (e) {
     // seul le code est consigné : ni la question, ni la réponse, ni les données envoyées

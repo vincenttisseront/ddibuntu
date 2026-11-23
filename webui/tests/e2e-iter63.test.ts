@@ -125,12 +125,24 @@ describe('assistant IA', () => {
     expect(txt).toContain('enroll_not_in_group'); expect(txt).toContain('WINPC01'); expect(txt).toContain('10.9.8.7')
     for (const s of ['mot-de-passe-fuite', 'BQIAAABV', 'eyJhbGci']) expect(txt, s).not.toContain(s)
     expect(sent.body.messages[0].role).toBe('system'); expect(sent.body.stream).toBe(false)
+    // 0.23.1 : sens de l'action, événements proches, aucune règle de jetons sans pseudonymisation
+    expect(txt).toContain('enrolment'); expect(txt).toContain('related_events')
+    expect(sent.body.messages[0].content).not.toContain('[COMPTE1]')
     code(await oper.post('/api/ai/explain', { use: 'audit', id: ev.id }), 403, 'forbidden')
     code(await admin.post('/api/ai/explain', { use: 'audit', id: 999999 }), 404, 'not_found')
     // même question : réponse gardée, aucun nouvel appel ; « refresh » redemande
     got.length = 0
     expect((await admin.post('/api/ai/explain', { use: 'audit', id: ev.id, lang: 'fr' })).json.cached).toBe(true); expect(got).toHaveLength(0)
     expect((await admin.post('/api/ai/explain', { use: 'audit', id: ev.id, lang: 'fr', refresh: true })).json.cached).toBe(false); expect(got).toHaveLength(1)
+    // un nouvel événement proche change le contexte : la réponse gardée ne sert plus
+    const [lf] = await rows(`insert into audit_log (action, entity, detail, ip) values ('login_failed', 'user', $1::jsonb, '10.9.8.7') returning id`,
+      [JSON.stringify({ username: 'CORP\\jdupont', reason: 'not_found', source: null, tried: [{ via: 'ad', result: 'not_found' }] })])
+    got.length = 0
+    expect((await admin.post('/api/ai/explain', { use: 'audit', id: lf.id, lang: 'fr' })).status).toBe(200)
+    const lfData = JSON.parse(String(got[0]!.body.messages[1].content).replace(/^[^\n]*\n<<<\n/, '').replace(/\n>>>$/, ''))
+    expect(lfData.meaning).toMatch(/not RADIUS/); expect(lfData.reason_meaning).toMatch(/DOMAIN\\user/); expect(lfData.tried[0].meaning).toMatch(/did not find/)
+    expect(lfData.auth_config).toMatchObject({ local_accounts: true, active_directory: { enabled: false }, sso_oidc: { enabled: false } })
+    expect(lfData.related_events.some((e: any) => e.action === 'enroll.refused' && e.ip === '10.9.8.7')).toBe(true)
   })
   it('audit des demandes : usage, modèle, durée ; ni la question ni la réponse', async () => {
     const a = await rows("select entity_id, detail from audit_log where action = 'ai.explain' order by id")
