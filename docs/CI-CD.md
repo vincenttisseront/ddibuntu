@@ -1,8 +1,8 @@
 # Intégration et publication continues
 
-Une version n'arrive sur les appliances qu'après trois barrières : la **CI** sur chaque PR, la **version candidate** construite et signée une seule fois, puis la **validation sur une vraie appliance de dev** pilotée par AWX. Le passage en release publique est automatique quand tout est vert. Ce qui est publié est exactement ce qui a été testé : même fichier, même empreinte.
+Avec une instance de dev (`DEV_VALIDATION=on`), une version n'arrive sur les appliances qu'après trois barrières : la **CI** sur chaque PR, la **version candidate** construite et signée une seule fois, puis la **validation sur une vraie appliance de dev** pilotée par AWX. Le passage en release publique est automatique quand tout est vert. Ce qui est publié est exactement ce qui a été testé : même fichier, même empreinte.
 
-**Sans instance de dev** (réglage par défaut) : la troisième barrière est absente. `release.yml` publie directement la release publique après la CI complète et la signature, avec le bandeau « Publiée directement ». La validation par AWX s'active avec la variable de dépôt **`DEV_VALIDATION=on`**, une fois l'instance de dev en place (section 3) ; le schéma ci-dessous décrit ce mode.
+**Sans instance de dev** (réglage par défaut) : la troisième barrière est absente, **aucune installation n'est testée avant publication** (seulement la CI : tests, batteries, construction). `release.yml` publie directement la release publique après la CI complète et la signature, avec le bandeau « Publiée directement ». La validation par AWX s'active avec la variable de dépôt **`DEV_VALIDATION=on`**, une fois l'instance de dev en place (section 3) ; le schéma ci-dessous décrit ce mode.
 
 ```
  PR ──► ci.yml + codeql.yml ──► fusion sur main (protégée : « ci-ok » requis)

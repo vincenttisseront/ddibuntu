@@ -33,7 +33,10 @@ jobs:
       - id: g
         env:
           GH_TOKEN: ${{ github.token }}
+          DEV_VALIDATION: ${{ vars.DEV_VALIDATION }}
         run: |
+          # mode de publication : une valeur mal saisie ne doit jamais publier sans validation par erreur
+          case "$DEV_VALIDATION" in on|off|'') ;; *) echo "::error::variable DEV_VALIDATION invalide : « $DEV_VALIDATION » (on, off ou absente)"; exit 1 ;; esac
           v="$(tr -d '\n' < src/VERSION)"
           [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::src/VERSION invalide : $v"; exit 1; }
           [ "$(tr -d '\n' < src/rootfs/usr/local/lib/ddibuntu/VERSION)" = "$v" ] || { echo "::error::les deux fichiers VERSION diffèrent"; exit 1; }
@@ -193,7 +196,7 @@ jobs:
             dist/sbom-console-${{ env.VERSION }}.cdx.json
       - name: Publication (pré-version si une instance de validation est configurée, sinon release publique)
         run: |
-          if [ "$DEV_VALIDATION" = on ]; then mode=(--prerelease); else mode=(--latest); fi
+          case "$DEV_VALIDATION" in on) mode=(--prerelease) ;; off|'') mode=(--latest) ;; *) echo "::error::DEV_VALIDATION invalide"; exit 1 ;; esac
           rot=()
           for f in src/keys/rotations/key-rotation-[0-9][0-9][0-9].json src/keys/rotations/key-rotation-[0-9][0-9][0-9].json.sig; do
             if [ -f "$f" ]; then rot+=("$f"); fi
