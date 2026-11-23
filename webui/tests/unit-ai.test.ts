@@ -151,3 +151,22 @@ describe('dialogue avec un serveur de modèles', () => {
     await expect(ai.listModels('ollama', new URL('http://127.0.0.1:9/'), { verify: true, timeoutMs: 1000 })).rejects.toMatchObject({ code: 'ai_unreachable' })
   })
 })
+
+describe('0.23.1 : invites et sens des événements', () => {
+  it('règle des jetons seulement si la pseudonymisation est active (sinon le modèle en invente)', () => {
+    const off = ai.buildMessages('audit', 'fr', {}, false)[0]!.content, on = ai.buildMessages('audit', 'fr', {}, true)[0]!.content
+    expect(off).not.toContain('[COMPTE1]'); expect(off).toContain("n'utilise jamais de jetons")
+    expect(on).toContain('[COMPTE1]'); expect(on).toContain('réutilise-les tels quels')
+  })
+  it('journal d\'audit : la console, pas RADIUS ; mise en forme légère demandée', () => {
+    const m = ai.buildMessages('audit', 'en', {})[0]!.content
+    expect(m).toContain('ADMINISTRATION CONSOLE'); expect(m).toContain('related_events'); expect(m).toContain('**Title**')
+  })
+  it('sens des actions et des motifs', () => {
+    expect(ai.auditMeaning('login_failed')).toMatch(/web administration console \(not RADIUS\)/)
+    expect(ai.auditMeaning('enroll.refused')).toMatch(/enrolment/)
+    expect(ai.auditMeaning('radius_client_create')).toMatch(/RADIUS/)
+    expect(ai.auditMeaning('inconnue')).toBeUndefined()
+    expect(ai.REASON_MEANING.not_found).toMatch(/DOMAIN\\user/)
+  })
+})

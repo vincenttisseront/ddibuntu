@@ -1,5 +1,13 @@
 # Journal des modifications
 
+## 0.23.1 — « Des explications IA propres et justes »
+
+- **Mise en forme des réponses de l'assistant IA** : titres, gras, code et listes sont rendus (plus de `**…**` brut à l'écran), toujours sans interpréter de HTML.
+- **Plus de jetons inventés** : la consigne des jetons (`[IP1]`, `[COMPTE1]`…) n'est donnée au modèle que lorsque la pseudonymisation est active ; sinon il lui est demandé de citer les valeurs réelles. Un modèle imitait l'exemple et affichait `[COMPTE1]` sans pseudonymisation.
+- **Explications du journal d'audit justes** : le modèle sait désormais qu'il s'agit de la console d'administration (un échec de connexion n'était plus attribué à RADIUS ou à la PKI). La console lui donne le **sens de l'action** et du **motif** (compte introuvable, mot de passe refusé par l'annuaire, aucun groupe associé, forme `DOMAINE\utilisateur` jamais acceptée…), les **annuaires essayés**, les **événements proches** du même compte ou de la même adresse (±30 min, pour repérer plusieurs formats d'identifiant ou une rafale) et, pour une connexion, la **configuration d'authentification** (attribut d'identifiant de l'AD, LDAP, SSO, seuils de blocage), sans aucun secret.
+- Les demandes à l'assistant n'entrent pas dans les événements proches (la mémoire des réponses reste efficace) ; une invite corrigée ne ressert pas une ancienne réponse.
+- **Tests** : `unit-ai` (21), `unit-ai-format` (2), `e2e-iter63` (11, contexte enrichi vérifié).
+
 ## 0.23.0 — « Ipnoria, un assistant IA en lecture seule et une chaîne de publication sans régression »
 
 ### DDI-Buntu devient Ipnoria (étape 1 : le nom visible)
