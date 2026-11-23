@@ -1,14 +1,9 @@
 # Vulnérabilités connues des dépendances (osv-scanner, CI : job « deps » de .github/workflows/ci.yml).
 # Toute vulnérabilité ABSENTE de cette liste fait échouer la CI. Chaque exception est motivée et a une date de fin :
 # passé cette date, la CI échoue de nouveau et la dépendance doit être mise à niveau (ou l'exception justifiée à nouveau).
-# Ligne de base relevée le 2026-11-22 (0.22.x) ; mise à niveau prévue : zod 4, vitest 4, nuxt (correctifs).
+# Ligne de base relevée le 2026-11-22 (0.22.x) ; zod 4 et vitest 5 faits le 2026-11-23 (exceptions retirées) ; reste nuxt (correctifs).
 
 # --- Livré dans l'appliance
-[[IgnoredVulns]]
-id = "GHSA-mrhx-c7xc-m3w5"
-effectiveUntil = 2027-01-31
-reason = "zod 3 : épuisement mémoire sur collections démesurées. Corrigé en zod 4 seulement (migration majeure) ; l'API refuse en amont les corps > maxBodyBytes (413), ce qui borne la taille des collections validées."
-
 [[IgnoredVulns]]
 id = "GHSA-f3x9-2chm-73c8"
 effectiveUntil = 2027-01-31
@@ -43,24 +38,3 @@ reason = "minimatch (transitive, outillage de construction) : déni de service p
 id = "GHSA-g7r4-m6w7-qqqr"
 effectiveUntil = 2027-01-31
 reason = "esbuild : lecture de fichiers via le serveur de développement uniquement ; jamais lancé dans l'appliance ni en CI."
-
-# --- Outillage de test seulement (devDependencies, jamais livré)
-[[IgnoredVulns]]
-id = "GHSA-82fw-gwwq-j7x9"
-effectiveUntil = 2027-01-31
-reason = "vitest / @vitest/mocker 3.x : touche le mode navigateur/serveur de vitest, non utilisé (vitest run). Corrigé en vitest 4."
-
-[[IgnoredVulns]]
-id = "GHSA-qxg6-89mg-rqv8"
-effectiveUntil = 2027-01-31
-reason = "@vitest/mocker 3.x : enregistrement de mocks non authentifié du mode serveur, non utilisé. Corrigé en vitest 4."
-
-[[IgnoredVulns]]
-id = "GHSA-5gmw-xhrv-c9v3"
-effectiveUntil = 2027-01-31
-reason = "tinypool (pool de workers de vitest) : exploitable seulement avec des options contrôlées par un attaquant ; options fixées par la configuration des tests."
-
-[[IgnoredVulns]]
-id = "GHSA-85c8-ppgw-ccpr"
-effectiveUntil = 2027-01-31
-reason = "tinypool : même motif que ci-dessus. Disparaît avec vitest 4."
