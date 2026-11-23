@@ -2,6 +2,8 @@
 
 Une version n'arrive sur les appliances qu'après trois barrières : la **CI** sur chaque PR, la **version candidate** construite et signée une seule fois, puis la **validation sur une vraie appliance de dev** pilotée par AWX. Le passage en release publique est automatique quand tout est vert. Ce qui est publié est exactement ce qui a été testé : même fichier, même empreinte.
 
+**Sans instance de dev** (réglage par défaut) : la troisième barrière est absente. `release.yml` publie directement la release publique après la CI complète et la signature, avec le bandeau « Publiée directement ». La validation par AWX s'active avec la variable de dépôt **`DEV_VALIDATION=on`**, une fois l'instance de dev en place (section 3) ; le schéma ci-dessous décrit ce mode.
+
 ```
  PR ──► ci.yml + codeql.yml ──► fusion sur main (protégée : « ci-ok » requis)
                                      │  src/VERSION a changé
@@ -46,7 +48,7 @@ Elle se déclenche par un push sur `main` qui change `src/VERSION`, ou à la mai
 1. **Contrôles** : `src/VERSION` et `src/rootfs/usr/local/lib/ddibuntu/VERSION` sont identiques, et `CHANGELOG.md` contient une section `## X.Y.Z`. Si `vX.Y.Z` existe déjà (candidate, rejetée ou publiée), rien n'est fait : un numéro n'est jamais reconstruit.
 2. **CI complète** rejouée sur le commit exact (appel de `ci.yml`).
 3. **Construction unique** à partir de la console construite et testée par cette CI. On produit l'archive `ddibuntu-update-X.Y.Z.tar.gz` (avec ses paquets embarqués), le fichier unique `build-ddibuntu.sh`, puis `SHA256SUMS`. Celui-ci est **signé Ed25519 dans un travail à part** (`sign`), rattaché à l'*environment* `release` : il ne reçoit que `SHA256SUMS` et la clé (secret `RELEASE_SIGNING_KEY`), refuse une clé qui n'est pas une clé de confiance épinglée et contrôle la signature comme une appliance (`tools/release-keys.sh`). S'y ajoutent le **SBOM** CycloneDX des dépendances livrées de la console et l'**attestation de provenance** GitHub (Sigstore). On la vérifie avec `gh attestation verify ddibuntu-update-X.Y.Z.tar.gz --repo <propriétaire>/<dépôt>`.
-4. **Publication en pré-version** `vX.Y.Z`, avec le bandeau « ⏳ Version candidate ». Les appliances du canal `stable` ne lisent que `releases/latest` et ne voient pas les pré-versions. Celles du canal `prerelease` ne prennent jamais une candidate rejetée.
+4. **Publication**. Sans `DEV_VALIDATION=on` : release publique (« latest ») tout de suite, sections 3 et 4 sans objet. Avec : **pré-version** `vX.Y.Z`, avec le bandeau « ⏳ Version candidate ». Les appliances du canal `stable` ne lisent que `releases/latest` et ne voient pas les pré-versions. Celles du canal `prerelease` ne prennent jamais une candidate rejetée.
 
 Le titre des releases vient de la variable de dépôt `PRODUCT_NAME`, avec « Ipnoria » par défaut. Changer le nom du produit ne demande donc aucune modification des workflows.
 
@@ -67,7 +69,7 @@ Le workflow reçoit l'événement `dev-validation` : `{version, result, bundle_s
 - Il ne traite qu'une **pré-version qui attend encore un verdict**. Un verdict en double ou tardif ne change rien.
 - Il **revérifie la signature** de `SHA256SUMS`, puis compare l'empreinte de l'archive **installée sur l'instance de dev** (`/var/lib/ddibuntu/installed-bundle.sha256`) à celle de la release. Si elles diffèrent, il n'y a pas de promotion.
 - Il refuse de remplacer une release publiée plus récente.
-- **Succès** : `--prerelease=false --latest`. La release devient publique telle quelle, sans reconstruction, et ses notes reçoivent « ✅ Validée sur l'instance de dev le … ». Les appliances la proposent à leur prochaine recherche.
+- **Succès** : `--prerelease=false --latest`. La release devient publique telle quelle, sans reconstruction, et ses notes reçoivent « ✅ Validée sur l'instance de dev le … » (ou « Promue à la main par … » pour un verdict saisi à la main). Les appliances la proposent à leur prochaine recherche.
 - **Échec** : les notes passent à « ❌ Rejetée — ne pas installer », une **issue** est ouverte avec le rapport, et le workflow finit en rouge. On corrige, puis on publie **X.Y.Z+1**. Un rejet qui porte l'empreinte d'une autre archive est ignoré.
 - **Veille quotidienne** : une version candidate restée plus de 24 h sans verdict ouvre une issue.
 - **Procédure de secours** (*Actions → promote → Run workflow*) : verdict saisi à la main avec l'empreinte relevée sur l'instance de dev (`/var/lib/ddibuntu/installed-bundle.sha256`). Elle n'est acceptée que **depuis `main` et par un administrateur du dépôt**. Les mêmes contrôles s'appliquent, et les notes de version indiquent qui l'a saisi.
@@ -80,6 +82,7 @@ Le workflow reçoit l'événement `dev-validation` : `{version, result, bundle_s
 | `UPDATE_SIGNING_KEY` | secret Actions (transition) | ancienne clé ; utilisée seulement tant que `RELEASE_SIGNING_KEY` n'existe pas, à supprimer ensuite |
 | `SONAR_TOKEN` | secret Actions | analyse SonarQube Cloud (docs/QUALITE.md) |
 | `PRODUCT_NAME` | variable Actions (facultative) | nom du produit dans le titre des releases |
+| `DEV_VALIDATION` | variable Actions (facultative) | `on` : versions candidates validées par l'instance de dev (AWX) avant promotion ; absente : publication directe |
 | Jeton AWX | identifiant AWX | jeton à granularité fine, ce dépôt seul, *Contents : Read and write* (exigé par `repository_dispatch`), un an au plus |
 | `DEPENDENCY_REVIEW` | variable Actions | `on` une fois le *Dependency graph* activé (*Settings → Security*) : active dependency-review en PR |
 | Protection de `main` | *Settings → Rules → Rulesets* | PR obligatoire ; contrôles requis **`ci-ok`**, **`analyze (javascript-typescript)`**, **`analyze (actions)`** et, en analyse automatique, **`SonarCloud Code Analysis`** ; pas de force-push ni de suppression. Le jeton AWX ne peut donc pas pousser de code. |

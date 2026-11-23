@@ -100,12 +100,17 @@ jobs:
           e = os.environ
           body = json.load(open('rel.json'))['body'] or ''
           when = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())
-          how = 'saisi à la main par %s' % e['ACTOR'] if e['SOURCE'] == 'workflow_dispatch' else "rendu par l'instance de validation"
           link = (' — [rapport](%s)' % e['JOB_URL']) if e.get('JOB_URL') else ''
-          if e['RESULT'] == 'success':
-              block = '<!-- validation:passed -->\n> ✅ Validée sur l\'instance de dev le %s (verdict %s%s). Archive : `%s`\n<!-- /validation -->' % (when, how, link, e['WANT'])
+          manual = e['SOURCE'] == 'workflow_dispatch'
+          # un verdict saisi à la main n'est pas une validation par l'instance de dev : les notes le disent tel quel
+          if e['RESULT'] == 'success' and manual:
+              block = '<!-- validation:passed -->\n> ✅ Promue à la main par %s le %s, sans validation automatique sur une instance de dev%s. Archive : `%s`\n<!-- /validation -->' % (e['ACTOR'], when, link, e['WANT'])
+          elif e['RESULT'] == 'success':
+              block = '<!-- validation:passed -->\n> ✅ Validée sur l\'instance de dev le %s (verdict rendu par l\'instance de validation%s). Archive : `%s`\n<!-- /validation -->' % (when, link, e['WANT'])
+          elif manual:
+              block = '<!-- validation:failed -->\n> ❌ **Rejetée** à la main par %s le %s%s. Ne pas installer.\n<!-- /validation -->' % (e['ACTOR'], when, link)
           else:
-              block = '<!-- validation:failed -->\n> ❌ **Rejetée** par la validation sur l\'instance de dev le %s (verdict %s%s). Ne pas installer.\n<!-- /validation -->' % (when, how, link)
+              block = '<!-- validation:failed -->\n> ❌ **Rejetée** par la validation sur l\'instance de dev le %s%s. Ne pas installer.\n<!-- /validation -->' % (when, link)
           body = re.sub(r'<!-- validation:pending -->.*?<!-- /validation -->', lambda m: block, body, count=1, flags=re.S)
           open('notes.md', 'w').write(body)
           PY
