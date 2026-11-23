@@ -40,7 +40,14 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false, sparse-checkout: src/rootfs/etc/ddibuntu/update-pubkey.pem, sparse-checkout-cone-mode: false }
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            src/rootfs/etc/ddibuntu
+            src/rootfs/usr/local/lib/ddibuntu/release-keys.sh
+            tools/release-keys.sh
+            keys
+          sparse-checkout-cone-mode: false
       - name: Verdict manuel — depuis main et par un administrateur seulement
         if: github.event_name == 'workflow_dispatch'
         run: |
@@ -67,7 +74,7 @@ jobs:
         if: hashFiles('skip') == ''
         run: |
           gh release download "v$V" --repo "$GITHUB_REPOSITORY" -p SHA256SUMS -p SHA256SUMS.sig -D chk
-          openssl pkeyutl -verify -pubin -inkey src/rootfs/etc/ddibuntu/update-pubkey.pem -rawin -in chk/SHA256SUMS -sigfile chk/SHA256SUMS.sig
+          tools/release-keys.sh verify chk/SHA256SUMS chk/SHA256SUMS.sig
           want="$(awk -v n="ddibuntu-update-$V.tar.gz" '$2 == n {print $1; exit}' chk/SHA256SUMS)"
           [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::archive absente de SHA256SUMS"; exit 1; }
           if [ "$RESULT" = success ] && [ "$BUNDLE_SHA256" != "$want" ]; then

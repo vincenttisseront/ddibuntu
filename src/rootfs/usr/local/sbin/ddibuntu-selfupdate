@@ -3,12 +3,15 @@
 # Frontière de privilèges : la console web (sans privilège) ne fait que DÉPOSER une demande
 # (/var/lib/ddibuntu/generated/.update-request) et LIRE l'état (/var/lib/ddibuntu/update-status.json).
 # Ce script ne fait confiance à rien de la demande : il redemande lui-même la dernière release, n'installe que
-# cette version, et seulement après avoir vérifié la signature Ed25519 (clé publique épinglée) puis la somme SHA-256.
+# cette version, et seulement après avoir vérifié la signature Ed25519 (une des clés de confiance épinglées, voir
+# release-keys.sh) puis la somme SHA-256. Les manifestes de rotation de clé publiés avec la release (signés par la clé de
+# secours) sont appliqués avant toute vérification : une clé révoquée ne fait plus foi, même sur une ancienne archive.
 #
 #   check              interroge GitHub, écrit l'état (aucune installation)
 #   request            traite la demande déposée par la console (check | apply <version>)
 #   apply <version>    installe cette version si c'est la dernière release signée
 #   packages [--auto]  (re)pose les paquets embarqués (podman, freeradius…) qui manquent, depuis l'archive signée de la dernière release
+#   keys               affiche les clés de confiance (empreintes), les empreintes révoquées et la dernière rotation appliquée
 #
 # Variables de test : DDI_ROOT, DDI_TEST=1, DDI_UPDATE_API, DDI_UPDATE_PUBKEY, DDI_NO_SYSTEMD=1
 set -euo pipefail
@@ -33,7 +36,11 @@ GEN="$DDI_STATEDIR/generated"
 REQ="$GEN/.update-request"
 WORKDIR="$DDI_STATEDIR/update-work"
 BACKUPS="$DDI_STATEDIR/update-backup"
-PUBKEY="${DDI_UPDATE_PUBKEY:-$DDI_CONFDIR/update-pubkey.pem}"
+# Ancienne clé unique (avant la 0.24.0) : encore de confiance pendant la transition vers le jeu de clés ; retirée par une version ultérieure.
+# shellcheck disable=SC2034  # lu par release-keys.sh
+RK_LEGACY="${DDI_UPDATE_PUBKEY:-$DDI_CONFDIR/update-pubkey.pem}"
+# shellcheck source=/dev/null
+. "$DDI_LIBDIR/release-keys.sh"
 TOKFILE="$DDI_CONFDIR/update-token"
 API="${DDI_UPDATE_API:-https://api.github.com}"
 WEB="${DDI_UPDATE_WEB:-https://github.com}"
@@ -109,6 +116,7 @@ gh_curl() {
 
 # ---- release la plus récente ----
 REL_JSON=""; LATEST=""; NOTES=""; PAGE=""; PUBLISHED=""; BUNDLE_URL=""; SUMS_URL=""; SIG_URL=""; BUNDLE_NAME=""
+ROTATIONS=""; ROT_WEB=0   # manifestes de rotation joints à la release : « numéro|adresse|adresse de la signature » séparés par des espaces
 # Repli quand l'API est limitée : la page « releases/latest » redirige vers le dernier tag, et les fichiers se téléchargent par leur adresse publique.
 # Rien n'est pris sur parole : la signature de SHA256SUMS est vérifiée avant toute installation.
 fetch_release_web() {
@@ -116,7 +124,7 @@ fetch_release_web() {
   url="$(gh_curl -o /dev/null -w '%{url_effective}' "$WEB/$REPO/releases/latest" 2>/dev/null)" || return 1
   [[ "$url" =~ /releases/tag/v?([0-9]+\.[0-9]+\.[0-9]+)$ ]] || return 1
   ver="${BASH_REMATCH[1]}"
-  LATEST="$ver"; PAGE="$WEB/$REPO/releases/tag/v$ver"; PUBLISHED=""; NOTES=""
+  LATEST="$ver"; PAGE="$WEB/$REPO/releases/tag/v$ver"; PUBLISHED=""; NOTES=""; ROTATIONS=""; ROT_WEB=1
   BUNDLE_NAME="ddibuntu-update-$ver.tar.gz"
   BUNDLE_URL="$WEB/$REPO/releases/download/v$ver/$BUNDLE_NAME"; SUMS_URL="$WEB/$REPO/releases/download/v$ver/SHA256SUMS"; SIG_URL="$WEB/$REPO/releases/download/v$ver/SHA256SUMS.sig"
   log "API GitHub limitée : release $ver lue sur le site web"
@@ -157,10 +165,16 @@ if not m or d.get('draft') or (d.get('prerelease') and not pre_ok):
 ver = m.group(1)
 want = {'ddibuntu-update-%s.tar.gz' % ver: 'bundle', 'SHA256SUMS': 'sums', 'SHA256SUMS.sig': 'sig'}
 urls = {}
+rot = {}
 for a in d.get('assets', []):
     k = want.get(a.get('name'))
-    if k and re.fullmatch(r'https?://[^\s"\']+', str(a.get('url', ''))):
+    if not re.fullmatch(r'https?://[^\s"\'|]+', str(a.get('url', ''))):
+        continue
+    if k:
         urls[k] = a['url']
+    mr = re.fullmatch(r'key-rotation-(\d{3})\.json(\.sig)?', str(a.get('name', '')))
+    if mr:
+        rot.setdefault(int(mr.group(1)), {})['sig' if mr.group(2) else 'json'] = a['url']
 b = lambda s: s.replace('\n', ' ').replace('\r', ' ')
 print(ver)
 print(urls.get('bundle', ''))
@@ -168,12 +182,13 @@ print(urls.get('sums', ''))
 print(urls.get('sig', ''))
 print(b(str(d.get('html_url', '')))[:300])
 print(b(str(d.get('published_at', '')))[:40])
+print(' '.join('%d|%s|%s' % (n, r['json'], r['sig']) for n, r in sorted(rot.items()) if 'json' in r and 'sig' in r and n >= 1))
 print((d.get('body') or '').replace('\r', '')[:3500].replace('\n', '\\n'))
 PY
 )" || { rm -f "$REL_JSON"; return 2; }
   rm -f "$REL_JSON"
-  { IFS= read -r LATEST; IFS= read -r BUNDLE_URL; IFS= read -r SUMS_URL; IFS= read -r SIG_URL; IFS= read -r PAGE; IFS= read -r PUBLISHED; IFS= read -r NOTES; } <<< "$out"
-  BUNDLE_NAME="ddibuntu-update-$LATEST.tar.gz"
+  { IFS= read -r LATEST; IFS= read -r BUNDLE_URL; IFS= read -r SUMS_URL; IFS= read -r SIG_URL; IFS= read -r PAGE; IFS= read -r PUBLISHED; IFS= read -r ROTATIONS; IFS= read -r NOTES; } <<< "$out"
+  BUNDLE_NAME="ddibuntu-update-$LATEST.tar.gz"; ROT_WEB=0
   NOTES="${NOTES//\\n/$'\n'}"
   return 0
 }
@@ -191,14 +206,52 @@ cmd_check() {
   if [ "$rc" -eq 5 ]; then st state=idle "current=$cur" "checked_at=$(date +%s)" "error=GitHub a refusé la requête (jeton invalide ou limite de débit atteinte) : réessayer plus tard" "message="; log "GitHub : accès refusé ou limite de débit"; return 1; fi
   if [ "$rc" -eq 2 ]; then st state=idle "current=$cur" "checked_at=$(date +%s)" "error=Aucune version stable publiée (ou numéro de version invalide)" "message="; return 1; fi
   local avail=0 err=""
+  # rotations de clé publiées avec la release : appliquées dès la recherche (une révocation prend effet sans attendre une installation)
+  if ! sync_rotations "$WORKDIR.rot"; then err="$FV_ERR"; log "$FV_ERR"; fi
+  rm -rf "$WORKDIR.rot"
   if newer "$LATEST" "$cur"; then
     avail=1
     if [ -z "$BUNDLE_URL" ] || [ -z "$SUMS_URL" ] || [ -z "$SIG_URL" ]; then
       avail=0; err="La release $LATEST n'a pas tous ses fichiers signés (archive, SHA256SUMS, SHA256SUMS.sig) : installation impossible"
+    elif [ -n "$err" ]; then avail=0
     fi
   fi
   st state=idle "current=$cur" "latest=$LATEST" "available=$avail" "channel=$CHANNEL" "notes=$NOTES" "url=$PAGE" "published_at=$PUBLISHED" "checked_at=$(date +%s)" "message=" "error=$err"
   log "version installée $cur, dernière release $LATEST (disponible : $avail)"
+  return 0
+}
+
+# Manifestes de rotation de la release lue par fetch_release : téléchargés et appliqués dans l'ordre (rk_apply_rotation).
+# Repli web (API limitée) : les numéros suivant le dernier appliqué sont essayés à leur adresse publique, jusqu'au premier absent.
+# Un manifeste présent mais refusé (signature, contenu) bloque la mise à jour : retour 1, motif dans FV_ERR.
+sync_rotations() {
+  local w="$1" item n ju su rc base last
+  FV_ERR=""
+  mkdir -p "$w"
+  if [ "$ROT_WEB" = 1 ]; then
+    base="$WEB/$REPO/releases/download/v$LATEST"; last="$(rk_seq)"; ROTATIONS=""
+    for n in $(seq $((last + 1)) $((last + 5))); do
+      ju="$base/key-rotation-$(printf '%03d' "$n").json"
+      gh_curl --max-filesize "$RK_MAX_MANIFEST" "$ju" -o "$w/rot.json" 2>/dev/null || break
+      ROTATIONS="$ROTATIONS $n|$ju|$ju.sig"
+    done
+  fi
+  for item in $ROTATIONS; do
+    IFS='|' read -r n ju su <<< "$item"
+    [[ "$n" =~ ^[0-9]{1,6}$ ]] || continue
+    [ "$n" -gt "$(rk_seq)" ] || continue
+    rm -f "$w/rot.json" "$w/rot.json.sig"
+    gh_curl -H 'Accept: application/octet-stream' --max-filesize "$RK_MAX_MANIFEST" "$ju" -o "$w/rot.json" \
+      && gh_curl -H 'Accept: application/octet-stream' --max-filesize 4096 "$su" -o "$w/rot.json.sig" \
+      || { FV_ERR="téléchargement du manifeste de rotation de clé n°$n impossible : mise à jour refusée"; return 1; }
+    rc=0; rk_apply_rotation "$w/rot.json" "$w/rot.json.sig" || rc=$?
+    case "$rc" in
+      0) log "rotation de clé n°$n appliquée (clé de confiance ajoutée ou révoquée)" ;;
+      2) ;;
+      *) FV_ERR="manifeste de rotation de clé n°$n refusé ($RK_ERR) : mise à jour refusée"; return 1 ;;
+    esac
+  done
+  rm -f "$w/rot.json" "$w/rot.json.sig"
   return 0
 }
 
@@ -209,13 +262,15 @@ fetch_verified() {
   local w="$1" report="${2:-0}" want_hash got_hash
   FV_ERR=""
   rm -rf "$w"; mkdir -p "$w"; chmod 0700 "$w"
+  sync_rotations "$w" || return 1
   [ "$report" != 1 ] || st state=downloading "message=Téléchargement de la version $LATEST"
   gh_curl -H 'Accept: application/octet-stream' --max-filesize 1048576 "$SUMS_URL" -o "$w/SHA256SUMS" || { FV_ERR="téléchargement de SHA256SUMS impossible"; return 1; }
   gh_curl -H 'Accept: application/octet-stream' --max-filesize 4096 "$SIG_URL" -o "$w/SHA256SUMS.sig" || { FV_ERR="téléchargement de la signature impossible"; return 1; }
   gh_curl -H 'Accept: application/octet-stream' --max-filesize "$MAX_BUNDLE" "$BUNDLE_URL" -o "$w/$BUNDLE_NAME" || { FV_ERR="téléchargement de $BUNDLE_NAME impossible"; return 1; }
   [ "$report" != 1 ] || st state=verifying "message=Vérification de la signature et de l'empreinte"
-  openssl pkeyutl -verify -pubin -inkey "$PUBKEY" -rawin -in "$w/SHA256SUMS" -sigfile "$w/SHA256SUMS.sig" >/dev/null 2>&1 \
-    || { FV_ERR="SIGNATURE INVALIDE : la mise à jour est refusée (rien n'a été modifié)"; return 1; }
+  rk_verify "$w/SHA256SUMS" "$w/SHA256SUMS.sig" \
+    || { FV_ERR="SIGNATURE INVALIDE ($RK_ERR) : la mise à jour est refusée (rien n'a été modifié)"; return 1; }
+  log "signature vérifiée (clé $RK_KEY_FPR)"
   want_hash="$(awk -v n="$BUNDLE_NAME" '$2 == n || $2 == "*" n {print $1; exit}' "$w/SHA256SUMS")"
   [[ "$want_hash" =~ ^[0-9a-f]{64}$ ]] || { FV_ERR="$BUNDLE_NAME absent de SHA256SUMS signé"; return 1; }
   got_hash="$(sha256sum "$w/$BUNDLE_NAME" | cut -d' ' -f1)"
@@ -331,7 +386,7 @@ cmd_packages() {
   log "paquets manquants : $miss : récupération depuis l'archive signée de la dernière release"
   local fail=""
   load_conf
-  if [ ! -f "$PUBKEY" ]; then fail="clé publique de signature absente ($PUBKEY)"
+  if [ -z "$(rk_trusted)" ]; then fail="aucune clé de confiance pour vérifier la signature (clés absentes ou révoquées)"
   else
     st packages_state=downloading "packages_message=Récupération des paquets : $miss"
     local frc=0; fetch_release || frc=$?
@@ -380,7 +435,7 @@ cmd_apply() {
   local want="${1:-}" cur
   [[ "$want" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "numéro de version demandé invalide"
   load_conf
-  [ -f "$PUBKEY" ] || die "clé publique de signature absente ($PUBKEY) : mise à jour refusée"
+  [ -n "$(rk_trusted)" ] || die "aucune clé de confiance pour vérifier la signature (clés absentes ou révoquées) : mise à jour refusée"
   cur="$(ddi_version)"
   st "current=$cur" state=checking "message=Recherche de la version $want" error= "target=$want"
   local frc=0; fetch_release || frc=$?
@@ -493,6 +548,22 @@ cmd_apply() {
   log "mise à jour $cur -> $LATEST terminée"
 }
 
+cmd_keys() {
+  local fp origin path sec n=0
+  echo "Clés de confiance des mises à jour (empreinte SHA-256 de la clé publique) :"
+  while IFS=$'\t' read -r fp origin path; do
+    [ -n "$fp" ] || continue; n=$((n + 1))
+    case "$origin" in ancienne) origin="ancienne clé (transition)" ;; livree) origin="livrée avec la version" ;; rotation) origin="ajoutée par rotation" ;; esac
+    printf '  %s  %s  (%s)\n' "$fp" "$origin" "${path#"$DDI_ROOT"}"
+  done < <(rk_trusted)
+  [ "$n" -gt 0 ] || echo "  AUCUNE : aucune mise à jour ne peut être installée"
+  sec="$(rk_secours_fpr)"
+  echo "Clé de secours (rotation seulement) : ${sec:-ABSENTE}"
+  echo "Dernière rotation appliquée : $(rk_seq)"
+  if [ -s "$RK_STATE/revoked" ]; then echo "Empreintes révoquées :"; sed 's/^/  /' "$RK_STATE/revoked"; fi
+  [ "$n" -gt 0 ]
+}
+
 cmd_request() {
   [ -f "$REQ" ] && [ ! -L "$REQ" ] || exit 0
   local body action version
@@ -519,5 +590,6 @@ case "${1:-}" in
   request) cmd_request ;;
   apply) cmd_apply "${2:-}" ;;
   packages) cmd_packages "${2:-}" ;;
-  *) echo "Usage : ddibuntu-selfupdate check [--auto] | request | apply <version> | packages [--auto]" >&2; exit 2 ;;
+  keys) cmd_keys ;;
+  *) echo "Usage : ddibuntu-selfupdate check [--auto] | request | apply <version> | packages [--auto] | keys" >&2; exit 2 ;;
 esac

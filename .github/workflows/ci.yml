@@ -44,6 +44,7 @@ jobs:
       - run: bash tests/b02-i18n.sh
       - run: bash tests/b09-selfupdate.sh
       - run: bash tests/b43-selftest.sh
+      - run: bash tests/b45-release-keys.sh
 
   # ---- playbook AWX de l'instance de validation : ansible-lint (profil production) et rejeu contre un faux GitHub (tests/b44)
   awx:

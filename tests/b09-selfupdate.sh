@@ -17,7 +17,7 @@ openssl genpkey -algorithm ed25519 -out "$W/priv.pem" 2>/dev/null; openssl pkey 
 openssl genpkey -algorithm ed25519 -out "$W/evil.pem" 2>/dev/null
 
 echo "== Système simulé 0.4.0 =="
-mk "$R/usr/local/lib/ddibuntu/VERSION" 0.4.0; cp "$COMMON" "$R/usr/local/lib/ddibuntu/common.sh"
+mk "$R/usr/local/lib/ddibuntu/VERSION" 0.4.0; cp "$COMMON" "$R/usr/local/lib/ddibuntu/common.sh"; cp "$RFS/usr/local/lib/ddibuntu/release-keys.sh" "$R/usr/local/lib/ddibuntu/"
 mk "$R/etc/ddibuntu/update.conf" 'REPO="acme/ddibuntu"'
 mk "$R/usr/local/lib/ddibuntu/update-packages" "podman freeradius freeradius-ldap freeradius-rest winbind samba-common-bin"
 cp "$W/pub.pem" "$R/etc/ddibuntu/update-pubkey.pem"

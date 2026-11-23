@@ -109,7 +109,22 @@ s=$(date +%s); expect_eq "console injoignable, --wait 4 : code 1" 1 "$(run --wai
 d=$(( $(date +%s) - s )); if [ "$d" -ge 3 ] && [ "$d" -le 20 ]; then ok "…attente bornée ($d s)"; else ko "…attente inattendue ($d s)"; fi
 expect_eq "…console-health en échec" ko "$(jcheck "$W/out" console-health)"
 
-echo "== 5. Usage =="
+echo "== 5. Clés de signature des mises à jour =="
+bash "$ST" --json > "$W/j.json" 2>/dev/null
+expect_eq "version sans jeu de clés : contrôle ignoré" skip "$(jcheck "$W/j.json" update-keys)"
+cp "$RFS/usr/local/lib/ddibuntu/release-keys.sh" "$R/usr/local/lib/ddibuntu/"
+cp -r "$RFS/etc/ddibuntu/keys" "$R/etc/ddibuntu/"; cp "$RFS/etc/ddibuntu/update-pubkey.pem" "$R/etc/ddibuntu/"
+bash "$ST" --json > "$W/j.json" 2>/dev/null
+expect_eq "clés livrées : contrôle réussi" ok "$(jcheck "$W/j.json" update-keys)"
+rm "$R/etc/ddibuntu/keys/release-secours.pem"
+bash "$ST" --json > "$W/j.json" 2>/dev/null
+expect_eq "clé de secours absente : contrôle en échec" ko "$(jcheck "$W/j.json" update-keys)"
+rm -r "$R/etc/ddibuntu/keys" "$R/etc/ddibuntu/update-pubkey.pem"
+bash "$ST" --json > "$W/j.json" 2>/dev/null
+expect_eq "aucune clé : contrôle en échec" ko "$(jcheck "$W/j.json" update-keys)"
+rm "$R/usr/local/lib/ddibuntu/release-keys.sh"
+
+echo "== 6. Usage =="
 expect_eq "option inconnue : code 2" 2 "$(run --oups)"
 expect_eq "version mal formée : code 2" 2 "$(run --expect-version 'x; rm -rf /')"
 expect_eq "--wait non numérique : code 2" 2 "$(run --wait abc)"
