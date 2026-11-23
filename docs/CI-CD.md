@@ -36,7 +36,7 @@ Lancée sur chaque PR, chaque push sur `main` et, en `workflow_call`, par chaque
 **Chaîne d'approvisionnement.** Toutes les actions sont **épinglées par empreinte de commit**. Les outils téléchargés (gitleaks, osv-scanner, actionlint) le sont avec leur **SHA-256**. Chaque travail reçoit les seuls droits dont il a besoin, et `persist-credentials: false` est posé partout. Dependabot (`.github/dependabot.yml`) propose chaque semaine les mises à jour des actions et des dépendances npm. Chaque proposition passe toute la CI.
 
 **Exceptions.**
-- `webui/osv-scanner.toml` liste les vulnérabilités connues acceptées. Chacune a une raison et une **date de fin** : au-delà, la CI échoue de nouveau. La ligne de base du 2026-11-22 attend la mise à niveau de zod 4, vitest 4 et nuxt.
+- `webui/osv-scanner.toml` liste les vulnérabilités connues acceptées. Chacune a une raison et une **date de fin** : au-delà, la CI échoue de nouveau. zod 4 et vitest 5 sont faits (exceptions retirées) ; il reste les correctifs de nuxt et de l'outillage de construction.
 - `.gitleaks.toml` n'exempte que la règle heuristique `generic-api-key`, et seulement dans les tests et les traductions, ainsi que le jeton d'exemple public de jwt.io dans les tests (masquage des JWT). Une vraie clé privée ou un vrai jeton reste bloquant partout.
 
 ## 2. Version candidate — `.github/workflows/release.yml`

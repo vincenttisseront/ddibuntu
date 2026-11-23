@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { setResponseHeader } from 'h3'
-import { audit, fail, intParam, qint, qstr, route } from '../utils/router'
+import { audit, fail, intParam, patchOf, qint, qstr, route } from '../utils/router'
 import { getPool, one, query, tx } from '../utils/db'
 import { classlessRange } from '../utils/reverse'
 import { capacity, nextFree, nextFreeInRange, isHostname, normIp, normMac, parseCidr, cidrToString, cidrContainsIp, parseIp, ptrName } from '../utils/net'
@@ -80,7 +80,7 @@ route('POST', '/ipam/spaces', 'operator', async (c) => {
 route('PUT', '/ipam/spaces/:id', 'operator', async (c) => {
   allowSpace(c, Number(c.params.id))
   const id = intParam(c, 'id')
-  const b = await c.body(spaceBody.partial())
+  const b = await c.body(patchOf(spaceBody))
   const r = await query('update ipam_spaces set name = coalesce($2, name), description = coalesce($3, description), tags = coalesce($4, tags), updated_at = now() where id = $1 returning id', [id, b.name ?? null, b.description ?? null, b.tags ?? null])
   await ensureLabels(b.tags)
   if (!r.length) fail(404, 'not_found')
@@ -146,7 +146,7 @@ route('POST', '/ipam/subnets', 'operator', async (c) => {
 route('PUT', '/ipam/subnets/:id', 'operator', async (c) => {
   await allowSubnet(c, Number(c.params.id))
   const id = intParam(c, 'id')
-  const b = await c.body(subnetBody.partial())
+  const b = await c.body(patchOf(subnetBody))
   const cur = await one<any>('select text(cidr) as cidr, (select count(*)::int from addresses where subnet_id = $1) as n from subnets where id = $1', [id])
   if (!cur) fail(404, 'not_found')
   if (b.space_id !== undefined) { allowSpace(c, b.space_id); await checkSpace(b.space_id); await assertNoDhcpOverlap(id, b.space_id) }
@@ -329,7 +329,7 @@ route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
 route('PUT', '/ipam/addresses/:id', 'operator', async (c) => {
   await allowAddress(c, Number(c.params.id))
   const id = intParam(c, 'id')
-  const b = await c.body(addrBody.omit({ ip: true, dns_zone_id: true }).partial())
+  const b = await c.body(patchOf(addrBody.omit({ ip: true, dns_zone_id: true })))
   const dhcp = await tx(async (cl) => {
     const cur = (await cl.query('select subnet_id from addresses where id = $1 for update', [id])).rows[0]
     if (!cur) fail(404, 'not_found')
@@ -406,7 +406,7 @@ route('POST', '/ipam/subnets/:id/pools', 'operator', async (c) => {
 route('PUT', '/ipam/pools/:id', 'operator', async (c) => {
   await allowPool(c, Number(c.params.id))
   const id = intParam(c, 'id')
-  const b = await c.body(poolBody.partial())
+  const b = await c.body(patchOf(poolBody))
   const r = await query('update ipam_pools set name = coalesce($2, name), description = coalesce($3, description), start_ip = coalesce($4, start_ip), end_ip = coalesce($5, end_ip), updated_at = now() where id = $1 returning id',
     [id, b.name ?? null, b.description ?? null, b.start_ip ? normIp(b.start_ip) : null, b.end_ip ? normIp(b.end_ip) : null])
   if (!r.length) fail(404, 'not_found')
@@ -506,7 +506,7 @@ route('POST', '/ipam/vlans', 'operator', async (c) => {
 route('PUT', '/ipam/vlans/:id', 'operator', async (c) => {
   denyScoped(c)
   const id = intParam(c, 'id')
-  const b = await c.body(vlanBody.partial())
+  const b = await c.body(patchOf(vlanBody))
   checkNaming(b)
   await query('update vlans set vlan_id = coalesce($2, vlan_id), name = coalesce($3, name), description = coalesce($4, description) where id = $1', [id, b.vlan_id ?? null, b.name ?? null, b.description ?? null])
   if (b.tags !== undefined) { await query('update vlans set tags = $2 where id = $1', [id, b.tags]); await ensureLabels(b.tags) }

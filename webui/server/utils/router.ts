@@ -3,7 +3,7 @@
 import { ENROL_PATHS, mfaEnrolPending } from './mfa-policy'
 import { createError, deleteCookie, getCookie, getMethod, getQuery, getRequestHeader, getRequestIP, getRequestURL, readBody, setCookie, setResponseHeader } from 'h3'
 import type { H3Event } from 'h3'
-import type { ZodType } from 'zod'
+import { z, type ZodType } from 'zod'
 import { cfg } from './config'
 import { inRecovery, isSchemaReady, query } from './db'
 import { ROLE_RANK, safeEqual, sessionFromToken } from './auth'
@@ -19,7 +19,7 @@ export interface Ctx {
   query: Record<string, any>
   user: SessionUser | null
   ip: string | null
-  body<T>(schema: ZodType<T, any, any>): Promise<T>
+  body<T>(schema: ZodType<T>): Promise<T>
 }
 type Handler = (c: Ctx) => Promise<unknown>
 interface Entry { method: string; re: RegExp; keys: string[]; role: Role | 'public'; handler: Handler; path: string }
@@ -95,7 +95,15 @@ function checkOrigin(event: H3Event) {
   if (host !== expected) fail(403, 'bad_origin')
 }
 
-export function validate<T>(schema: ZodType<T, any, any>, data: unknown): T {
+/** Corps d'une mise à jour partielle : chaque champ devient facultatif et SANS sa valeur par défaut.
+ *  Depuis zod 4, `.partial()` applique les `.default()` aux champs absents : une modification partielle remettrait
+ *  alors ces champs à leur valeur par défaut (p. ex. le statut d'une adresse). */
+export function patchOf<S extends z.ZodObject>(schema: S) {
+  const shape = Object.fromEntries(Object.entries(schema.shape).map(([k, v]) => [k, v instanceof z.ZodDefault ? v.unwrap() : v]))
+  return schema.extend(shape as { [K in keyof S['shape']]: S['shape'][K] extends z.ZodDefault<infer I> ? I : S['shape'][K] }).partial()
+}
+
+export function validate<T>(schema: ZodType<T>, data: unknown): T {
   const r = schema.safeParse(data)
   if (!r.success) {
     const issues = r.error.issues.slice(0, 10).map((i) => ({ path: i.path.join('.'), message: i.message }))
