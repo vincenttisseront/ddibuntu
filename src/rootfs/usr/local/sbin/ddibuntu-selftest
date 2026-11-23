@@ -4,7 +4,7 @@
 #     --expect-version  la version attendue (fichiers VERSION, état de la mise à jour, version servie par la console)
 #     --wait            attend jusqu'à SECONDES que la console réponde avant de lancer les contrôles (redémarrage après mise à jour)
 #     --json            résultat en JSON sur la sortie standard : {"ok":bool,"version":…,"checks":[{"name","result","detail"}]}
-# Contrôles : version installée, état de la mise à jour, santé et version de la console, services attendus (ddibuntu-health),
+# Contrôles : version installée, état de la mise à jour, clés de signature des mises à jour, santé et version de la console, services attendus (ddibuntu-health),
 # PostgreSQL, espace disque, certificat de la console, configurations BIND et Kea, réponse DNS d'une zone primaire.
 # Utilisé par l'instance de validation de la chaîne de publication (deploy/awx, docs/CI-CD.md) ; utilisable à la main.
 # Code de retour : 0 = tout est bon ; 1 = au moins un contrôle en échec ; 2 = usage.
@@ -73,6 +73,16 @@ if [ -f "$STATEDIR/update-status.json" ]; then
   elif [ -n "$expect" ] && [ -n "$ucur" ] && [ "$ucur" != "$expect" ]; then res update-state ko "état « current » = $ucur, attendu $expect"
   else res update-state ok "${ust:-idle}"; fi
 else res update-state skip "aucune mise à jour en ligne effectuée"; fi
+
+# ---- clés de signature des mises à jour : au moins une clé de confiance, et la clé de secours épinglée (rotation possible)
+if [ -r "$LIBDIR/release-keys.sh" ]; then
+  kl="$(RK_CONFDIR="$CONFDIR" RK_STATE="$STATEDIR/keys" RK_LEGACY="$CONFDIR/update-pubkey.pem" \
+        bash -c '. "$1"; rk_trusted | wc -l; rk_secours_fpr' _ "$LIBDIR/release-keys.sh" 2>/dev/null)"
+  kn="$(printf '%s\n' "$kl" | sed -n 1p | tr -d ' ')"; ksec="$(printf '%s\n' "$kl" | sed -n 2p)"
+  if [ "${kn:-0}" -lt 1 ] 2>/dev/null || [ -z "$kn" ]; then res update-keys ko "aucune clé de confiance : aucune mise à jour ne pourrait être installée"
+  elif [ -z "$ksec" ]; then res update-keys ko "$kn clé(s) de confiance, mais clé de secours absente : aucune rotation possible"
+  else res update-keys ok "$kn clé(s) de confiance, clé de secours ${ksec:0:16}…"; fi
+else res update-keys skip "version sans jeu de clés (avant la 0.24.0)"; fi
 
 # ---- console : santé, puis version réellement servie (prouve que le processus en marche est le nouveau)
 case "$hs" in

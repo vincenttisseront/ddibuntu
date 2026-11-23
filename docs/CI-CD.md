@@ -45,7 +45,7 @@ Elle se déclenche par un push sur `main` qui change `src/VERSION`, ou à la mai
 
 1. **Contrôles** : `src/VERSION` et `src/rootfs/usr/local/lib/ddibuntu/VERSION` sont identiques, et `CHANGELOG.md` contient une section `## X.Y.Z`. Si `vX.Y.Z` existe déjà (candidate, rejetée ou publiée), rien n'est fait : un numéro n'est jamais reconstruit.
 2. **CI complète** rejouée sur le commit exact (appel de `ci.yml`).
-3. **Construction unique** à partir de la console construite et testée par cette CI. On produit l'archive `ddibuntu-update-X.Y.Z.tar.gz` (avec ses paquets embarqués), le fichier unique `build-ddibuntu.sh`, puis `SHA256SUMS` **signé Ed25519** (secret `UPDATE_SIGNING_KEY`) et contrôlé avec la clé publique du dépôt. S'y ajoutent le **SBOM** CycloneDX des dépendances livrées de la console et l'**attestation de provenance** GitHub (Sigstore). On la vérifie avec `gh attestation verify ddibuntu-update-X.Y.Z.tar.gz --repo <propriétaire>/<dépôt>`.
+3. **Construction unique** à partir de la console construite et testée par cette CI. On produit l'archive `ddibuntu-update-X.Y.Z.tar.gz` (avec ses paquets embarqués), le fichier unique `build-ddibuntu.sh`, puis `SHA256SUMS`. Celui-ci est **signé Ed25519 dans un travail à part** (`sign`), rattaché à l'*environment* `release` : il ne reçoit que `SHA256SUMS` et la clé (secret `RELEASE_SIGNING_KEY`), refuse une clé qui n'est pas une clé de confiance épinglée et contrôle la signature comme une appliance (`tools/release-keys.sh`). S'y ajoutent le **SBOM** CycloneDX des dépendances livrées de la console et l'**attestation de provenance** GitHub (Sigstore). On la vérifie avec `gh attestation verify ddibuntu-update-X.Y.Z.tar.gz --repo <propriétaire>/<dépôt>`.
 4. **Publication en pré-version** `vX.Y.Z`, avec le bandeau « ⏳ Version candidate ». Les appliances du canal `stable` ne lisent que `releases/latest` et ne voient pas les pré-versions. Celles du canal `prerelease` ne prennent jamais une candidate rejetée.
 
 Le titre des releases vient de la variable de dépôt `PRODUCT_NAME`, avec « Ipnoria » par défaut. Changer le nom du produit ne demande donc aucune modification des workflows.
@@ -76,16 +76,15 @@ Le workflow reçoit l'événement `dev-validation` : `{version, result, bundle_s
 
 | Élément | Où | Rôle |
 |---|---|---|
-| `UPDATE_SIGNING_KEY` | secret Actions | clé privée Ed25519 de signature (docs/RELEASING.md) |
+| `RELEASE_SIGNING_KEY` | secret de l'*environment* `release` (limité à `main`) | clé privée Ed25519 active de signature ; seul le travail `sign` la lit (docs/RELEASING.md) |
+| `UPDATE_SIGNING_KEY` | secret Actions (transition) | ancienne clé ; utilisée seulement tant que `RELEASE_SIGNING_KEY` n'existe pas, à supprimer ensuite |
 | `SONAR_TOKEN` | secret Actions | analyse SonarQube Cloud (docs/QUALITE.md) |
 | `PRODUCT_NAME` | variable Actions (facultative) | nom du produit dans le titre des releases |
 | Jeton AWX | identifiant AWX | jeton à granularité fine, ce dépôt seul, *Contents : Read and write* (exigé par `repository_dispatch`), un an au plus |
 | `DEPENDENCY_REVIEW` | variable Actions | `on` une fois le *Dependency graph* activé (*Settings → Security*) : active dependency-review en PR |
 | Protection de `main` | *Settings → Rules → Rulesets* | PR obligatoire ; contrôles requis **`ci-ok`**, **`analyze (javascript-typescript)`**, **`analyze (actions)`** et, en analyse automatique, **`SonarCloud Code Analysis`** ; pas de force-push ni de suppression. Le jeton AWX ne peut donc pas pousser de code. |
 
-Le jeton AWX ne permet pas de publier une version acceptée par les appliances. Celles-ci et `promote.yml` vérifient la signature faite avec une clé que seul GitHub Actions détient.
-
-**À la prochaine rotation de la clé de signature** (docs/RELEASING.md), placez la nouvelle clé dans un *environment* `release` limité à `main`, plutôt que dans les secrets du dépôt. Elle ne sera alors lisible que par les travaux de publication.
+Le jeton AWX ne permet pas de publier une version acceptée par les appliances. Celles-ci et `promote.yml` vérifient la signature faite avec une clé que seul GitHub Actions détient. La **clé de secours**, qui seule peut remplacer ou révoquer la clé active, n'est jamais sur GitHub (docs/RELEASING.md).
 
 ## 6. Ce qui reste hors de la CI
 

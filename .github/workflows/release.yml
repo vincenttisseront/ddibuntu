@@ -1,9 +1,11 @@
 # Publication, étape 1/2 — VERSION CANDIDATE. Un push sur main qui change src/VERSION :
 #   1. rejoue toute la CI sur le commit exact (ci.yml) ;
-#   2. construit UNE FOIS l'archive de mise à jour et le fichier unique (depuis la console testée par la CI), signe SHA256SUMS (Ed25519,
-#      clé privée dans le secret UPDATE_SIGNING_KEY, clé publique épinglée src/rootfs/etc/ddibuntu/update-pubkey.pem), produit le SBOM
-#      et l'attestation de provenance ;
-#   3. publie le tout en PRÉ-VERSION vX.Y.Z : les appliances (canal stable) ne la voient pas ; l'instance de validation (canal prerelease)
+#   2. construit UNE FOIS l'archive de mise à jour et le fichier unique (depuis la console testée par la CI), produit le SBOM ;
+#   3. signe SHA256SUMS (Ed25519) dans un travail à part, rattaché à l'environment « release » (limité à main), qui ne voit que
+#      SHA256SUMS et la clé : secret RELEASE_SIGNING_KEY (repli : ancien secret UPDATE_SIGNING_KEY pendant la transition). La clé
+#      doit être une clé de confiance épinglée et la signature est contrôlée comme le ferait une appliance (tools/release-keys.sh) ;
+#   4. publie le tout en PRÉ-VERSION vX.Y.Z, avec l'attestation de provenance et les manifestes de rotation de clé du dépôt
+#      (keys/rotations) : les appliances (canal stable) ne la voient pas ; l'instance de validation (canal prerelease)
 #      l'installe, la teste et rend son verdict à promote.yml (étape 2/2), qui en fait la release publique sans rien reconstruire.
 # Voir docs/CI-CD.md et docs/RELEASING.md.
 name: release
@@ -67,17 +69,8 @@ jobs:
         run: |
           ./build-ddibuntu.sh --bundle --out dist
           tools/make-single.sh dist
-      - name: Signature de SHA256SUMS (Ed25519) et contrôle avec la clé publique du dépôt
-        env:
-          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-        run: |
-          [ -n "$UPDATE_SIGNING_KEY" ] || { echo "::error::secret UPDATE_SIGNING_KEY absent"; exit 1; }
-          cd dist
-          sha256sum "ddibuntu-update-$VERSION.tar.gz" build-ddibuntu.sh > SHA256SUMS
-          key="$(mktemp)"; trap 'shred -u "$key"' EXIT
-          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
-          openssl pkeyutl -sign -inkey "$key" -rawin -in SHA256SUMS -out SHA256SUMS.sig
-          openssl pkeyutl -verify -pubin -inkey ../src/rootfs/etc/ddibuntu/update-pubkey.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
+      - name: Sommes SHA-256 (signées par le travail « sign »)
+        run: cd dist && sha256sum "ddibuntu-update-$VERSION.tar.gz" build-ddibuntu.sh > SHA256SUMS
       - name: SBOM de la console (CycloneDX, dépendances livrées)
         working-directory: webui
         run: |
@@ -101,12 +94,48 @@ jobs:
             dist/ddibuntu-update-${{ env.VERSION }}.tar.gz
             dist/build-ddibuntu.sh
             dist/SHA256SUMS
-            dist/SHA256SUMS.sig
             dist/sbom-console-${{ env.VERSION }}.cdx.json
             dist/notes.md
 
-  prerelease:
+  # Signature : seul travail qui lit la clé privée. Il n'exécute ni la construction ni la console : il ne reçoit que SHA256SUMS,
+  # et ne prend du dépôt que les clés publiques, les manifestes de rotation et le script de contrôle (même logique que l'appliance).
+  sign:
     needs: [gate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            src/rootfs/etc/ddibuntu
+            src/rootfs/usr/local/lib/ddibuntu/release-keys.sh
+            tools/release-keys.sh
+            keys
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: release-files, path: dist }
+      - name: Signature de SHA256SUMS (Ed25519) par une clé de confiance, contrôlée comme sur une appliance
+        env:
+          SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY || secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          [ -n "$SIGNING_KEY" ] || { echo "::error::secret RELEASE_SIGNING_KEY absent (environment release)"; exit 1; }
+          key="$(mktemp)"; trap 'shred -u "$key"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          tools/release-keys.sh check-rotations
+          tools/release-keys.sh check-signer "$key"
+          openssl pkeyutl -sign -inkey "$key" -rawin -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+          tools/release-keys.sh verify dist/SHA256SUMS dist/SHA256SUMS.sig
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-signature
+          retention-days: 30
+          if-no-files-found: error
+          path: dist/SHA256SUMS.sig
+
+  prerelease:
+    needs: [gate, build, sign]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -120,6 +149,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: release-files, path: dist }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: release-signature, path: dist }
+      # manifestes de rotation de clé (signés hors ligne par la clé de secours) : joints à CHAQUE release, pour qu'une appliance qui
+      # saute des versions les trouve sur la dernière ; aucun code du dépôt n'est exécuté ici
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false, path: src, sparse-checkout: keys/rotations, sparse-checkout-cone-mode: false }
       - name: Attestation de provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -129,9 +164,13 @@ jobs:
             dist/sbom-console-${{ env.VERSION }}.cdx.json
       - name: Publication en pré-version
         run: |
+          rot=()
+          for f in src/keys/rotations/key-rotation-[0-9][0-9][0-9].json src/keys/rotations/key-rotation-[0-9][0-9][0-9].json.sig; do
+            if [ -f "$f" ]; then rot+=("$f"); fi
+          done
           gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
             --title "$PRODUCT $VERSION" --notes-file dist/notes.md \
-            "dist/ddibuntu-update-$VERSION.tar.gz" dist/build-ddibuntu.sh dist/SHA256SUMS dist/SHA256SUMS.sig "dist/sbom-console-$VERSION.cdx.json"
+            "dist/ddibuntu-update-$VERSION.tar.gz" dist/build-ddibuntu.sh dist/SHA256SUMS dist/SHA256SUMS.sig "dist/sbom-console-$VERSION.cdx.json" "${rot[@]}"
           {
             echo "### Version candidate $VERSION publiée"
             echo "En attente du verdict de l'instance de validation (promote.yml)."
