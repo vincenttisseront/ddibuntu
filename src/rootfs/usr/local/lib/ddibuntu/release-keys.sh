@@ -13,8 +13,9 @@
 # Manifeste de rotation (key-rotation-NNN.json, signé par la clé de secours dans key-rotation-NNN.json.sig) :
 #   {"format": 1, "usage": "release", "sequence": 1, "date": "AAAA-MM-JJ", "reason": "…",
 #    "old_fingerprints": ["<sha256 hex de la clé publique DER>", …], "new_public_key": "-----BEGIN PUBLIC KEY-----…" | null}
-# Appliqué une seule fois, dans l'ordre des numéros : les anciennes empreintes sont révoquées pour toujours, la nouvelle clé
-# devient une clé de confiance. Un numéro déjà appliqué (ou plus petit) n'est jamais rejoué.
+# Appliqué une seule fois, dans l'ordre des numéros, sans trou (n° attendu = dernier appliqué + 1) : les anciennes empreintes
+# sont révoquées pour toujours, la nouvelle clé devient une clé de confiance. Un numéro déjà appliqué n'est jamais rejoué.
+# Un manifeste peut ne rien ajouter et révoquer toutes les clés : les mises à jour sont alors bloquées jusqu'au manifeste suivant.
 # Empreinte d'une clé = SHA-256 de la clé publique au format DER : openssl pkey -pubin -in k.pem -outform DER | sha256sum
 # RK_ERR (motif d'un refus) et RK_KEY_FPR (clé qui a vérifié) sont lus par l'appelant.
 # shellcheck disable=SC2034
@@ -69,6 +70,8 @@ rk_verify() {
 rk_seq() { local s; s="$(cat "$RK_STATE/rotation-seq" 2>/dev/null || true)"; [[ "$s" =~ ^[0-9]{1,6}$ ]] && printf '%s' "$s" || printf 0; }
 
 # rk_apply_rotation MANIFESTE SIGNATURE : 0 = appliqué ; 2 = déjà appliqué (numéro ≤ dernier) ; 1 = refusé (motif dans RK_ERR).
+# Écritures contrôlées une à une, nouvelle clé d'abord, numéro en dernier : une écriture qui échoue rend 1 sans avancer le numéro,
+# la mise à jour est refusée et le manifeste sera rejoué à la prochaine tentative.
 rk_apply_rotation() {
   local m="$1" sig="$2" sec tmp seq newfp out
   RK_ERR=""
@@ -80,7 +83,7 @@ rk_apply_rotation() {
   openssl pkeyutl -verify -pubin -inkey "$sec" -rawin -in "$m" -sigfile "$sig" >/dev/null 2>&1 \
     || { RK_ERR="manifeste de rotation NON signé par la clé de secours : refusé"; return 1; }
   tmp="$(mktemp -d)"
-  out="$(python3 - "$m" "$tmp/new.pem" <<'PY'
+  out="$(python3 -I - "$m" "$tmp/new.pem" <<'PY'
 import json, re, sys
 try:
     d = json.load(open(sys.argv[1], encoding='utf-8'))
@@ -112,6 +115,7 @@ PY
 )" || { RK_ERR="${out:-manifeste invalide}"; rm -rf "$tmp"; return 1; }
   seq="$(printf '%s\n' "$out" | head -1)"
   if [ "$seq" -le "$(rk_seq)" ]; then rm -rf "$tmp"; return 2; fi
+  [ "$seq" -eq $(( $(rk_seq) + 1 )) ] || { RK_ERR="manifeste n°$seq alors que le n°$(( $(rk_seq) + 1 )) n'a pas été appliqué"; rm -rf "$tmp"; return 1; }
   newfp=""
   if [ -f "$tmp/new.pem" ]; then
     newfp="$(rk_fpr "$tmp/new.pem")" || { RK_ERR="la nouvelle clé n'est pas une clé publique Ed25519"; rm -rf "$tmp"; return 1; }
@@ -119,15 +123,14 @@ PY
     ! rk_revoked "$newfp" || { RK_ERR="la nouvelle clé est une clé révoquée"; rm -rf "$tmp"; return 1; }
     ! printf '%s\n' "$out" | tail -n +2 | grep -qxF "$newfp" || { RK_ERR="le manifeste révoque la clé qu'il ajoute"; rm -rf "$tmp"; return 1; }
   fi
-  mkdir -p "$RK_STATE/release.d" "$RK_STATE/applied"; chmod 0755 "$RK_STATE"
-  # révocations d'abord : une interruption laisse au pire une clé révoquée sans remplaçante, jamais l'inverse
-  printf '%s\n' "$out" | tail -n +2 | while IFS= read -r fp; do
-    [ -n "$fp" ] && ! rk_revoked "$fp" && printf '%s\n' "$fp" >> "$RK_STATE/revoked"
-  done
-  if [ -n "$newfp" ]; then install -m 0644 "$tmp/new.pem" "$RK_STATE/release.d/$newfp.pem"; fi
-  install -m 0644 "$m" "$RK_STATE/applied/key-rotation-$(printf '%03d' "$seq").json"
-  install -m 0644 "$sig" "$RK_STATE/applied/key-rotation-$(printf '%03d' "$seq").json.sig"
-  printf '%s\n' "$seq" > "$RK_STATE/rotation-seq.tmp" && mv -f "$RK_STATE/rotation-seq.tmp" "$RK_STATE/rotation-seq"
-  rm -rf "$tmp"
+  local n3; n3="$(printf '%03d' "$seq")"
+  RK_ERR="écriture de l'état des clés impossible ($RK_STATE) : rotation n°$seq non appliquée"
+  { mkdir -p "$RK_STATE/release.d" "$RK_STATE/applied" && chmod 0755 "$RK_STATE"; } || { rm -rf "$tmp"; return 1; }
+  if [ -n "$newfp" ]; then install -m 0644 "$tmp/new.pem" "$RK_STATE/release.d/$newfp.pem" || { rm -rf "$tmp"; return 1; }; fi
+  { { cat "$RK_STATE/revoked" 2>/dev/null || true; printf '%s\n' "$out" | tail -n +2; } | awk 'NF && !s[$0]++' > "$RK_STATE/revoked.tmp" \
+      && mv -f "$RK_STATE/revoked.tmp" "$RK_STATE/revoked"; } || { rm -rf "$tmp"; return 1; }
+  { install -m 0644 "$m" "$RK_STATE/applied/key-rotation-$n3.json" && install -m 0644 "$sig" "$RK_STATE/applied/key-rotation-$n3.json.sig" \
+      && printf '%s\n' "$seq" > "$RK_STATE/rotation-seq.tmp" && mv -f "$RK_STATE/rotation-seq.tmp" "$RK_STATE/rotation-seq"; } || { rm -rf "$tmp"; return 1; }
+  RK_ERR=""; rm -rf "$tmp"
   return 0
 }

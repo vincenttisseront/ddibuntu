@@ -3,10 +3,10 @@
 # tools/release-keys.sh — mêmes règles que l'appliance (src/rootfs/usr/local/lib/ddibuntu/release-keys.sh), appliquées au dépôt :
 # clés de confiance = src/rootfs/etc/ddibuntu/update-pubkey.pem + keys/release.d/*.pem, après application de TOUS les manifestes
 # de rotation du dépôt (keys/rotations/key-rotation-NNN.json, signés par keys/release-secours.pem), dans l'ordre.
-# À lancer depuis la racine du dépôt. Aucune clé privée n'est lue, sauf par « check-signer », qui n'en garde que la partie publique.
+# Aucune clé privée n'est lue, sauf par « check-signer » quand on lui en donne une : il n'en garde que la partie publique.
 #
 #   verify FICHIER SIGNATURE   la signature est-elle valide pour une clé de confiance ?
-#   check-signer CLÉ_PRIVÉE    cette clé privée correspond-elle à une clé de confiance (et n'est-elle pas la clé de secours) ?
+#   check-signer CLÉ           cette clé (publique, ou privée) est-elle une clé de confiance, et pas la clé de secours ?
 #   check-rotations            tous les manifestes du dépôt sont-ils valides et signés par la clé de secours ?
 #   list                       clés de confiance (empreinte, origine)
 #   RK_REPO : racine du dépôt à contrôler (par défaut, celui de ce script ; les tests en donnent un autre)
@@ -39,9 +39,10 @@ case "${1:-}" in
     apply_repo_rotations
     if rk_verify "$2" "$3"; then echo "signature valide (clé $RK_KEY_FPR)"; else echo "::error::$RK_ERR" >&2; exit 1; fi ;;
   check-signer)
-    [ $# -eq 2 ] || { echo "usage : $0 check-signer CLÉ_PRIVÉE" >&2; exit 2; }
+    [ $# -eq 2 ] || { echo "usage : $0 check-signer CLÉ (publique, ou privée dont seule la partie publique est gardée)" >&2; exit 2; }
     apply_repo_rotations
-    openssl pkey -in "$2" -pubout -out "$WORK/signer.pub" 2>/dev/null || { echo "::error::clé privée illisible" >&2; exit 1; }
+    openssl pkey -pubin -in "$2" -out "$WORK/signer.pub" 2>/dev/null || openssl pkey -in "$2" -pubout -out "$WORK/signer.pub" 2>/dev/null \
+      || { echo "::error::clé de signature illisible" >&2; exit 1; }
     fp="$(rk_fpr "$WORK/signer.pub")" || { echo "::error::la clé de signature n'est pas une clé Ed25519" >&2; exit 1; }
     [ "$fp" != "$(rk_secours_fpr)" ] || { echo "::error::la clé de SECOURS ne signe jamais une archive" >&2; exit 1; }
     if rk_trusted | cut -f1 | grep -qxF "$fp"; then echo "clé de signature de confiance ($fp)"
