@@ -12,4 +12,8 @@ export default defineEventHandler((event) => {
   h('Cross-Origin-Opener-Policy', 'same-origin')
   h('Cross-Origin-Resource-Policy', 'same-origin')
   if (cfg().cookieSecure) h('Strict-Transport-Security', 'max-age=31536000')
+  // Les pages rendues par le serveur portent l'utilisateur, son rôle et le jeton CSRF : ni cache partagé, ni relecture par l'historique après la déconnexion.
+  // Les fichiers de l'interface (/_nuxt/…, polices, icône) gardent leur cache ; l'API pose elle-même « no-store ».
+  const path = (event.path ?? '').split('?')[0]!
+  if (!path.startsWith('/_nuxt/') && !/\.[A-Za-z0-9]{2,5}$/.test(path)) h('Cache-Control', 'no-store')
 })

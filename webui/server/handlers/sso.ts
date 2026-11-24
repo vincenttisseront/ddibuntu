@@ -86,8 +86,9 @@ route('GET', '/auth/oidc/callback', 'public', async (c) => {
   if (ex?.disabled) return bad('disabled_user', { username: m.username })
   const r = await one<any>(
     `insert into users (username, display_name, role, source, space_ids, last_login) values ($1, $2, $3, 'oidc', $4, now())
-     on conflict (lower(username)) do update set role = excluded.role, display_name = excluded.display_name, space_ids = excluded.space_ids, last_login = now() returning id`,
+     on conflict (lower(username)) do update set role = excluded.role, display_name = excluded.display_name, space_ids = excluded.space_ids, last_login = now() where users.source = 'oidc' returning id`,
     [m.username, m.displayName, m.role, m.spaceIds])
+  if (!r) return bad('conflict', { username: m.username })      // un compte d'une autre origine est apparu entre le contrôle et l'écriture : jamais de reprise
   const ses = await createSession(r.id, c.ip, null)
   setSessionCookie(c.event, ses.token, ses.maxAge)
   await audit(c, 'login', 'user', r.id, { sso: 'oidc' })

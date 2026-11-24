@@ -56,7 +56,7 @@ afterAll(async () => { srv?.kill('SIGTERM'); await db?.end() })
 const IDP_PORT = 3417, IDP = `http://127.0.0.1:${IDP_PORT}`, CLIENT = 'ddi-console', SECRET = 'secret-client-de-test'
 let idp: Server, key: any, other: any
 const codes = new Map<string, { nonce: string; challenge: string; redirect: string; claims: any }>()
-const knob: { claims: any; badSig?: boolean; aud?: string; iss?: string; expired?: boolean; nonce?: string; userinfoGroups?: string[]; deny?: boolean } = { claims: {} }
+const knob: { claims: any; badSig?: boolean; aud?: string; iss?: string; expired?: boolean; noExp?: boolean; nonce?: string; userinfoGroups?: string[]; deny?: boolean } = { claims: {} }
 beforeAll(async () => {
   key = await generateKeyPair('RS256'); other = await generateKeyPair('RS256')
   const jwk = { ...(await exportJWK(key.publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' }
@@ -79,7 +79,9 @@ beforeAll(async () => {
       const c = codes.get(p.get('code') ?? ''); codes.delete(p.get('code') ?? '')       // usage unique
       if (!c || c.redirect !== p.get('redirect_uri') || createHash('sha256').update(p.get('code_verifier') ?? '').digest('base64url') !== c.challenge) return send(400, { error: 'invalid_grant' })
       const now = Math.floor(Date.now() / 1000)
-      const jwt = await new SignJWT({ ...c.claims, nonce: knob.nonce ?? c.nonce }).setProtectedHeader({ alg: 'RS256', kid: 'k1' }).setIssuer(knob.iss ?? IDP).setAudience(knob.aud ?? CLIENT).setSubject(String(c.claims.sub ?? 'x')).setIssuedAt(now - 10).setExpirationTime(knob.expired ? now - 3600 : now + 300).sign(knob.badSig ? other.privateKey : key.privateKey)
+      const builder = new SignJWT({ ...c.claims, nonce: knob.nonce ?? c.nonce }).setProtectedHeader({ alg: 'RS256', kid: 'k1' }).setIssuer(knob.iss ?? IDP).setAudience(knob.aud ?? CLIENT).setSubject(String(c.claims.sub ?? 'x')).setIssuedAt(now - 10)
+      if (!knob.noExp) builder.setExpirationTime(knob.expired ? now - 3600 : now + 300)   // noExp : jeton sans « exp » (jamais admis)
+      const jwt = await builder.sign(knob.badSig ? other.privateKey : key.privateKey)
       return send(200, { id_token: jwt, access_token: 'at-' + Math.random(), token_type: 'Bearer' })
     }
     if (u.pathname === '/userinfo') return send(200, { groups: knob.userinfoGroups ?? [] })
@@ -166,9 +168,9 @@ describe('SSO OpenID Connect', () => {
     r = await sso({ sub: 'u7' }, { deny: true }); expect(errOf(r.loc)).toBe('idp_error')
     expect((await db.query("select count(*)::int n from audit_log where action = 'login_failed' and detail::text like '%sso%'")).rows[0].n).toBeGreaterThanOrEqual(6)
   })
-  it('id_token invalide : mauvaise signature, audience, émetteur, expiré, nonce', async () => {
+  it('id_token invalide : mauvaise signature, audience, émetteur, expiré, sans expiration, nonce', async () => {
     const c = { sub: 'u8', preferred_username: 'mallory', groups: ['DDI-Admins'] }
-    for (const tweak of [{ badSig: true }, { aud: 'autre-client' }, { iss: 'http://evil.example' }, { expired: true }, { nonce: 'rejoue' }]) {
+    for (const tweak of [{ badSig: true }, { aud: 'autre-client' }, { iss: 'http://evil.example' }, { expired: true }, { noExp: true }, { nonce: 'rejoue' }]) {
       const r = await sso(c, tweak); expect([JSON.stringify(tweak), errOf(r.loc), r.cookie]).toEqual([JSON.stringify(tweak), 'token', ''])
     }
     expect((await db.query("select 1 from users where username = 'mallory'")).rowCount).toBe(0)

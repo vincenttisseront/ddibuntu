@@ -85,6 +85,20 @@ export function cfg() {
   }
 }
 
+/**
+ * Réglages réservés aux tests, jamais admis sur la console de production. Le démarrage HTTPS de l'appliance (console-start) fournit NITRO_SSL_CERT ;
+ * les tests de bout en bout tournent en HTTP clair et gardent ces réglages. DDI_TEST_MODE=1 remplacerait la clé de chiffrement absente par une clé publique
+ * et réduirait le coût du hachage des mots de passe ; les deux autres affaiblissent l'authentification par IdP OIDC ou annuaire.
+ * Renvoie le message du refus, ou null si tout est en ordre.
+ */
+export function productionGuardError(e: Record<string, string | undefined> = process.env): string | null {
+  if (!e.NITRO_SSL_CERT) return null
+  for (const k of ['DDI_TEST_MODE', 'DDI_OIDC_ALLOW_HTTP', 'DDI_ALLOW_UNVERIFIED_AUTH']) {
+    if (e[k] === '1') return `${k}=1 est réservé aux tests : démarrage refusé (retirer ce réglage de /etc/ddibuntu/console.env)`
+  }
+  return null
+}
+
 export function requireSecret(): string {
   const c = cfg()
   if (c.testMode && !c.secretKey) return 'test-mode-secret-key-0123456789abcdef'

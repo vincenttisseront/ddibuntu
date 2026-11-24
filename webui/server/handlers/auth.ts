@@ -1,6 +1,6 @@
 import { mfaEnrolPending } from '../utils/mfa-policy'
 import { z } from 'zod'
-import { audit, clearSessionCookie, fail, intParam, route, setSessionCookie, COOKIE } from '../utils/router'
+import { audit, clearSessionCookie, fail, intParam, qint, route, setSessionCookie, COOKIE } from '../utils/router'
 import { one, query, tx, getSetting, isSchemaReady, inRecovery } from '../utils/db'
 import { cfg } from '../utils/config'
 import { createSession, destroySession, signMfaChallenge, REPLICA_TOKEN_PREFIX, replicaLoginBlocked, replicaRecordAttempt, signReplicaSession, destroyUserSessions, dummyVerify, hashPassword, loginBlocked, passwordPolicyError, recordAttempt, safeEqual, verifyPassword, decryptSecret } from '../utils/auth'
@@ -164,13 +164,21 @@ route('POST', '/setup/admin', 'public', async (c) => {
   const b = await c.body(z.object({ token: z.string().min(1).max(200), username, password: z.string().min(1).max(512) }))
   const expected = cfg().setupToken
   if (!expected) fail(404, 'not_found')
-  if (await loginBlocked('setup', c.ip)) fail(429, 'too_many_attempts')
+  // compteur d'échecs PAR ADRESSE : un compteur commun permettrait à n'importe qui de bloquer l'installation en envoyant cinq faux jetons
+  const who = `setup:${c.ip ?? '-'}`
+  if (await loginBlocked(who, c.ip)) fail(429, 'too_many_attempts')
   const n = await one<{ n: string }>('select count(*) n from users')
   if (Number(n?.n ?? 0) > 0) fail(409, 'already_configured')
-  if (!safeEqual(b.token, expected)) { await recordAttempt('setup', c.ip, false); fail(403, 'bad_setup_token') }
+  if (!safeEqual(b.token, expected)) { await recordAttempt(who, c.ip, false); fail(403, 'bad_setup_token') }
   const pe = passwordPolicyError(b.password, b.username)
   if (pe) fail(400, pe)
-  const r = await one<any>("insert into users (username, role, source, password_hash) values ($1, 'admin', 'local', $2) returning id", [b.username, await hashPassword(b.password)])
+  const hash = await hashPassword(b.password)
+  // le contrôle « aucun utilisateur » et l'insertion sont sérialisés : deux requêtes simultanées avec le bon jeton ne créent pas deux administrateurs
+  const r = await tx(async (cl) => {
+    await cl.query('select pg_advisory_xact_lock(7311001)')
+    if (Number((await cl.query('select count(*) n from users')).rows[0].n) > 0) fail(409, 'already_configured')
+    return (await cl.query("insert into users (username, role, source, password_hash) values ($1, 'admin', 'local', $2) returning id", [b.username, hash])).rows[0]
+  })
   c.user = { id: r.id, username: b.username, role: 'admin', source: 'local', displayName: null, csrf: '', sessionId: 0 }
   await audit(c, 'setup_admin', 'user', r.id)
   return { ok: true }
@@ -229,7 +237,7 @@ route('DELETE', '/users/:id', 'admin', async (c) => {
 })
 
 route('GET', '/audit', 'admin', async (c) => {
-  const limit = Math.min(500, Number(c.query.limit ?? 100) || 100), offset = Number(c.query.offset ?? 0) || 0
+  const limit = qint(c, 'limit', 100, 1, 500), offset = qint(c, 'offset', 0, 0, 100_000_000)
   const q = typeof c.query.q === 'string' ? `%${c.query.q.slice(0, 80)}%` : '%'
   const items = await query(`select id, at, coalesce(username, detail->>'username') as username, action, entity, entity_id, detail, host(ip) as ip from audit_log
     where (action ilike $1 or coalesce(username, detail->>'username', '') ilike $1 or coalesce(entity,'') ilike $1 or coalesce(detail->>'reason', '') ilike $1 or host(ip) like $1) order by id desc limit $2 offset $3`, [q, limit, offset])
