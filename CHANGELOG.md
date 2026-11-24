@@ -1,5 +1,15 @@
 # Journal des modifications
 
+## 0.24.1 — « Audit de sécurité applicative »
+
+- **RADIUS** : `ddibuntu-radius` refuse les séquences `%{…}`, `%(…)` et `%[…]` dans l'identité et le mot de passe de liaison LDAP, en plus de `${…}`, `$ENV{…}` et `$(…)`. FreeRADIUS les développe à l'exécution : un `%{exec:…}` saisi dans la console y aurait été exécuté. **À savoir** : un mot de passe de service contenant l'une de ces séquences est désormais refusé et doit être changé dans l'annuaire.
+- **Délégation par espaces IPAM** : un opérateur à périmètre restreint ne choisit plus la zone DNS d'une adresse ; seule celle du gabarit de son réseau est admise (403 `out_of_scope` sinon).
+- **Première configuration** : la création du premier administrateur est sérialisée (deux requêtes simultanées ne créent plus deux comptes) et le compteur d'échecs du jeton est tenu par adresse, au lieu d'un compteur commun qui permettait de bloquer l'installation.
+- **Connexion unique (OIDC)** : un compte d'une autre origine n'est jamais repris par une connexion OIDC, le claim `exp` est obligatoire, la tolérance d'horloge est bornée à 60 s.
+- **Démarrage** : la console refuse de démarrer quand elle sert en HTTPS avec `DDI_TEST_MODE`, `DDI_OIDC_ALLOW_HTTP` ou `DDI_ALLOW_UNVERIFIED_AUTH` à 1. **À vérifier avant la mise à jour** : ces réglages ne doivent pas figurer dans `/etc/ddibuntu/console.env`.
+- **Pages et journal d'audit** : les pages rendues par le serveur sont servies en `Cache-Control: no-store` (fichiers de l'interface exclus) ; `limit` et `offset` du journal d'audit sont bornés (400 sinon).
+- **Tests** : `b46-radius-noexpand` (20), `e2e-sec-audit` (14), `unit-sec-audit` (6), cas « jeton sans expiration » dans `e2e-iter16`.
+
 ## 0.24.0 — « Des clés de signature qu'on peut remplacer »
 
 - **Jeu de clés de confiance** pour les mises à jour en ligne : une appliance accepte une archive dont `SHA256SUMS` est signé par **l'une** de ses clés épinglées (Ed25519), et non plus par une clé unique. Cette version livre la **nouvelle clé active** (`/etc/ddibuntu/keys/release.d/`) et garde l'ancienne clé (`update-pubkey.pem`) pendant la transition : elle est encore signée par l'ancienne clé, donc acceptée par toutes les appliances.
