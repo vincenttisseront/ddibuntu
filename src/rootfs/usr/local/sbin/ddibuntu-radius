@@ -367,9 +367,11 @@ def text(v, what, lo, hi, rx=None):
 def integer(v, what, lo, hi):
     if isinstance(v, bool) or not isinstance(v, int) or not (lo <= v <= hi): die("%s : entier entre %d et %d attendu" % (what, lo, hi))
     return v
-# FreeRADIUS interprète « ${…} », « $ENV{…} » et « $(…) » dans une chaîne de configuration, même entre guillemets
+# FreeRADIUS interprète « ${…} », « $ENV{…} » et « $(…) » dans une chaîne de configuration, même entre guillemets, et développe « %{…} » (xlat) à l'exécution
+# dans « identity » et « password » du module LDAP : un « %{exec:…} » ou « %{sql:…} » saisi dans la console y serait exécuté par FreeRADIUS.
 def noexpand(v, what):
     if re.search(r"\$(\{|ENV|\()", v): die("%s : la séquence « $ » suivie de « { », « ENV » ou « ( » n'est pas prise en charge" % what)
+    if re.search(r"%[{(\[]", v): die("%s : la séquence « %% » suivie de « { », « ( » ou « [ » n'est pas prise en charge" % what)
     return v
 dq = lambda s: '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'      # chaîne de configuration (module)
 sq = lambda s: "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'"      # littéral unlang (aucune expansion)
