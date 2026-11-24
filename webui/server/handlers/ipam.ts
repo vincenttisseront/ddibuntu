@@ -274,7 +274,7 @@ route('POST', '/ipam/subnets/:id/addresses', 'operator', async (c) => {
     const r = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, mac, description, owner, tags, is_gateway) values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id',
       [sid, ip, b.status, b.hostname ?? null, b.mac ? normMac(b.mac) : null, b.description ?? null, b.owner ?? null, b.tags ?? [], b.status === 'gateway' || !!b.is_gateway])).rows[0].id as number
     await ensureLabels(b.tags, cl)
-    const zone = b.hostname ? await resolveDnsZone(cl, sid, b.dns_zone_id) : null
+    const zone = b.hostname ? await resolveDnsZone(cl, sid, b.dns_zone_id, { scoped: !!c.user?.spaceIds }) : null
     if (zone && b.hostname) await syncDns(cl, ip, b.hostname, zone)
     return { id: r, dhcp: await syncReservation(cl, r), dns: !!zone }
   })
@@ -318,7 +318,7 @@ route('POST', '/ipam/subnets/:id/next', 'operator', async (c) => {
     }
     const id = (await cl.query('insert into addresses (subnet_id, ip, status, hostname, description, tags, is_gateway) values ($1,$2,$3,$4,$5,$6,$7) returning id', [sid, ip, b.status, hostname, b.description ?? null, b.tags ?? [], b.status === 'gateway'])).rows[0].id
     await ensureLabels(b.tags, cl)
-    const zone = hostname ? await resolveDnsZone(cl, sid, b.dns_zone_id) : null
+    const zone = hostname ? await resolveDnsZone(cl, sid, b.dns_zone_id, { scoped: !!c.user?.spaceIds }) : null
     if (zone && hostname) await syncDns(cl, ip!, hostname, zone)
     return { id: id as number, ip, hostname, dhcp: await syncReservation(cl, id as number), dns: !!zone }
   })

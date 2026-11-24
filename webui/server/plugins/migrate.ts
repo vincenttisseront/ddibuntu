@@ -1,8 +1,10 @@
-import { requireSecret } from '../utils/config'
+import { productionGuardError, requireSecret } from '../utils/config'
 import { inRecovery, isSchemaReady, migrate, SchemaPendingError } from '../utils/db'
 import { purgeSessions } from '../utils/auth'
 
 export default defineNitroPlugin(async () => {
+  const refused = productionGuardError()
+  if (refused) throw new Error(`[config] ${refused}`)   // jamais de mode « test » (clé publique, hachage affaibli) sur une console de production
   requireSecret()   // arrêt immédiat si la clé de chiffrement des secrets est absente
   for (let i = 1; i <= 10; i++) {
     try {

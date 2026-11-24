@@ -42,7 +42,7 @@ export const clearDiscoveryCache = () => dcache.clear()
 const jwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>()
 export async function verifyIdToken(idToken: string, d: Discovery, clientId: string, nonce: string): Promise<Record<string, unknown>> {
   let set = jwks.get(d.jwks_uri); if (!set) { set = createRemoteJWKSet(new URL(d.jwks_uri), { timeoutDuration: 8000, cooldownDuration: 30_000 }); jwks.set(d.jwks_uri, set) }
-  const { payload } = await jwtVerify(idToken, set, { issuer: d.issuer, audience: clientId, algorithms: ['RS256', 'RS384', 'RS512', 'PS256', 'ES256', 'ES384'], clockTolerance: 60 })
+  const { payload } = await jwtVerify(idToken, set, { issuer: d.issuer, audience: clientId, algorithms: ['RS256', 'RS384', 'RS512', 'PS256', 'ES256', 'ES384'], clockTolerance: 60, requiredClaims: ['exp'] })
   if (payload.nonce !== nonce) throw new Error('nonce_mismatch')
   return payload as Record<string, unknown>
 }

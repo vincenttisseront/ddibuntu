@@ -44,10 +44,19 @@ export async function checkHostnameRule(q: Q, subnetId: number, hostname: string
 }
 
 /** Zone DNS à alimenter : choix explicite (null = aucune), sinon celle du gabarit du réseau, sinon aucune. */
-export async function resolveDnsZone(q: Q, subnetId: number, requested: number | null | undefined): Promise<number | null> {
+/**
+ * Zone DNS où écrire le nom d'une adresse. Un utilisateur à périmètre restreint (délégation par espaces IPAM) ne choisit PAS la zone : il n'écrit que dans celle
+ * du gabarit de son réseau, fixée par un administrateur. Sinon « dns_zone_id » (fourni par la requête) lui ferait écrire dans n'importe quelle zone primaire,
+ * alors que le DNS n'est pas délégué (le routeur lui refuse toute écriture hors de /ipam/).
+ */
+export async function resolveDnsZone(q: Q, subnetId: number, requested: number | null | undefined, opts: { scoped?: boolean } = {}): Promise<number | null> {
   if (requested === null) return null
-  if (requested) return requested
-  return (await templateOfSubnet(q, subnetId))?.dns_zone_id ?? null
+  const fromTemplate = (await templateOfSubnet(q, subnetId))?.dns_zone_id ?? null
+  if (requested) {
+    if (opts.scoped && requested !== fromTemplate) fail(403, 'out_of_scope')
+    return requested
+  }
+  return fromTemplate
 }
 
 export type DhcpSync = 'created' | 'updated' | 'removed' | 'no_mac' | 'no_scope' | 'ipv6' | null
